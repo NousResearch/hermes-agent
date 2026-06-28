@@ -394,6 +394,19 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)
+    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *_args, **_kwargs: None)
+
+
+def _logical_git_cmd(cmd):
+    """Strip Windows-only git config prefix from update test comparisons."""
+    if (
+        len(cmd) >= 4
+        and cmd[0] == "git"
+        and cmd[1:3] == ["-c", "windows.appendAtomically=false"]
+    ):
+        return ["git", *cmd[3:]]
+    return cmd
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
@@ -407,13 +420,14 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        logical = _logical_git_cmd(cmd)
+        if logical == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if logical == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if logical == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if logical == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -456,13 +470,14 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        logical = _logical_git_cmd(cmd)
+        if logical == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if logical == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if logical == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if logical == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -578,7 +593,7 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    reset_calls = [_logical_git_cmd(c) for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
     assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
 
@@ -699,9 +714,9 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    fetch_calls = [c for c in recorded if "fetch" in c]
+    fetch_calls = [_logical_git_cmd(c) for c in recorded if "fetch" in c]
     assert fetch_calls == [["git", "fetch", "origin", "main"]]
-    assert ["git", "fetch", "origin"] not in recorded
+    assert ["git", "fetch", "origin"] not in [_logical_git_cmd(c) for c in recorded]
 
 
 # ---------------------------------------------------------------------------

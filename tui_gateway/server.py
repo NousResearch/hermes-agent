@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli import _subprocess_compat
 from hermes_constants import (
     get_hermes_home,
     get_hermes_home_override,
@@ -9076,7 +9077,7 @@ def _(rid, params: dict) -> dict:
             str(pdf_path), str(out_prefix),
         ]
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            res = _subprocess_compat.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -11097,7 +11098,7 @@ def _(rid, params: dict) -> dict:
     if hint:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
     try:
-        r = subprocess.run(
+        r = _subprocess_compat.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
@@ -11159,7 +11160,7 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
-            r = subprocess.run(
+            r = _subprocess_compat.run(
                 qc.get("command", ""),
                 shell=True,
                 capture_output=True,
@@ -11619,7 +11620,7 @@ def _list_repo_files(root: str) -> list[str]:
 
     files: list[str] = []
     try:
-        top_result = subprocess.run(
+        top_result = _subprocess_compat.run(
             ["git", "-C", root, "rev-parse", "--show-toplevel"],
             capture_output=True,
             timeout=2.0,
@@ -11628,7 +11629,7 @@ def _list_repo_files(root: str) -> list[str]:
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
-            list_result = subprocess.run(
+            list_result = _subprocess_compat.run(
                 [
                     "git",
                     "-C",
@@ -13499,7 +13500,7 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
-        r = subprocess.run(
+        r = _subprocess_compat.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
         )

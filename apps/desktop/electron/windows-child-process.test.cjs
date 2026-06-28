@@ -23,6 +23,19 @@ function requireHiddenChildOptions(source, needle) {
   )
 }
 
+function requireAllHiddenChildOptions(source, needle) {
+  const matches = [...source.matchAll(needle)]
+  assert.ok(matches.length > 0, `missing call site: ${needle}`)
+  for (const match of matches) {
+    const snippet = source.slice(match.index, match.index + 700)
+    assert.match(
+      snippet,
+      /hiddenWindowsChildOptions\(/,
+      `expected ${needle} call site to wrap child-process options with hiddenWindowsChildOptions`
+    )
+  }
+}
+
 test('desktop background child processes opt into hidden Windows consoles', () => {
   const source = readElectronFile('main.cjs')
 
@@ -37,6 +50,7 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   requireHiddenChildOptions(source, /spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /hermesProcess = spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /spawn\(\s*py,\s*\['-m', 'hermes_cli\.main', 'uninstall', '--gui-summary'\]/)
+  requireAllHiddenChildOptions(source, /spawn\(\s*updater,\s*updaterArgs,/g)
 
   assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, dashboardArgs\)/)
   assert.match(source, /existing Hermes no-console Python at/)
@@ -56,7 +70,6 @@ test('desktop background child processes opt into hidden Windows consoles', () =
 test('intentional or interactive desktop child processes stay documented', () => {
   const source = readElectronFile('main.cjs')
 
-  assert.match(source, /windowsHide: false/)
   assert.match(source, /handOffWindowsBootstrapRecovery/)
   assert.match(source, /'--repair', '--branch'/)
   assert.match(source, /'--update', '--branch'/)
@@ -68,5 +81,5 @@ test('bootstrap PowerShell runner hides Windows console children', () => {
   const source = readElectronFile('bootstrap-runner.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
-  requireHiddenChildOptions(source, 'spawn(ps, fullArgs')
+  requireHiddenChildOptions(source, /spawn\(\s*ps,\s*fullArgs/)
 })

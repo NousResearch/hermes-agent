@@ -41,6 +41,7 @@ from hermes_cli.config import (
     save_env_value,
 )
 from hermes_cli.cli_output import prompt as _prompt_input
+from hermes_cli import _subprocess_compat
 
 _MANIFEST_VERSION = 1
 
@@ -397,7 +398,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     is_sha_ref = bool(re.fullmatch(r"[0-9a-f]{7,40}", install.ref))
 
     if not is_sha_ref:
-        proc = subprocess.run(
+        proc = _subprocess_compat.run(
             [git, "clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)],
         )
         if proc.returncode == 0:
@@ -410,10 +411,10 @@ def _do_git_install(entry: CatalogEntry) -> Path:
             is_sha_ref = True  # treat the same as a SHA ref from here
 
     if is_sha_ref:
-        proc = subprocess.run([git, "clone", install.url, str(dest)])
+        proc = _subprocess_compat.run([git, "clone", install.url, str(dest)])
         if proc.returncode != 0:
             raise CatalogError(f"git clone failed for {install.url}")
-        proc = subprocess.run([git, "-C", str(dest), "checkout", install.ref])
+        proc = _subprocess_compat.run([git, "-C", str(dest), "checkout", install.ref])
         if proc.returncode != 0:
             raise CatalogError(f"git checkout {install.ref} failed")
 

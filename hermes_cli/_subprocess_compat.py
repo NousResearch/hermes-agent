@@ -28,12 +28,15 @@ guarantee.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "run",
+    "popen",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -199,6 +202,41 @@ def windows_hide_flags() -> int:
     if not IS_WINDOWS:
         return 0
     return _CREATE_NO_WINDOW
+
+
+def _hidden_startupinfo() -> Any | None:
+    """Return STARTUPINFO that hides a child console on Windows."""
+    if not IS_WINDOWS:
+        return None
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return startupinfo
+
+
+def _with_hidden_windows_defaults(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Apply no-window defaults without changing POSIX behavior."""
+    if not IS_WINDOWS:
+        return kwargs
+
+    out = dict(kwargs)
+    creationflags = int(out.get("creationflags", 0) or 0)
+    if not creationflags & subprocess.CREATE_NEW_CONSOLE:
+        out["creationflags"] = creationflags | windows_hide_flags()
+        if out.get("startupinfo") is None:
+            out["startupinfo"] = _hidden_startupinfo()
+    return out
+
+
+def run(*popenargs: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run a subprocess with Hermes' Windows hidden-console defaults."""
+    return subprocess.run(*popenargs, **_with_hidden_windows_defaults(kwargs))
+
+
+def popen(*popenargs: Any, **kwargs: Any) -> subprocess.Popen:
+    """Open a subprocess with Hermes' Windows hidden-console defaults."""
+    return subprocess.Popen(*popenargs, **_with_hidden_windows_defaults(kwargs))
 
 
 def windows_detach_popen_kwargs() -> dict:

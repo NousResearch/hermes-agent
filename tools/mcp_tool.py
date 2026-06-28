@@ -91,6 +91,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -197,9 +198,75 @@ _MCP_MESSAGE_HANDLER_SUPPORTED = False
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
 LATEST_PROTOCOL_VERSION = "2025-03-26"
+
+
+def _hidden_windows_startupinfo():
+    if sys.platform != "win32":
+        return None
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return startupinfo
+
+
+def _patch_mcp_stdio_windows_process_factory() -> None:
+    """Keep MCP stdio server launches from opening console windows on Windows."""
+    if sys.platform != "win32":
+        return
+    try:
+        import anyio
+        import mcp.client.stdio as mcp_stdio
+        from mcp.os.win32 import utilities as win32_utilities
+        from hermes_cli._subprocess_compat import windows_hide_flags
+    except Exception as exc:
+        logger.debug("Could not patch MCP Windows stdio launcher: %s", exc)
+        return
+
+    if getattr(mcp_stdio, "_hermes_hidden_windows_process_factory", False):
+        return
+
+    async def _create_hidden_windows_process(
+        command: str,
+        args: List[str],
+        env: Optional[Dict[str, str]] = None,
+        errlog: Any = sys.stderr,
+        cwd: Any = None,
+    ):
+        process = None
+        job = win32_utilities._create_job_object()
+        process_kwargs = {
+            "env": env,
+            "stderr": errlog,
+            "cwd": cwd,
+            "creationflags": windows_hide_flags(),
+            "startupinfo": _hidden_windows_startupinfo(),
+        }
+        try:
+            process = await anyio.open_process([command, *args], **process_kwargs)
+        except Exception:
+            popen_obj = subprocess.Popen(
+                [command, *args],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=errlog,
+                env=env,
+                cwd=cwd,
+                bufsize=0,
+                creationflags=windows_hide_flags(),
+                startupinfo=_hidden_windows_startupinfo(),
+            )
+            process = win32_utilities.FallbackProcess(popen_obj)
+        win32_utilities._maybe_assign_process_to_job(process, job)
+        return process
+
+    mcp_stdio.create_windows_process = _create_hidden_windows_process
+    mcp_stdio._hermes_hidden_windows_process_factory = True
+
+
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
+    _patch_mcp_stdio_windows_process_factory()
     _MCP_AVAILABLE = True
     try:
         from mcp.client.streamable_http import streamablehttp_client

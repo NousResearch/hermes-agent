@@ -447,6 +447,65 @@ def test_quarantine_actionable_warning_when_everything_fails(
     assert "Hermes Desktop" in captured or "gateway" in captured.lower()
 
 
+def test_quarantined_install_restores_missing_shim_after_success(tmp_path, monkeypatch):
+    """A successful installer exit must still leave the command shim usable."""
+    shim = tmp_path / "hermes.exe"
+    quarantined = tmp_path / "hermes.exe.old.123"
+    quarantined.write_bytes(b"old shim")
+
+    monkeypatch.setattr(
+        cli_main,
+        "_quarantine_running_hermes_exe",
+        lambda scripts_dir: [(shim, quarantined)],
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_run_install_with_heartbeat",
+        lambda cmd, env=None: None,
+    )
+
+    cli_main._run_quarantined_install(["uv", "pip", "install"], scripts_dir=tmp_path)
+
+    assert shim.read_bytes() == b"old shim"
+    assert not quarantined.exists()
+
+
+def test_quarantined_install_preserves_fresh_replacement(tmp_path, monkeypatch):
+    """Do not overwrite a replacement shim that the installer actually wrote."""
+    shim = tmp_path / "hermes.exe"
+    quarantined = tmp_path / "hermes.exe.old.123"
+    quarantined.write_bytes(b"old shim")
+
+    monkeypatch.setattr(
+        cli_main,
+        "_quarantine_running_hermes_exe",
+        lambda scripts_dir: [(shim, quarantined)],
+    )
+
+    def fake_install(cmd, env=None):
+        shim.write_bytes(b"fresh shim")
+
+    monkeypatch.setattr(cli_main, "_run_install_with_heartbeat", fake_install)
+
+    cli_main._run_quarantined_install(["uv", "pip", "install"], scripts_dir=tmp_path)
+
+    assert shim.read_bytes() == b"fresh shim"
+    assert quarantined.exists()
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_cleanup_quarantined_exes_restores_stranded_missing_original(_winp, tmp_path):
+    """Cleanup should recover, not delete, the only remaining shim backup."""
+    shim = tmp_path / "hermes.exe"
+    quarantined = tmp_path / "hermes.exe.old.123"
+    quarantined.write_bytes(b"old shim")
+
+    cli_main._cleanup_quarantined_exes(tmp_path)
+
+    assert shim.read_bytes() == b"old shim"
+    assert not quarantined.exists()
+
+
 # ---------------------------------------------------------------------------
 # Windows gateway pause/resume before update mutation
 # ---------------------------------------------------------------------------

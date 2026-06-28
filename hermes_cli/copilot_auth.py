@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli import _subprocess_compat
+
 logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
@@ -135,7 +137,7 @@ def _try_gh_cli_token() -> Optional[str]:
         if hostname:
             cmd += ["--hostname", hostname]
         try:
-            result = subprocess.run(
+            result = _subprocess_compat.run(
                 cmd,
                 capture_output=True,
                 text=True,

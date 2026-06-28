@@ -11,9 +11,11 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse
-from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Dict, List, Optional
+from urllib.parse import urlparse
+
+from hermes_cli import _subprocess_compat
+from hermes_constants import get_hermes_home
 
 # rich and prompt_toolkit are imported lazily (inside the functions that use
 # them) rather than at module level.  Importing this module is on the TUI
@@ -218,7 +220,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
-        subprocess.run(
+        _subprocess_compat.run(
             fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),

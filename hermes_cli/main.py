@@ -258,6 +258,11 @@ import json
 import shutil
 import stat
 import subprocess
+from hermes_cli import _subprocess_compat
+from hermes_cli._subprocess_compat import (
+    windows_detach_popen_kwargs,
+    windows_hide_flags,
+)
 from pathlib import Path
 from typing import Optional
 
@@ -4451,7 +4456,7 @@ _UPDATE_CRITICAL_FILES = (
 def _capture_head_sha(git_cmd, cwd) -> str | None:
     """Return the current HEAD SHA, or None if it can't be resolved."""
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=cwd,
             capture_output=True,
@@ -6281,7 +6286,7 @@ def _update_via_zip(args):
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    status = subprocess.run(
+    status = _subprocess_compat.run(
         git_cmd + ["status", "--porcelain"],
         cwd=cwd,
         capture_output=True,
@@ -6295,7 +6300,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     # git stash will fail with "needs merge / could not write index".  Clear the
     # conflict state with `git reset` so the stash can proceed.  Working-tree
     # changes are preserved; only the index conflict markers are dropped.
-    unmerged = subprocess.run(
+    unmerged = _subprocess_compat.run(
         git_cmd + ["ls-files", "--unmerged"],
         cwd=cwd,
         capture_output=True,
@@ -6303,7 +6308,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     )
     if unmerged.stdout.strip():
         print("→ Clearing unmerged index entries from a previous conflict...")
-        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+        _subprocess_compat.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
 
     from datetime import datetime, timezone
 
@@ -6311,12 +6316,12 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         "hermes-update-autostash-%Y%m%d-%H%M%S"
     )
     print("→ Local changes detected — stashing before update...")
-    subprocess.run(
+    _subprocess_compat.run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
         check=True,
     )
-    stash_ref = subprocess.run(
+    stash_ref = _subprocess_compat.run(
         git_cmd + ["rev-parse", "--verify", "refs/stash"],
         cwd=cwd,
         capture_output=True,
@@ -6329,7 +6334,7 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
 def _resolve_stash_selector(
     git_cmd: list[str], cwd: Path, stash_ref: str
 ) -> Optional[str]:
-    stash_list = subprocess.run(
+    stash_list = _subprocess_compat.run(
         git_cmd + ["stash", "list", "--format=%gd %H"],
         cwd=cwd,
         capture_output=True,
@@ -6384,7 +6389,7 @@ def _restore_stashed_changes(
             return False
 
     print("→ Restoring local changes...")
-    restore = subprocess.run(
+    restore = _subprocess_compat.run(
         git_cmd + ["stash", "apply", stash_ref],
         cwd=cwd,
         capture_output=True,
@@ -6392,7 +6397,7 @@ def _restore_stashed_changes(
     )
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
-    unmerged = subprocess.run(
+    unmerged = _subprocess_compat.run(
         git_cmd + ["diff", "--name-only", "--diff-filter=U"],
         cwd=cwd,
         capture_output=True,
@@ -6420,7 +6425,7 @@ def _restore_stashed_changes(
         # Always reset to clean state — leaving conflict markers in source
         # files makes hermes completely unrunnable (SyntaxError on import).
         # The user's changes are safe in the stash for manual recovery.
-        subprocess.run(
+        _subprocess_compat.run(
             git_cmd + ["reset", "--hard", "HEAD"],
             cwd=cwd,
             capture_output=True,
@@ -6442,7 +6447,7 @@ def _restore_stashed_changes(
         )
         _print_stash_cleanup_guidance(stash_ref)
     else:
-        drop = subprocess.run(
+        drop = _subprocess_compat.run(
             git_cmd + ["stash", "drop", stash_selector],
             cwd=cwd,
             capture_output=True,
@@ -6494,7 +6499,7 @@ def _discard_stashed_changes(
         _print_stash_cleanup_guidance(stash_ref)
         return False
 
-    drop = subprocess.run(
+    drop = _subprocess_compat.run(
         git_cmd + ["stash", "drop", stash_selector],
         cwd=cwd,
         capture_output=True,
@@ -6531,7 +6536,7 @@ SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     """Get the URL of the origin remote, or None if not set."""
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["remote", "get-url", "origin"],
             cwd=cwd,
             capture_output=True,
@@ -6564,7 +6569,7 @@ def _is_fork(origin_url: Optional[str]) -> bool:
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
     """Check if an 'upstream' remote already exists."""
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["remote", "get-url", "upstream"],
             cwd=cwd,
             capture_output=True,
@@ -6578,7 +6583,7 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
 def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
     """Add the official repo as the 'upstream' remote. Returns True on success."""
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["remote", "add", "upstream", OFFICIAL_REPO_URL],
             cwd=cwd,
             capture_output=True,
@@ -6592,7 +6597,7 @@ def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
 def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) -> int:
     """Count commits on `head` that are not on `base`. Returns -1 on error."""
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["rev-list", "--count", f"{base}..{head}"],
             cwd=cwd,
             capture_output=True,
@@ -6628,7 +6633,7 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     Returns True if push succeeded, False otherwise.
     """
     try:
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["push", "origin", "main", "--force-with-lease"],
             cwd=cwd,
             capture_output=True,
@@ -6691,7 +6696,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     print()
     print("→ Fetching upstream...")
     try:
-        subprocess.run(
+        _subprocess_compat.run(
             git_cmd + ["fetch", "upstream", "main", "--quiet"],
             cwd=cwd,
             capture_output=True,
@@ -6731,7 +6736,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     print("→ Pulling from upstream...")
 
     try:
-        subprocess.run(
+        _subprocess_compat.run(
             git_cmd + ["pull", "--ff-only", "upstream", "main"],
             cwd=cwd,
             check=True,
@@ -7363,6 +7368,11 @@ def _run_quarantined_install(
         if scripts_dir is not None:
             _restore_quarantined_exes(moved)
         raise
+    if scripts_dir is not None:
+        # A successful installer exit does not always guarantee the entry-point
+        # shim was recreated. Keep the command usable if uv/pip skipped writing
+        # the replacement after quarantine.
+        _restore_quarantined_exes(moved)
 
 
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
@@ -7381,6 +7391,11 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     try:
         for stale in scripts_dir.glob("*.exe.old.*"):
             try:
+                original_name = stale.name.split(".old.", 1)[0]
+                original = stale.with_name(original_name)
+                if not original.exists():
+                    stale.rename(original)
+                    continue
                 stale.unlink()
             except OSError:
                 pass  # still locked or in use — try again next run
@@ -8164,7 +8179,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # would then report a huge bogus "behind" number. Detect shallow up front:
     # fetch with --depth 1 to preserve the boundary and report presence-only.
     is_shallow = (
-        subprocess.run(
+        _subprocess_compat.run(
             git_cmd + ["rev-parse", "--is-shallow-repository"],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -8176,7 +8191,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
 
     if branch == "main":
         print("→ Fetching from upstream...")
-        fetch_result = subprocess.run(
+        fetch_result = _subprocess_compat.run(
             git_cmd + ["fetch"] + depth_args + ["upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -8185,7 +8200,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         if fetch_result.returncode != 0:
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
-            fetch_result = subprocess.run(
+            fetch_result = _subprocess_compat.run(
                 git_cmd + ["fetch"] + depth_args + ["origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
@@ -8199,7 +8214,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
+        fetch_result = _subprocess_compat.run(
             git_cmd + ["fetch"] + depth_args + ["origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -8224,7 +8239,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
     # (with check=True) raises CalledProcessError, surfacing a Python
     # traceback. Friendlier to detect-and-report.
-    verify_result = subprocess.run(
+    verify_result = _subprocess_compat.run(
         git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -8237,11 +8252,11 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
         # report presence-only (mirrors the banner's _check_via_local_git).
-        head_sha = subprocess.run(
+        head_sha = _subprocess_compat.run(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
         ).stdout.strip()
-        target_sha = subprocess.run(
+        target_sha = _subprocess_compat.run(
             git_cmd + ["rev-parse", compare_branch],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
         ).stdout.strip()
@@ -8254,7 +8269,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             print(f"  Run '{recommended_update_command()}' to install.")
         return
 
-    rev_result = subprocess.run(
+    rev_result = _subprocess_compat.run(
         git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -8770,7 +8785,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
     Best-effort; only ever touches files named ``package-lock.json``.
     """
     try:
-        diff = subprocess.run(
+        diff = _subprocess_compat.run(
             git_cmd + ["diff", "--name-only"],
             cwd=repo_root,
             capture_output=True,
@@ -8791,7 +8806,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         ]
         if not dirty:
             return
-        subprocess.run(
+        _subprocess_compat.run(
             git_cmd + ["checkout", "--", *dirty],
             cwd=repo_root,
             capture_output=True,
@@ -9057,7 +9072,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _resolve_update_branch(args)
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
+        fetch_result = _subprocess_compat.run(
             git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -9081,7 +9096,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -9104,7 +9119,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            checkout_result = subprocess.run(
+            checkout_result = _subprocess_compat.run(
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
@@ -9115,7 +9130,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # it up as a tracking branch of origin/<branch>. This is
                 # the common case when the requested branch exists upstream
                 # but was never checked out locally.
-                track_result = subprocess.run(
+                track_result = _subprocess_compat.run(
                     git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
@@ -9146,7 +9161,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
 
         # Check if there are updates
-        result = subprocess.run(
+        result = _subprocess_compat.run(
             git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -9172,7 +9187,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     input_fn=gw_input_fn,
                 )
             if current_branch not in {branch, "HEAD"}:
-                subprocess.run(
+                _subprocess_compat.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
@@ -9211,7 +9226,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
-            pull_result = subprocess.run(
+            pull_result = _subprocess_compat.run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
@@ -9224,7 +9239,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
-                reset_result = subprocess.run(
+                reset_result = _subprocess_compat.run(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
@@ -9260,7 +9275,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if pre_pull_sha:
                     print()
                     print(f"→ Rolling back to {pre_pull_sha[:10]}...")
-                    rollback_result = subprocess.run(
+                    rollback_result = _subprocess_compat.run(
                         git_cmd + ["reset", "--hard", pre_pull_sha],
                         cwd=PROJECT_ROOT,
                         capture_output=True,

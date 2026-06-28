@@ -50,10 +50,69 @@ against double-reconfigure.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+_subprocess_defaults_applied = False
+_original_popen = subprocess.Popen
+
+
+def _hidden_windows_startupinfo():
+    if not _IS_WINDOWS:
+        return None
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return startupinfo
+
+
+def _apply_windows_subprocess_defaults(kwargs: dict) -> dict:
+    """Default Windows child processes to hidden unless caller is explicit."""
+    if not _IS_WINDOWS:
+        return kwargs
+    if os.environ.get("HERMES_ALLOW_VISIBLE_SUBPROCESSES") == "1":
+        return kwargs
+    creationflags = kwargs.get("creationflags", 0) or 0
+    create_new_console = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+    if not creationflags & create_new_console:
+        kwargs["creationflags"] = creationflags | getattr(
+            subprocess, "CREATE_NO_WINDOW", 0
+        )
+    if kwargs.get("startupinfo") is None:
+        startupinfo = _hidden_windows_startupinfo()
+        if startupinfo is not None:
+            kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
+def apply_windows_subprocess_defaults() -> bool:
+    """Hide Python-spawned child process windows by default on Windows.
+
+    Hermes' desktop/gateway backends launch many short-lived helpers while the
+    UI is connecting, loading sessions, resolving providers, or discovering
+    tools. Any raw ``subprocess.run`` / ``Popen`` call that forgets
+    ``CREATE_NO_WINDOW`` can briefly flash a Windows Terminal/cmd window.
+
+    This process-wide wrapper makes hidden launches the default for Hermes
+    Python entry points. Callers that need special process behavior remain in
+    control by passing explicit ``creationflags`` and/or ``startupinfo``.
+    """
+    global _subprocess_defaults_applied
+
+    if not _IS_WINDOWS:
+        return False
+    if _subprocess_defaults_applied:
+        return False
+
+    class HermesHiddenPopen(_original_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **_apply_windows_subprocess_defaults(kwargs))
+
+    subprocess.Popen = HermesHiddenPopen
+    _subprocess_defaults_applied = True
+    return True
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -79,6 +138,7 @@ def apply_windows_utf8_bootstrap() -> bool:
     #    (or PYTHONIOENCODING=something-else) if they really want to.
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    apply_windows_subprocess_defaults()
 
     # 2. Reconfigure the current process's stdio to UTF-8.  Needed
     #    because os.environ changes don't retroactively rebind sys.stdout

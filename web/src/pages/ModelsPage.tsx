@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
   Brain,
+  Bot,
   ChevronDown,
   Cpu,
   DollarSign,
@@ -18,6 +19,7 @@ import type {
   AuxiliaryTaskAssignment,
   ModelsAnalyticsModelEntry,
   ModelsAnalyticsResponse,
+  ProfileInfo,
 } from "@/lib/api";
 import { timeAgo, cn, themedBody } from "@/lib/utils";
 import { formatTokenCount } from "@/lib/format";
@@ -27,6 +29,7 @@ import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -687,6 +690,213 @@ function AuxiliaryTasksModal({
   );
 }
 
+type ProfileModelChoice = { provider: string; model: string; label: string };
+
+function profileModelKey(provider: string | null | undefined, model: string | null | undefined) {
+  return provider && model ? `${provider}\u0000${model}` : "";
+}
+
+function findManagedProfile(profiles: ProfileInfo[], id: "perry" | "aisha") {
+  if (id === "perry") {
+    return (
+      profiles.find((p) => p.name === "default") ??
+      profiles.find((p) => p.name === "perry") ??
+      null
+    );
+  }
+  return profiles.find((p) => p.name === "aisha") ?? null;
+}
+
+function ProfileModelSection({
+  id,
+  title,
+  description,
+  profile,
+  choices,
+  choicesLoading,
+  onChanged,
+}: {
+  id: "perry" | "aisha";
+  title: string;
+  description: string;
+  profile: ProfileInfo | null;
+  choices: ProfileModelChoice[];
+  choicesLoading: boolean;
+  onChanged(): void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const currentKey = profileModelKey(profile?.provider, profile?.model);
+  const availableChoices = currentKey && !choices.some((c) => profileModelKey(c.provider, c.model) === currentKey)
+    ? [
+        {
+          provider: profile?.provider ?? "",
+          model: profile?.model ?? "",
+          label: `${profile?.provider ?? "unknown"} · ${profile?.model ?? "unknown"}`,
+        },
+        ...choices,
+      ]
+    : choices;
+
+  const changeModel = async (value: string) => {
+    if (!profile || !value || value === currentKey) return;
+    const picked = availableChoices.find((c) => profileModelKey(c.provider, c.model) === value);
+    if (!picked) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.setProfileModel(profile.name, picked.provider, picked.model);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3 border border-border/50 bg-muted/20 p-4">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Bot className="h-4 w-4 text-primary" />
+            <h3 className="text-display text-sm font-medium tracking-wider">
+              {title}
+            </h3>
+          </div>
+          <p className="mt-1 text-xs text-text-tertiary">{description}</p>
+        </div>
+        <Badge className="shrink-0 uppercase">{profile?.name ?? id}</Badge>
+      </div>
+
+      <div className="min-w-0">
+        <div className="mb-1 text-[0.65rem] uppercase tracking-wide text-text-tertiary">
+          Current model
+        </div>
+        <div className="truncate font-mono text-xs text-text-secondary">
+          {profile
+            ? `${profile.provider || "(unset)"} · ${profile.model || "(unset)"}`
+            : "profile not found"}
+        </div>
+      </div>
+
+      <Select
+        value={currentKey}
+        disabled={!profile || saving || choicesLoading || availableChoices.length === 0}
+        placeholder={choicesLoading ? "Loading models…" : "Choose model"}
+        onValueChange={(value) => void changeModel(value)}
+      >
+        {availableChoices.map((choice) => (
+          <SelectOption
+            key={`${id}-${choice.provider}\u0000${choice.model}`}
+            value={profileModelKey(choice.provider, choice.model)}
+          >
+            {choice.label}
+          </SelectOption>
+        ))}
+      </Select>
+
+      <div className="min-h-4 text-xs">
+        {saving && <span className="text-text-tertiary">Saving…</span>}
+        {error && <span className="text-destructive">{error}</span>}
+      </div>
+    </div>
+  );
+}
+
+function ManagedProfilesModelPanel({ onSaved }: { onSaved(): void }) {
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [choices, setChoices] = useState<ProfileModelChoice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [choicesLoading, setChoicesLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadProfiles = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    api
+      .getProfiles()
+      .then((res) => setProfiles(res.profiles))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    void Promise.resolve().then(loadProfiles);
+  }, [loadProfiles]);
+
+  useEffect(() => {
+    api
+      .getModelOptions()
+      .then((res) => {
+        const flat: ProfileModelChoice[] = [];
+        for (const provider of res.providers ?? []) {
+          for (const model of provider.models ?? []) {
+            flat.push({
+              provider: provider.slug,
+              model,
+              label: `${provider.name} · ${model}`,
+            });
+          }
+        }
+        setChoices(flat);
+      })
+      .catch(() => setChoices([]))
+      .finally(() => setChoicesLoading(false));
+  }, []);
+
+  const handleChanged = useCallback(() => {
+    loadProfiles();
+    onSaved();
+  }, [loadProfiles, onSaved]);
+
+  const perry = findManagedProfile(profiles, "perry");
+  const aisha = findManagedProfile(profiles, "aisha");
+
+  return (
+    <Card className="min-w-0 max-w-full overflow-hidden lg:col-span-2">
+      <CardHeader className="min-w-0 pb-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <CardTitle className="text-sm">Perry & Aisha</CardTitle>
+          <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">
+            profile defaults for new sessions
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="min-w-0 pt-3">
+        {error && <p className="mb-3 text-xs text-destructive">{error}</p>}
+        {loading ? (
+          <div className="flex items-center justify-center py-8">
+            <Spinner className="text-primary" />
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            <ProfileModelSection
+              id="perry"
+              title="Perry"
+              description="Default profile used by the main assistant. Sì, quello con l'hardware Frankenstein."
+              profile={perry}
+              choices={choices}
+              choicesLoading={choicesLoading}
+              onChanged={handleChanged}
+            />
+            <ProfileModelSection
+              id="aisha"
+              title="Aisha"
+              description="Aisha profile, isolated config and runtime defaults. Niente scambio di cappotti."
+              profile={aisha}
+              choices={choices}
+              choicesLoading={choicesLoading}
+              onChanged={handleChanged}
+            />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ModelSettingsPanel({
   aux,
   refreshKey,
@@ -936,7 +1146,7 @@ export default function ModelsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
   }, [load]);
 
   // Model assignments can change outside this page (config editor, chat
@@ -962,6 +1172,8 @@ export default function ModelsPage() {
       <PluginSlot name="models:top" />
 
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+        <ManagedProfilesModelPanel onSaved={onAssigned} />
+
         <ModelSettingsPanel
           aux={aux}
           refreshKey={saveKey}

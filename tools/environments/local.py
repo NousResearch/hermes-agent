@@ -658,7 +658,27 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                # Windows: use taskkill /T to kill the entire process tree.
+                # proc.terminate() only kills the parent process, leaving
+                # orphaned child processes behind.
+                try:
+                    subprocess.run(
+                        ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    # Fallback to terminate() if taskkill fails
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                # Wait for process to exit
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
             else:
                 try:
                     pgid = os.getpgid(proc.pid)

@@ -1141,7 +1141,9 @@ def _reset_terminal_input_modes_on_exit() -> None:
     except Exception:
         pass
     try:
-        with open("/dev/tty", "w", encoding="ascii") as tty:
+        # Windows doesn't have /dev/tty — use CON instead
+        tty_path = "CON" if sys.platform == "win32" else "/dev/tty"
+        with open(tty_path, "w", encoding="ascii") as tty:
             tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
             tty.flush()
     except Exception:

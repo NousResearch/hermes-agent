@@ -42,6 +42,14 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 logger = logging.getLogger(__name__)
 
 
+# Max consecutive successful credential-pool token refreshes of the SAME entry
+# on a persistent auth failure before we give up and let the fallback chain
+# activate. A single-entry OAuth pool can re-mint a fresh token indefinitely
+# even when the upstream keeps rejecting it, so without this cap the retry loop
+# spins forever and never reaches ``_try_activate_fallback``. See #26080.
+_MAX_AUTH_REFRESH_ATTEMPTS = 2
+
+
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
@@ -775,6 +783,30 @@ def recover_with_credential_pool(
             return False, has_retried_429
         refreshed = pool.try_refresh_current()
         if refreshed is not None:
+            # ``try_refresh_current()`` re-mints a fresh OAuth token and reports
+            # success even when the upstream keeps rejecting it — a single-entry
+            # pool (common for OAuth/Max subscribers) has nothing to rotate to,
+            # so a bare "refreshed → retry" loop spins forever on the same dead
+            # token and the configured fallback never activates. Cap consecutive
+            # same-entry refreshes and fall through to fallback once exceeded.
+            # See #26080.
+            refreshed_id = getattr(refreshed, "id", None)
+            if refreshed_id is not None:
+                refresh_counts = getattr(agent, "_auth_pool_refresh_counts", None)
+                if refresh_counts is None:
+                    refresh_counts = {}
+                    agent._auth_pool_refresh_counts = refresh_counts
+                refresh_key = (agent.provider, refreshed_id)
+                refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
+                if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
+                    _ra().logger.warning(
+                        "Credential auth failure persists after %s refreshes for "
+                        "pool entry %s — treating as unrecoverable and allowing "
+                        "fallback to activate.",
+                        refresh_counts[refresh_key] - 1,
+                        refreshed_id,
+                    )
+                    return False, has_retried_429
             _ra().logger.info(f"Credential auth failure — refreshed pool entry {getattr(refreshed, 'id', '?')}")
             agent._swap_credential(refreshed)
             return True, has_retried_429

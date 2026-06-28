@@ -3789,7 +3789,7 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
 function getWindowState() {

@@ -18,10 +18,17 @@ test('WSLg paints the same WCO, so it reserves the same fallback width', () => {
   assert.equal(nativeOverlayWidth({ isWsl: true }), OVERLAY_FALLBACK_WIDTH)
 })
 
-test('plain Linux and macOS reserve nothing', () => {
-  assert.equal(nativeOverlayWidth({ isWindows: false, isWsl: false }), 0)
-  assert.equal(nativeOverlayWidth(), 0)
-  assert.equal(nativeOverlayWidth({}), 0)
+test('plain Linux paints the WCO too, so it reserves the fallback width', () => {
+  // Regression #53185: re-enabling the overlay on plain Linux (KDE/GNOME)
+  // without reserving its width left the native min/max/close buttons painting
+  // on top of the app's right-edge titlebar tools.
+  assert.equal(nativeOverlayWidth({ isWindows: false, isWsl: false }), OVERLAY_FALLBACK_WIDTH)
+  assert.equal(nativeOverlayWidth(), OVERLAY_FALLBACK_WIDTH)
+  assert.equal(nativeOverlayWidth({}), OVERLAY_FALLBACK_WIDTH)
+})
+
+test('macOS uses traffic lights, not a WCO overlay, so it reserves nothing', () => {
+  assert.equal(nativeOverlayWidth({ isMac: true }), 0)
 })
 
 test('the fallback width is a sane positive pixel value', () => {

@@ -691,6 +691,29 @@ class TestRuntimeDisconnectQueuing:
 
         runner.stop.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_fatal_error_bounds_wedged_disconnect(self, monkeypatch):
+        """A wedged disconnect() in the fatal-error handler must not hang."""
+        monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+        runner = _make_runner()
+        runner.stop = AsyncMock()
+
+        class WedgedAdapter(StubAdapter):
+            async def disconnect(self):
+                await asyncio.sleep(60)
+
+        adapter = WedgedAdapter(succeed=True)
+        adapter._set_fatal_error("ws_wedge", "WebSocket hung", retryable=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        await asyncio.wait_for(
+            runner._handle_adapter_fatal_error(adapter),
+            timeout=5.0,
+        )
+
+        assert Platform.TELEGRAM not in runner.adapters
+        assert Platform.TELEGRAM in runner._failed_platforms
+
 
 # --- Pause / resume circuit breaker ---
 

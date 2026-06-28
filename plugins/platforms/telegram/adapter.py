@@ -65,6 +65,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.file_intake import extract_if_supported, record_incoming_file
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -7014,6 +7015,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)
+                try:
+                    intake_record = record_incoming_file(
+                        cache_path=cached_path,
+                        original_filename=original_filename or f"document{ext or '.bin'}",
+                        mime_type=mime_type,
+                        size_bytes=len(raw_bytes),
+                        source_platform="telegram",
+                        chat_id=getattr(msg.chat, "id", None),
+                        thread_id=getattr(msg, "message_thread_id", None),
+                        message_id=getattr(msg, "message_id", None),
+                        user_id=getattr(msg.from_user, "id", None) if getattr(msg, "from_user", None) else None,
+                        username=getattr(msg.from_user, "username", None) if getattr(msg, "from_user", None) else None,
+                        platform_file_id=getattr(doc, "file_id", None),
+                        platform_unique_id=getattr(doc, "file_unique_id", None),
+                    )
+                    extract_if_supported(intake_record, filename=original_filename, mime_type=mime_type)
+                except Exception as intake_exc:
+                    logger.info("[Telegram] File intake skipped for %s: %s", cached_path, intake_exc)
 
                 # For text-readable files, inject content into event.text (capped
                 # at 100 KB). Gate on a text-like extension/MIME — NOT a blind

@@ -1495,6 +1495,13 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
     for f in cache_dir.iterdir():
         if f.is_file() and f.stat().st_mtime < cutoff:
             try:
+                from gateway.file_intake import should_keep_cache_path
+
+                if should_keep_cache_path(f):
+                    continue
+            except Exception:
+                pass
+            try:
                 f.unlink()
                 removed += 1
             except OSError:

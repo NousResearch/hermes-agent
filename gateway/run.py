@@ -9458,6 +9458,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent_path = to_agent_visible_cache_path(path)
 
                 context_note = _build_document_context_note(display_name, agent_path, mtype)
+                try:
+                    from gateway.file_intake import build_intake_context_note
+
+                    intake_note = build_intake_context_note(path)
+                    if intake_note:
+                        context_note = f"{context_note} Intake: {intake_note}."
+                except Exception:
+                    pass
                 message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:

@@ -2681,6 +2681,19 @@ DEFAULT_CONFIG = {
         # adapter. ``0`` disables the cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
 
+        # Bounded archive/document intake for user-uploaded ZIP/OOXML files.
+        # These limits are checked before CRC validation or member extraction
+        # so malformed archives cannot expand unbounded data into memory.
+        "file_intake": {
+            "max_archive_entries": 2000,
+            "max_archive_compressed_bytes": 536870912,
+            "max_archive_uncompressed_bytes": 536870912,
+            "max_archive_member_bytes": 67108864,
+            "max_ooxml_xml_member_bytes": 16777216,
+            # Set to null/0/false to disable ratio enforcement.
+            "max_compression_ratio": 100.0,
+        },
+
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,

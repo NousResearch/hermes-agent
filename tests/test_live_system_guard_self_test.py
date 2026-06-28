@@ -204,36 +204,38 @@ def test_subprocess_killall_hermes_blocked():
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 
+def _run_read_only_systemctl(cmd):
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+
+
 def test_systemctl_status_passes_through():
     """Read-only systemctl probes (status/show/list-units) are fine."""
-    # Run with check=False so we don't fail on the gateway's exit code.
-    r = subprocess.run(
-        ["systemctl", "--user", "status", "hermes-gateway", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
+    r = _run_read_only_systemctl(
+        ["systemctl", "--user", "status", "hermes-gateway", "--no-pager"]
     )
-    assert r is not None  # Did not raise — the guard let it through.
+    assert r is None or isinstance(r, subprocess.CompletedProcess)
 
 
 def test_systemctl_show_passes_through():
-    r = subprocess.run(
-        ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
+    r = _run_read_only_systemctl(
+        ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"]
     )
-    assert r is not None
+    assert r is None or isinstance(r, subprocess.CompletedProcess)
 
 
 def test_systemctl_list_units_passes_through():
-    r = subprocess.run(
-        ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
-        capture_output=True,
-        text=True,
-        check=False,
+    r = _run_read_only_systemctl(
+        ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"]
     )
-    assert r is not None
+    assert r is None or isinstance(r, subprocess.CompletedProcess)
 
 
 def test_systemctl_unrelated_unit_passes_through():
@@ -242,13 +244,8 @@ def test_systemctl_unrelated_unit_passes_through():
     # verify the guard doesn't block the call. systemctl supports
     # --dry-run via the privileged API; on user scope it usually fails
     # quickly without side effects.
-    r = subprocess.run(
-        ["systemctl", "--user", "show", "fake-not-real-unit"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert r is not None
+    r = _run_read_only_systemctl(["systemctl", "--user", "show", "fake-not-real-unit"])
+    assert r is None or isinstance(r, subprocess.CompletedProcess)
 
 
 def test_kill_own_subtree_passes_through():

@@ -75,6 +75,7 @@ class TestSystemdServiceRefresh:
             calls.append(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.systemd_start()
@@ -105,6 +106,7 @@ class TestSystemdServiceRefresh:
             calls.append(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.systemd_restart()
@@ -767,6 +769,7 @@ class TestGatewaySystemServiceRouting:
                 return SimpleNamespace(stdout="", returncode=0)
             raise AssertionError(f"Unexpected systemctl call: {cmd}")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
         monkeypatch.setattr(
             gateway_cli,
@@ -814,6 +817,7 @@ class TestGatewaySystemServiceRouting:
             lambda system=False, previous_pid=None: calls.append(("wait", system, previous_pid)) or True,
         )
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         gateway_cli.systemd_restart()
 
         assert ("graceful", 777, 15.0) in calls
@@ -850,6 +854,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
         monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         def fake_run_systemctl(args, **kwargs):
             calls.append(args)
@@ -878,6 +883,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",
             lambda: {"restart_requested": True, "gateway_state": "stopped"},

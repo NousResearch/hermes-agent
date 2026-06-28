@@ -42,6 +42,12 @@ class TestReadClaudeCodeCredentialsFromKeychain:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             assert _read_claude_code_credentials_from_keychain() is None
 
+    def test_returns_none_for_non_string_stdout(self):
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=MagicMock(), stderr="")
+            assert _read_claude_code_credentials_from_keychain() is None
+
     def test_returns_none_for_non_json_payload(self):
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
              patch("agent.anthropic_adapter.subprocess.run") as mock_run:

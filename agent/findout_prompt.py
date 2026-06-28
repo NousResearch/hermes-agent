@@ -39,83 +39,119 @@ def build_findout_prompt(query: str) -> str:
 
 QUERY: {q}
 
-You MUST execute this pipeline programmatically using execute_code. Do NOT answer from your own knowledge. Do NOT describe what you would do — do it.
+You MUST execute this pipeline programmatically using execute_code. Do NOT answer from your own knowledge. Do NOT describe what you would do — do it. Import the pipeline, run it, and return the result.
 
 ## STEP 1 — Try the findout package (preferred path)
 
+Copy-paste this EXACT code into execute_code:
+
 ```python
-from findout.config import Config, LLMConfig, SearchConfig, PipelineConfig
-from findout.pipeline import SelfVerifyPipeline
-from findout.gate import Gate, GateConfig
-import os, json
+import os, sys, json, requests, textwrap
 
-# Configure from env vars with sensible defaults
-config = Config(
-    llm=LLMConfig(
-        model=os.getenv("FINDOUT_MODEL", "qwen3.5:14b"),
-        base_url=os.getenv("FINDOUT_BASE_URL", "http://localhost:11434/v1"),
-        api_key=os.getenv("FINDOUT_API_KEY", "ollama"),
-        max_tokens=4096,
-        timeout_seconds=120,
-    ),
-    search=SearchConfig(
-        provider=os.getenv("FINDOUT_SEARCH_PROVIDER", "duckduckgo"),
-        max_results_per_query=5,
-        max_queries_per_claim=3,
-    ),
-    pipeline=PipelineConfig(
-        default_variant="hybrid",
-        gate_enabled=True,
-        hybrid_samples=2,
-        max_claims_per_answer=12,
-        short_circuit_on_agreement=True,
-    ),
-)
+# === CONFIG ===
+BASE_URL = os.getenv("FINDOUT_BASE_URL", "http://localhost:11434/v1")
+API_KEY = os.getenv("FINDOUT_API_KEY", "ollama")
+MODEL = os.getenv("FINDOUT_MODEL", "qwen3.5:14b")
+SEARCH_PROVIDER = os.getenv("FINDOUT_SEARCH_PROVIDER", "duckduckgo")
+QUERY = "{q}"
 
-# Gate check first
-gate = Gate(GateConfig(), config.llm)
-category, reason = gate.classify_with_reason("{q}")
-print(f"Gate: {{category}} ({{reason}})")
+# === CONNECTIVITY PROBE ===
+def _probe_llm() -> bool:
+    \"\"\"Check if the LLM endpoint is reachable before running the pipeline.\"\"\"
+    probe_url = BASE_URL.rstrip("/v1").rstrip("/")
+    for endpoint in [probe_url + "/api/tags", BASE_URL + "/models"]:
+        try:
+            r = requests.get(endpoint, timeout=5, headers={{}})
+            if r.status_code == 200:
+                return True
+        except Exception:
+            continue
+    # Last resort: try a raw chat completion to see if anything answers
+    try:
+        r = requests.post(
+            BASE_URL + "/chat/completions",
+            json={{"model": MODEL, "messages": [{{"role": "user", "content": "ping"}}], "max_tokens": 1}},
+            timeout=5,
+            headers={{"Authorization": f"Bearer {{API_KEY}}"}} if API_KEY and API_KEY != "ollama" else {{}},
+        )
+        return r.status_code < 500
+    except Exception:
+        return False
 
-# Choose variant based on model size from context
-pipeline_variant = "hybrid"  # safe default for 3B-14B
+print("🔍 Checking LLM endpoint...")
+llm_ok = _probe_llm()
+print(f"   → {{'reachable' if llm_ok else 'UNREACHABLE'}} at {{BASE_URL}}")
 
-# Run pipeline
-pipe = SelfVerifyPipeline(config)
-result = pipe.run(query="{q}", pipeline=pipeline_variant)
+if not llm_ok:
+    print(f"\\n⚠️  LLM endpoint at {{BASE_URL}} is not reachable.")
+    print("   Pipeline skipped — will do manual verification below.")
+    raise SystemExit(0)  # exit cleanly, STEP 2 handles it
 
-# Print results
-print("=" * 60)
-print("PIPELINE RESULTS")
-print("=" * 60)
-print(f"Claims: {{result.total_claims}} total, {{result.verified_claims}} verified, {{result.uncertain_claims}} uncertain, {{result.contradicted_claims}} contradicted")
-print(f"Searches: {{result.total_searches}}")
-print()
-print(result.answer)
+# === RUN PIPELINE ===
+try:
+    from findout.config import Config, LLMConfig, SearchConfig, PipelineConfig
+    from findout.pipeline import SelfVerifyPipeline
+    from findout.gate import Gate, GateConfig
+
+    config = Config(
+        llm=LLMConfig(
+            model=MODEL, base_url=BASE_URL, api_key=API_KEY,
+            max_tokens=4096, timeout_seconds=120,
+        ),
+        search=SearchConfig(
+            provider=SEARCH_PROVIDER,
+            max_results_per_query=5, max_queries_per_claim=3,
+        ),
+        pipeline=PipelineConfig(
+            default_variant="hybrid", gate_enabled=True,
+            hybrid_samples=2, max_claims_per_answer=12,
+            short_circuit_on_agreement=True,
+        ),
+    )
+
+    # Gate check
+    gate = Gate(GateConfig(), config.llm)
+    category, reason = gate.classify_with_reason(QUERY)
+    print(f"Gate: {{category}} ({{reason}})")
+
+    # Run
+    pipe = SelfVerifyPipeline(config)
+    result = pipe.run(query=QUERY, pipeline="hybrid")
+
+    # Results
+    print("=" * 60)
+    print("PIPELINE RESULTS")
+    print("=" * 60)
+    print(f"Claims: {{result.total_claims}} total, {{result.verified_claims}} verified, {{result.uncertain_claims}} uncertain, {{result.contradicted_claims}} contradicted")
+    print(f"Searches: {{result.total_searches}}")
+    print()
+    print(result.answer)
+
+except ImportError as e:
+    print(f"\\n⚠️  findout package not available: {{e}}")
+    raise SystemExit(0)  # exit cleanly, STEP 2 handles it
+
+except Exception as e:
+    print(f"\\n⚠️  Pipeline error: {{type(e).__name__}}: {{e}}")
+    print("   Continuing to manual fallback...")
+    raise SystemExit(0)  # exit cleanly, STEP 3 handles it
 ```
 
-## STEP 2 — If findout package import fails
+## STEP 2 — Manual fallback (when the package or LLM is unavailable)
 
-Catch ImportError / ModuleNotFoundError and fall back to this manual workflow:
+If you reach this step (either the SystemExit from STEP 1 or the package isn't importable), do the following manually using your own tools:
 
-1. **Extract claims** — break the query into atomic factual claims
-2. **Web search** — run 3 web searches per claim from different angles
-3. **Cross-check** — identify which claims are supported, contradicted, or uncertain
-4. **Rewrite** — produce a verified answer with `[verified]` / `[contradicted]` / `[uncertain]` markers
-5. **Return** — present the answer with verdict summary
-
-## STEP 3 — If LLM endpoint is unreachable
-
-Catch ConnectionError and network errors. Fall back to a normal web-search-then-
-answer workflow using the tools you already have (web_search + your own reasoning).
-Tell the user: "Verification pipeline unavailable (model server not running at
-${{FINDOUT_BASE_URL:-http://localhost:11434/v1}}). Answered via direct research."
+1. **Extract claims** — break the query into atomic factual claims (3-8 claims)
+2. **Web search** — for each claim, run 2-3 web searches from different angles using your web_search tool
+3. **Cross-check** — determine which claims are supported by sources, which are contradicted, and which are uncertain
+4. **Synthesize** — write a verified answer with `[verified]` / `[contradicted]` / `[uncertain]` markers
+5. **Cite** — include source URLs for each verified or contradicted claim
 
 ## Output format
 
 Include in your final response:
-- The verified answer
+- The verified answer (synthesized from pipeline or manual research)
 - A verdict line: "X claims verified, Y uncertain, Z contradicted"
 - Source citations when available
-- Which pipeline path was used (findout package / manual fallback / direct research)
+- Which path was used: pipeline / manual fallback / direct research
 """

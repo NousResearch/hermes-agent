@@ -2124,7 +2124,9 @@ def _run_browser_command(
                     session_keys.append(sidecar_key)
 
                 # Cleanup each key; wrap in try/except so a failure on one
-                # key doesn't prevent cleanup of the next or the final pop.
+                # key doesn't prevent cleanup of the next.  Dict pop is
+                # always executed regardless of cleanup errors so we don't
+                # leave ghost entries in module-level state.
                 for sk in session_keys:
                     try:
                         _stop_cdp_supervisor(sk)
@@ -2144,12 +2146,18 @@ def _run_browser_command(
                                             logger.debug("Killed daemon pid %s for %s", daemon_pid, sname)
                                         except (ProcessLookupError, ValueError, PermissionError, OSError) as e:
                                             logger.warning("Could not kill daemon for %s: %s", sname, e)
+                                try:
                                     shutil.rmtree(sdir, ignore_errors=True)
-                        with _cleanup_lock:
-                            _active_sessions.pop(sk, None)
-                            _session_last_activity.pop(sk, None)
+                                except Exception:
+                                    pass
                     except Exception as e:
                         logger.warning("Error during browser session cleanup for %s: %s", sk, e)
+
+                    # Always pop dicts — even if cleanup above failed, the
+                    # session is unrecoverable after a timeout.
+                    with _cleanup_lock:
+                        _active_sessions.pop(sk, None)
+                        _session_last_activity.pop(sk, None)
 
                 # Clear the last-active key to prevent stale lookups
                 _last_active_session_key.pop(task_id, None)

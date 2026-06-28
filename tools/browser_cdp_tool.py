@@ -43,13 +43,13 @@ _SENSITIVE_CDP_METHODS = {
 }
 _SENSITIVE_RUNTIME_EVALUATE_PATTERNS = (
     re.compile(r"\bdocument\s*(?:\?\s*)?\.\s*cookie\b", re.IGNORECASE),
-    re.compile(r"\bdocument\s*(?:\?\s*\.)?\s*\[\s*['\"]cookie['\"]\s*\]", re.IGNORECASE),
+    re.compile(r"\bdocument\s*(?:\?\s*\.)?\s*\[\s*['\"`]cookie['\"`]\s*\]", re.IGNORECASE),
     re.compile(
         r"\b(?:window\s*\.\s*|globalThis\s*\.\s*)?(?:localStorage|sessionStorage)\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:window|globalThis)\s*\[\s*['\"](?:localStorage|sessionStorage)['\"]\s*\]",
+        r"\b(?:window|globalThis)\s*\[\s*['\"`](?:localStorage|sessionStorage)['\"`]\s*\]",
         re.IGNORECASE,
     ),
     re.compile(
@@ -57,12 +57,12 @@ _SENSITIVE_RUNTIME_EVALUATE_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:window|globalThis|self)\s*(?:\?\s*\.)?\s*\[\s*['\"](?:indexedDB|caches|CacheStorage)['\"]\s*\]",
+        r"\b(?:window|globalThis|self)\s*(?:\?\s*\.)?\s*\[\s*['\"`](?:indexedDB|caches|CacheStorage)['\"`]\s*\]",
         re.IGNORECASE,
     ),
 )
 _JS_IDENTIFIER_STRING_CONCAT_RE = re.compile(
-    r"(['\"])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*\+\s*(['\"])([A-Za-z_$][A-Za-z0-9_$]*)\3"
+    r"(['\"`])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*\+\s*(['\"`])([A-Za-z_$][A-Za-z0-9_$]*)\3"
 )
 _JS_SIMPLE_ESCAPE_RE = re.compile(
     r"\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})"

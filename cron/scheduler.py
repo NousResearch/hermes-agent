@@ -1631,13 +1631,24 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         from tools.environments.local import _sanitize_subprocess_env
 
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        child_env = _sanitize_subprocess_env(os.environ.copy())
+        # Cron no_agent scripts often emit Telegram-ready Unicode (Korean,
+        # emoji, box-drawing bars).  On Windows services/GUI launches the
+        # locale default is commonly cp949, and subprocess.run(text=True)
+        # will decode stdout with that codec unless we pin it.  A decode
+        # failure in the reader thread can make a successful script look like
+        # empty stdout, which suppresses delivery.  Force UTF-8 on both sides.
+        child_env.setdefault("PYTHONIOENCODING", "utf-8")
+        child_env.setdefault("PYTHONUTF8", "1")
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=script_timeout,
             cwd=str(path.parent),
-            env=_sanitize_subprocess_env(os.environ.copy()),
+            env=child_env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()

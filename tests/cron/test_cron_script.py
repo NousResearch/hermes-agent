@@ -99,6 +99,25 @@ class TestRunJobScript:
         assert success is True
         assert output == "hello from script"
 
+    def test_script_stdout_decodes_utf8_unicode(self, cron_env):
+        """No-agent cron scripts may emit Telegram-ready Korean/emoji text.
+
+        Windows GUI/service launches commonly default subprocess text decoding
+        to cp949. Pinning the scheduler's decode path to UTF-8 keeps those
+        successful scripts from being misread as empty/silent output.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "unicode.py"
+        script.write_text(
+            'print("✅ 한글/이모지/막대문자 정상 출력: 📊 ███···")\n',
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "✅ 한글/이모지/막대문자 정상 출력: 📊 ███···"
+
     def test_script_relative_path(self, cron_env):
         from cron.scheduler import _run_job_script
 

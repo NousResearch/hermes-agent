@@ -1241,6 +1241,46 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
+        # Windows desktop/gateway cron runs have occasionally hit python-telegram-bot
+        # HTTPX timeouts even while the plain Bot API endpoint is reachable.  For
+        # text-only Telegram sends, fall back to a minimal urllib sendMessage call
+        # so cron alerts are not dropped by a transport-specific timeout.
+        try:
+            import json as _json
+            import urllib.parse as _urlparse
+            import urllib.request as _urlrequest
+
+            if (not media_files) and str(message or "").strip():
+                payload = {
+                    "chat_id": str(chat_id),
+                    "text": str(message),
+                }
+                if thread_id is not None:
+                    payload["message_thread_id"] = str(thread_id)
+                data = _urlparse.urlencode(payload).encode("utf-8")
+                with _urlrequest.urlopen(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    data=data,
+                    timeout=30,
+                ) as resp:
+                    raw = resp.read().decode("utf-8", "replace")
+                obj = _json.loads(raw)
+                if obj.get("ok"):
+                    result = obj.get("result") or {}
+                    return {
+                        "success": True,
+                        "platform": "telegram",
+                        "chat_id": chat_id,
+                        "message_id": str(result.get("message_id", "")),
+                        "warnings": [
+                            "python-telegram-bot send failed; delivered via urllib Bot API fallback"
+                        ],
+                    }
+        except Exception as fallback_exc:
+            logger.warning(
+                "Telegram urllib fallback failed after python-telegram-bot error: %s",
+                _sanitize_error_text(fallback_exc),
+            )
         return _error(f"Telegram send failed: {e}")
 
 

@@ -1,0 +1,6 @@
+{
+  "_note": "เพิ่มคำด่าเองได้ที่นี่ไฟล์เดียว (req-36) · ตัวจับอ่านไฟล์นี้",
+  "keywords": ["fuck", "fuk", "fck", "stfu", "wtf", "fuck off", "เหี้ย", "มึง", "สัส", "แม่ง", "ควย", "ฉิบหาย", "มั่ว", "โง่", "ห่า"],
+  "targets": ["hermes", "opus", "codex", "claude", "gemini", "grok", "agent", "ai"],
+  "repeat_warn_threshold": 3
+}

@@ -1,0 +1,24 @@
+# ไฟล์สัญญาประจำ project — บอกส่วนกลางว่า project นี้เป็นยังไง
+# ส่วนกลางอ่านไฟล์นี้เพื่อรู้ว่าต้อง push อะไรลงมา · ตัวเฝ้าใช้ตรวจสถานะ
+
+hermes_standard_version: "1.0.0"   # เวอร์ชันมาตรฐานที่ project นี้ยึด
+
+project_name: ""                   # ชื่อ project
+owner: ""                          # เจ้าของ/ผู้ดูแล (เช่น nat, nam)
+machine: ""                        # vps | mac | notebook-<ชื่อคน>
+project_type: ""                   # web | api | tool | content | other
+
+gates_enabled:                     # ด่านที่เปิด (ส่วนกลางคุม)
+  - evidence                       # ด่านตรวจหลักฐาน (กันโกหก)
+  - scope                          # ด่านขอบเขต (กันทำนอกคำสั่ง)
+  - no-guess                       # ด่านห้ามเดา
+  - danger-command                 # ด่านกันคำสั่งอันตราย
+
+required_files:                    # ไฟล์ที่ project นี้ต้องมี (ตัวเฝ้าตรวจ)
+  - CLAUDE.md
+  - AGENTS.md
+  - OverviewProgress.md
+  - hermes.project.yaml
+
+status: active                     # active | paused | archived
+last_sync: ""                      # วันที่ sync ล่าสุด (ระบบเติมให้)

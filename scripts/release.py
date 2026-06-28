@@ -1728,6 +1728,7 @@ AUTHOR_MAP = {
     "steveonjava@gmail.com": "steveonjava",  # PR #29669 (redact secrets in kanban tool payloads)
     "afnlegion01@gmail.com": "Afnath-max",  # PR #49129 salvage (opencode-zen catalog refresh + uncapped/live-first picker)
     "sharma.priyanshu96@gmail.com": "ipriyaaanshu",  # PR #51488 salvage (clear stale base_url on gateway model switches; #25107)
+    "spiky02plateau@users.noreply.github.com": "spiky02plateau",  # PR #54178 (lazy_deps: signature-gate active_features so a shared transitive dep no longer false-positives matrix refresh)
 }
 
 

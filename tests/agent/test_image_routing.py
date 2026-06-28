@@ -256,6 +256,19 @@ class TestLookupSupportsVisionOverride:
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert _lookup_supports_vision("openrouter", "x", None) is None
 
+    def test_provider_prefixed_model_slug_falls_back_to_bare_slug(self):
+        fake_caps = type("Caps", (), {"supports_vision": True})()
+
+        def fake_lookup(provider, model):
+            if model == "openai-codex/gpt-5.5":
+                return None
+            if model == "gpt-5.5":
+                return fake_caps
+            raise AssertionError(f"unexpected lookup: {provider=} {model=}")
+
+        with patch("agent.models_dev.get_model_capabilities", side_effect=fake_lookup):
+            assert _lookup_supports_vision("openai-codex", "openai-codex/gpt-5.5", {}) is True
+
 
 # ─── decide_image_input_mode with auto + override ────────────────────────────
 

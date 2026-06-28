@@ -305,6 +305,12 @@ def _lookup_supports_vision(
     try:
         from agent.models_dev import get_model_capabilities
         caps = get_model_capabilities(provider, model)
+        # Some provider adapters expose the runtime model as a provider-prefixed
+        # slug (e.g. ``openai-codex/gpt-5.5``). models.dev may know the bare
+        # model slug (``gpt-5.5``) instead. Only retry on a complete miss so a
+        # real provider-scoped entry remains authoritative.
+        if caps is None and "/" in model:
+            caps = get_model_capabilities(provider, model.rsplit("/", 1)[-1])
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
         return None

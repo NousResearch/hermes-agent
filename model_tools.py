@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import os
 import json
 import re
+import shlex
 import asyncio
 import logging
 import threading
@@ -825,6 +826,82 @@ def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optio
     except Exception:
         pass
     return "ok", None, None, None
+
+
+def _shell_command_class(command: Any) -> str:
+    """Return a low-cardinality, secret-safe class for a shell command."""
+    if not isinstance(command, str) or not command.strip():
+        return "unknown"
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.strip().split()
+    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return "unknown"
+
+    executable = os.path.basename(tokens[0])
+    subcommand = tokens[1] if len(tokens) > 1 else ""
+
+    if executable == "python" or re.match(r"^python\d+(?:\.\d+)?$", executable):
+        if subcommand == "-m" and len(tokens) > 2 and tokens[2] in {"pytest", "unittest", "tox"}:
+            return "test"
+        return "python"
+    if executable in {"pytest", "tox", "nox"} or executable.startswith("run_tests"):
+        return "test"
+    if executable in {"npm", "pnpm", "yarn"} and subcommand in {"test", "vitest", "jest"}:
+        return "test"
+    if executable == "cargo" and subcommand == "test":
+        return "test"
+    if executable in {"npm", "pnpm", "yarn"} and subcommand in {"build", "compile"}:
+        return "build"
+    if executable == "cargo" and subcommand in {"build", "check", "clippy"}:
+        return "build"
+    if executable in {"make", "cmake", "ninja", "tsc", "vite", "webpack", "rollup"}:
+        return "build"
+    if executable == "git":
+        return "git"
+    if executable in {"pip", "pip3", "uv", "poetry", "npm", "pnpm", "yarn", "bun"}:
+        return "package_manager"
+    if executable in {"curl", "wget", "ssh", "scp", "rsync"}:
+        return "network"
+    if executable in {"ls", "pwd", "find", "grep", "rg", "cat", "head", "tail", "stat"}:
+        return "filesystem"
+    if subcommand in {"run", "serve", "server", "dev"}:
+        return "server"
+    return "unknown"
+
+
+def _tool_command_metadata(function_name: str, function_args: Dict[str, Any]) -> Dict[str, Any]:
+    """Build secret-safe execution metadata for command-like tools."""
+    if function_name == "terminal":
+        metadata: Dict[str, Any] = {"command_class": _shell_command_class(function_args.get("command"))}
+        timeout = function_args.get("timeout")
+        if timeout is None:
+            try:
+                from tools.terminal_tool import _get_env_config
+
+                timeout = _get_env_config().get("timeout")
+            except Exception:
+                timeout = None
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            metadata["timeout_seconds"] = int(timeout)
+        for key in ("background", "notify_on_complete", "pty"):
+            metadata[key] = bool(function_args.get(key, False))
+        return metadata
+    if function_name == "execute_code":
+        metadata = {"command_class": "python"}
+        try:
+            from tools.code_execution_tool import DEFAULT_TIMEOUT, _load_config
+
+            timeout = _load_config().get("timeout", DEFAULT_TIMEOUT)
+        except Exception:
+            timeout = None
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            metadata["timeout_seconds"] = int(timeout)
+        return metadata
+    return {}
 
 
 def _emit_post_tool_call_hook(

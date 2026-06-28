@@ -10,6 +10,7 @@ from model_tools import (
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
+    _shell_command_class,
     TOOL_TO_TOOLSET_MAP,
 )
 
@@ -19,6 +20,16 @@ from model_tools import (
 # =========================================================================
 
 class TestHandleFunctionCall:
+    def test_shell_command_class_is_conservative_and_secret_safe(self):
+        assert _shell_command_class("API_TOKEN=*** scripts/run_tests.sh tests/test_model_tools.py") == "test"
+        assert _shell_command_class("python -m pytest tests/test_model_tools.py") == "test"
+        assert _shell_command_class("npm build") == "build"
+        assert _shell_command_class("git status --short") == "git"
+        assert _shell_command_class("curl https://example.com") == "network"
+        assert _shell_command_class("./deploy-prod-with-secret-token") == "unknown"
+        assert _shell_command_class("API_TOKEN=***") == "unknown"
+        assert _shell_command_class(None) == "unknown"
+
     def test_agent_loop_tool_returns_error(self):
         for tool_name in _AGENT_LOOP_TOOLS:
             result = json.loads(handle_function_call(tool_name, {}))

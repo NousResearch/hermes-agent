@@ -149,6 +149,13 @@ _MAX_FILES = 50_000
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
 
+# Docker bind-mount spec: ``host:container[:options]`` where the container path
+# is absolute.  Kept in sync with gateway/run.py's ``_DOCKER_VOLUME_SPEC_RE`` —
+# duplicated here so the checkpoint layer never imports the gateway package.
+_DOCKER_VOLUME_SPEC_RE = re.compile(
+    r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$"
+)
+
 
 # ---------------------------------------------------------------------------
 # Input validation helpers
@@ -201,6 +208,98 @@ def _project_hash(working_dir: str) -> str:
     """Deterministic per-project hash: sha256(abs_path)[:16]."""
     abs_path = str(_normalize_path(working_dir))
     return hashlib.sha256(abs_path.encode()).hexdigest()[:16]
+
+
+def _abspath_no_resolve(path_value: str) -> str:
+    """Absolute, normalised path *without* symlink resolution.
+
+    Used for matching a logical runtime (container) path against bind-mount
+    targets.  ``_normalize_path`` calls ``Path.resolve()`` which would chase
+    host symlinks — wrong for a container path like ``/workspace/repos/x`` that
+    has no meaning on the host filesystem.
+    """
+    return os.path.normpath(os.path.abspath(os.path.expanduser(path_value)))
+
+
+def _parse_volume_specs(raw) -> List[Tuple[str, str]]:
+    """Parse ``docker_volumes`` into ``[(host, container), ...]`` pairs.
+
+    Accepts either the already-decoded list (constructor/config path) or the
+    JSON string carried in ``TERMINAL_DOCKER_VOLUMES`` (runtime path).  Entries
+    that are not ``host:container[:options]`` specs are ignored.
+    """
+    if not raw:
+        return []
+    items = raw
+    if isinstance(raw, str):
+        try:
+            items = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(items, list):
+        return []
+    mounts: List[Tuple[str, str]] = []
+    for spec in items:
+        if not isinstance(spec, str):
+            continue
+        m = _DOCKER_VOLUME_SPEC_RE.match(spec.strip())
+        if not m:
+            continue
+        mounts.append((m.group("host"), m.group("container")))
+    return mounts
+
+
+def _physical_from_metadata(logical_key: str) -> Optional[str]:
+    """Recover the physical host path for ``logical_key`` from project metadata.
+
+    Project metadata records the on-disk ``workdir`` that git operated on when
+    the checkpoint was created.  This lets list/diff/restore still find the host
+    tree for a logical (container) key even when the live ``docker_volumes``
+    mounts are no longer present in the environment — a safety net for the
+    primary ``docker_volumes`` mapping in ``_resolve_dirs``.  Returns None when
+    no usable metadata exists.
+    """
+    store = _store_path(CHECKPOINT_BASE)
+    meta_path = _project_meta_path(store, _project_hash(logical_key))
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(meta, dict):
+        workdir = meta.get("workdir")
+        if workdir and Path(workdir).exists():
+            return str(_normalize_path(workdir))
+    return None
+
+
+def _map_logical_to_physical(
+    logical_dir: str, mounts: List[Tuple[str, str]],
+) -> Optional[str]:
+    """Translate a logical (container) workdir to its host bind-mount path.
+
+    Returns the host path if ``logical_dir`` equals or sits under a mount's
+    container target, choosing the most specific (longest) target when several
+    match.  Returns None when no mount applies (caller keeps the logical path).
+    """
+    logical_norm = _abspath_no_resolve(logical_dir)
+    best_len = -1
+    best_path: Optional[str] = None
+    for host, container in mounts:
+        container_norm = os.path.normpath(container)
+        if logical_norm == container_norm:
+            rel = ""
+        elif logical_norm.startswith(container_norm.rstrip("/") + os.sep):
+            rel = os.path.relpath(logical_norm, container_norm)
+        else:
+            continue
+        host_norm = os.path.normpath(os.path.expanduser(host))
+        mapped = host_norm if rel in ("", ".") else os.path.join(host_norm, rel)
+        if len(container_norm) > best_len:
+            best_len = len(container_norm)
+            best_path = mapped
+    return best_path
 
 
 def _store_path(base: Optional[Path] = None) -> Path:
@@ -476,9 +575,18 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     return None
 
 
-def _register_project(store: Path, working_dir: str) -> None:
-    """Create or update ``projects/<hash>.json`` with workdir + timestamps."""
-    dir_hash = _project_hash(working_dir)
+def _register_project(
+    store: Path, working_dir: str, dir_hash: Optional[str] = None,
+) -> None:
+    """Create or update ``projects/<hash>.json`` with workdir + timestamps.
+
+    ``dir_hash`` lets callers key a project by its *logical* runtime path while
+    persisting the *physical* ``working_dir`` git operates on (Docker bind
+    mounts).  When omitted it is derived from ``working_dir`` (local backend,
+    where logical == physical).
+    """
+    if dir_hash is None:
+        dir_hash = _project_hash(working_dir)
     meta_path = _project_meta_path(store, dir_hash)
     now = time.time()
     meta: Dict = {"workdir": str(_normalize_path(working_dir)),
@@ -497,12 +605,19 @@ def _register_project(store: Path, working_dir: str) -> None:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 
 
-def _touch_project(store: Path, working_dir: str) -> None:
-    """Update last_touch for a project, preserving created_at."""
-    dir_hash = _project_hash(working_dir)
+def _touch_project(
+    store: Path, working_dir: str, dir_hash: Optional[str] = None,
+) -> None:
+    """Update last_touch for a project, preserving created_at.
+
+    ``dir_hash`` follows the same logical/physical split as
+    ``_register_project`` — supply it to key by the logical runtime path.
+    """
+    if dir_hash is None:
+        dir_hash = _project_hash(working_dir)
     meta_path = _project_meta_path(store, dir_hash)
     if not meta_path.exists():
-        _register_project(store, working_dir)
+        _register_project(store, working_dir, dir_hash)
         return
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -626,6 +741,7 @@ class CheckpointManager:
         max_snapshots: int = 20,
         max_total_size_mb: int = 500,
         max_file_size_mb: int = 10,
+        docker_volumes: Optional[List[str]] = None,
     ):
         self.enabled = enabled
         self.max_snapshots = max(1, int(max_snapshots))
@@ -633,6 +749,10 @@ class CheckpointManager:
         self.max_file_size_mb = max(0, int(max_file_size_mb))
         self._checkpointed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
+        # Explicit bind-mount override (tests / direct config).  When None the
+        # mounts are read from the runtime env (TERMINAL_ENV / DOCKER_VOLUMES)
+        # at call time, mirroring how runtime_cwd reads TERMINAL_CWD.
+        self._docker_volumes_override = docker_volumes
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -641,6 +761,63 @@ class CheckpointManager:
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
+
+    # ------------------------------------------------------------------
+    # Logical (runtime) ↔ physical (host) workdir resolution
+    # ------------------------------------------------------------------
+
+    def _docker_mounts(self) -> List[Tuple[str, str]]:
+        """Return the active ``(host, container)`` bind mounts, or ``[]``.
+
+        An explicit constructor override wins (tests / direct config).
+        Otherwise mounts are read from the runtime env, and only when the
+        active terminal backend is Docker — a stale ``TERMINAL_DOCKER_VOLUMES``
+        left over from a previous backend must not remap local-backend paths.
+        """
+        if self._docker_volumes_override is not None:
+            return _parse_volume_specs(self._docker_volumes_override)
+        if (os.getenv("TERMINAL_ENV") or "local").strip().lower() != "docker":
+            return []
+        return _parse_volume_specs(os.getenv("TERMINAL_DOCKER_VOLUMES", ""))
+
+    def _resolve_dirs(self, working_dir: str) -> Tuple[str, str]:
+        """Split a workdir into ``(logical_key, physical_dir)``.
+
+        The *logical key* is the stable runtime path used to identify the
+        project (so checkpoint creation and ``/rollback`` agree on one key).
+        The *physical dir* is where git actually reads and writes — for a
+        Docker bind mount that's the host source path; otherwise it is the same
+        as the logical key (local backend, the common case).
+        """
+        logical_key = str(_normalize_path(working_dir))
+        mounts = self._docker_mounts()
+        if mounts:
+            mapped = _map_logical_to_physical(working_dir, mounts)
+            if mapped:
+                return logical_key, str(_normalize_path(mapped))
+        # No live mount mapped the key.  If the logical path doesn't exist on
+        # disk (e.g. a container path queried after the Docker env is gone),
+        # fall back to the physical host path recorded in project metadata.
+        if not Path(logical_key).exists():
+            recovered = _physical_from_metadata(logical_key)
+            if recovered:
+                return logical_key, recovered
+        return logical_key, logical_key
+
+    def checkpoint_dir_for_file(self, file_path: str) -> str:
+        """Return the logical workdir key to checkpoint for a file edit.
+
+        Inside a Docker bind-mount runtime a *relative* edit resolves against
+        the container runtime cwd (``TERMINAL_CWD``) so the recorded key matches
+        what ``/rollback`` looks up; ``_resolve_dirs`` later maps that key to the
+        host path for git I/O.  In every other case this falls back to walking
+        up from the file's location to the project root (local backend).
+        """
+        if not os.path.isabs(file_path):
+            runtime_cwd = os.getenv("TERMINAL_CWD", "").strip()
+            if runtime_cwd and self._docker_mounts():
+                return runtime_cwd
+        return self.get_working_dir_for_path(file_path)
 
     # ------------------------------------------------------------------
     # Public API
@@ -662,33 +839,36 @@ class CheckpointManager:
         if not self._git_available:
             return False
 
-        abs_dir = str(_normalize_path(working_dir))
+        logical_key, physical_dir = self._resolve_dirs(working_dir)
 
-        # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
-            logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
+        # Skip root, home, and other overly broad directories — check the
+        # physical dir git would actually snapshot.
+        if physical_dir in {"/", str(Path.home())}:
+            logger.debug("Checkpoint skipped: directory too broad (%s)", physical_dir)
             return False
 
-        if abs_dir in self._checkpointed_dirs:
+        # Dedup on the logical key so one project is snapshotted once per turn
+        # regardless of which host path it maps to.
+        if logical_key in self._checkpointed_dirs:
             return False
 
-        self._checkpointed_dirs.add(abs_dir)
+        self._checkpointed_dirs.add(logical_key)
 
         try:
-            return self._take(abs_dir, reason)
+            return self._take(logical_key, physical_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
 
     def list_checkpoints(self, working_dir: str) -> List[Dict]:
         """List available checkpoints for a directory (most recent first)."""
-        abs_dir = str(_normalize_path(working_dir))
+        logical_key, abs_dir = self._resolve_dirs(working_dir)
         store = _store_path(CHECKPOINT_BASE)
 
         if not (store / "HEAD").exists():
             return []
 
-        ref = _ref_name(_project_hash(abs_dir))
+        ref = _ref_name(_project_hash(logical_key))
         ok, stdout, _ = _run_git(
             ["log", ref, f"--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
             store, abs_dir,
@@ -740,7 +920,7 @@ class CheckpointManager:
         if hash_err:
             return {"success": False, "error": hash_err}
 
-        abs_dir = str(_normalize_path(working_dir))
+        logical_key, abs_dir = self._resolve_dirs(working_dir)
         store = _store_path(CHECKPOINT_BASE)
 
         if not (store / "HEAD").exists():
@@ -752,7 +932,7 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
 
-        dir_hash = _project_hash(abs_dir)
+        dir_hash = _project_hash(logical_key)
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
@@ -790,7 +970,7 @@ class CheckpointManager:
         if hash_err:
             return {"success": False, "error": hash_err}
 
-        abs_dir = str(_normalize_path(working_dir))
+        logical_key, abs_dir = self._resolve_dirs(working_dir)
 
         if file_path:
             path_err = _validate_file_path(file_path, abs_dir)
@@ -810,9 +990,10 @@ class CheckpointManager:
                     "debug": err or None}
 
         # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
+        self._take(logical_key, abs_dir,
+                   f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
-        dir_hash = _project_hash(abs_dir)
+        dir_hash = _project_hash(logical_key)
         index_file = _index_path(store, dir_hash)
 
         restore_target = file_path if file_path else "."
@@ -835,7 +1016,8 @@ class CheckpointManager:
             "success": True,
             "restored_to": commit_hash[:8],
             "reason": reason,
-            "directory": abs_dir,
+            # Report the logical key — the stable, user-facing project identity.
+            "directory": logical_key,
         }
         if file_path:
             result["file"] = file_path
@@ -863,8 +1045,16 @@ class CheckpointManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _take(self, working_dir: str, reason: str) -> bool:
-        """Take a snapshot.  Returns True on success."""
+    def _take(self, logical_key: str, physical_dir: str, reason: str) -> bool:
+        """Take a snapshot.  Returns True on success.
+
+        ``logical_key`` identifies the project (ref / index / metadata key);
+        ``physical_dir`` is the on-disk tree git reads and writes.  They differ
+        only for Docker bind mounts — elsewhere the caller passes the same value
+        for both.
+        """
+        # The git-facing body below operates entirely on the physical tree.
+        working_dir = physical_dir
         store = _store_path(CHECKPOINT_BASE)
 
         err = _init_store(store, working_dir)
@@ -872,14 +1062,14 @@ class CheckpointManager:
             logger.debug("Checkpoint store init failed: %s", err)
             return False
 
-        _touch_project(store, working_dir)
+        dir_hash = _project_hash(logical_key)
+        _touch_project(store, working_dir, dir_hash)
 
         # Quick size guard — don't try to snapshot enormous directories
         if _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
 
-        dir_hash = _project_hash(working_dir)
         index_file = _index_path(store, dir_hash)
         ref = _ref_name(dir_hash)
 

@@ -446,7 +446,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
-                        work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        work_dir = agent._checkpoint_mgr.checkpoint_dir_for_file(file_path)
                         agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
                 except Exception:
                     pass
@@ -1002,7 +1002,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             try:
                 file_path = function_args.get("path", "")
                 if file_path:
-                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+                    work_dir = agent._checkpoint_mgr.checkpoint_dir_for_file(file_path)
                     agent._checkpoint_mgr.ensure_checkpoint(
                         work_dir, f"before {function_name}"
                     )

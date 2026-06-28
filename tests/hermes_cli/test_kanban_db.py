@@ -4074,3 +4074,80 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Reap registry persistence: exit records survive gateway restarts.
+# ---------------------------------------------------------------------------
+
+
+def test_save_and_load_recent_exits(tmp_path, monkeypatch):
+    """Worker exits persist to disk and reload correctly."""
+    from hermes_cli.kanban_db import (
+        _recent_worker_exits, _save_recent_exits, _load_recent_exits,
+    )
+    import time
+
+    # Monkeypatch the path resolver to use tmp_path
+    exits_file = tmp_path / "recent_worker_exits.json"
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._recent_exits_path",
+        lambda: exits_file,
+    )
+
+    # Populate with test data
+    now = time.time()
+    _recent_worker_exits.clear()
+    _recent_worker_exits[12345] = (0, now - 10)  # clean exit 10s ago
+    _recent_worker_exits[12346] = (9, now - 30)  # signal 9, 30s ago
+
+    _save_recent_exits()
+    assert exits_file.exists()
+
+    # Clear and reload
+    _recent_worker_exits.clear()
+    _load_recent_exits()
+    assert 12345 in _recent_worker_exits
+    assert _recent_worker_exits[12345] == (0, now - 10)
+    assert 12346 in _recent_worker_exits
+
+
+def test_load_recent_exits_skips_expired(tmp_path, monkeypatch):
+    """Expired exit records are not loaded."""
+    from hermes_cli.kanban_db import (
+        _recent_worker_exits, _save_recent_exits, _load_recent_exits,
+        _RECENT_WORKER_EXIT_TTL_SECONDS,
+    )
+    import time, json
+
+    exits_file = tmp_path / "recent_worker_exits.json"
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._recent_exits_path",
+        lambda: exits_file,
+    )
+
+    now = time.time()
+    # Write an expired entry directly
+    data = {"99999": [0, now - _RECENT_WORKER_EXIT_TTL_SECONDS - 100]}
+    exits_file.write_text(json.dumps(data))
+
+    _recent_worker_exits.clear()
+    _load_recent_exits()
+    assert 99999 not in _recent_worker_exits
+
+
+def test_save_recent_exits_ignores_empty(monkeypatch, tmp_path):
+    """No file is written when the registry is empty."""
+    from hermes_cli.kanban_db import (
+        _recent_worker_exits, _save_recent_exits,
+    )
+
+    exits_file = tmp_path / "recent_worker_exits.json"
+    monkeypatch.setattr(
+        "hermes_cli.kanban_db._recent_exits_path",
+        lambda: exits_file,
+    )
+
+    _recent_worker_exits.clear()
+    _save_recent_exits()
+    assert not exits_file.exists()

@@ -4325,6 +4325,24 @@ class DispatchResult:
     """True when another dispatcher process already owns the per-board
     dispatch lock. This is normal with coordinated gateway+cron dispatchers."""
 
+    rate_limited: list[str] = field(default_factory=list)
+    """Task ids whose workers bailed on a provider rate-limit / quota wall
+    (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
+    counting a failure. These never trip the circuit breaker — a long quota
+    window just makes the task bounce cheaply until the window clears."""
+    skipped_locked: bool = False
+    """True when this tick was skipped because another process already held
+    the board's dispatch lock (issue #35240). A losing dispatcher does no
+    DB writes this tick — the lock holder is making progress on the same
+    board. This is the steady-state signal that a single-writer guard is
+    actively preventing two dispatchers from racing on ``kanban.db``."""
+    memory_throttled: bool = False
+    """True when this tick skipped spawning because system available memory
+    fell below ``kanban.dispatch_memory_min_mb`` (#1001). When set, the
+    tick returns immediately without spawning any workers, regardless of
+    ready-task count. The dispatcher retries on its next scheduled tick,
+    so throttling is self-healing when memory pressure eases."""
+
 
 # Bounded registry of recently-reaped worker child exits, populated by the
 # reap loop at the top of ``dispatch_once`` and consulted by
@@ -4337,6 +4355,53 @@ class DispatchResult:
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
+
+# JSON file to persist exit records so they survive gateway restarts.
+_RECENT_WORKER_EXITS_FILE = "recent_worker_exits.json"
+
+
+def _recent_exits_path() -> Optional[Path]:
+    """Return the path to the persisted worker exits file, or None if unresolvable."""
+    try:
+        db_path = kanban_db_path()
+        return db_path.parent / _RECENT_WORKER_EXITS_FILE
+    except Exception:
+        return None
+
+
+def _save_recent_exits() -> None:
+    """Persist _recent_worker_exits to disk (best-effort)."""
+    path = _recent_exits_path()
+    if path is None or not _recent_worker_exits:
+        return
+    try:
+        # Convert to JSON-serializable format: {pid: [raw_status, timestamp]}
+        data = {
+            str(pid): list(entry)
+            for pid, entry in _recent_worker_exits.items()
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.rename(path)
+    except Exception:
+        pass  # best-effort; don't crash the dispatcher
+
+
+def _load_recent_exits() -> None:
+    """Load persisted _recent_worker_exits from disk on startup."""
+    path = _recent_exits_path()
+    if path is None or not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text())
+        now = time.time()
+        for pid_str, (raw_status, ts) in data.items():
+            pid = int(pid_str)
+            # Only load entries younger than the TTL
+            if now - ts < _RECENT_WORKER_EXIT_TTL_SECONDS:
+                _recent_worker_exits[pid] = (int(raw_status), float(ts))
+    except Exception:
+        pass  # corrupted file -> start fresh
 
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
@@ -4417,6 +4482,8 @@ def reap_worker_zombies() -> "list[int]":
                 reaped.append(pid)
         except Exception:
             pass
+    if reaped:
+        _save_recent_exits()
     return reaped
 
 
@@ -4482,6 +4549,41 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # If the secondary probe fails, keep the kill(0) answer.
             pass
     return True
+
+
+def _system_available_memory_mb() -> Optional[int]:
+    """Return available system memory in MB, or None if undetectable.
+
+    Reads ``MemAvailable`` from ``/proc/meminfo`` (Linux).  Returns None
+    on non-Linux or if the file is unreadable so callers can treat the
+    check as "no limit" rather than blocking dispatch on exotic platforms.
+    """
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    # Format: "MemAvailable:   12345678 kB"
+                    return int(line.split()[1]) // 1024  # kB → MB
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _resolve_dispatch_memory_min_mb() -> Optional[int]:
+    """Return the minimum available memory (MB) required to spawn workers.
+
+    Reads ``kanban.dispatch_memory_min_mb`` from config.  Returns None
+    (no limit) when unset or set to 0.
+    """
+    try:
+        from hermes_cli.config import get_config_value
+        val = get_config_value("kanban.dispatch_memory_min_mb", default=None)
+        if val is not None:
+            val = int(val)
+            return val if val > 0 else None
+    except Exception:
+        pass
+    return None
 
 
 def _terminate_reclaimed_worker(
@@ -5636,6 +5738,11 @@ def _dispatch_once_unlocked(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    # Load persisted exit records on first tick (survives gateway restart).
+    if not hasattr(_dispatch_once_locked, "_exits_loaded"):
+        _load_recent_exits()
+        _dispatch_once_locked._exits_loaded = True  # type: ignore[attr-defined]
+
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()
@@ -5710,6 +5817,20 @@ def _dispatch_once_unlocked(
         remaining = max_in_progress - in_progress
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
+    # Memory-aware dispatch gate (#1001): skip spawning when system
+    # memory is critically low.  Prevents OOM cascade where the Linux
+    # OOM killer kills the gateway, taking all workers with it.
+    _mem_min_mb = _resolve_dispatch_memory_min_mb()
+    if _mem_min_mb is not None and ready_rows:
+        avail_mb = _system_available_memory_mb()
+        if avail_mb is not None and avail_mb < _mem_min_mb:
+            _log.warning(
+                "kanban dispatch: available memory %dMB < threshold %dMB \u2014 "
+                "skipping spawn this tick to prevent OOM cascade",
+                avail_mb, _mem_min_mb,
+            )
+            result.memory_throttled = True
+            return result
     spawned = 0
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:

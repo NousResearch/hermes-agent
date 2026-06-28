@@ -214,8 +214,11 @@ function applyPayload(payload: ProjectsPayload): void {
 export async function refreshProjects(): Promise<void> {
   try {
     applyPayload(await gatewayRequest<ProjectsPayload>('projects.list'))
-  } catch {
-    // Backend may not be ready; keep the last known list.
+  } catch (err: unknown) {
+    // Backend may not be ready; keep the last known list. Log so a persistent
+    // failure (the bug that made the sidebar silently fall back to cwd grouping)
+    // is visible instead of swallowed.
+    console.warn('[hermes-projects] failed to refresh projects list', err)
   }
 }
 
@@ -252,8 +255,11 @@ export async function refreshProjectTree(): Promise<void> {
         $removedSessionIds.set(pending)
       }
     }
-  } catch {
-    // Backend may not be ready; keep the last known tree.
+  } catch (err: unknown) {
+    // Backend may not be ready; keep the last known tree. Log persistent
+    // failures so the project overview cannot silently fall back to cwd grouping
+    // (the regression this guards against).
+    console.warn('[hermes-projects] failed to refresh project tree', err)
   } finally {
     $projectTreeLoading.set(false)
   }

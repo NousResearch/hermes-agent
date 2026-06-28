@@ -624,7 +624,6 @@ export function ChatSidebar({
   // authoritatively on the backend (projects.tree). Parents reorder via
   // workspaceParentOrderIds; worktrees within a parent via workspaceOrderIds.
   const worktreeGroupingActive = agentsGrouped && !showAllProfiles
-  const gatewayReady = gatewayState === 'open'
 
   // The backend project tree is a structural snapshot, NOT a per-message feed.
   // Refresh it on structural edges only — entering the grouped view, a profile
@@ -633,8 +632,17 @@ export function ChatSidebar({
   // (overlayLiveLanes / overlayLivePreviews) off `$sessions`, so a turn
   // completing does NOT re-run the heavy list_sessions_rich scan. Project
   // mutations refresh the tree from their own store actions.
+  //
+  // Do NOT pre-gate this on the renderer-side `gatewayReady` flag.
+  // `gatewayRequest()` already calls `ensureActiveGatewayOpen()`, so it opens the
+  // connection itself; the renderer's `$gatewayState` is driven by IPC events
+  // about the Electron main-process gateway and can lag behind a connection that
+  // is in fact usable. Pre-gating here stranded `$projectTree` empty — the
+  // overview never fetched, and the sidebar silently fell back to cwd grouping.
+  // `gatewayState` stays in the dep list as a RETRY edge: if the first fetch runs
+  // before the connection settles, a later state transition re-runs it.
   useEffect(() => {
-    if (worktreeGroupingActive && gatewayReady) {
+    if (worktreeGroupingActive) {
       void refreshProjects()
       // Paint the list from the fast tree fetch (explicit projects + repos from
       // existing sessions / the backend cache) FIRST, then kick off the heavy
@@ -642,7 +650,7 @@ export function ChatSidebar({
       // of the crawl blocking the first render.
       void refreshProjectTree().finally(() => void scanAndRecordRepos())
     }
-  }, [worktreeGroupingActive, profileScope, gatewayReady])
+  }, [worktreeGroupingActive, profileScope, gatewayState])
 
   // Out-of-band repo changes (a `git init` / `rm -rf` in another terminal) emit
   // no git events, so — like every git GUI — re-pull on window focus / tab
@@ -651,7 +659,7 @@ export function ChatSidebar({
   // session regrouping); the heavy disk crawl that surfaces brand-new repos is
   // throttled. Agent-driven changes already refresh via $workspaceChangeTick.
   useEffect(() => {
-    if (!worktreeGroupingActive || !gatewayReady) {
+    if (!worktreeGroupingActive) {
       return
     }
 
@@ -681,7 +689,7 @@ export function ChatSidebar({
       window.removeEventListener('focus', onActive)
       document.removeEventListener('visibilitychange', onActive)
     }
-  }, [worktreeGroupingActive, gatewayReady])
+  }, [worktreeGroupingActive])
 
   // Apply the persisted repo + worktree orders to a project's repo subtrees.
   const orderRepos = useCallback(
@@ -741,7 +749,7 @@ export function ChatSidebar({
   const [enteredProjectTree, setEnteredProjectTree] = useState<SidebarProjectTree | null>(null)
 
   useEffect(() => {
-    if (!enteredProjectId || !gatewayReady) {
+    if (!enteredProjectId) {
       setEnteredProjectTree(null)
 
       return
@@ -749,18 +757,28 @@ export function ChatSidebar({
 
     let cancelled = false
 
-    void fetchProjectSessions(enteredProjectId).then(project => {
-      if (!cancelled) {
-        setEnteredProjectTree(project)
-      }
-    })
+    void fetchProjectSessions(enteredProjectId)
+      .then(project => {
+        if (!cancelled) {
+          setEnteredProjectTree(project)
+        }
+      })
+      .catch((err: unknown) => {
+        console.warn('[hermes-projects] failed to hydrate project sessions', err)
+
+        if (!cancelled) {
+          setEnteredProjectTree(null)
+        }
+      })
 
     return () => {
       cancelled = true
     }
     // `projectTree` in deps: re-hydrate after a tree refresh so the entered view
-    // stays current with new/ended sessions.
-  }, [enteredProjectId, gatewayReady, projectTree])
+    // stays current with new/ended sessions. Like the overview fetch, do NOT
+    // pre-gate on `gatewayReady` — `fetchProjectSessions` opens the gateway
+    // itself; `gatewayState` is only a retry edge.
+  }, [enteredProjectId, gatewayState, projectTree])
 
   // Prefer the hydrated tree; fall back to the overview node (empty lanes) while
   // the drill-in fetch is in flight, so the header/structure render immediately.

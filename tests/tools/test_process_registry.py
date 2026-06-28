@@ -416,6 +416,34 @@ class TestListSessions:
         assert len(result) == 1
         assert result[0]["session_id"] == "proc_1"
 
+    def test_session_key_surfaces_cross_task_processes(self, registry):
+        """A bg process under the same gateway session but a DIFFERENT task is
+        surfaced when session_key is passed, and flagged session_scoped (#29177).
+        """
+        # Current turn's task = "t_now"; forgotten preview server = "t_old"
+        # but both share gateway session_key "gw1".
+        own = _make_session(sid="proc_own", task_id="t_now")
+        own.session_key = "gw1"
+        forgotten = _make_session(sid="proc_forgotten", task_id="t_old")
+        forgotten.session_key = "gw1"
+        other = _make_session(sid="proc_other", task_id="t_x")
+        other.session_key = "gw_other"
+        registry._running[own.id] = own
+        registry._running[forgotten.id] = forgotten
+        registry._running[other.id] = other
+
+        # Task-only (legacy) view sees just the current task's process.
+        legacy = registry.list_sessions(task_id="t_now")
+        assert {r["session_id"] for r in legacy} == {"proc_own"}
+
+        # With session_key, the forgotten process under the same gateway
+        # session is surfaced and flagged; the unrelated session is not.
+        result = registry.list_sessions(task_id="t_now", session_key="gw1")
+        by_id = {r["session_id"]: r for r in result}
+        assert set(by_id) == {"proc_own", "proc_forgotten"}
+        assert by_id["proc_forgotten"].get("session_scoped") is True
+        assert "session_scoped" not in by_id["proc_own"]
+
     def test_list_entry_fields(self, registry):
         s = _make_session(output="preview text")
         registry._running[s.id] = s

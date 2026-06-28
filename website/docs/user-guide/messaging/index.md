@@ -198,6 +198,15 @@ Sessions reset based on configurable policies:
 | Idle | 1440 min | Reset after N minutes of inactivity |
 | Both | (combined) | Whichever triggers first |
 
+A live background process (started with `terminal(background=true)`) normally
+protects its session from resetting so output isn't lost. To stop a forgotten
+process — say a preview server — from pinning a session open forever, a
+background process older than `bg_process_max_age_hours` (default **24**) no
+longer blocks reset. The process is **not** killed, only ignored by the reset
+guard. Set it to `0` to disable the cutoff (any live process blocks reset, the
+old behavior), or raise it if you run legitimate multi-day jobs whose liveness
+should keep the conversation open.
+
 Configure per-platform overrides in `~/.hermes/gateway.json`:
 
 ```json

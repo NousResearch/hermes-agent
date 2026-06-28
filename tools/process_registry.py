@@ -58,7 +58,7 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
-MAX_ACTIVE_PROCESS_AGE = 86400  # 24h — stale processes no longer block session reset
+MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
 
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
@@ -1515,15 +1515,28 @@ class ProcessRegistry:
         except Exception:
             return 0
 
-    def list_sessions(self, task_id: str = None) -> list:
-        """List all running and recently-finished processes."""
+    def list_sessions(self, task_id: str = None, session_key: str = None) -> list:
+        """List all running and recently-finished processes.
+
+        When ``task_id`` is given, processes for that task are included. When
+        ``session_key`` is also given, session-scoped background processes
+        (``background: true``) registered under that gateway session are
+        surfaced too, even if they belong to a different task — so the agent
+        can discover a forgotten preview server that is blocking session
+        reset (#29177). Such cross-task entries are flagged with
+        ``"session_scoped": true``.
+        """
         with self._lock:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
 
-        if task_id:
-            all_sessions = [s for s in all_sessions if s.task_id == task_id]
+        if task_id or session_key:
+            all_sessions = [
+                s for s in all_sessions
+                if (task_id and s.task_id == task_id)
+                or (session_key and s.session_key == session_key)
+            ]
 
         result = []
         for s in all_sessions:
@@ -1537,6 +1550,11 @@ class ProcessRegistry:
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
+            # Flag processes surfaced only because they share the gateway
+            # session (not the current task) — these are the long-lived
+            # background processes a user may have forgotten about (#29177).
+            if task_id and session_key and s.task_id != task_id and s.session_key == session_key:
+                entry["session_scoped"] = True
             # Trigger metadata so a goal-loop judge can decide to wait on this
             # process's OWN signal (a watch-pattern match or completion), not
             # just its exit. A watcher with watch_patterns may never exit.
@@ -2070,7 +2088,18 @@ def _handle_process(args, **kw):
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
 
     if action == "list":
-        return json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
+        # Surface session-scoped background processes (e.g. a forgotten
+        # preview server) in addition to this task's own — they share the
+        # gateway session_key and can block session reset (#29177).
+        try:
+            from tools.approval import get_current_session_key
+            session_key = get_current_session_key(default="") or ""
+        except Exception:
+            session_key = ""
+        return json.dumps(
+            {"processes": process_registry.list_sessions(task_id=task_id, session_key=session_key or None)},
+            ensure_ascii=False,
+        )
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
         if not session_id:
             return tool_error(f"session_id is required for {action}")

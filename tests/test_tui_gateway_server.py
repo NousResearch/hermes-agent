@@ -955,6 +955,14 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     monkeypatch.setattr(
         server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
     )
+    # This resume takes the deferred (non-eager) path, which fires a 50ms
+    # background Timer (`_schedule_agent_build`) that later calls whatever
+    # `server._make_agent` is patched in AT THAT MOMENT. Left un-stubbed, that
+    # timer outlives this test and lands in the *next* test's `_make_agent`
+    # mock, racily corrupting its captured state (the `assert 'tip' ==
+    # 'cont_tip'` flake in test_session_resume_follows_compression_tip). Neuter
+    # the pre-warm here — this test only asserts the returned display history.
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
 
     resp = server.handle_request(
         {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
@@ -1004,7 +1012,10 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     captured = {}
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
-        captured["agent_session_id"] = session_id
+        # Record only the FIRST (synchronous, eager) build. A stray background
+        # build leaked from an earlier test's deferred resume could otherwise
+        # overwrite this with its own session_id and corrupt the assertion.
+        captured.setdefault("agent_session_id", session_id)
         return types.SimpleNamespace(model="test", provider="test")
 
     monkeypatch.setattr(server, "_get_db", lambda: db)

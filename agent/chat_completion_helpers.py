@@ -1050,18 +1050,23 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     "arguments": tool_call.function.arguments
                 },
             }
-            # Defence-in-depth: redact credentials from tool call arguments
-            # before they enter conversation history. Tool execution uses the
-            # raw API response object, not this dict, so redacting the
-            # persisted shape is safe and only affects storage. Catches the
-            # case where a model accidentally inlines a secret into a tool
-            # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
-            # sk-...'")`). (#19798)
-            if isinstance(tc_dict["function"]["arguments"], str):
-                from agent.redact import redact_sensitive_text
-                tc_dict["function"]["arguments"] = redact_sensitive_text(
-                    tc_dict["function"]["arguments"]
-                )
+            # Tool-call arguments are intentionally NOT redacted here. This
+            # dict enters the in-memory conversation history that is replayed
+            # to the model on every subsequent turn AND persisted to state.db,
+            # which is itself replayed verbatim on session resume
+            # (get_messages_as_conversation). Masking a credential to `***`
+            # here poisons that replay: the model reads back its own
+            # `PGPASSWORD='***' psql ...` call and copies the placeholder into
+            # the next tool call, breaking every credential-dependent command
+            # on the second turn (#43083). The masking also provided no real
+            # protection — the same secret still leaks verbatim through tool
+            # OUTPUT (file contents, command output, diffs, the compaction
+            # block), none of which this pass ever touched. Keeping secrets
+            # out of the replayable store is a separate tokenization/vault
+            # concern, not something arg-redaction can deliver without
+            # breaking replay. Storage-time redaction remains governed by the
+            # `security.redact_secrets` toggle. (#19798 introduced this;
+            # #43083 removed it.)
             # Preserve extra_content (e.g. Gemini thought_signature) so it
             # is sent back on subsequent API calls.  Without this, Gemini 3
             # thinking models reject the request with a 400 error.

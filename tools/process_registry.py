@@ -1271,6 +1271,7 @@ class ProcessRegistry:
 
         result = {
             "session_id": session.id,
+            "command": session.command,
             "status": "exited" if session.exited else "running",
             "output": "\n".join(selected),
             "total_lines": total_lines,
@@ -1330,6 +1331,7 @@ class ProcessRegistry:
                 self._completion_consumed.add(session_id)
                 result = {
                     "status": "exited",
+                    "command": session.command,
                     "exit_code": session.exit_code,
                     "completion_reason": session.completion_reason,
                     "termination_source": session.termination_source,
@@ -1342,6 +1344,7 @@ class ProcessRegistry:
             if _is_interrupted():
                 result = {
                     "status": "interrupted",
+                    "command": session.command,
                     "output": strip_ansi(session.output_buffer[-1000:]),
                     "note": "User sent a new message -- wait interrupted",
                 }
@@ -1356,6 +1359,7 @@ class ProcessRegistry:
 
         result = {
             "status": "timeout",
+            "command": session.command,
             "output": strip_ansi(session.output_buffer[-1000:]),
         }
         if timeout_note:
@@ -2081,6 +2085,31 @@ PROCESS_SCHEMA = {
 }
 
 
+def _redact_process_result(result: dict) -> dict:
+    """Redact secrets from background-process output before it reaches the
+    model, session.db, and CLI display.
+
+    Mirrors the foreground ``terminal`` redaction (terminal_tool.py) so the
+    two surfaces can't diverge — issue #43025 (background output was returned
+    verbatim). Respects ``security.redact_secrets`` (no force): output fields
+    pass through ``redact_terminal_output`` which picks ``code_file`` based on
+    the recorded command (env dumps get the ENV-assignment pass). The command
+    string itself is also redacted in case it carried an inline credential.
+    """
+    if not isinstance(result, dict):
+        return result
+    from agent.redact import redact_sensitive_text, redact_terminal_output
+
+    command = result.get("command") or ""
+    for field in ("output", "output_preview"):
+        value = result.get(field)
+        if isinstance(value, str) and value:
+            result[field] = redact_terminal_output(value, command)
+    if isinstance(result.get("command"), str) and result["command"]:
+        result["command"] = redact_sensitive_text(result["command"], code_file=True)
+    return result
+
+
 def _handle_process(args, **kw):
     task_id = kw.get("task_id")
     action = args.get("action", "")
@@ -2104,12 +2133,12 @@ def _handle_process(args, **kw):
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":
-            return json.dumps(process_registry.poll(session_id), ensure_ascii=False)
+            return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
         elif action == "log":
-            return json.dumps(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200)), ensure_ascii=False)
+            return json.dumps(_redact_process_result(process_registry.read_log(
+                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
         elif action == "wait":
-            return json.dumps(process_registry.wait(session_id, timeout=args.get("timeout")), ensure_ascii=False)
+            return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":
             return json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
         elif action == "write":

@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +174,15 @@ _JSON_FIELD_RE = re.compile(
 # while the header name and scheme word are preserved for debuggability. The
 # previous rule only matched ``Bearer``, so ``Basic <base64 user:pass>`` and
 # ``token <pat>`` leaked verbatim into logs/transcripts.
+#
+# The credential class excludes quote characters (``"`` / ``'``): a token sitting
+# flush against a closing quote (``"Authorization: Bearer sk-..."``) must not pull
+# that quote into the match, or masking turns value corruption into *syntax*
+# corruption — the closing quote vanishes and the command/string no longer parses
+# (unterminated quote → shell EOF / Python SyntaxError). Real credentials never
+# contain ``"`` or ``'``, so excluding them is safe. See #43083.
 _AUTH_HEADER_RE = re.compile(
-    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(\S+)",
+    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)",
     re.IGNORECASE,
 )
 
@@ -394,7 +402,40 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
+def _mask_token_nonreusable(token: str) -> str:
+    """Redact a prefix-matched credential to a NON-REUSABLE sentinel.
+
+    Unlike :func:`_mask_token` (which keeps head/tail chars — fine for logs
+    that are never fed back into a config), this emits a marker that:
+
+    * cannot be mistaken for a usable-but-truncated key, so an agent that
+      reads it from a config file and writes it back does NOT corrupt the
+      stored credential into a dead 13-char string (issue #35519); and
+    * still does not leak the secret material (no head/tail chars).
+
+    The vendor prefix label is preserved for debuggability so the agent can
+    still tell *which* credential is present (e.g. a GitHub PAT vs an OpenAI
+    key) without seeing any of its bytes.
+    """
+    if not token:
+        return "«redacted-secret»"
+    # Preserve only the recognizable vendor prefix label (e.g. "ghp_", "sk-"),
+    # never any of the random secret body.
+    label = ""
+    for sub in _PREFIX_SUBSTRINGS:
+        if token.startswith(sub):
+            label = sub
+            break
+    return f"«redacted:{label}…»" if label else "«redacted-secret»"
+
+
+def redact_sensitive_text(
+    text: str,
+    *,
+    force: bool = False,
+    code_file: bool = False,
+    file_read: bool = False,
+) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
@@ -406,6 +447,17 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
     constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
     private keys, DB connstrings, JWTs, and URL secrets are still redacted.
+
+    Set file_read=True for file *content* returned to the agent (read_file /
+    search_files / cat). Secrets are STILL redacted — they are never exposed —
+    but prefix-matched credentials are replaced with a non-reusable sentinel
+    (``«redacted:ghp_…»``) instead of a head/tail-preserving mask
+    (``ghp_S1...Pn2T``). The old mask looked like a real-but-truncated key, so
+    an agent reading it from config.yaml and writing it back silently corrupted
+    the stored credential into a dead 13-char value → 401 (issue #35519). The
+    sentinel is syntactically invalid as a token, so it can't be mistaken for a
+    usable key or written back as one. Implies code_file=True (config/data
+    files shouldn't trigger the source-code ENV/JSON false-positive paths).
 
     Performance: each regex pattern is gated behind a cheap substring
     pre-check (e.g. ``"=" in text`` for ENV assignments, ``"://" in text``
@@ -425,9 +477,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not (force or _REDACT_ENABLED):
         return text
 
+    # file_read content shouldn't hit the source-code ENV/JSON false-positive
+    # paths either (it's config/data, not log lines).
+    if file_read:
+        code_file = True
+
     # Known prefixes (sk-, ghp_, etc.) — gate on substring presence
     if _has_known_prefix_substring(text):
-        text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
+        _prefix_sub = _mask_token_nonreusable if file_read else _mask_token
+        text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
     if not code_file:
@@ -533,6 +591,66 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+# Commands whose stdout is an environment-variable dump (KEY=value lines),
+# NOT source code. For these, terminal-output redaction must run the
+# ENV-assignment pass (code_file=False) so opaque tokens with no recognized
+# vendor prefix (e.g. ``MY_SERVICE_TOKEN=abc123randomstring``) are still
+# masked. For all other commands, code_file=True is used to avoid mangling
+# legitimate source/config dumps (``MAX_TOKENS=100``, ``"apiKey": "x"``
+# fixtures, ``postgresql://{user}`` f-string templates). See issue #43025.
+_ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
+
+
+def is_env_dump_command(command: str | None) -> bool:
+    """Return True if ``command`` dumps environment variables to stdout.
+
+    Detects ``env`` / ``printenv`` / ``set`` / ``export`` / ``declare`` as the
+    first token of any segment in a pipeline or sequence (``;`` / ``&&`` /
+    ``||`` / ``|``). Conservative: a parse failure or anything unrecognized
+    returns False (callers then fall back to the safer code_file=True path,
+    which still masks prefix-shaped keys).
+    """
+    if not command or not isinstance(command, str):
+        return False
+    # Split on shell separators, then inspect the first token of each segment.
+    segments = re.split(r"[|;&]+", command)
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            tokens = seg.split()
+        if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
+            return True
+    return False
+
+
+def redact_terminal_output(
+    output: str, command: str | None = None, *, force: bool = False
+) -> str:
+    """Redact secrets from terminal/process stdout.
+
+    Single redaction policy for ALL terminal-output surfaces — foreground
+    ``terminal`` results AND background ``process(action=poll/log/wait)``
+    output — so they can't diverge. Picks ``code_file`` based on whether
+    ``command`` is an environment dump:
+
+    - env-dump command (``env``/``printenv``/``set``/``export``/``declare``)
+      → ``code_file=False`` so the ENV-assignment pass masks opaque tokens.
+    - anything else (or unknown command) → ``code_file=True`` to avoid
+      false positives on source/config dumps.
+
+    ``force=True`` bypasses the global ``security.redact_secrets`` preference
+    for safety boundaries that must never emit raw credentials.
+    """
+    if not output:
+        return output
+    code_file = not is_env_dump_command(command or "")
+    return redact_sensitive_text(output, force=force, code_file=code_file)
 
 
 # Substrings used to gate ``_PREFIX_RE`` execution. If none of these appear in

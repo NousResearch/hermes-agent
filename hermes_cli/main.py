@@ -6992,6 +6992,55 @@ def _recover_from_interrupted_install() -> None:
         # the install itself will surface the real problem.
         logger.debug("Could not create install-recovery lock: %s", exc)
 
+    # Windows self-lock guard: if hermes.exe is the launcher that spawned
+    # this Python process, any attempt to pip-install will fail with
+    # "拒绝访问 / WinError 32" because the running .exe cannot be replaced.
+    # Rather than entering the permanent retry loop described in issue
+    # #45542, clear the marker and give the user an offline recovery command.
+    if _is_windows():
+        scripts_dir = _venv_scripts_dir()
+        if scripts_dir is not None:
+            shims = _hermes_exe_shims(scripts_dir)
+            if shims:
+                _shim_set: set[str] = set()
+                for _s in shims:
+                    try:
+                        _shim_set.add(str(_s.resolve()).lower())
+                    except OSError:
+                        _shim_set.add(str(_s).lower())
+                try:
+                    import psutil
+                    _me = psutil.Process()
+                    for _anc in [_me] + list(_me.parents()):
+                        try:
+                            _anc_exe = _anc.exe()
+                            _anc_norm = str(Path(_anc_exe).resolve()).lower()
+                        except Exception:
+                            continue
+                        if _anc_norm in _shim_set:
+                            print(
+                                "✗ Hermes is running from the binary that "
+                                "needs to be replaced — the auto-recovery "
+                                "cannot overwrite a running executable."
+                            )
+                            print(
+                                "  Restart Hermes from a different terminal, "
+                                "then run the manual recovery command below:"
+                            )
+                            print(f'    cd /d "{PROJECT_ROOT}"')
+                            print(
+                                f'    "{sys.executable}" -m pip install '
+                                '-e ".[all]"'
+                            )
+                            _clear_update_incomplete_marker()
+                            try:
+                                lock_path.unlink()
+                            except OSError:
+                                pass
+                            return
+                except Exception:
+                    pass  # psutil is best-effort; fall through to install
+
     saved_stdout_fd = None
     saved_sys_stdout = sys.stdout
     try:

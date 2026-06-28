@@ -2656,13 +2656,17 @@ def terminal_tool(
             from tools.ansi_strip import strip_ansi
             output = strip_ansi(output)
 
-            # Redact secrets from command output (catches env/printenv leaking
-            # keys). code_file=True: terminal output often echoes source/config
+            # Redact secrets from command output. For source/config dumps
             # (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string
-            # templates) — skip false-positive ENV/JSON/template redaction while
-            # still masking real prefixes, auth headers, JWTs, and private keys.
-            from agent.redact import redact_sensitive_text
-            output = redact_sensitive_text(output.strip(), code_file=True) if output else ""
+            # templates) the ENV/JSON/template passes are skipped to avoid
+            # false positives (code_file=True). But for env-dump commands
+            # (env/printenv/set/export/declare) the output IS a KEY=value
+            # credential dump, so redact_terminal_output runs the ENV pass
+            # (code_file=False) to mask opaque tokens with no vendor prefix.
+            # Real prefixes, auth headers, JWTs, private keys are masked in
+            # both modes. See issue #43025.
+            from agent.redact import redact_terminal_output
+            output = redact_terminal_output(output.strip(), command) if output else ""
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")

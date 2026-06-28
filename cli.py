@@ -15350,8 +15350,15 @@ def main(
             task_id=cli.session_id,
         )
         if missing_skills:
-            missing_display = ", ".join(missing_skills)
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+            if os.environ.get("HERMES_KANBAN_DB"):
+                logger.warning(
+                    "Kanban worker: some requested skills unavailable (%s); "
+                    "continuing with available skills",
+                    ", ".join(missing_skills),
+                )
+            else:
+                missing_display = ", ".join(missing_skills)
+                raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             cli.system_prompt = "\n\n".join(
                 part for part in (cli.system_prompt, skills_prompt) if part

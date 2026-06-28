@@ -413,10 +413,26 @@ def finalize_turn(
                 conversation_id=getattr(agent, "_gateway_session_key", None) or "",
                 gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
                 sender_id=getattr(agent, "_user_id", None) or "",
-                chat_id=getattr(agent, "chat_id", None) or "",
-                chat_name=getattr(agent, "chat_name", None) or "",
-                chat_type=getattr(agent, "chat_type", None) or "",
-                thread_id=getattr(agent, "thread_id", None) or "",
+                chat_id=(
+                    getattr(agent, "_chat_id", None)
+                    or getattr(agent, "chat_id", None)
+                    or ""
+                ),
+                chat_name=(
+                    getattr(agent, "_chat_name", None)
+                    or getattr(agent, "chat_name", None)
+                    or ""
+                ),
+                chat_type=(
+                    getattr(agent, "_chat_type", None)
+                    or getattr(agent, "chat_type", None)
+                    or ""
+                ),
+                thread_id=(
+                    getattr(agent, "_thread_id", None)
+                    or getattr(agent, "thread_id", None)
+                    or ""
+                ),
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)

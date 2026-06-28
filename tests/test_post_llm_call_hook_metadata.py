@@ -21,10 +21,10 @@ class _Agent:
     base_url = ""
     session_id = "session-1"
     platform = "discord"
-    chat_id = "channel-123"
-    chat_name = "Hermes LCM"
-    chat_type = "thread"
-    thread_id = "thread-456"
+    _chat_id = "channel-123"
+    _chat_name = "Hermes LCM"
+    _chat_type = "thread"
+    _thread_id = "thread-456"
     _gateway_session_key = "agent:main:discord:thread:thread-456:thread-456"
     _user_id = "user-789"
     context_compressor = _Compressor()
@@ -141,10 +141,10 @@ def test_post_llm_call_hook_metadata_is_backward_compatible_for_telegram(monkeyp
 
     class _TelegramAgent(_Agent):
         platform = "telegram"
-        chat_id = "1782862480"
-        chat_name = "Home"
-        chat_type = "private"
-        thread_id = ""
+        _chat_id = "1782862480"
+        _chat_name = "Home"
+        _chat_type = "private"
+        _thread_id = ""
         _gateway_session_key = "agent:main:telegram:private:1782862480"
         _user_id = "1782862480"
 
@@ -178,3 +178,51 @@ def test_post_llm_call_hook_metadata_is_backward_compatible_for_telegram(monkeyp
     assert post_call["chat_id"] == "1782862480"
     assert post_call["chat_type"] == "private"
     assert post_call["thread_id"] == ""
+
+
+def test_post_llm_call_hook_metadata_falls_back_to_public_lane_attrs(monkeypatch):
+    calls = []
+
+    def fake_invoke_hook(name, **kwargs):
+        calls.append((name, kwargs))
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+    class _PublicLaneAgent(_Agent):
+        _chat_id = ""
+        _chat_name = ""
+        _chat_type = ""
+        _thread_id = ""
+        chat_id = "public-channel"
+        chat_name = "Public Channel"
+        chat_type = "channel"
+        thread_id = "public-thread"
+        _gateway_session_key = "agent:main:discord:channel:public-channel:public-thread"
+
+    messages = [
+        {"role": "user", "content": "public hello"},
+        {"role": "assistant", "content": "public reply"},
+    ]
+    result = finalize_turn(
+        _PublicLaneAgent(),
+        final_response="public reply",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task-3",
+        turn_id="turn-3",
+        user_message="public hello",
+        original_user_message="public hello",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == "public reply"
+    post_call = next(kwargs for name, kwargs in calls if name == "post_llm_call")
+    assert post_call["chat_id"] == "public-channel"
+    assert post_call["chat_name"] == "Public Channel"
+    assert post_call["chat_type"] == "channel"
+    assert post_call["thread_id"] == "public-thread"

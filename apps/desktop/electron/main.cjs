@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  Tray,
   clipboard,
   dialog,
   ipcMain,
@@ -757,6 +758,8 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+let forceQuit = false
+let tray = null
 let hermesProcess = null
 let connectionPromise = null
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
@@ -3879,11 +3882,63 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+// ── System tray (minimize-to-tray) ──────────────────────────────────────
+
+function createTray() {
+  if (tray) return
+  const iconPath = getAppIconPath()
+  const icon = iconPath ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 }) : nativeImage.createEmpty()
+
+  tray = new Tray(icon)
+  tray.setToolTip(app.name || 'Hermes')
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Show Hermes',
+      click: restoreFromTray
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        forceQuit = true
+        destroyTray()
+        app.quit()
+      }
+    }
+  ])
+
+  tray.setContextMenu(contextMenu)
+
+  // Restore on double-click (Windows behaviour; no-op where unsupported)
+  tray.on('double-click', restoreFromTray)
+
+  rememberLog('[tray] tray icon created')
+}
+
+function destroyTray() {
+  if (tray) {
+    tray.destroy()
+    tray = null
+    rememberLog('[tray] tray icon destroyed')
+  }
+}
+
+function restoreFromTray() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+  destroyTray()
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { webContents } = mainWindow
   if (!webContents || webContents.isDestroyed()) return
   webContents.send('hermes:open-updates')
+  destroyTray()
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
 }
@@ -5912,6 +5967,18 @@ function createWindow() {
   // window-all-closed from quitting on Windows/Linux).
   mainWindow.on('closed', () => closePetOverlay())
 
+  // Minimise to system tray instead of closing, unless forceQuit is set
+  // (e.g. actual quit from tray menu, Cmd+Q, or app update).
+  mainWindow.on('close', (event) => {
+    if (forceQuit) {
+      destroyTray()
+      return
+    }
+    event.preventDefault()
+    mainWindow.hide()
+    createTray()
+  })
+
   wireCommonWindowHandlers(mainWindow)
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
@@ -7465,6 +7532,7 @@ if (!_gotSingleInstanceLock) {
     else if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
+      destroyTray()
     }
   })
 }
@@ -7503,6 +7571,8 @@ app.whenReady().then(() => {
       createWindow()
     } else {
       focusWindow(mainWindow)
+      // Window was hidden to tray; remove the tray icon on restore
+      destroyTray()
     }
   })
 })
@@ -7531,6 +7601,8 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  forceQuit = true
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
@@ -7564,5 +7636,8 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // On non-macOS, keep the process alive while the tray icon is shown so the
+  // user can restore the window. The tray's "Quit" action calls app.quit(),
+  // which sets forceQuit and bypasses the hide-to-tray close handler.
+  if (process.platform !== 'darwin' && !tray) app.quit()
 })

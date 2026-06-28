@@ -10,6 +10,20 @@ const { pathToFileURL } = require('node:url')
 const SESSION_WINDOW_MIN_WIDTH = 420
 const SESSION_WINDOW_MIN_HEIGHT = 620
 
+// A new session window inherits the size of the window it was opened from (the
+// parent), so popping out a chat doesn't snap to the cramped minimum. The source
+// size is clamped to the minimum — and coerced past a non-finite value — so a
+// tiny or unmeasurable parent can't spawn an unusable window.
+function secondaryWindowSize(sourceSize) {
+  const width = Number(sourceSize?.width)
+  const height = Number(sourceSize?.height)
+
+  return {
+    width: Number.isFinite(width) ? Math.max(width, SESSION_WINDOW_MIN_WIDTH) : SESSION_WINDOW_MIN_WIDTH,
+    height: Number.isFinite(height) ? Math.max(height, SESSION_WINDOW_MIN_HEIGHT) : SESSION_WINDOW_MIN_HEIGHT
+  }
+}
+
 // Shared webPreferences for every window that renders the chat transcript — the
 // primary window AND the secondary session windows. Keeping it in one place is
 // the whole point: the two BrowserWindow definitions in main.cjs used to be
@@ -119,6 +133,7 @@ module.exports = {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  secondaryWindowSize,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 }

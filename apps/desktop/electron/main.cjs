@@ -31,11 +31,13 @@ const {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
   createSessionWindowRegistry,
+  secondaryWindowSize,
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { createLinkTitleWindow } = require('./link-title-window.cjs')
+const { clampZoomLevel, createZoomController } = require('./zoom.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
@@ -3981,25 +3983,21 @@ function buildApplicationMenu() {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
         click: () => {
-          setAndPersistZoomLevel(mainWindow, 0)
+          setAndPersistZoomLevel(0)
         }
       },
       {
         label: 'Zoom In',
         accelerator: 'CommandOrControl+Plus',
         click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + 0.1)
-          }
+          setAndPersistZoomLevel(zoomController.getLevel() + 0.1)
         }
       },
       {
         label: 'Zoom Out',
         accelerator: 'CommandOrControl+-',
         click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - 0.1)
-          }
+          setAndPersistZoomLevel(zoomController.getLevel() - 0.1)
         }
       },
       { type: 'separator' },
@@ -4060,40 +4058,57 @@ function installPreviewShortcut(window) {
   })
 }
 
-// Zoom level is persisted in the renderer's own localStorage (per-origin,
-// survives reloads/restarts) rather than a main-process JSON file. The main
-// process owns setZoomLevel, so we mirror each change into localStorage and
-// read it back on did-finish-load to re-apply after reloads or crash recovery.
-const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
+// Zoom is one app-level setting owned by the main process and applied to every
+// window, rather than a per-window or per-route value. Chromium otherwise keeps
+// its own zoom per host AND per hash route, so the HashRouter renderer ends up
+// with a different zoom on each session/settings route, and the level silently
+// changes when switching routes (the controller re-asserts on
+// did-navigate-in-page; see wireCommonWindowHandlers). Persisted to a
+// main-process JSON file so a cold launch applies it at first paint, before any
+// window loads. The pure controller logic lives in zoom.cjs; here we inject the
+// Electron-bound persistence and window access. Mirrors the translucency
+// subsystem.
+const ZOOM_CONFIG_PATH = path.join(app.getPath('userData'), 'zoom.json')
 
-function clampZoomLevel(value) {
-  if (!Number.isFinite(value)) return 0
-  return Math.min(Math.max(value, -9), 9)
+function readPersistedZoomLevel() {
+  try {
+    return clampZoomLevel(JSON.parse(fs.readFileSync(ZOOM_CONFIG_PATH, 'utf8')).level)
+  } catch {
+    return 0
+  }
 }
 
-function setAndPersistZoomLevel(window, zoomLevel) {
-  if (!window || window.isDestroyed()) return
-  const next = clampZoomLevel(zoomLevel)
-  window.webContents.setZoomLevel(next)
-  window.webContents
-    .executeJavaScript(
-      `try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`
-    )
-    .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
+function writePersistedZoomLevel(level) {
+  try {
+    fs.mkdirSync(path.dirname(ZOOM_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(ZOOM_CONFIG_PATH, JSON.stringify({ level }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[zoom] write failed: ${error.message}`)
+  }
 }
 
-function restorePersistedZoomLevel(window) {
-  if (!window || window.isDestroyed()) return
-  window.webContents
-    .executeJavaScript(
-      `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
-    )
-    .then(stored => {
-      if (stored == null || !window || window.isDestroyed()) return
-      const level = clampZoomLevel(Number(stored))
-      window.webContents.setZoomLevel(level)
-    })
-    .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
+const zoomController = createZoomController({
+  readLevel: readPersistedZoomLevel,
+  writeLevel: writePersistedZoomLevel,
+  getWindows: () => BrowserWindow.getAllWindows(),
+  getZoom: win => win.webContents.getZoomLevel(),
+  setZoom: (win, level) => win.webContents.setZoomLevel(level)
+})
+
+// Re-assert the app zoom on a live window (on load and after each hash-route
+// navigation). Guards against a destroyed window/webContents before delegating
+// to the controller.
+function applyWindowZoom(win) {
+  if (!win || win.isDestroyed()) return
+  const { webContents } = win
+  if (!webContents || webContents.isDestroyed()) return
+  zoomController.apply(win)
+}
+
+// Set the app zoom, persist it, and apply to every open window so the scale
+// stays consistent across the main window and all session windows.
+function setAndPersistZoomLevel(level) {
+  zoomController.set(level)
 }
 
 function installZoomShortcuts(window) {
@@ -4109,13 +4124,13 @@ function installZoomShortcuts(window) {
     const key = input.key
     if (key === '0') {
       event.preventDefault()
-      setAndPersistZoomLevel(window, 0)
+      setAndPersistZoomLevel(0)
     } else if (key === '=' || key === '+') {
       event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
+      setAndPersistZoomLevel(zoomController.getLevel() + ZOOM_STEP)
     } else if (key === '-') {
       event.preventDefault()
-      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
+      setAndPersistZoomLevel(zoomController.getLevel() - ZOOM_STEP)
     }
   })
 }
@@ -5625,6 +5640,11 @@ function wireCommonWindowHandlers(win) {
   installDevToolsShortcut(win)
   installZoomShortcuts(win)
   installContextMenu(win)
+  // Apply the app zoom to every chat window on load, and re-assert it after each
+  // hash-route navigation — Chromium tracks zoom per route and resets it on a
+  // route change, which otherwise makes the scale jump when switching sessions.
+  win.webContents.on('did-finish-load', () => applyWindowZoom(win))
+  win.webContents.on('did-navigate-in-page', () => applyWindowZoom(win))
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
 
@@ -5654,11 +5674,14 @@ function focusWindow(win) {
   win.focus()
 }
 
-function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
+function spawnSecondaryWindow({ sessionId, watch, newSession, sourceWindow } = {}) {
   const icon = getAppIconPath()
+  const { width, height } = secondaryWindowSize(
+    sourceWindow && !sourceWindow.isDestroyed() ? sourceWindow.getBounds() : undefined
+  )
   const win = new BrowserWindow({
-    width: SESSION_WINDOW_MIN_WIDTH,
-    height: SESSION_WINDOW_MIN_HEIGHT,
+    width,
+    height,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
@@ -5706,16 +5729,17 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
   return win
 }
 
-// Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+// Open (or focus) a standalone window for a single chat session. A freshly
+// spawned window inherits the size of the window it was opened from.
+function createSessionWindow(sessionId, { watch = false, sourceWindow } = {}) {
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch, sourceWindow }))
 }
 
 // Open a fresh compact window on the new-session draft (#/). Not registry-keyed:
 // like ⌘N in a browser, every press opens a new window — and a draft window that
 // later converts to a real session must not get refocused as if it were blank.
-function createNewSessionWindow() {
-  return spawnSecondaryWindow({ newSession: true })
+function createNewSessionWindow({ sourceWindow } = {}) {
+  return spawnSecondaryWindow({ newSession: true, sourceWindow })
 }
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -5980,7 +6004,8 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
-    restorePersistedZoomLevel(mainWindow)
+    // Zoom is applied via wireCommonWindowHandlers for every chat window
+    // (main + secondary), so it is not repeated here.
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
@@ -6037,12 +6062,15 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+  createSessionWindow(sessionId.trim(), {
+    watch: opts?.watch === true,
+    sourceWindow: BrowserWindow.fromWebContents(_event.sender)
+  })
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openNewSession', async () => {
-  createNewSessionWindow()
+ipcMain.handle('hermes:window:openNewSession', async _event => {
+  createNewSessionWindow({ sourceWindow: BrowserWindow.fromWebContents(_event.sender) })
 
   return { ok: true }
 })

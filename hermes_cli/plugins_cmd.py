@@ -685,7 +685,26 @@ def cmd_remove(name: str) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
+    # Resolve the canonical key BEFORE removing the directory, because
+    # _resolve_plugin_key scans the plugins dir and won't find it after.
+    key = _resolve_plugin_key(name)
+
     shutil.rmtree(target)
+
+    # Also clean up plugins.enabled / plugins.disabled in config.yaml
+    # so stale entries don't survive a reinstall (#54336).
+    if key:
+        enabled = _get_enabled_set()
+        disabled = _get_disabled_set()
+        enabled.discard(key)
+        disabled.discard(key)
+        bare = key.split("/")[-1]
+        if bare != key:
+            enabled.discard(bare)
+            disabled.discard(bare)
+        _save_enabled_set(enabled)
+        _save_disabled_set(disabled)
+
     _display_removed(name, plugins_dir)
 
 

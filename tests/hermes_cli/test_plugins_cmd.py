@@ -928,3 +928,70 @@ class TestSubdirInstallE2E:
         identifier = f"file://{repo_root}#does-not-exist"
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
+
+
+
+class TestCmdRemoveCleansConfig:
+    """cmd_remove should remove the plugin from plugins.enabled and plugins.disabled."""
+
+    def test_removes_from_enabled(self, tmp_path, monkeypatch):
+        """After removing a plugin, it should no longer be in plugins.enabled."""
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        plugin_dir = plugins_dir / "my_plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "manifest.yaml").write_text(yaml.dump({
+            "name": "my_plugin", "version": "1.0"
+        }))
+
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(pc, "_resolve_plugin_key", lambda name: "my_plugin")
+
+        config = {"plugins": {"enabled": ["my_plugin"], "disabled": []}}
+        monkeypatch.setattr(pc, "_get_enabled_set", lambda: set(config["plugins"]["enabled"]))
+        monkeypatch.setattr(pc, "_get_disabled_set", lambda: set(config["plugins"]["disabled"]))
+
+        def save_enabled(enabled):
+            config["plugins"]["enabled"] = sorted(enabled)
+        def save_disabled(disabled):
+            config["plugins"]["disabled"] = sorted(disabled)
+        monkeypatch.setattr(pc, "_save_enabled_set", save_enabled)
+        monkeypatch.setattr(pc, "_save_disabled_set", save_disabled)
+
+        pc.cmd_remove("my_plugin")
+
+        assert not plugin_dir.exists()
+        assert "my_plugin" not in config["plugins"]["enabled"]
+
+    def test_removes_from_disabled(self, tmp_path, monkeypatch):
+        """After removing a plugin, it should no longer be in plugins.disabled."""
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        plugin_dir = plugins_dir / "my_plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "manifest.yaml").write_text(yaml.dump({
+            "name": "my_plugin", "version": "1.0"
+        }))
+
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(pc, "_resolve_plugin_key", lambda name: "my_plugin")
+
+        config = {"plugins": {"enabled": [], "disabled": ["my_plugin"]}}
+        monkeypatch.setattr(pc, "_get_enabled_set", lambda: set(config["plugins"]["enabled"]))
+        monkeypatch.setattr(pc, "_get_disabled_set", lambda: set(config["plugins"]["disabled"]))
+
+        def save_enabled(enabled):
+            config["plugins"]["enabled"] = sorted(enabled)
+        def save_disabled(disabled):
+            config["plugins"]["disabled"] = sorted(disabled)
+        monkeypatch.setattr(pc, "_save_enabled_set", save_enabled)
+        monkeypatch.setattr(pc, "_save_disabled_set", save_disabled)
+
+        pc.cmd_remove("my_plugin")
+
+        assert not plugin_dir.exists()
+        assert "my_plugin" not in config["plugins"]["disabled"]

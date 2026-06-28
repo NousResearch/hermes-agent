@@ -58,6 +58,7 @@ import subprocess
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
@@ -492,7 +493,7 @@ def _register_project(store: Path, working_dir: str) -> None:
             pass
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        atomic_json_write(meta_path, meta)
     except OSError as exc:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 
@@ -514,7 +515,7 @@ def _touch_project(store: Path, working_dir: str) -> None:
     meta["last_touch"] = time.time()
     meta.setdefault("created_at", meta["last_touch"])
     try:
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        atomic_json_write(meta_path, meta)
     except OSError as exc:
         logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 

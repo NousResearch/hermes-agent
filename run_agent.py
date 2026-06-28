@@ -5430,6 +5430,7 @@ def main(
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,
     list_tools: bool = False,
+    browser_test: bool = False,
     save_trajectories: bool = False,
     save_sample: bool = False,
     verbose: bool = False,
@@ -5449,6 +5450,7 @@ def main(
                               Multiple toolsets can be combined: "web,vision"
         disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
         list_tools (bool): Just list available tools and exit
+        browser_test (bool): Run a small browser smoke-test prompt using the browser toolset.
         save_trajectories (bool): Save conversation trajectories to JSONL files (appends to trajectory_samples.jsonl). Defaults to False.
         save_sample (bool): Save a single trajectory sample to a UUID-named JSONL file for inspection. Defaults to False.
         verbose (bool): Enable verbose logging for debugging. Defaults to False.
@@ -5546,6 +5548,9 @@ def main(
     # Parse toolset selection arguments
     enabled_toolsets_list = None
     disabled_toolsets_list = None
+
+    if browser_test and not enabled_toolsets:
+        enabled_toolsets = "browser"
     
     if enabled_toolsets:
         enabled_toolsets_list = [t.strip() for t in enabled_toolsets.split(",")]
@@ -5579,10 +5584,16 @@ def main(
     
     # Use provided query or default to Python 3.13 example
     if query is None:
-        user_query = (
-            "Tell me about the latest developments in Python 3.13 and what new features "
-            "developers should know about. Please search for current information and try it out."
-        )
+        if browser_test:
+            user_query = (
+                "Use the browser tools to open https://example.com and report "
+                "the page title."
+            )
+        else:
+            user_query = (
+                "Tell me about the latest developments in Python 3.13 and what new features "
+                "developers should know about. Please search for current information and try it out."
+            )
     else:
         user_query = query
     

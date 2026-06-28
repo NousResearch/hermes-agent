@@ -20,7 +20,10 @@
     "audit:tui": "npm audit --workspace ui-tui",
     "audit:fix:root": "npm audit fix --workspaces=false",
     "audit:fix:web": "npm audit fix --workspace web",
-    "audit:fix:tui": "npm audit fix --workspace ui-tui"
+    "audit:fix:tui": "npm audit fix --workspace ui-tui",
+    "install:mobile": "npm install --workspace apps/mobile",
+    "mobile:ios": "npm run ios --workspace apps/mobile",
+    "mobile:start": "npm run start --workspace apps/mobile"
   },
   "repository": {
     "type": "git",

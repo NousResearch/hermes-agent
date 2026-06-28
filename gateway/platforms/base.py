@@ -3130,7 +3130,11 @@ class BasePlatformAdapter(ABC):
         if choices:
             lines = [f"❓ {question}", ""]
             if multi_select:
-                lines.append("Multiple selections allowed: reply with numbers/letters like `1,3` or `A+C`, option text, or your own answer.")
+                suffix = ", or your own answer" if allow_other else ""
+                lines.append(
+                    "Multiple selections allowed: reply with numbers/letters "
+                    f"like `1,3` or `A+C`, or option text{suffix}."
+                )
                 lines.append("")
             for i, choice in enumerate(choices, start=1):
                 prefix = f"{i}."
@@ -3140,9 +3144,12 @@ class BasePlatformAdapter(ABC):
                 lines.append(f"  {prefix} {choice}")
             lines.append("")
             if multi_select:
-                lines.append("Reply with one or more numbers/letters, option text, or your own answer.")
-            else:
+                suffix = ", option text, or your own answer" if allow_other else " or option text"
+                lines.append(f"Reply with one or more numbers/letters{suffix}.")
+            elif allow_other:
                 lines.append("Reply with the number, the option text, or your own answer.")
+            else:
+                lines.append("Reply with the number or the option text.")
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).

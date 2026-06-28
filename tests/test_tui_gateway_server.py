@@ -5185,6 +5185,106 @@ def test_respond_unpacks_sid_tuple_correctly():
         server._answers.pop("rid-x", None)
 
 
+def test_clarify_respond_rejects_custom_answer_when_other_disallowed():
+    ev = threading.Event()
+    server._pending["rid-no-other"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-no-other"] = (
+        "clarify.request",
+        {
+            "question": "Pick one",
+            "choices": ["Alpha", "Beta"],
+            "multi_select": False,
+            "allow_other": False,
+        },
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-no-other", "answer": "Alpha, Beta"},
+            }
+        )
+        assert resp.get("error")
+        assert resp["error"]["code"] == 4010
+        assert not ev.is_set()
+        assert "rid-no-other" not in server._answers
+    finally:
+        server._pending.pop("rid-no-other", None)
+        server._pending_prompt_payloads.pop("rid-no-other", None)
+        server._answers.pop("rid-no-other", None)
+
+
+def test_clarify_respond_normalizes_allowed_choice_text():
+    ev = threading.Event()
+    server._pending["rid-choice"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-choice"] = (
+        "clarify.request",
+        {
+            "question": "Pick one",
+            "choices": ["Alpha", "Beta"],
+            "multi_select": False,
+            "allow_other": False,
+        },
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-choice", "answer": "2"},
+            }
+        )
+        assert resp.get("result")
+        assert ev.is_set()
+        assert server._answers.get("rid-choice") == "Beta"
+    finally:
+        server._pending.pop("rid-choice", None)
+        server._pending_prompt_payloads.pop("rid-choice", None)
+        server._answers.pop("rid-choice", None)
+
+
+def test_clarify_respond_enforces_multi_select_bounds():
+    ev = threading.Event()
+    server._pending["rid-ms"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-ms"] = (
+        "clarify.request",
+        {
+            "question": "Pick two",
+            "choices": ["Alpha", "Beta", "Gamma"],
+            "multi_select": True,
+            "min_selections": 2,
+            "max_selections": 2,
+            "allow_other": False,
+        },
+    )
+    try:
+        too_few = server.handle_request(
+            {
+                "id": "1",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-ms", "answer": "1"},
+            }
+        )
+        assert too_few.get("error")
+        assert not ev.is_set()
+
+        ok = server.handle_request(
+            {
+                "id": "2",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-ms", "answer": "1,3"},
+            }
+        )
+        assert ok.get("result")
+        assert ev.is_set()
+        assert server._answers.get("rid-ms") == "Alpha, Gamma"
+    finally:
+        server._pending.pop("rid-ms", None)
+        server._pending_prompt_payloads.pop("rid-ms", None)
+        server._answers.pop("rid-ms", None)
+
+
 # ---------------------------------------------------------------------------
 # /model switch and other agent-mutating commands must reject while the
 # session is running.  agent.switch_model() mutates self.model, self.provider,

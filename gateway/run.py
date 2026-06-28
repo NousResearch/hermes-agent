@@ -8617,6 +8617,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+                logger.info(
+                    "Gateway rejected invalid clarify text response (session=%s, id=%s)",
+                    _quick_key, _pending_clarify.clarify_id,
+                )
+                return _clarify_mod.format_invalid_text_response_message(_pending_clarify)
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are

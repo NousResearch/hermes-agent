@@ -261,7 +261,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const selectedSummary = selectedChoices.join(', ')
   const customSummary = trimmedDraft ? `${copy.other}: ${trimmedDraft}` : ''
   const selectionSummary = selectedSummary || selectedChoice || customSummary
-  const canSubmitSelected = selectedChoices.length > 0 && selectedChoices.length >= minSelections
+  const canSubmitSelected = multiSelect && selectedChoices.length > 0 && selectedChoices.length >= minSelections
 
   const selectChoice = useCallback(
     (choice: string) => {
@@ -275,11 +275,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const toggleMultiChoice = useCallback(
     (choice: string) => {
+      if (!multiSelect) {
+        return
+      }
       setDraft('')
       setSelectedChoice(null)
       setSelectedChoices(current => toggleChoice(current, choice, maxSelections))
     },
-    [maxSelections]
+    [maxSelections, multiSelect]
   )
 
   const submitSelected = useCallback(() => {
@@ -383,36 +386,22 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             }
 
             return (
-              <div className="flex items-start gap-1" key={`${index}-${choice}`}>
-                <button
-                  aria-label={choice}
-                  className={cn(
-                    OPTION_ROW_CLASS,
-                    'flex-1 text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
-                    selectedChoice === choice && 'text-(--ui-text-primary)'
-                  )}
-                  data-choice
-                  disabled={submitting}
-                  onClick={() => selectChoice(choice)}
-                  type="button"
-                >
-                  <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />
-                  <span className="flex-1 wrap-anywhere">{choice}</span>
-                </button>
-                <button
-                  aria-label={`Toggle ${choice} for multi-select`}
-                  aria-pressed={staged}
-                  className={cn(
-                    'grid size-7 shrink-0 place-items-center rounded-[0.25rem] text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary) disabled:cursor-not-allowed disabled:opacity-50',
-                    staged && 'text-primary'
-                  )}
-                  disabled={submitting}
-                  onClick={() => toggleMultiChoice(choice)}
-                  type="button"
-                >
-                  <SelectToggle selected={staged} />
-                </button>
-              </div>
+              <button
+                aria-label={choice}
+                className={cn(
+                  OPTION_ROW_CLASS,
+                  'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
+                  selectedChoice === choice && 'text-(--ui-text-primary)'
+                )}
+                data-choice
+                disabled={submitting}
+                key={`${index}-${choice}`}
+                onClick={() => selectChoice(choice)}
+                type="button"
+              >
+                <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />
+                <span className="flex-1 wrap-anywhere">{choice}</span>
+              </button>
             )
           })}
           {allowOther && (
@@ -459,7 +448,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        {hasChoices && selectedChoices.length > 0 ? (
+        {multiSelect && selectedChoices.length > 0 ? (
           <Button disabled={submitting || !canSubmitSelected} onClick={submitSelected} size="xs" type="button">
             {submitting ? <Loader2 className="size-3" /> : 'Send selected'}
           </Button>

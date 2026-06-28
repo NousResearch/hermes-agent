@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
@@ -130,6 +132,7 @@ def _try_gh_cli_token() -> Optional[str]:
     clean_env = {k: v for k, v in os.environ.items()
                  if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
 
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     for gh_path in _gh_cli_candidates():
         cmd = [gh_path, "auth", "token"]
         if hostname:
@@ -141,6 +144,7 @@ def _try_gh_cli_token() -> Optional[str]:
                 text=True,
                 timeout=5,
                 env=clean_env,
+                **_popen_kwargs,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)

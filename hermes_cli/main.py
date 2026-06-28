@@ -300,6 +300,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.agents import build_agents_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -4247,6 +4248,66 @@ def cmd_kanban(args):
     from hermes_cli.kanban import kanban_command
 
     return kanban_command(args)
+
+
+def cmd_agents(args):
+    """AI team dashboard — bare ``hermes agents`` behaves like ``agents list``."""
+    from hermes_cli.agents import load_agents, render_table
+
+    agents = load_agents()
+    print(render_table(agents))
+    return 0
+
+
+def cmd_agents_list(args):
+    """List agents as a table or JSON."""
+    from hermes_cli.agents import load_agents, render_table, to_json
+
+    agents = load_agents()
+    if getattr(args, "json", False):
+        print(to_json(agents))
+    else:
+        print(render_table(agents))
+    return 0
+
+
+def cmd_agents_init(args):
+    """Create a starter agents.yaml registry."""
+    from hermes_cli.agents import init_registry
+
+    try:
+        path = init_registry(force=getattr(args, "force", False))
+    except FileExistsError as exc:
+        print(f"agents init: {exc}", file=sys.stderr)
+        return 1
+    print(f"Wrote starter registry to {path}")
+    return 0
+
+
+def cmd_agents_orchestrate(args):
+    """Prepare a planning handoff for orch via Kanban."""
+    from hermes_cli.agents import orchestrate, render_orchestrate_summary
+
+    create_card = not getattr(args, "no_create", False)
+    try:
+        result = orchestrate(args.task, create_card=create_card)
+    except ValueError as exc:
+        print(f"agents orchestrate: {exc}", file=sys.stderr)
+        return 2
+    print(render_orchestrate_summary(result))
+    return 0
+
+
+def cmd_agents_dashboard(args):
+    """Open the navigable agents dashboard."""
+    from hermes_cli.agents_dashboard import run_dashboard, render_dashboard_str, load_agents
+
+    # --no-detail forces non-interactive output even in a TTY.
+    if getattr(args, "no_detail", False):
+        agents = load_agents()
+        print(render_dashboard_str(agents))
+        return 0
+    return run_dashboard()
 
 
 def cmd_project(args):
@@ -12340,6 +12401,18 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # agents command — AI team dashboard
+    # =========================================================================
+    build_agents_parser(
+        subparsers,
+        cmd_agents=cmd_agents,
+        cmd_agents_list=cmd_agents_list,
+        cmd_agents_init=cmd_agents_init,
+        cmd_agents_orchestrate=cmd_agents_orchestrate,
+        cmd_agents_dashboard=cmd_agents_dashboard,
+    )
 
     # =========================================================================
     # project command — named, multi-folder workspaces

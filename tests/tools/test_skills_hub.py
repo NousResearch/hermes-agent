@@ -1281,6 +1281,52 @@ class TestCheckForSkillUpdates:
 
         assert results[0]["status"] == "up_to_date"
 
+    def test_self_heals_stale_lock_content_hash_from_live_disk(self, tmp_path):
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        skills_dir = tmp_path / "skills"
+        install_dir = skills_dir / "demo-skill"
+        install_dir.mkdir(parents=True)
+        (install_dir / "SKILL.md").write_text("same content\n")
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={"SKILL.md": "same content\n"},
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        lock = HubLockFile(path=skills_dir / ".hub" / "lock.json")
+        lock.save({
+            "version": 1,
+            "installed": {
+                "demo-skill": {
+                    "name": "demo-skill",
+                    "source": "github",
+                    "identifier": "owner/repo/demo-skill",
+                    "content_hash": "sha256:stale0000000000",
+                    "install_path": "demo-skill",
+                }
+            },
+        })
+
+        source = MagicMock()
+        source.source_id.return_value = "github"
+        source.fetch.return_value = bundle
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir):
+            results = check_for_skill_updates(lock=lock, sources=[source])
+
+        disk_hash = content_hash(install_dir)
+        saved = lock.load()["installed"]["demo-skill"]
+
+        assert results[0]["status"] == "up_to_date"
+        assert results[0]["current_hash"] == disk_hash
+        assert saved["content_hash"] == disk_hash
+        assert "updated_at" in saved
+
 
 class TestCreateSourceRouter:
     def test_includes_skills_sh_source(self):

@@ -3559,6 +3559,30 @@ def check_for_skill_updates(
             continue
 
         current_hash = entry.get("content_hash", "")
+
+        # Prefer the live on-disk hash when the installed path exists. This
+        # self-heals lock entries created by older Hermes builds whose
+        # ``content_hash()`` ordering disagreed with ``bundle_content_hash()``,
+        # which otherwise causes false-positive update reports for unchanged
+        # skills.
+        install_rel = entry.get("install_path", "")
+        if install_rel:
+            try:
+                install_dir = _resolve_lock_install_path(install_rel, entry.get("name", ""))
+            except ValueError:
+                install_dir = None
+            if install_dir and install_dir.exists():
+                disk_hash = content_hash(install_dir)
+                if disk_hash != current_hash:
+                    current_hash = disk_hash
+                    if isinstance(lock, HubLockFile):
+                        data = lock.load()
+                        installed_entry = data.get("installed", {}).get(entry.get("name", ""))
+                        if isinstance(installed_entry, dict):
+                            installed_entry["content_hash"] = disk_hash
+                            installed_entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+                            lock.save(data)
+
         latest_hash = bundle_content_hash(bundle)
         status = "up_to_date" if current_hash == latest_hash else "update_available"
         results.append({

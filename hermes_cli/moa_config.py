@@ -74,7 +74,13 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
 
-    refs = [_clean_slot(item) for item in raw.get("reference_models") or []]
+    raw_refs = raw.get("reference_models")
+    if not isinstance(raw_refs, list):
+        # A hand-edited scalar / single mapping (or a bad type) must degrade to
+        # defaults instead of crashing the iteration, mirroring the tolerance
+        # for the scalar fields below (reference_temperature / max_tokens).
+        raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
+    refs = [_clean_slot(item) for item in raw_refs]
     refs = [item for item in refs if item is not None]
     if not refs:
         refs = deepcopy(DEFAULT_MOA_REFERENCE_MODELS)
@@ -199,4 +205,4 @@ def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | No
 
 
 def moa_usage() -> str:
-    return "Usage: /moa [preset-name | prompt]  (bare /moa toggles the default preset)"
+    return "Usage: /moa <prompt>  (runs one prompt through the default MoA preset, then restores your model; pick a preset from the model picker to switch for the session)"

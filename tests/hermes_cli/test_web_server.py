@@ -3767,6 +3767,7 @@ class TestBuildSchemaFromConfig:
         # These should be merged away
         assert "privacy" not in categories  # merged into security
         assert "context" not in categories  # merged into agent
+        assert CONFIG_SCHEMA["knowledge_base.path"]["category"] == "memory"
 
     def test_no_single_field_categories(self):
         """After merging, no category should have just 1 field."""

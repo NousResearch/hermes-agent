@@ -750,6 +750,9 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
 _CATEGORY_MERGE: Dict[str, str] = {
     "privacy": "security",
     "context": "agent",
+    # The knowledge-base plugin has one path setting; keep it beside the
+    # related persistent-memory settings instead of creating a one-field tab.
+    "knowledge_base": "memory",
     "skills": "agent",
     "cron": "agent",
     "network": "agent",

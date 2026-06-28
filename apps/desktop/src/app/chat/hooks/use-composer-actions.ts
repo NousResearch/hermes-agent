@@ -5,7 +5,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
-import { isDesktopFsRemoteMode, readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
 import {
   addComposerAttachment,
   type ComposerAttachment,
@@ -266,8 +266,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
       const paths = await selectDesktopPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
-        directories: kind === 'folder',
-        multiple: kind === 'folder' && isDesktopFsRemoteMode() ? false : undefined
+        directories: kind === 'folder'
       })
 
       if (!paths?.length) {

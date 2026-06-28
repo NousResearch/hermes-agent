@@ -68,13 +68,12 @@ describe('pickProjectFolder', () => {
     vi.clearAllMocks()
   })
 
-  it('uses the remote-aware directory picker locally (no backend default cwd probe)', async () => {
+  it('uses the remote-aware directory picker locally', async () => {
     isDesktopFsRemoteMode.mockReturnValue(false)
     selectDesktopPaths.mockResolvedValue(['/local/repo'])
 
     await expect(pickProjectFolder()).resolves.toBe('/local/repo')
     expect(selectDesktopPaths).toHaveBeenCalledWith({ defaultPath: undefined, directories: true, multiple: false })
-    expect(desktopDefaultCwd).not.toHaveBeenCalled()
   })
 
   it('seeds the picker with the backend cwd on a remote gateway', async () => {

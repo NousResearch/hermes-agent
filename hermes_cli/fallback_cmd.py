@@ -53,7 +53,13 @@ def _format_entry(entry: Dict[str, Any]) -> str:
     model = entry.get("model", "?")
     base = entry.get("base_url")
     suffix = f"  [{base}]" if base else ""
-    return f"{model}  (via {provider}){suffix}"
+    try:
+        from hermes_cli.context_window import entry_context_length
+        cap = entry_context_length(entry)
+    except Exception:
+        cap = None
+    cap_suffix = f"  (context cap {cap:,})" if cap else ""
+    return f"{model}  (via {provider}){suffix}{cap_suffix}"
 
 
 def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]:
@@ -72,6 +78,13 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
     api_mode = (model_cfg.get("api_mode") or "").strip()
     if api_mode:
         entry["api_mode"] = api_mode
+    try:
+        from hermes_cli.context_window import entry_context_length
+        cap = entry_context_length(model_cfg)
+        if cap:
+            entry["max_context_length"] = cap
+    except Exception:
+        pass
     return entry
 
 
@@ -151,6 +164,16 @@ def cmd_fallback_add(args) -> None:
 
     _require_tty("fallback add")
 
+    from hermes_cli.context_window import parse_context_window_cap
+    cap_arg = getattr(args, "max_context", None)
+    if cap_arg is None:
+        cap_arg = getattr(args, "context_length", None)
+    cap_value = parse_context_window_cap(cap_arg)
+    if cap_arg is not None and cap_value is None and str(cap_arg).strip().lower() != "auto":
+        print()
+        print(f"  Invalid --max-context value: {cap_arg!r} (use an integer or auto).")
+        raise SystemExit(2)
+
     # Snapshot BEFORE the picker runs so we can distinguish "user actually
     # picked something" from "user cancelled" by comparing before/after.
     before_cfg = load_config()
@@ -182,6 +205,16 @@ def cmd_fallback_add(args) -> None:
         print()
         print("  No fallback added.")
         return
+
+    # Explicit CLI cap wins over any transient model config value written by
+    # the picker. ``auto`` means no entry-specific cap.
+    if cap_arg is not None:
+        new_entry.pop("context_length", None)
+        if cap_value:
+            new_entry["max_context_length"] = cap_value
+        else:
+            new_entry.pop("max_context_length", None)
+            new_entry.pop("context_length", None)
 
     # Picker picked the same thing that's already the primary → nothing changed,
     # and there's nothing useful to add as a fallback to itself.

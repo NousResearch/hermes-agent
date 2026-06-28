@@ -304,10 +304,10 @@ class ModelSwitchResult:
 # Flag parsing
 # ---------------------------------------------------------------------------
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
-    """Parse --provider, --global, --session, and --refresh flags from /model command args.
+def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool, str | None]:
+    """Parse flags from /model command args.
 
-    Returns ``(model_input, explicit_provider, is_global, force_refresh, is_session)``.
+    Returns ``(model_input, explicit_provider, is_global, force_refresh, is_session, max_context)``.
 
     ``is_global`` and ``is_session`` are independent flag presences; the
     *effective* persistence decision is resolved by
@@ -328,11 +328,12 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
     explicit_provider = ""
     force_refresh = False
     is_session = False
+    max_context: str | None = None
 
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh)', r'--\1', raw_args)
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|max-context|context-length)', r'--\1', raw_args)
 
     # Extract --global
     if "--global" in raw_args:
@@ -349,7 +350,8 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
         force_refresh = True
         raw_args = raw_args.replace("--refresh", "").strip()
 
-    # Extract --provider <name>
+    # Extract --provider <name>, --max-context <tokens|auto>, and
+    # --context-length <tokens|auto>.
     parts = raw_args.split()
     i = 0
     filtered: list[str] = []
@@ -357,12 +359,19 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
         if parts[i] == "--provider" and i + 1 < len(parts):
             explicit_provider = parts[i + 1]
             i += 2
+        elif parts[i] in {"--max-context", "--context-length"}:
+            if i + 1 < len(parts) and not parts[i + 1].startswith("--"):
+                max_context = parts[i + 1]
+                i += 2
+            else:
+                max_context = ""
+                i += 1
         else:
             filtered.append(parts[i])
             i += 1
 
     model_input = " ".join(filtered).strip()
-    return (model_input, explicit_provider, is_global, force_refresh, is_session)
+    return (model_input, explicit_provider, is_global, force_refresh, is_session, max_context)
 
 
 def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:

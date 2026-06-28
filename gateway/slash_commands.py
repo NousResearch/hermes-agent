@@ -1133,8 +1133,13 @@ class GatewaySlashCommandsMixin:
             is_global_flag,
             force_refresh,
             is_session,
+            max_context_arg,
         ) = parse_model_flags(raw_args)
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
+        from hermes_cli.context_window import parse_context_window_cap
+        max_context_cap = parse_context_window_cap(max_context_arg)
+        if max_context_arg is not None and max_context_cap is None and str(max_context_arg).strip().lower() != "auto":
+            return t("gateway.model.error_prefix", error=f"Invalid --max-context value: {max_context_arg!r} (use an integer or auto)")
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1183,6 +1188,71 @@ class GatewaySlashCommandsMixin:
             current_provider = override.get("provider", current_provider)
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
+
+        if max_context_arg is not None and not model_input and not explicit_provider:
+            cached_entry = None
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached_entry = _cache.get(session_key)
+            agent = cached_entry[0] if cached_entry and cached_entry[0] is not None else None
+            if agent is not None:
+                agent._config_context_length = max_context_cap
+                if getattr(agent, "context_compressor", None):
+                    from agent.model_metadata import get_model_context_length
+                    ctx_len = get_model_context_length(
+                        getattr(agent, "model", current_model),
+                        base_url=getattr(agent, "base_url", current_base_url) or "",
+                        api_key=getattr(agent, "api_key", "") if isinstance(getattr(agent, "api_key", ""), str) else "",
+                        provider=getattr(agent, "provider", current_provider) or "",
+                        config_context_length=max_context_cap,
+                        custom_providers=custom_provs,
+                    )
+                    agent.context_compressor.update_model(
+                        model=getattr(agent, "model", current_model),
+                        context_length=ctx_len,
+                        base_url=getattr(agent, "base_url", current_base_url) or "",
+                        api_key=getattr(agent, "api_key", "") or "",
+                        provider=getattr(agent, "provider", current_provider) or "",
+                        api_mode=getattr(agent, "api_mode", "") or "",
+                    )
+                ctx_len = getattr(getattr(agent, "context_compressor", None), "context_length", None) or max_context_cap
+            else:
+                ctx_len = max_context_cap
+            override_for_cap = self._session_model_overrides.get(session_key)
+            if not isinstance(override_for_cap, dict):
+                override_for_cap = {
+                    "model": getattr(agent, "model", current_model) if agent is not None else current_model,
+                    "provider": getattr(agent, "provider", current_provider) if agent is not None else current_provider,
+                    "api_key": getattr(agent, "api_key", current_api_key) if agent is not None else current_api_key,
+                    "base_url": getattr(agent, "base_url", current_base_url) if agent is not None else current_base_url,
+                    "api_mode": getattr(agent, "api_mode", "") if agent is not None else "",
+                }
+            if max_context_cap:
+                override_for_cap["max_context_length"] = max_context_cap
+                override_for_cap.pop("context_length", None)
+            else:
+                override_for_cap.pop("max_context_length", None)
+                override_for_cap.pop("context_length", None)
+            self._session_model_overrides[session_key] = override_for_cap
+            if persist_global:
+                try:
+                    from cli import save_config_value
+                    if max_context_cap:
+                        save_config_value("model.max_context_length", max_context_cap)
+                        save_config_value("model.context_length", None)
+                    else:
+                        save_config_value("model.max_context_length", None)
+                        save_config_value("model.context_length", None)
+                except Exception as exc:
+                    logger.warning("Failed to persist model context cap: %s", exc)
+            lines = ["Context cap set: {0:,} tokens".format(max_context_cap) if max_context_cap else "Context cap cleared; using auto-detected context window"]
+            if ctx_len:
+                lines.append(f"Context: {int(ctx_len):,} tokens")
+                lines.append(f"Compress around: {int(ctx_len * 0.5):,} tokens")
+            lines.append(t("gateway.model.saved_global") if persist_global else t("gateway.model.session_only_hint"))
+            return "\n".join(lines)
 
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
@@ -1278,6 +1348,7 @@ class GatewaySlashCommandsMixin:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    config_context_length=max_context_cap if max_context_arg is not None else None,
                                 )
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
@@ -1360,6 +1431,13 @@ class GatewaySlashCommandsMixin:
                                 _persist_model_cfg["provider"] = result.target_provider
                                 if result.base_url:
                                     _persist_model_cfg["base_url"] = result.base_url
+                                if max_context_arg is not None:
+                                    if max_context_cap:
+                                        _persist_model_cfg["max_context_length"] = max_context_cap
+                                        _persist_model_cfg.pop("context_length", None)
+                                    else:
+                                        _persist_model_cfg.pop("max_context_length", None)
+                                        _persist_model_cfg.pop("context_length", None)
                                 if str(result.target_provider or "").strip().lower() != "custom":
                                     clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
                                 from hermes_cli.config import save_config
@@ -1373,16 +1451,19 @@ class GatewaySlashCommandsMixin:
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
                         from hermes_cli.model_switch import resolve_display_context_length
-                        _sw_config_ctx = None
-                        try:
-                            _sw_cfg = _load_gateway_config()
-                            _sw_model_cfg = _sw_cfg.get("model", {})
-                            if isinstance(_sw_model_cfg, dict):
-                                _sw_raw = _sw_model_cfg.get("context_length")
-                                if _sw_raw is not None:
-                                    _sw_config_ctx = int(_sw_raw)
-                        except Exception:
-                            pass
+                        _sw_config_ctx = max_context_cap if max_context_arg is not None else None
+                        if _sw_config_ctx is None:
+                            try:
+                                _sw_cfg = _load_gateway_config()
+                                from hermes_cli.context_window import scoped_model_config_context_length
+                                _sw_config_ctx = scoped_model_config_context_length(
+                                    _sw_cfg,
+                                    model=result.new_model,
+                                    provider=result.target_provider,
+                                    base_url=result.base_url or current_base_url or "",
+                                )
+                            except Exception:
+                                pass
                         ctx = resolve_display_context_length(
                             result.new_model,
                             result.target_provider,
@@ -1511,6 +1592,7 @@ class GatewaySlashCommandsMixin:
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
+                        config_context_length=max_context_cap if max_context_arg is not None else None,
                     )
                 except Exception as exc:
                     # In-place swap rolled the agent back to the OLD working
@@ -1565,6 +1647,13 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            if max_context_arg is not None:
+                if max_context_cap:
+                    self._session_model_overrides[session_key]["max_context_length"] = max_context_cap
+                    self._session_model_overrides[session_key].pop("context_length", None)
+                else:
+                    self._session_model_overrides[session_key].pop("max_context_length", None)
+                    self._session_model_overrides[session_key].pop("context_length", None)
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.
@@ -1597,6 +1686,13 @@ class GatewaySlashCommandsMixin:
                     model_cfg["provider"] = result.target_provider
                     if result.base_url:
                         model_cfg["base_url"] = result.base_url
+                    if max_context_arg is not None:
+                        if max_context_cap:
+                            model_cfg["max_context_length"] = max_context_cap
+                            model_cfg.pop("context_length", None)
+                        else:
+                            model_cfg.pop("max_context_length", None)
+                            model_cfg.pop("context_length", None)
                     if str(result.target_provider or "").strip().lower() != "custom":
                         clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
                     from hermes_cli.config import save_config
@@ -1613,16 +1709,19 @@ class GatewaySlashCommandsMixin:
             # Copilot, and Nous-enforced caps win over the raw models.dev entry.
             mi = result.model_info
             from hermes_cli.model_switch import resolve_display_context_length
-            _sw2_config_ctx = None
-            try:
-                _sw2_cfg = _load_gateway_config()
-                _sw2_model_cfg = _sw2_cfg.get("model", {})
-                if isinstance(_sw2_model_cfg, dict):
-                    _sw2_raw = _sw2_model_cfg.get("context_length")
-                    if _sw2_raw is not None:
-                        _sw2_config_ctx = int(_sw2_raw)
-            except Exception:
-                pass
+            _sw2_config_ctx = max_context_cap if max_context_arg is not None else None
+            if _sw2_config_ctx is None:
+                try:
+                    _sw2_cfg = _load_gateway_config()
+                    from hermes_cli.context_window import scoped_model_config_context_length
+                    _sw2_config_ctx = scoped_model_config_context_length(
+                        _sw2_cfg,
+                        model=result.new_model,
+                        provider=result.target_provider,
+                        base_url=result.base_url or current_base_url or "",
+                    )
+                except Exception:
+                    pass
             ctx = resolve_display_context_length(
                 result.new_model,
                 result.target_provider,

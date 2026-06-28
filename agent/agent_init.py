@@ -209,6 +209,8 @@ def init_agent(
     notice_clear_callback: callable = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
     max_tokens: int = None,
+    config_context_length: int | None = None,
+    use_model_config_context_length: bool = True,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
@@ -1472,28 +1474,42 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
-    # Read explicit context_length override from model config
-    if isinstance(_model_cfg, dict):
-        _config_context_length = _model_cfg.get("context_length")
-    else:
-        _config_context_length = None
-    if _config_context_length is not None:
+    # Read explicit context-window override from model config.  The historical
+    # key is model.context_length; model.max_context_length is a clearer alias
+    # for capping a provider-advertised window (e.g. a 1M-token model) below its
+    # detected size.  context_length wins if both are present.
+    _context_length_key = None
+    _config_context_raw = None
+    _config_context_length = None
+    if config_context_length is not None:
         try:
-            _config_context_length = int(_config_context_length)
+            if isinstance(config_context_length, bool):
+                raise ValueError
+            _parsed_direct_ctx = int(config_context_length)
+            if _parsed_direct_ctx <= 0:
+                raise ValueError
+            _config_context_length = _parsed_direct_ctx
         except (TypeError, ValueError):
-            _ra().logger.warning(
-                "Invalid model.context_length in config.yaml: %r — "
-                "must be a plain integer (e.g. 256000, not '256K'). "
-                "Falling back to auto-detection.",
-                _config_context_length,
-            )
-            print(
-                f"\n⚠ Invalid model.context_length in config.yaml: {_config_context_length!r}\n"
-                f"  Must be a plain integer (e.g. 256000, not '256K').\n"
-                f"  Falling back to auto-detected context window.\n",
-                file=sys.stderr,
-            )
             _config_context_length = None
+    if _config_context_length is None and use_model_config_context_length:
+        try:
+            from hermes_cli.context_window import model_config_context_length
+            _config_context_length, _context_length_key, _config_context_raw = model_config_context_length(_model_cfg)
+        except Exception:
+            _config_context_length = None
+    if _context_length_key is not None and _config_context_length is None:
+        _ra().logger.warning(
+            "Invalid model.%s in config.yaml: %r — must be a plain positive integer "
+            "(e.g. 256000, not '256K'). Falling back to auto-detection.",
+            _context_length_key,
+            _config_context_raw,
+        )
+        print(
+            f"\n⚠ Invalid model.{_context_length_key} in config.yaml: {_config_context_raw!r}\n"
+            f"  Must be a plain positive integer (e.g. 256000, not '256K').\n"
+            f"  Falling back to auto-detected context window.\n",
+            file=sys.stderr,
+        )
 
     # Resolve custom_providers list once for reuse below (startup
     # context-length override and plugin context-engine init).

@@ -127,8 +127,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model (persists by default)", "Configuration",
-               args_hint="[model] [--provider name] [--global|--session] [--refresh]"),
+    CommandDef("model", "Switch model or set context cap (persists by default)", "Configuration",
+               args_hint="[model] [--provider name] [--max-context tokens|auto] [--global|--session] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),

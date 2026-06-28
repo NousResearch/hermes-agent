@@ -400,6 +400,8 @@ class AIAgent:
         notice_clear_callback: callable = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         max_tokens: int = None,
+        config_context_length: int | None = None,
+        use_model_config_context_length: bool = True,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
@@ -475,6 +477,8 @@ class AIAgent:
             notice_clear_callback=notice_clear_callback,
             event_callback=event_callback,
             max_tokens=max_tokens,
+            config_context_length=config_context_length,
+            use_model_config_context_length=use_model_config_context_length,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
             request_overrides=request_overrides,
@@ -700,10 +704,10 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', config_context_length=None):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode, config_context_length)
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.

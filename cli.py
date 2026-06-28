@@ -7541,6 +7541,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    config_context_length=None,
                 )
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
@@ -7706,12 +7707,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             is_global_flag,
             force_refresh,
             is_session,
+            max_context_arg,
         ) = parse_model_flags(raw_args)
         # Resolve the effective persistence once: --session overrides the
         # config-gated default, --global forces persist, otherwise defer to
         # model.persist_switch_by_default (defaults to True so /model survives
         # across sessions).
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
+        from hermes_cli.context_window import parse_context_window_cap
+        max_context_cap = parse_context_window_cap(max_context_arg)
+        if max_context_arg is not None and max_context_cap is None and str(max_context_arg).strip().lower() != "auto":
+            _cprint(f"  ✗ Invalid --max-context value: {max_context_arg!r} (use an integer or auto)")
+            return
 
         # --refresh: wipe the on-disk picker cache before building the
         # provider list. Forces a live re-fetch of every authed provider's
@@ -7743,6 +7750,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # dicts; ConfigContext is the canonical source for both.
         user_provs = ctx.user_providers if ctx is not None else None
         custom_provs = ctx.custom_providers if ctx is not None else None
+
+        # A cap-only command updates this running session without switching.
+        if max_context_arg is not None and not model_input and not explicit_provider:
+            if persist_global:
+                if max_context_cap:
+                    save_config_value("model.max_context_length", max_context_cap)
+                    save_config_value("model.context_length", None)
+                else:
+                    save_config_value("model.max_context_length", None)
+                    save_config_value("model.context_length", None)
+            if self.agent is not None:
+                self.agent._config_context_length = max_context_cap
+                if getattr(self.agent, "context_compressor", None):
+                    from agent.model_metadata import get_model_context_length
+                    ctx_len = get_model_context_length(
+                        self.agent.model,
+                        base_url=getattr(self.agent, "base_url", "") or "",
+                        api_key=getattr(self.agent, "api_key", "") if isinstance(getattr(self.agent, "api_key", ""), str) else "",
+                        provider=getattr(self.agent, "provider", "") or "",
+                        config_context_length=max_context_cap,
+                        custom_providers=custom_provs,
+                    )
+                    self.agent.context_compressor.update_model(
+                        model=self.agent.model,
+                        context_length=ctx_len,
+                        base_url=getattr(self.agent, "base_url", "") or "",
+                        api_key=getattr(self.agent, "api_key", "") or "",
+                        provider=getattr(self.agent, "provider", "") or "",
+                        api_mode=getattr(self.agent, "api_mode", "") or "",
+                    )
+                ctx_len = getattr(getattr(self.agent, "context_compressor", None), "context_length", None) or max_context_cap
+            else:
+                ctx_len = max_context_cap
+            if max_context_cap:
+                _cprint(f"  ✓ Context cap set: {max_context_cap:,} tokens")
+            else:
+                _cprint("  ✓ Context cap cleared; using auto-detected context window")
+            if ctx_len:
+                _cprint(f"    Context: {int(ctx_len):,} tokens")
+                _cprint(f"    Compress around: {int(ctx_len * 0.5):,} tokens")
+            if persist_global:
+                _cprint("    Saved to config.yaml (--global)")
+            else:
+                _cprint("    (session only — add --global to persist)")
+            return
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
@@ -7848,6 +7900,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    config_context_length=max_context_cap if max_context_arg is not None else None,
                 )
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a
@@ -7911,6 +7964,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            if max_context_arg is not None:
+                if max_context_cap:
+                    save_config_value("model.max_context_length", max_context_cap)
+                    save_config_value("model.context_length", None)
+                else:
+                    save_config_value("model.max_context_length", None)
+                    save_config_value("model.context_length", None)
             _cprint("    Saved to config.yaml")
         else:
             _cprint("    (session only — add --global to persist)")

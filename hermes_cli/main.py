@@ -12373,9 +12373,19 @@ def main():
         aliases=["ls"],
         help="Show the current fallback chain (default when no subcommand)",
     )
-    fallback_subparsers.add_parser(
+    fallback_add_parser = fallback_subparsers.add_parser(
         "add",
         help="Pick a provider + model (same picker as `hermes model`) and append to the chain",
+    )
+    fallback_add_parser.add_argument(
+        "--max-context",
+        dest="max_context",
+        help="Optional context cap for this fallback entry (integer tokens, or auto).",
+    )
+    fallback_add_parser.add_argument(
+        "--context-length",
+        dest="context_length",
+        help="Alias for --max-context for compatibility with model.context_length.",
     )
     fallback_subparsers.add_parser(
         "remove",

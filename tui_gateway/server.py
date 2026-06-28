@@ -2555,7 +2555,7 @@ def _restart_slash_worker(sid: str, session: dict):
     _attach_worker(sid, session, new_worker)
 
 
-def _persist_model_switch(result) -> None:
+def _persist_model_switch(result, *, max_context_cap=None, max_context_arg=None) -> None:
     # Use targeted, atomic key writes (comment/ordering-preserving) instead of
     # rewriting the whole `model:` block. A full-block rewrite via save_config()
     # destroys sibling keys the user set under `model:` — `model_slots`,
@@ -2573,6 +2573,13 @@ def _persist_model_switch(result) -> None:
         # removal without needing a key-delete. Leaving the old value would
         # route the new model at the previous custom host (#48305).
         save_config_value("model.base_url", None)
+    if max_context_arg is not None:
+        if max_context_cap:
+            save_config_value("model.max_context_length", max_context_cap)
+            save_config_value("model.context_length", None)
+        else:
+            save_config_value("model.max_context_length", None)
+            save_config_value("model.context_length", None)
 
 
 def _apply_model_switch(
@@ -2582,7 +2589,7 @@ def _apply_model_switch(
     *,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
-    parsed_flags: tuple[str, str, bool, bool, bool] | None = None,
+    parsed_flags: tuple[str, str, bool, bool, bool, str | None] | None = None,
 ) -> dict:
     from hermes_cli.model_switch import (
         parse_model_flags,
@@ -2599,8 +2606,62 @@ def _apply_model_switch(
         is_global_flag,
         _force_refresh,
         is_session,
+        max_context_arg,
     ) = parsed_flags
     persist_global = resolve_persist_behavior(is_global_flag, is_session)
+    from hermes_cli.context_window import parse_context_window_cap
+    max_context_cap = parse_context_window_cap(max_context_arg)
+    if max_context_arg is not None and max_context_cap is None and str(max_context_arg).strip().lower() != "auto":
+        raise ValueError(f"Invalid --max-context value: {max_context_arg!r} (use an integer or auto)")
+    if not model_input and max_context_arg is not None:
+        agent = session.get("agent")
+        if agent:
+            agent._config_context_length = max_context_cap
+            if getattr(agent, "context_compressor", None):
+                from agent.model_metadata import get_model_context_length
+                ctx_len = get_model_context_length(
+                    getattr(agent, "model", ""),
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") if isinstance(getattr(agent, "api_key", ""), str) else "",
+                    provider=getattr(agent, "provider", "") or "",
+                    config_context_length=max_context_cap,
+                    custom_providers=None,
+                )
+                agent.context_compressor.update_model(
+                    model=getattr(agent, "model", ""),
+                    context_length=ctx_len,
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    api_mode=getattr(agent, "api_mode", "") or "",
+                )
+            _emit("session.info", sid, _session_info(agent, session))
+        if isinstance(session, dict):
+            override = session.get("model_override")
+            if not isinstance(override, dict):
+                override = {
+                    "model": getattr(agent, "model", "") if agent else _resolve_model(),
+                    "provider": getattr(agent, "provider", "") if agent else None,
+                    "base_url": getattr(agent, "base_url", "") if agent else None,
+                    "api_key": getattr(agent, "api_key", "") if agent else None,
+                    "api_mode": getattr(agent, "api_mode", "") if agent else None,
+                }
+            if max_context_cap:
+                override["max_context_length"] = max_context_cap
+                override.pop("context_length", None)
+            else:
+                override.pop("max_context_length", None)
+                override.pop("context_length", None)
+            session["model_override"] = override
+        if persist_global:
+            from cli import save_config_value
+            if max_context_cap:
+                save_config_value("model.max_context_length", max_context_cap)
+                save_config_value("model.context_length", None)
+            else:
+                save_config_value("model.max_context_length", None)
+                save_config_value("model.context_length", None)
+        return {"value": getattr(agent, "model", ""), "warning": "", "confirm_required": False}
     if not model_input:
         raise ValueError("model value required")
 
@@ -2634,6 +2695,7 @@ def _apply_model_switch(
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
     user_provs = None
     custom_provs = None
+    cfg = {}
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
@@ -2661,11 +2723,15 @@ def _apply_model_switch(
         try:
             from hermes_cli.context_switch_guard import merge_preflight_compression_warning
 
-            _cfg_ctx = None
-            if isinstance(cfg, dict):
-                _mc = cfg.get("model", {})
-                if isinstance(_mc, dict) and _mc.get("context_length") is not None:
-                    _cfg_ctx = int(_mc["context_length"])
+            _cfg_ctx = max_context_cap if max_context_arg is not None else None
+            if _cfg_ctx is None and isinstance(cfg, dict):
+                from hermes_cli.context_window import scoped_model_config_context_length
+                _cfg_ctx = scoped_model_config_context_length(
+                    cfg,
+                    model=result.new_model,
+                    provider=result.target_provider,
+                    base_url=result.base_url or current_base_url or "",
+                )
             merge_preflight_compression_warning(
                 result,
                 agent=agent,
@@ -2708,6 +2774,7 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
+                config_context_length=max_context_cap if max_context_arg is not None else None,
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -2751,8 +2818,15 @@ def _apply_model_switch(
             "api_key": result.api_key,
             "api_mode": result.api_mode,
         }
+        if max_context_arg is not None:
+            if max_context_cap:
+                session["model_override"]["max_context_length"] = max_context_cap
+                session["model_override"].pop("context_length", None)
+            else:
+                session["model_override"].pop("max_context_length", None)
+                session["model_override"].pop("context_length", None)
     if persist_global:
-        _persist_model_switch(result)
+        _persist_model_switch(result, max_context_cap=max_context_cap, max_context_arg=max_context_arg)
     return {
         "value": result.new_model,
         "warning": result.warning_message or "",
@@ -4200,6 +4274,15 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
+    config_context_length = None
+    use_model_config_context_length = True
+    if isinstance(model_override, dict):
+        use_model_config_context_length = False
+        try:
+            from hermes_cli.context_window import entry_context_length
+            config_context_length = entry_context_length(model_override)
+        except Exception:
+            config_context_length = None
     agent_cfg = cfg.get("agent") or {}
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()
@@ -4273,6 +4356,8 @@ def _make_agent(
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
+        config_context_length=config_context_length,
+        use_model_config_context_length=use_model_config_context_length,
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
@@ -9663,7 +9748,7 @@ def _(rid, params: dict) -> dict:
                 from hermes_cli.model_switch import parse_model_flags
 
                 parsed_flags = parse_model_flags(value)
-                _model_input, explicit_provider, _persist_global, _force_refresh, _is_session = parsed_flags
+                _model_input, explicit_provider, _persist_global, _force_refresh, _is_session, _max_context = parsed_flags
                 if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)

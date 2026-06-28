@@ -2214,6 +2214,17 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+def _override_context_length(override: dict | None) -> int | None:
+    """Return a session override context cap with legacy precedence."""
+    if not isinstance(override, dict):
+        return None
+    try:
+        from hermes_cli.context_window import entry_context_length
+        return entry_context_length(override)
+    except Exception:
+        return None
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -3495,6 +3506,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
+                "config_context_length": _override_context_length(override),
+                "use_model_config_context_length": False,
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -14398,6 +14411,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        runtime_kwargs["config_context_length"] = _override_context_length(override)
+        runtime_kwargs["use_model_config_context_length"] = False
         return model, runtime_kwargs
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:

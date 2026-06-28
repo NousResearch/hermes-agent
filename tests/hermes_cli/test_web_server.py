@@ -4013,6 +4013,35 @@ class TestModelContextLength:
         assert result["model"] == "anthropic/claude-opus-4.6"
         assert result["model_context_length"] == 200000
 
+    def test_normalize_extracts_max_context_length_alias_from_dict(self):
+        """normalize should surface max_context_length so saves preserve the alias cap."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        cfg = {
+            "model": {
+                "default": "glm-5.2",
+                "provider": "zai",
+                "max_context_length": 262144,
+            }
+        }
+        result = _normalize_config_for_web(cfg)
+        assert result["model"] == "glm-5.2"
+        assert result["model_context_length"] == 262144
+
+    def test_normalize_context_length_precedes_max_context_length(self):
+        """normalize should preserve legacy context_length precedence when both are present."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        cfg = {
+            "model": {
+                "default": "glm-5.2",
+                "context_length": 131072,
+                "max_context_length": 262144,
+            }
+        }
+        result = _normalize_config_for_web(cfg)
+        assert result["model_context_length"] == 131072
+
     def test_normalize_bare_string_model_yields_zero(self):
         """normalize should set model_context_length=0 for bare string model."""
         from hermes_cli.web_server import _normalize_config_for_web
@@ -4037,8 +4066,8 @@ class TestModelContextLength:
         result = _normalize_config_for_web(cfg)
         assert result["model_context_length"] == 0
 
-    def test_denormalize_writes_context_length_into_model_dict(self):
-        """denormalize should write model_context_length back into model dict."""
+    def test_denormalize_writes_max_context_length_into_model_dict(self):
+        """denormalize should write model_context_length back as max_context_length."""
         from hermes_cli.web_server import _denormalize_config_from_web
         from hermes_cli.config import save_config
 
@@ -4052,7 +4081,7 @@ class TestModelContextLength:
             "model_context_length": 100000,
         })
         assert isinstance(result["model"], dict)
-        assert result["model"]["context_length"] == 100000
+        assert result["model"]["max_context_length"] == 100000
         assert "model_context_length" not in result  # virtual field removed
 
     def test_denormalize_zero_removes_context_length(self):
@@ -4089,7 +4118,7 @@ class TestModelContextLength:
         })
         assert isinstance(result["model"], dict)
         assert result["model"]["default"] == "anthropic/claude-sonnet-4"
-        assert result["model"]["context_length"] == 65000
+        assert result["model"]["max_context_length"] == 65000
 
     def test_denormalize_bare_string_stays_string_when_zero(self):
         """denormalize should keep bare string model as string when context_length=0."""
@@ -4118,7 +4147,7 @@ class TestModelContextLength:
             "model_context_length": "32000",
         })
         assert isinstance(result["model"], dict)
-        assert result["model"]["context_length"] == 32000
+        assert result["model"]["max_context_length"] == 32000
 
 
 class TestDenormalizeProviderSwitch:
@@ -4214,7 +4243,7 @@ class TestDenormalizeProviderSwitch:
         })
         model = result["model"]
         assert model["provider"] == "openrouter"
-        assert model["context_length"] == 128000
+        assert model["max_context_length"] == 128000
 
 
 class TestModelContextLengthSchema:

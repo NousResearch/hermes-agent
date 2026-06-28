@@ -20,10 +20,10 @@ from hermes_cli.model_switch import parse_model_flags, resolve_persist_behavior
 
 class TestParseModelFlagsSession:
     def test_no_flags(self):
-        assert parse_model_flags("sonnet") == ("sonnet", "", False, False, False)
+        assert parse_model_flags("sonnet") == ("sonnet", "", False, False, False, None)
 
     def test_global_flag(self):
-        assert parse_model_flags("sonnet --global") == ("sonnet", "", True, False, False)
+        assert parse_model_flags("sonnet --global") == ("sonnet", "", True, False, False, None)
 
     def test_session_flag(self):
         assert parse_model_flags("sonnet --session") == (
@@ -32,6 +32,7 @@ class TestParseModelFlagsSession:
             False,
             False,
             True,
+            None,
         )
 
     def test_session_with_provider(self):
@@ -41,10 +42,44 @@ class TestParseModelFlagsSession:
             False,
             False,
             True,
+            None,
         )
 
     def test_refresh_flag_still_parsed(self):
-        assert parse_model_flags("--refresh") == ("", "", False, True, False)
+        assert parse_model_flags("--refresh") == ("", "", False, True, False, None)
+
+    def test_max_context_flag(self):
+        assert parse_model_flags("glm-5.2 --provider zai --max-context 262144") == (
+            "glm-5.2",
+            "zai",
+            False,
+            False,
+            False,
+            "262144",
+        )
+
+    def test_context_length_alias_flag(self):
+        assert parse_model_flags("glm-5.2 --context-length auto --session") == (
+            "glm-5.2",
+            "",
+            False,
+            False,
+            True,
+            "auto",
+        )
+
+    def test_missing_max_context_value_marks_invalid_without_model_leak(self):
+        assert parse_model_flags("--max-context") == ("", "", False, False, False, "")
+
+    def test_missing_context_length_value_marks_invalid_without_model_leak(self):
+        assert parse_model_flags("glm-5.2 --context-length") == (
+            "glm-5.2",
+            "",
+            False,
+            False,
+            False,
+            "",
+        )
 
     def test_unicode_dash_session_normalized(self):
         # Telegram/iOS auto-converts -- to en/em dashes.
@@ -54,6 +89,7 @@ class TestParseModelFlagsSession:
             False,
             False,
             True,
+            None,
         )
 
 
@@ -74,7 +110,7 @@ class TestResolvePersistBehavior:
             assert resolve_persist_behavior(True, False) is True
 
     def test_default_persists_when_config_missing(self):
-        # No model section at all → built-in default (True).
+        # No model section at all → built-in default (True, None).
         with _config({}):
             assert resolve_persist_behavior(False, False) is True
 

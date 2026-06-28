@@ -1105,7 +1105,7 @@ Set `model.max_tokens` only when you need to limit how long individual responses
 
 Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
 
-1. **Config override** — `model.context_length` in config.yaml (highest priority)
+1. **Config override** — `model.context_length`, or `model.max_context_length` as an alias when `context_length` is absent (highest priority)
 2. **Custom provider per-model** — `custom_providers[].models.<id>.context_length`
 3. **Persistent cache** — previously discovered values (survives restarts)
 4. **Endpoint `/models`** — queries your server's API (local/custom endpoints)
@@ -1117,13 +1117,29 @@ Hermes uses a multi-source resolution chain to detect the correct context window
 
 For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but 128K on GitHub Copilot).
 
-To set the context length explicitly, add `context_length` to your model config:
+To set the context length explicitly, add `context_length` to your model config. If you are intentionally capping a provider's advertised window, `max_context_length` is the clearer spelling; `context_length` remains supported and wins if both are present:
+
+```yaml
+model:
+  provider: "zai"
+  default: "glm-5.2"
+  max_context_length: 262144  # cap the detected 1M window to 256K tokens
+```
 
 ```yaml
 model:
   default: "qwen3.5:9b"
   base_url: "http://localhost:8080/v1"
-  context_length: 131072  # tokens
+  context_length: 131072  # legacy spelling, still supported
+```
+
+You can set the same cap for a running session with `/model --max-context 262144`, clear it with `/model --max-context auto`, and persist either change with `--global`. Fallback entries can also carry a per-entry cap:
+
+```yaml
+fallback_providers:
+  - provider: zai
+    model: glm-5.2
+    max_context_length: 262144
 ```
 
 For custom endpoints, you can also set context length per model:

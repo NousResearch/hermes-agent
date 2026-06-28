@@ -43,6 +43,53 @@ def test_classify_send_error_text(text, expected):
     assert classify_send_error(None, text) == expected
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Discord (discord.py stringifies HTTPException as "<status> ... (error
+        # code: <n>): <message>"). Unknown Channel = deleted/inaccessible target.
+        ("404 Not Found (error code: 10003): Unknown Channel", "not_found"),
+        ("Discord API error (404): {\"message\":\"Unknown Channel\",\"code\":10003}", "not_found"),
+        ("403 Forbidden (error code: 50001): Missing Access", "forbidden"),
+        ("403 Forbidden (error code: 50013): Missing Permissions", "forbidden"),
+        ("Thread 12345 not found", "not_found"),
+        ("Channel 67890 not found", "not_found"),
+        # Slack error codes (str(SlackApiError) carries the code).
+        ("channel_not_found", "not_found"),
+        ("is_archived", "not_found"),
+        ("not_in_channel", "forbidden"),
+        ("missing_scope (needed: chat:write)", "forbidden"),
+        # Telegram forum topic states beyond the pre-existing topic_deleted.
+        ("Bad Request: topic_closed", "not_found"),
+        # Generic deleted/archived/locked container phrasing.
+        ("The conversation was not found", "not_found"),
+        ("This thread is archived", "not_found"),
+        ("This thread is locked", "not_found"),
+        ("Matrix room not found", "not_found"),
+    ],
+)
+def test_classify_send_error_cross_platform_definitive(text, expected):
+    """Definitive (deleted/archived/no-access) targets classify across platforms."""
+    assert classify_send_error(None, text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Uncertain failures must NOT become definitive (would risk a redirect /
+        # duplicate delivery). They classify as a non-definitive kind.
+        "Timeout sending message",
+        "503 Service Unavailable",
+        "kaboom 500 internal",
+        "Too Many Requests: retry after 30",
+        # Container-less "not found" must not be misread as a stale target.
+        "media file not found on disk",
+    ],
+)
+def test_classify_uncertain_not_definitive(text):
+    assert classify_send_error(None, text) not in {"not_found", "forbidden"}
+
+
 def test_classify_uses_exception_class_name():
     # The class name participates in classification even when str(exc) is empty.
     exc = type("Forbidden", (Exception,), {})()

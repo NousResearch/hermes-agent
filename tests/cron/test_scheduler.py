@@ -956,6 +956,257 @@ class TestDeliverResultErrorReturns:
         assert "no delivery target" in result
 
 
+class TestDeliverResultStaleTargetFallback:
+    """Definitive delivery failures redirect to parent/home; uncertain ones don't."""
+
+    def _cfg(self, platform):
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {platform: pconfig}
+        return mock_cfg
+
+    def _clear_home_envs(self, monkeypatch):
+        for env in (
+            "DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_THREAD_ID",
+            "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_THREAD_ID",
+            "TELEGRAM_CRON_THREAD_ID", "SLACK_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(env, raising=False)
+
+    def test_discord_unknown_channel_falls_back_parent_then_home(self, monkeypatch):
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-chan")
+
+        send_mock = AsyncMock(side_effect=[
+            {"error": "404 Not Found (error code: 10003): Unknown Channel"},
+            {"success": True},
+        ])
+        job = {
+            "id": "discord-stale",
+            "deliver": "origin",
+            "origin": {
+                "platform": "discord", "chat_id": "old-thread",
+                "thread_id": "old-thread", "parent_chat_id": "parent-chan",
+            },
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.DISCORD)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is None
+        assert [c.args[2] for c in send_mock.call_args_list] == ["old-thread", "parent-chan"]
+        assert send_mock.call_args_list[1].kwargs["thread_id"] is None
+        assert "parent channel" in send_mock.call_args_list[1].args[3]
+
+    def test_telegram_topic_deleted_drops_to_channel(self, monkeypatch):
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        send_mock = AsyncMock(side_effect=[
+            {"error": "Bad Request: topic_deleted"},
+            {"success": True},
+        ])
+        job = {
+            "id": "tg-stale",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "-100chan", "thread_id": "topic-9"},
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.TELEGRAM)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is None
+        # Model B: same channel, topic dropped.
+        assert [c.args[2] for c in send_mock.call_args_list] == ["-100chan", "-100chan"]
+        assert send_mock.call_args_list[1].kwargs["thread_id"] is None
+        assert "parent channel" in send_mock.call_args_list[1].args[3]
+
+    def test_slack_archived_channel_falls_back_to_home(self, monkeypatch):
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("SLACK_HOME_CHANNEL", "slack-home")
+        send_mock = AsyncMock(side_effect=[
+            {"error": "is_archived"},
+            {"success": True},
+        ])
+        job = {
+            "id": "slack-stale",
+            "deliver": "origin",
+            "origin": {"platform": "slack", "chat_id": "C-old"},
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.SLACK)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is None
+        assert [c.args[2] for c in send_mock.call_args_list] == ["C-old", "slack-home"]
+        assert "home channel" in send_mock.call_args_list[1].args[3]
+
+    def test_timeout_does_not_redirect(self, monkeypatch):
+        """An uncertain failure (timeout) must not be duplicated to parent/home."""
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-chan")
+        send_mock = AsyncMock(side_effect=TimeoutError("timed out"))
+        job = {
+            "id": "discord-timeout",
+            "deliver": "origin",
+            "origin": {
+                "platform": "discord", "chat_id": "old-thread",
+                "thread_id": "old-thread", "parent_chat_id": "parent-chan",
+            },
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.DISCORD)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is not None
+        assert "timed out" in result
+        assert send_mock.call_count == 1
+
+    def test_parent_definitive_failure_advances_to_home(self, monkeypatch):
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-chan")
+        send_mock = AsyncMock(side_effect=[
+            {"error": "404 Not Found (error code: 10003): Unknown Channel"},
+            {"error": "403 Forbidden (error code: 50001): Missing Access"},
+            {"success": True},
+        ])
+        job = {
+            "id": "discord-cascade",
+            "deliver": "origin",
+            "origin": {
+                "platform": "discord", "chat_id": "old-thread",
+                "thread_id": "old-thread", "parent_chat_id": "parent-chan",
+            },
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.DISCORD)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is None
+        assert [c.args[2] for c in send_mock.call_args_list] == ["old-thread", "parent-chan", "home-chan"]
+
+    def test_uncertain_fallback_failure_stops_chain(self, monkeypatch):
+        """If a fallback fails for an uncertain reason, stop (don't try home too)."""
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-chan")
+        send_mock = AsyncMock(side_effect=[
+            {"error": "404 Not Found (error code: 10003): Unknown Channel"},
+            TimeoutError("timed out"),
+        ])
+        job = {
+            "id": "discord-stop",
+            "deliver": "origin",
+            "origin": {
+                "platform": "discord", "chat_id": "old-thread",
+                "thread_id": "old-thread", "parent_chat_id": "parent-chan",
+            },
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.DISCORD)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is not None
+        assert "timed out" in result
+        assert send_mock.call_count == 2  # original + parent; home NOT attempted
+
+    def test_two_dead_targets_redirect_to_home_only_once(self, monkeypatch):
+        """Several failing targets redirecting to the same home channel must not
+        duplicate the message there (cross-target fallback dedup)."""
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-chan")
+        # chanA fails -> home (delivered); chanB fails -> home (skipped, dup).
+        send_mock = AsyncMock(side_effect=[
+            {"error": "404 Not Found (error code: 10003): Unknown Channel"},
+            {"success": True},
+            {"error": "404 Not Found (error code: 10003): Unknown Channel"},
+        ])
+        job = {
+            "id": "discord-dup",
+            "deliver": "discord:chanA,discord:chanB",
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.DISCORD)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "reminder")
+
+        assert result is None
+        sent_chat_ids = [c.args[2] for c in send_mock.call_args_list]
+        # chanA original, home fallback, chanB original; home NOT sent a 2nd time.
+        assert sent_chat_ids == ["chanA", "home-chan", "chanB"]
+        assert sent_chat_ids.count("home-chan") == 1
+
+    def test_dm_blocked_does_not_leak_to_home_channel(self, monkeypatch):
+        """A blocked 1:1 DM must NOT redirect private content to the shared home
+        channel — it has no broader-but-private target, so it fails quietly."""
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100groupHome")
+        send_mock = AsyncMock(side_effect=[
+            {"error": "Forbidden: bot was blocked by the user"},
+        ])
+        job = {
+            "id": "tg-dm-blocked",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "user-1", "chat_type": "dm"},
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.TELEGRAM)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "private reminder")
+
+        assert result is not None  # recorded as a delivery error, not redirected
+        assert send_mock.call_count == 1  # no fallback send to the home group
+        assert [c.args[2] for c in send_mock.call_args_list] == ["user-1"]
+
+    def test_dm_deleted_topic_falls_back_to_dm_root_not_home(self, monkeypatch):
+        """A deleted DM topic drops to the DM root (still private); home is not used."""
+        from gateway.config import Platform
+
+        self._clear_home_envs(monkeypatch)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100groupHome")
+        send_mock = AsyncMock(side_effect=[
+            {"error": "Bad Request: topic_deleted"},
+            {"success": True},
+        ])
+        job = {
+            "id": "tg-dm-topic",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram", "chat_id": "user-1",
+                "thread_id": "topic-5", "chat_type": "dm",
+            },
+        }
+        with patch("gateway.config.load_gateway_config", return_value=self._cfg(Platform.TELEGRAM)), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(job, "private reminder")
+
+        assert result is None
+        # DM root retried (same chat, no topic); home group never used.
+        assert [c.args[2] for c in send_mock.call_args_list] == ["user-1", "user-1"]
+        assert send_mock.call_args_list[1].kwargs["thread_id"] is None
+
+
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {

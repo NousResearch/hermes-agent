@@ -3443,6 +3443,11 @@ def install_from_quarantine(
 
     # Record in lock file
     lock = HubLockFile()
+    # ``install_dir`` is realpath-resolved (via _resolve_lock_install_path), so
+    # compute its lock-relative path against the RESOLVED skills root. Comparing a
+    # resolved path against the unresolved ``SKILLS_DIR`` raises ValueError when
+    # HERMES_HOME is a symlink (e.g. the living-agent ``.gen/<name>/<gen_id>``
+    # generation layout), wrongly blocking the install. Resolve both sides.
     lock.record_install(
         name=safe_skill_name,
         source=bundle.source,
@@ -3450,7 +3455,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        install_path=str(install_dir.relative_to(SKILLS_DIR.resolve())),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
     )

@@ -2434,3 +2434,84 @@ class TestParallelSearchSourcesTimeout:
         assert source_counts.get("a") == 1
         assert source_counts.get("b") == 1
         assert len(all_results) == 2
+
+
+class TestInstallFromQuarantineSymlinkedHome:
+    """install_from_quarantine must work when HERMES_HOME is a symlink.
+
+    Regression for the living-agent ``.gen/<name>/<gen_id>`` generation layout:
+    ``~/.hermes/profiles/<name>`` is a symlink into the generation store, so the
+    skills dir resolves to a different real path than its unresolved form. The
+    install path is realpath-resolved by ``_resolve_lock_install_path``; recording
+    the lock entry must compare it against the RESOLVED skills root, not the
+    unresolved ``SKILLS_DIR``, or ``Path.relative_to`` raises ValueError and the
+    install is wrongly blocked.
+    """
+
+    def _stage(self, tmp_path):
+        """Build a symlinked profile home with a quarantined skill ready to install."""
+        import tools.skills_hub as hub
+
+        # Real generation dir + a symlink standing in for the live profile home.
+        gen_home = tmp_path / ".gen" / "agent" / "000005"
+        gen_home.mkdir(parents=True)
+        link_home = tmp_path / "profiles" / "agent"
+        link_home.parent.mkdir(parents=True)
+        link_home.symlink_to(gen_home, target_is_directory=True)
+
+        skills_dir = link_home / "skills"          # unresolved: …/profiles/agent/skills
+        hub_dir = skills_dir / ".hub"
+        quarantine_dir = hub_dir / "quarantine"
+        quarantine_dir.mkdir(parents=True)
+
+        # A scanned, quarantined skill bundle on disk.
+        q_path = quarantine_dir / "antigravity-cli"
+        q_path.mkdir()
+        (q_path / "SKILL.md").write_text(
+            "---\nname: antigravity-cli\ndescription: test\n---\nbody\n"
+        )
+        return hub, skills_dir, hub_dir, quarantine_dir, q_path
+
+    def test_install_succeeds_under_symlinked_hermes_home(self, tmp_path, monkeypatch):
+        hub, skills_dir, hub_dir, quarantine_dir, q_path = self._stage(tmp_path)
+
+        # Point the module's path constants at the symlinked tree. HubLockFile's
+        # default ``path`` arg binds LOCK_FILE at import, so also redirect the
+        # lock instance the install creates by patching the class default.
+        monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(hub, "QUARANTINE_DIR", quarantine_dir)
+        monkeypatch.setattr(hub, "LOCK_FILE", hub_dir / "lock.json")
+        monkeypatch.setattr(hub, "AUDIT_LOG", hub_dir / "audit.log")
+        monkeypatch.setattr(
+            hub.HubLockFile.__init__,
+            "__defaults__",
+            (hub_dir / "lock.json",),
+        )
+
+        bundle = SkillBundle(
+            name="antigravity-cli",
+            files={"SKILL.md": "x"},
+            source="official",
+            identifier="official/autonomous-ai-agents/antigravity-cli",
+            trust_level="official",
+            metadata={},
+        )
+        scan_result = MagicMock(verdict="SAFE", findings=[])
+
+        # Before the fix this raised ValueError ("not in the subpath of …") because
+        # the resolved install_dir was compared against the unresolved SKILLS_DIR.
+        install_dir = hub.install_from_quarantine(
+            q_path, "antigravity-cli", "autonomous-ai-agents", bundle, scan_result
+        )
+
+        assert install_dir.exists()
+        assert (install_dir / "SKILL.md").exists()
+        # The install_dir is realpath-resolved and lands under the resolved skills
+        # root at the expected category/name — the exact computation that used to
+        # raise when compared against the unresolved SKILLS_DIR.
+        rel = install_dir.relative_to(skills_dir.resolve())
+        assert str(rel) == "autonomous-ai-agents/antigravity-cli"
+        # Lock entry was recorded with that same relative path.
+        lock_data = json.loads((hub_dir / "lock.json").read_text())
+        recorded = lock_data["installed"]["antigravity-cli"]["install_path"]
+        assert recorded == "autonomous-ai-agents/antigravity-cli"

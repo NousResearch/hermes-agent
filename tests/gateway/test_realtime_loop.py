@@ -39,6 +39,7 @@ async def test_realtime_loop_updates_context_and_creates_task():
             session_key="voice:test",
             user_text="Can you check my email from Sam?",
             transcript=[{"role": "user", "text": "Can you check my email from Sam?"}],
+            provider="test",
         )
 
     assert call.await_count == 1
@@ -59,13 +60,14 @@ async def test_realtime_loop_falls_back_when_talker_unavailable():
     with patch(
         "agent.auxiliary_client.async_call_llm",
         side_effect=RuntimeError("No LLM provider configured"),
-    ):
+    ) as call:
         result = await loop.handle_turn(
             session_key="voice:test",
             user_text="Can you check my latest email?",
             timeout=0.5,
         )
 
+    assert call.await_count == 0
     assert result["degraded"] is True
     assert result["action"] == "start_task"
     assert "checking" in result["say"].lower()
@@ -107,7 +109,7 @@ async def test_realtime_api_turn_and_context():
             resp = await cli.post(
                 "/v1/realtime/turn",
                 headers=headers,
-                json={"input": "Check invoices", "timeout": 1.0},
+                json={"input": "Check invoices", "provider": "test", "timeout": 1.0},
             )
             assert resp.status == 200
             data = await resp.json()

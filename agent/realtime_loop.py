@@ -214,28 +214,11 @@ class RealtimeLoop:
         )
 
         started = time.perf_counter()
-        from agent.auxiliary_client import async_call_llm
 
         timeout_seconds = max(0.25, float(timeout or 3.0))
         degraded_error = ""
-        try:
-            response = await asyncio.wait_for(
-                async_call_llm(
-                    task="realtime_talker",
-                    provider=provider,
-                    model=model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=timeout_seconds,
-                    extra_body=extra_body,
-                ),
-                timeout=timeout_seconds,
-            )
-            text = _extract_response_text(response)
-            decision = _parse_decision(text)
-        except Exception as exc:
-            degraded_error = f"{type(exc).__name__}: {exc}"
+        if not _has_explicit_talker_provider(provider):
+            degraded_error = "RuntimeError: realtime talker provider not configured"
             decision = _fallback_decision(user_text)
             self.store.publish_event(
                 session_key,
@@ -245,6 +228,36 @@ class RealtimeLoop:
                     "fallback": decision,
                 },
             )
+        else:
+            from agent.auxiliary_client import async_call_llm
+
+            try:
+                response = await asyncio.wait_for(
+                    async_call_llm(
+                        task="realtime_talker",
+                        provider=provider,
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout=timeout_seconds,
+                        extra_body=extra_body,
+                    ),
+                    timeout=timeout_seconds,
+                )
+                text = _extract_response_text(response)
+                decision = _parse_decision(text)
+            except Exception as exc:
+                degraded_error = f"{type(exc).__name__}: {exc}"
+                decision = _fallback_decision(user_text)
+                self.store.publish_event(
+                    session_key,
+                    "turn.degraded",
+                    {
+                        "reason": _short_error(degraded_error),
+                        "fallback": decision,
+                    },
+                )
         elapsed = time.perf_counter() - started
         patch = decision.get("context_patch")
         if isinstance(patch, dict) and patch:
@@ -269,6 +282,17 @@ class RealtimeLoop:
         }
         self.store.publish_event(session_key, "turn.completed", result)
         return result
+
+
+def _has_explicit_talker_provider(provider: Optional[str]) -> bool:
+    """Return True only when callers intentionally route the talker LLM.
+
+    The realtime endpoint is used in live voice loops, so provider auto-detection
+    is too risky: auth discovery can block the event loop and create dead air.
+    Clients that want the no-tools talker model should pass a concrete provider.
+    """
+    normalized = str(provider or "").strip().lower()
+    return bool(normalized and normalized != "auto")
 
 
 def _build_talker_messages(

@@ -2028,7 +2028,14 @@ def run_conversation(
                     getattr(agent, "_current_streamed_assistant_text", "") or ""
                 ).strip()
                 if _partial:
-                    messages.append({"role": "assistant", "content": _partial})
+                    messages.append({
+                        "role": "assistant",
+                        "content": _partial,
+                        "finish_reason": "interrupted_during_api_call",
+                        "active": False,
+                        "compacted": False,
+                        "_quarantine_reason": "interrupted_during_api_call",
+                    })
                     final_response = _partial
                 else:
                     final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."

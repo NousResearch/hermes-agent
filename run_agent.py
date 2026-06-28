@@ -1695,6 +1695,8 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=msg.get("timestamp"),
+                    active=msg.get("active", True),
+                    compacted=msg.get("compacted", False),
                 )
                 flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)

@@ -75,7 +75,7 @@ def _make_agent():
     return agent
 
 
-def _mock_tool_call(name="web_search", arguments="{}", call_id="call_1"):
+def _mock_tool_call(name="web_search", arguments='{"query":"test"}', call_id="call_1"):
     return SimpleNamespace(
         id=call_id,
         type="function",
@@ -250,3 +250,64 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     # production flush call breaks one of these assertions.
     assert flushed_tool_ids == ["c1", "c2"]
     assert flush_lengths == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Contract 4: malformed/empty tool-call arguments are rejected BEFORE the real
+# tool dispatch surface. A provider glitch that emits terminal/write_file/etc.
+# with {} must not call handlers with None-valued required parameters or create
+# side-effect-bearing tool errors in the active context.
+# ---------------------------------------------------------------------------
+def test_execute_tool_calls_sequential_rejects_missing_required_args_before_dispatch():
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="terminal", arguments="{}", call_id="bad-terminal")
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+
+    agent._flush_messages_to_session_db = MagicMock()
+
+    with (
+        patch("run_agent.handle_function_call", return_value="SHOULD_NOT_DISPATCH") as disp,
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    disp.assert_not_called()
+    assert len(messages) == 1
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_call_id"] == "bad-terminal"
+    assert "invalid_tool_arguments" in messages[0]["content"]
+    assert "terminal" in messages[0]["content"]
+    assert "command" in messages[0]["content"]
+    agent._flush_messages_to_session_db.assert_called_once()
+
+
+def test_execute_tool_calls_concurrent_rejects_missing_required_args_before_dispatch():
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="write_file", arguments="{}", call_id="bad-write")
+    messages: list = []
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+
+    agent._flush_messages_to_session_db = MagicMock()
+
+    with (
+        patch.object(agent, "_invoke_tool", return_value="SHOULD_NOT_DISPATCH") as inv,
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+    ):
+        agent._execute_tool_calls_concurrent(assistant_message, messages, "task-1")
+
+    inv.assert_not_called()
+    assert len(messages) == 1
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_call_id"] == "bad-write"
+    assert "invalid_tool_arguments" in messages[0]["content"]
+    assert "write_file" in messages[0]["content"]
+    assert "path" in messages[0]["content"]
+    assert "content" in messages[0]["content"]
+    agent._flush_messages_to_session_db.assert_called_once()

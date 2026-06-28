@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.conversation_compression import conversation_history_after_compression
 from agent.iteration_budget import IterationBudget
+from agent.message_quarantine import live_context_messages
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -255,7 +256,11 @@ def build_turn_context(
         _msg_preview,
     )
 
-    # Initialize conversation (copy to avoid mutating the caller's list).
+    # Initialize conversation (copy to avoid mutating the caller's list).  Treat
+    # inactive rows as forensic-only: they remain in state.db/search with
+    # include_inactive=True but must not be replayed, compressed, or passed to
+    # plugins as live context.
+    conversation_history = live_context_messages(conversation_history)
     messages = list(conversation_history) if conversation_history else []
 
     # Hydrate todo store from conversation history.

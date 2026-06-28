@@ -8464,3 +8464,28 @@ class TestResolveRuntimeWithFallback:
 
         assert agent.model == "gpt-5.5"
         assert captured["provider"] == "deepseek"
+
+def test_async_delegation_notification_queues_internal_context_not_user_turn():
+    session = {"history_lock": threading.RLock()}
+    text = "[ASYNC DELEGATION COMPLETE — deleg_test]\n--- RESULT ---\ndone"
+
+    server._queue_async_delegation_context(session, text)
+    server._queue_async_delegation_context(session, text)
+
+    assert session["_pending_async_delegation_context"] == [text]
+
+
+def test_async_delegation_context_is_merged_into_next_prompt_and_cleared():
+    session = {
+        "history_lock": threading.RLock(),
+        "_pending_async_delegation_context": [
+            "[ASYNC DELEGATION COMPLETE — deleg_test]\n--- RESULT ---\ndone"
+        ],
+    }
+
+    prompt = server._consume_async_delegation_context(session, "what should I do next?")
+
+    assert "_pending_async_delegation_context" not in session
+    assert prompt.startswith("[INTERNAL ASYNC DELEGATION RESULTS")
+    assert "deleg_test" in prompt
+    assert prompt.endswith("what should I do next?")

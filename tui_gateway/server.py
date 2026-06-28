@@ -8187,6 +8187,43 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _queue_async_delegation_context(session: dict, text: str) -> None:
+    """Queue async delegation completion text for the next real user turn.
+
+    Background subagent completions are internal events, not ordinary user
+    messages.  Replaying them via _run_prompt_submit immediately can persist a
+    standalone user row and, if the provider turn is interrupted, leave a
+    user→user alternation violation.  Keep them as pending context and merge
+    into the next user prompt instead.
+    """
+    if not text:
+        return
+    pending = session.setdefault("_pending_async_delegation_context", [])
+    if text not in pending:
+        pending.append(text)
+
+
+def _consume_async_delegation_context(session: dict, prompt: Any) -> Any:
+    pending = session.pop("_pending_async_delegation_context", None)
+    if not pending:
+        return prompt
+    block = "\n\n".join(str(p) for p in pending if p)
+    if not block:
+        return prompt
+    prefix = (
+        "[INTERNAL ASYNC DELEGATION RESULTS — context for this turn]\n"
+        f"{block}\n"
+        "[/INTERNAL ASYNC DELEGATION RESULTS]"
+    )
+    if isinstance(prompt, str):
+        return f"{prefix}\n\n{prompt}"
+    # Multimodal/native content: preserve the original payload and add the
+    # internal event as a text prefix part where possible.
+    if isinstance(prompt, list):
+        return [{"type": "text", "text": prefix}, *prompt]
+    return f"{prefix}\n\n{prompt}"
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -8237,6 +8274,11 @@ def _notification_poller_loop(
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
+        if evt.get("type") == "async_delegation":
+            with session["history_lock"]:
+                _queue_async_delegation_context(session, text)
+            continue
+
         with session["history_lock"]:
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
@@ -8279,6 +8321,11 @@ def _notification_poller_loop(
         if _dedup_key not in _emitted:
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
+
+        if evt.get("type") == "async_delegation":
+            with session["history_lock"]:
+                _queue_async_delegation_context(session, text)
+            continue
 
         with session["history_lock"]:
             if session.get("running"):
@@ -8360,7 +8407,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _register_session_cwd(session)
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
-            prompt = text
+            prompt = _consume_async_delegation_context(session, text)
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references

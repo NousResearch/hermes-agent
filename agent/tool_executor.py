@@ -37,6 +37,7 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     make_tool_result_message,
 )
+from agent.tool_call_validation import validate_tool_call_arguments
 from tools.terminal_tool import (
     get_active_env,
 )
@@ -373,10 +374,25 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         # ── Block evaluation (BEFORE checkpoint preflight) ───────────
         # We must know whether the tool will execute before touching
-        # checkpoint state (dedup slot, real snapshots).
-        block_result = None
+        # checkpoint state (dedup slot, real snapshots).  Validate malformed
+        # provider-emitted arguments here so required-arg drops like
+        # ``terminal {}`` never reach side-effect-bearing handlers.
+        block_result = validate_tool_call_arguments(function_name, function_args)
         blocked_by_guardrail = False
-        if _ts_scope_block is not None:
+        if block_result is not None:
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="invalid_tool_arguments",
+                error_message=block_result,
+                middleware_trace=list(middleware_trace),
+            )
+        elif _ts_scope_block is not None:
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
             block_result = _ts_scope_block
             _emit_terminal_post_tool_call(
@@ -918,13 +934,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call_id=getattr(tool_call, "id", "") or "",
         )
 
-        # Check plugin hooks for a block directive before executing.
-        _block_msg: Optional[str] = None
-        _block_error_type = "plugin_block"
-        if _ts_scope_block is not None:
+        # Check plugin hooks for a block directive before executing.  First,
+        # reject malformed provider-emitted argument objects so calls like
+        # ``terminal {}`` or ``write_file {}`` never reach real handlers.
+        _block_msg: Optional[str] = validate_tool_call_arguments(function_name, function_args)
+        _block_error_type = "invalid_tool_arguments" if _block_msg is not None else "plugin_block"
+        if _block_msg is None and _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
-        else:
+        elif _block_msg is None:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message
                 _block_msg = get_pre_tool_call_block_message(
@@ -1024,8 +1042,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         tool_start_time = time.time()
 
         if _block_msg is not None:
-            # Tool blocked by plugin policy — return error without executing.
-            function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+            # Tool blocked by plugin/guardrail/preflight policy — return error
+            # without executing.  Preflight validation already returns a
+            # structured JSON tool result; plugin/tool-scope blocks are plain
+            # strings and get wrapped here.
+            if _block_error_type == "invalid_tool_arguments":
+                function_result = _block_msg
+            else:
+                function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
             _emit_terminal_post_tool_call(
                 agent,

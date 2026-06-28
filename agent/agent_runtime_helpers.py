@@ -489,6 +489,19 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
                 agent._last_flushed_db_idx, len(messages)
             )
 
+    if repairs > 0:
+        db = getattr(agent, "_session_db", None)
+        session_id = getattr(agent, "session_id", None)
+        if db is not None and session_id and hasattr(db, "apply_repaired_active_messages"):
+            try:
+                db.apply_repaired_active_messages(session_id, messages)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Failed to persist message-sequence repair for session=%s",
+                    session_id,
+                    exc_info=True,
+                )
+
     return repairs
 
 

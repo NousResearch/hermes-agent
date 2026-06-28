@@ -10,6 +10,8 @@ recovery every turn.
 """
 
 from run_agent import AIAgent
+from hermes_state import SessionDB
+from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
 
 
 def _bare_agent():
@@ -298,3 +300,59 @@ def test_flush_guard_clamps_overshooting_cursor():
 
     # min(5, 2) = 2 → nothing skipped below start_idx, cursor settles at 2
     assert agent._last_flushed_db_idx == 2
+
+def test_repair_persists_consecutive_user_merge_to_session_db(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="test")
+    db.append_message("s1", role="user", content="first")
+    db.append_message("s1", role="user", content="second")
+
+    messages = db.get_messages("s1")
+    agent = _bare_agent()
+    agent._session_db = db
+    agent.session_id = "s1"
+    agent._last_flushed_db_idx = len(messages)
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert messages == [
+        {**messages[0], "content": "first\n\nsecond"},
+    ]
+
+    live = db.get_messages("s1")
+    all_rows = db.get_messages("s1", include_inactive=True)
+
+    assert [m["content"] for m in live] == ["first\n\nsecond"]
+    assert len(all_rows) == 2
+    assert all_rows[0]["active"] == 1
+    assert all_rows[0]["content"] == "first\n\nsecond"
+    assert all_rows[1]["active"] == 0
+    assert all_rows[1]["content"] == "second"
+
+
+def test_repair_persists_stray_tool_drop_to_session_db(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="test")
+    db.append_message("s1", role="tool", content="orphan", tool_call_id="missing")
+    db.append_message("s1", role="user", content="real")
+
+    messages = db.get_messages("s1")
+    agent = _bare_agent()
+    agent._session_db = db
+    agent.session_id = "s1"
+    agent._last_flushed_db_idx = len(messages)
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert [m["role"] for m in messages] == ["user"]
+
+    live = db.get_messages("s1")
+    all_rows = db.get_messages("s1", include_inactive=True)
+
+    assert [m["content"] for m in live] == ["real"]
+    assert all_rows[0]["role"] == "tool"
+    assert all_rows[0]["active"] == 0
+    assert all_rows[1]["role"] == "user"
+    assert all_rows[1]["active"] == 1

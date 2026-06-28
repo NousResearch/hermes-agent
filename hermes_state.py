@@ -2724,6 +2724,8 @@ class SessionDB:
         platform_message_id: str = None,
         observed: bool = False,
         timestamp: Any = None,
+        active: bool = True,
+        compacted: bool = False,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2775,8 +2777,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, compacted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2794,22 +2796,27 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    1 if active else 0,
+                    1 if compacted else 0,
                 ),
             )
             msg_id = cursor.lastrowid
 
-            # Update counters
-            if num_tool_calls > 0:
-                conn.execute(
-                    """UPDATE sessions SET message_count = message_count + 1,
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
-                    (num_tool_calls, session_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
-                    (session_id,),
-                )
+            # Update live-context counters.  Forensic inactive rows (quarantine,
+            # rewind tails) remain queryable via include_inactive=True but must
+            # not inflate the session's active message/tool counts.
+            if active:
+                if num_tool_calls > 0:
+                    conn.execute(
+                        """UPDATE sessions SET message_count = message_count + 1,
+                           tool_call_count = tool_call_count + ? WHERE id = ?""",
+                        (num_tool_calls, session_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+                        (session_id,),
+                    )
             return msg_id
 
         return self._execute_write(_do)
@@ -2824,7 +2831,7 @@ class SessionDB:
         — the caller owns that, since the two flows reconcile counts differently.
         """
         now_ts = time.time()
-        inserted = 0
+        active_inserted = 0
         tool_calls_total = 0
         for msg in messages:
             role = msg.get("role", "unknown")
@@ -2866,8 +2873,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, active, compacted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2885,15 +2892,18 @@ class SessionDB:
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
+                    1 if msg.get("active", True) else 0,
+                    1 if msg.get("compacted", False) else 0,
                 ),
             )
-            inserted += 1
-            if tool_calls is not None:
-                tool_calls_total += (
-                    len(tool_calls) if isinstance(tool_calls, list) else 1
-                )
+            if msg.get("active", True):
+                active_inserted += 1
+                if tool_calls is not None:
+                    tool_calls_total += (
+                        len(tool_calls) if isinstance(tool_calls, list) else 1
+                    )
             now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
-        return inserted, tool_calls_total
+        return active_inserted, tool_calls_total
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
@@ -3516,6 +3526,91 @@ class SessionDB:
             "target_message": target_row,
             "new_head_id": new_head_id,
         }
+
+    def apply_repaired_active_messages(
+        self, session_id: str, repaired_messages: List[Dict[str, Any]]
+    ) -> int:
+        """Persist an in-memory message-sequence repair to active rows.
+
+        ``repair_message_sequence`` may merge adjacent user messages or drop
+        stray tool rows right before a provider request.  Without this method,
+        the DB still contains the unrepaired active rows, so every future turn
+        repeats the same in-memory repair.  This method keeps forensic rows on
+        disk while making the repaired active view durable:
+
+        * rows absent from ``repaired_messages`` become ``active=0``;
+        * surviving rows keep ``active=1`` and get updated content/finish_reason.
+        """
+        surviving: Dict[int, Dict[str, Any]] = {}
+        for msg in repaired_messages or []:
+            if not isinstance(msg, dict):
+                continue
+            msg_id = msg.get("id")
+            if msg_id is None:
+                continue
+            try:
+                msg_id_int = int(msg_id)
+            except (TypeError, ValueError):
+                continue
+            surviving[msg_id_int] = msg
+        if not surviving:
+            return 0
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchall()
+            active_ids = {int(r[0]) for r in rows}
+            changed = 0
+            drop_ids = sorted(active_ids - set(surviving))
+            if drop_ids:
+                placeholders = ",".join("?" for _ in drop_ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0, compacted = 0 "
+                    f"WHERE id IN ({placeholders})",
+                    drop_ids,
+                )
+                changed += len(drop_ids)
+
+            for msg_id, msg in surviving.items():
+                if msg_id not in active_ids:
+                    continue
+                role = msg.get("role")
+                content = self._encode_content(msg.get("content"))
+                finish_reason = msg.get("finish_reason")
+                cur = conn.execute(
+                    "UPDATE messages SET content = ?, finish_reason = ?, active = 1 "
+                    "WHERE id = ? AND session_id = ?",
+                    (content, finish_reason, msg_id, session_id),
+                )
+                changed += cur.rowcount or 0
+
+            active_count = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()[0]
+            tool_rows = conn.execute(
+                "SELECT role, tool_calls FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchall()
+            tool_count = 0
+            for role, tool_calls_json in tool_rows:
+                if role == "tool":
+                    tool_count += 1
+                elif tool_calls_json:
+                    try:
+                        parsed = json.loads(tool_calls_json)
+                        tool_count += len(parsed) if isinstance(parsed, list) else 1
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        tool_count += 1
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (active_count, tool_count, session_id),
+            )
+            return changed
+
+        return self._execute_write(_do)
 
     def restore_rewound(self, session_id: str, since_message_id: int) -> int:
         """Mark inactive messages with id >= *since_message_id* active again.

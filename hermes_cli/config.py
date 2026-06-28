@@ -6422,6 +6422,14 @@ def save_config(
         _secure_file(config_path)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
+        # Invalidate the timezone cache so a running gateway picks up
+        # timezone changes without a restart (see #54260).
+        try:
+            import hermes_time
+            hermes_time.reset_cache()
+        except Exception:
+            pass  # best-effort; a stale cache is not fatal
+
 
 def _parse_env_value(raw_value: str) -> str:
     """Parse the small .env value subset Hermes writes itself."""

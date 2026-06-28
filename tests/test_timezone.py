@@ -383,3 +383,48 @@ class TestCronTimezone:
 
         next_run = datetime.fromisoformat(job["next_run_at"])
         assert next_run.tzinfo is not None
+
+
+# =========================================================================
+# save_config invalidates timezone cache (#54260)
+# =========================================================================
+
+class TestSaveConfigTimezoneCacheReset:
+    """Verify save_config() calls hermes_time.reset_cache() so a running
+    gateway picks up timezone changes without a restart."""
+
+    def setup_method(self):
+        _reset_hermes_time_cache()
+
+    def teardown_method(self):
+        _reset_hermes_time_cache()
+        os.environ.pop("HERMES_TIMEZONE", None)
+
+    def test_save_config_resets_timezone_cache(self, tmp_path, monkeypatch):
+        """After save_config(), the timezone cache must be cleared."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        os.environ["HERMES_TIMEZONE"] = "UTC"
+        _reset_hermes_time_cache()
+
+        # Prime the cache
+        tz1 = hermes_time.get_timezone()
+        assert str(tz1) == "UTC"
+
+        # Change the env var — cache is still "UTC" without reset
+        os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
+        tz_stale = hermes_time.get_timezone()
+        assert str(tz_stale) == "UTC", "Cache should still return UTC before save_config"
+
+        # Create a minimal config.yaml so save_config has something to write
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("timezone: UTC\n")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_path)
+
+        from hermes_cli.config import save_config
+        save_config({"timezone": "Asia/Kolkata"}, strip_defaults=False)
+
+        # After save_config, cache should be cleared — next call picks up Kolkata
+        tz2 = hermes_time.get_timezone()
+        assert str(tz2) == "Asia/Kolkata", (
+            "save_config should reset the timezone cache so the new value is picked up"
+        )

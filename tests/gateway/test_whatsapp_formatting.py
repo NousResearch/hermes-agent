@@ -51,11 +51,11 @@ def _make_adapter():
     adapter._group_policy = "open"
     adapter._group_allow_from = set()
     adapter._human_cascade_messages = True
-    adapter._human_cascade_max_bubbles = 4
+    adapter._human_cascade_max_bubbles = 3
     adapter._human_cascade_delay_seconds = 0
     adapter._human_cascade_delay_jitter_seconds = 0
     adapter._human_cascade_max_total_chars = 900
-    adapter._human_cascade_min_total_chars = 420
+    adapter._human_cascade_min_total_chars = 320
     adapter._human_cascade_min_lead_chars = 40
     adapter._human_cascade_max_bubble_chars = 320
     adapter._human_cascade_max_merged_bubble_chars = 640
@@ -248,7 +248,7 @@ class TestSendChunking:
     async def test_extra_paragraphs_merge_into_final_cascade_bubble(self):
         adapter = _make_adapter()
         responses = []
-        for msg_id in ("msg1", "msg2", "msg3", "msg4"):
+        for msg_id in ("msg1", "msg2", "msg3"):
             resp = MagicMock(status=200)
             resp.json = AsyncMock(return_value={"messageId": msg_id})
             responses.append(_AsyncCM(resp))
@@ -264,16 +264,15 @@ class TestSendChunking:
         result = await adapter.send("chat1", "\n\n".join(messages))
 
         assert result.success
-        assert adapter._http_session.post.call_count == 4
+        assert adapter._http_session.post.call_count == 3
         payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
         assert [payload["message"] for payload in payloads] == [
             messages[0],
             messages[1],
-            messages[2],
-            messages[3] + "\n\n" + messages[4],
+            messages[2] + "\n\n" + messages[3] + "\n\n" + messages[4],
         ]
-        assert result.message_id == "msg4"
-        assert result.continuation_message_ids == ("msg1", "msg2", "msg3")
+        assert result.message_id == "msg3"
+        assert result.continuation_message_ids == ("msg1", "msg2")
         assert result.raw_response["human_cascade"] is True
 
     @pytest.mark.asyncio
@@ -320,6 +319,39 @@ class TestSendChunking:
         )
 
         assert adapter._http_session.post.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_machine_artifacts_do_not_human_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "Here is the config to verify as one unit.\n\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo\n\nCopy this exactly into the config file."
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == content
+
+    @pytest.mark.asyncio
+    async def test_mixed_prose_and_json_artifact_splits_only_before_artifact_tail(self):
+        adapter = _make_adapter()
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        lead = "This is the human-readable setup context, long enough to deserve its own bubble before the machine-readable payload arrives for verification, and it explains why the next blob is deliberately kept intact instead of chopped into mobile confetti that would be annoying to copy, audit, or compare against the file on disk."
+        artifact = '{\n  "service": "gateway",\n  "mode": "safe",\n  "retries": 3\n}'
+        await adapter.send("chat1", lead + "\n\n" + artifact)
+
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == lead
+        assert payloads[1]["message"] == artifact
 
     @pytest.mark.asyncio
     async def test_code_blocks_do_not_human_cascade(self):
@@ -435,6 +467,42 @@ class TestSendChunking:
         assert payloads[0]["message"] == lead
         assert payloads[1]["message"].startswith("Lots of info here.")
         assert result.raw_response["human_cascade"] is True
+
+    @pytest.mark.asyncio
+    async def test_active_question_before_tail_stays_single(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "Do you want me to restart the gateway?\n\n" + (
+            "These extra diagnostic details would bury the active question if they landed in a later bubble. " * 5
+        ).strip()
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == content
+
+    @pytest.mark.asyncio
+    async def test_link_tail_stays_with_immediate_context(self):
+        adapter = _make_adapter()
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        intro = "I found the relevant preview and this opening bubble is useful context before the actual action link arrives, rather than dropping a naked URL into the chat like a suspicious little phishing pellet."
+        context = "This link is for the draft preview, so it needs to travel with the sentence explaining what it is and why the user would tap it."
+        link = "Preview: https://example.com/draft/abc123"
+        await adapter.send("chat1", "\n\n".join([intro, context, link]))
+
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == intro
+        assert payloads[1]["message"] == context + "\n\n" + link
 
     @pytest.mark.asyncio
     async def test_group_chats_do_not_human_cascade_by_default(self):

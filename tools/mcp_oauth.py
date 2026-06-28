@@ -573,7 +573,7 @@ class OAuthCallbackServer:
 # ---------------------------------------------------------------------------
 
 
-async def _redirect_handler(authorization_url: str) -> None:
+async def _redirect_handler(authorization_url: str, port: int | None = None) -> None:
     """Show the authorization URL to the user.
 
     Opens the browser automatically when possible; always prints the URL
@@ -592,10 +592,11 @@ async def _redirect_handler(authorization_url: str) -> None:
     # opened.  Two ways out: paste the redirect URL back (default fallback,
     # offered by _wait_for_callback on interactive TTYs), or set up an SSH
     # port forward so the redirect tunnels through.
-    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+    actual_port = port or _oauth_port
+    if actual_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
         print(
             f"  Remote session detected. After you authorize, the provider redirects to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"    http://127.0.0.1:{actual_port}/callback\n"
             f"  which only the listener on THIS machine can receive. Two options:\n"
             f"\n"
             f"    1. Easiest — when your browser shows a connection error after\n"
@@ -624,26 +625,38 @@ async def _redirect_handler(authorization_url: str) -> None:
         print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
 
 
-async def _wait_for_callback() -> tuple[str, str | None]:
-    """Wait for the OAuth callback to arrive on the local callback server.
+async def _wait_for_callback(server: "OAuthCallbackServer | None" = None) -> tuple[str, str | None]:
+    """Wait for the OAuth callback to arrive.
 
-    Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
-    before this is ever called.  Polls for the result without blocking the
-    event loop.
+    If *server* is provided (from ``_configure_callback_port`` via
+    ``functools.partial``), polls the already-bound server for the result.
+    The paste fallback writes directly to ``server._result`` so it races
+    naturally with the HTTP listener — whichever finishes first wins.
 
-    On an interactive TTY, races the HTTP listener against a stdin paste
-    fallback so users without an SSH tunnel can copy the redirect URL (or
-    just the ``code=...&state=...`` query string) from a browser on another
-    machine and paste it back. The HTTP listener wins when the redirect
-    reaches it first; the paste fallback wins when it doesn't.
-
-    Raises:
-        OAuthNonInteractiveError: If the callback times out (no user present
-            to complete the browser auth).
-        RuntimeError: If ``_oauth_port`` has not been set, which would indicate
-            that ``build_oauth_auth`` was skipped — the asserting form below
-            was a silent bug when running Python with ``-O``/``-OO``.
+    Falls back to the legacy module-level ``_oauth_port`` path when
+    *server* is None (backward compat for callers that haven't been
+    migrated to ``functools.partial`` yet).
     """
+    # New path: server bound ahead of time, just poll
+    if server is not None:
+        # Paste fallback: race a stdin reader against the HTTP listener.
+        # Both write to `server._result`, so whichever finishes first wins.
+        if _is_interactive():
+            print(
+                "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
+                "portion) and press Enter. Type ``skip`` + Enter to continue "
+                "without this server:",
+                file=sys.stderr, flush=True,
+            )
+            threading.Thread(
+                target=_paste_callback_reader, args=(server._result,), daemon=True
+            ).start()
+        result = await server.wait()
+        if result[1] is None and server._result.get("error") == _USER_SKIPPED_SENTINEL:
+            raise OAuthNonInteractiveError("user_skipped")
+        return result
+
+    # Legacy path — remove after all callers migrated to functools.partial
     if _oauth_port is None:
         raise RuntimeError(
             "OAuth callback port not set — build_oauth_auth must be called "
@@ -656,7 +669,7 @@ async def _wait_for_callback() -> tuple[str, str | None]:
 
     # Start a temporary server on the known port
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        legacy_server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
     except OSError:
         # Port already in use — the server from build_oauth_auth is running.
         # Fall back to polling the server started by build_oauth_auth.
@@ -665,7 +678,7 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             "Complete the authorization in a browser first, then retry."
         )
 
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
+    server_thread = threading.Thread(target=legacy_server.handle_request, daemon=True)
     server_thread.start()
 
     # Optional paste-fallback thread: only on interactive TTYs. Reads one
@@ -696,7 +709,7 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
     finally:
-        server.server_close()
+        legacy_server.server_close()
 
     if result["error"] == _USER_SKIPPED_SENTINEL:
         raise OAuthNonInteractiveError("user_skipped")
@@ -945,11 +958,13 @@ def build_oauth_auth(
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 
+    import functools
+    callback_server = cfg.get("_callback_server")
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=_redirect_handler,
-        callback_handler=_wait_for_callback,
+        redirect_handler=functools.partial(_redirect_handler, port=callback_server.port),
+        callback_handler=functools.partial(_wait_for_callback, server=callback_server),
         timeout=float(cfg.get("timeout", 300)),
     )

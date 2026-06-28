@@ -8,20 +8,24 @@ Mac = launchd plist · Linux = crontab · เขียนไฟล์ไว้�
 """
 import os
 import sys
+import shlex
 import platform
 
 BIN = os.path.dirname(os.path.abspath(__file__))
 STD_ROOT = os.path.dirname(BIN)
 OUT = os.path.join(STD_ROOT, "scheduler")
 PY = sys.executable
+q = shlex.quote
 
 
 def main():
     root = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else "<root_projects>"
     data = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else "<curse_data>"
     os.makedirs(OUT, exist_ok=True)
-    scan = "%s %s/hermes_scan.py %s --html %s/scan-latest.html" % (PY, BIN, root, OUT)
-    ana = "%s %s/hermes_analyze.py --data %s --json %s/analyze-latest.json" % (PY, BIN, data, OUT)
+    scan = "%s %s %s --html %s" % (q(PY), q(os.path.join(BIN, "hermes_scan.py")),
+                                   q(root), q(os.path.join(OUT, "scan-latest.html")))
+    ana = "%s %s --data %s --json %s" % (q(PY), q(os.path.join(BIN, "hermes_analyze.py")),
+                                         q(data), q(os.path.join(OUT, "analyze-latest.json")))
 
     system = platform.system()
     if system == "Darwin":

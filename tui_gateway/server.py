@@ -1047,6 +1047,11 @@ def _ok(rid, result: dict) -> dict:
 
 
 def _err(rid, code: int, msg: str) -> dict:
+    try:
+        from agent.redact import redact_sensitive_text
+        msg = redact_sensitive_text(str(msg), force=True)
+    except Exception:
+        pass
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
 
 
@@ -1290,8 +1295,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
             _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
-            current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            try:
+                from agent.redact import redact_sensitive_text
+                current["agent_error"] = redact_sensitive_text(str(e), force=True)
+            except Exception:
+                current["agent_error"] = str(e)
+            try:
+                from agent.redact import redact_sensitive_text
+                _emit("error", sid, {"message": redact_sensitive_text(f"agent init failed: {e}", force=True)})
+            except Exception:
+                _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
@@ -8721,7 +8734,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
-            _emit("error", sid, {"message": str(e)})
+            try:
+                from agent.redact import redact_sensitive_text
+                _emit("error", sid, {"message": redact_sensitive_text(str(e), force=True)})
+            except Exception:
+                _emit("error", sid, {"message": str(e)})
         finally:
             try:
                 if approval_token is not None:

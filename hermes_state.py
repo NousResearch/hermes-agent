@@ -121,7 +121,71 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 18
+
+
+def _recall_scope_key_from_origin_json(origin_json: Any) -> Optional[str]:
+    """Rebuild the gateway recall scope key from persisted origin metadata.
+
+    ``sessions.scope_key`` is the recall/search boundary, not the in-memory
+    agent session key.  Older v17 rows accidentally stored the full session key
+    there, which may include per-user isolation.  This helper mirrors the
+    gateway's recall-scope shape but stays local to hermes_state.py to avoid a
+    gateway import cycle during DB initialization.
+
+    Return ``None`` when the row does not carry enough routing metadata for a
+    safe current-chat/thread scope.  That keeps legacy unknown rows fail-closed.
+    """
+    if not origin_json:
+        return None
+    if isinstance(origin_json, str):
+        try:
+            origin = json.loads(origin_json)
+        except Exception:
+            return None
+    elif isinstance(origin_json, dict):
+        origin = origin_json
+    else:
+        return None
+    if not isinstance(origin, dict):
+        return None
+
+    platform = str(origin.get("platform") or "").strip()
+    chat_type = str(origin.get("chat_type") or "").strip()
+    if not platform or not chat_type:
+        return None
+
+    profile = str(origin.get("profile") or "").strip()
+    ns = "agent:main" if not profile or profile == "default" else f"agent:{profile}"
+    chat_id = str(origin.get("chat_id") or "").strip()
+    thread_id = str(origin.get("thread_id") or "").strip()
+
+    if chat_type == "dm":
+        participant_id = str(
+            origin.get("user_id_alt") or origin.get("user_id") or ""
+        ).strip()
+        key_parts = [ns, platform, "dm"]
+        if chat_id:
+            key_parts.append(chat_id)
+        elif participant_id:
+            key_parts.append(participant_id)
+        else:
+            return None
+        if thread_id:
+            key_parts.append(thread_id)
+        return ":".join(key_parts)
+
+    # Group/channel recall must be scoped by a real chat/thread identifier, not
+    # by the bare platform+chat_type bucket.  A missing id is too broad to
+    # backfill safely.
+    if not chat_id and not thread_id:
+        return None
+    key_parts = [ns, platform, chat_type]
+    if chat_id:
+        key_parts.append(chat_id)
+    if thread_id:
+        key_parts.append(thread_id)
+    return ":".join(key_parts)
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -640,6 +704,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    scope_key TEXT,
+    origin_json TEXT,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -724,6 +790,9 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_scope_key_started
+    ON sessions(scope_key, started_at DESC)
+    WHERE scope_key IS NOT NULL;
 """
 
 FTS_SQL = """
@@ -1228,6 +1297,44 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _backfill_recall_scope_keys(self, cursor: sqlite3.Cursor) -> None:
+        """Convert v17 full-session scope keys into chat/thread recall scopes.
+
+        v17 introduced ``sessions.scope_key`` but accidentally wrote the full
+        gateway session key, which can include per-user isolation for Discord
+        groups/channels. Search scoping needs the current chat/thread key
+        instead. Only rows with origin metadata are candidates, and custom
+        non-prefix scope values are left untouched.
+        """
+        try:
+            rows = cursor.execute(
+                "SELECT id, scope_key, origin_json FROM sessions "
+                "WHERE origin_json IS NOT NULL AND origin_json != ''"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
+
+        updated = 0
+        for row in rows:
+            sid = row["id"]
+            current_scope = row["scope_key"] or ""
+            recall_scope = _recall_scope_key_from_origin_json(row["origin_json"])
+            if not recall_scope or current_scope == recall_scope:
+                continue
+            # Safe cases only:
+            #   - missing scope_key: fill from origin metadata
+            #   - old full session key: recall scope is its prefix before :user_id
+            # Anything else may be a custom/test/manual scope and is preserved.
+            if current_scope and not current_scope.startswith(f"{recall_scope}:"):
+                continue
+            cursor.execute(
+                "UPDATE sessions SET scope_key = ? WHERE id = ?",
+                (recall_scope, sid),
+            )
+            updated += 1
+        if updated:
+            logger.info("Backfilled %d session recall scope key(s)", updated)
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -1421,6 +1528,8 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 18:
+                self._backfill_recall_scope_keys(cursor)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1473,17 +1582,41 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        scope_key: str = None,
+        origin_json: Any = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
+        if isinstance(origin_json, str):
+            origin_json_payload = origin_json
+        elif origin_json:
+            origin_json_payload = json.dumps(origin_json)
+        else:
+            origin_json_payload = None
+
         def _do(conn):
+            effective_scope_key = scope_key
+            effective_origin_json = origin_json_payload
+            if parent_session_id and (not effective_scope_key or not effective_origin_json):
+                parent = conn.execute(
+                    "SELECT scope_key, origin_json FROM sessions WHERE id = ?",
+                    (parent_session_id,),
+                ).fetchone()
+                if parent is not None:
+                    if not effective_scope_key:
+                        effective_scope_key = parent["scope_key"]
+                    if not effective_origin_json:
+                        effective_origin_json = parent["origin_json"]
+
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT OR IGNORE INTO sessions (id, source, user_id, scope_key, origin_json,
+                   model, model_config, system_prompt, parent_session_id, cwd, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
                     user_id,
+                    effective_scope_key,
+                    effective_origin_json,
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
@@ -1492,6 +1625,14 @@ class SessionDB:
                     time.time(),
                 ),
             )
+            if effective_scope_key or effective_origin_json:
+                conn.execute(
+                    """UPDATE sessions
+                       SET scope_key = COALESCE(scope_key, ?),
+                           origin_json = COALESCE(origin_json, ?)
+                       WHERE id = ?""",
+                    (effective_scope_key, effective_origin_json, session_id),
+                )
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
@@ -2364,6 +2505,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        scope_key: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -2416,6 +2558,9 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if scope_key is not None:
+            where_clauses.append("s.scope_key = ?")
+            params.append(scope_key)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -3736,6 +3881,7 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        scope_key: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -3812,6 +3958,10 @@ class SessionDB:
             exclude_placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({exclude_placeholders})")
             params.extend(exclude_sources)
+
+        if scope_key is not None:
+            where_clauses.append("s.scope_key = ?")
+            params.append(scope_key)
 
         if role_filter:
             role_placeholders = ",".join("?" for _ in role_filter)
@@ -3890,6 +4040,9 @@ class SessionDB:
                 if exclude_sources is not None:
                     tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
                     tri_params.extend(exclude_sources)
+                if scope_key is not None:
+                    tri_where.append("s.scope_key = ?")
+                    tri_params.append(scope_key)
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
@@ -3947,6 +4100,9 @@ class SessionDB:
                 if exclude_sources is not None:
                     like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
                     like_params.extend(exclude_sources)
+                if scope_key is not None:
+                    like_where.append("s.scope_key = ?")
+                    like_params.append(scope_key)
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
@@ -4052,6 +4208,7 @@ class SessionDB:
         query: str,
         limit: int = 20,
         include_archived: bool = True,
+        scope_key: str = None,
     ) -> List[Dict[str, Any]]:
         """Search surfaced sessions by exact/prefix/substring session id.
 
@@ -4077,6 +4234,7 @@ class SessionDB:
             include_archived=include_archived,
             order_by_last_active=True,
             id_query=needle,
+            scope_key=scope_key,
         )
 
         def score(row: Dict[str, Any]) -> int:

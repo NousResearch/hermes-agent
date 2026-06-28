@@ -199,6 +199,33 @@ class SessionSource:
         )
     
 
+def _session_scope_origin_json(source: Optional[SessionSource]) -> Dict[str, Any]:
+    """Minimal stable routing metadata for debugging/backfill.
+
+    The opaque scope_key remains the search predicate.  This JSON avoids
+    human-readable names/topics and one-off message IDs so session-list/debug
+    surfaces do not grow extra PII beyond routing identifiers.
+    """
+    if source is None:
+        return {}
+    origin = source.to_dict()
+    return {
+        key: origin.get(key)
+        for key in (
+            "platform",
+            "chat_id",
+            "chat_type",
+            "thread_id",
+            "user_id",
+            "user_id_alt",
+            "chat_id_alt",
+            "guild_id",
+            "parent_chat_id",
+            "profile",
+        )
+        if origin.get(key) is not None
+    }
+
 
 @dataclass
 class SessionContext:
@@ -217,6 +244,7 @@ class SessionContext:
     
     # Session metadata
     session_key: str = ""
+    recall_scope_key: str = ""
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -230,6 +258,7 @@ class SessionContext:
             },
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
+            "recall_scope_key": self.recall_scope_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -779,6 +808,49 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def build_recall_scope_key(
+    source: SessionSource,
+    profile: Optional[str] = None,
+) -> str:
+    """Build the current-chat/thread recall scope key for ``session_search``.
+
+    This intentionally differs from :func:`build_session_key`: gateway agent
+    sessions may be isolated per user, but recall/search should cover the
+    current Discord/Telegram/etc. chat or thread as a whole. Therefore this key
+    never appends ``user_id`` for group/channel sessions.
+    """
+    ns = _session_key_namespace(profile)
+    platform = source.platform.value
+
+    if source.chat_type == "dm":
+        dm_chat_id = source.chat_id
+        if source.platform == Platform.WHATSAPP:
+            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+
+        key_parts = [ns, platform, "dm"]
+        if dm_chat_id:
+            key_parts.append(dm_chat_id)
+        else:
+            participant_id = source.user_id_alt or source.user_id
+            if participant_id and source.platform == Platform.WHATSAPP:
+                participant_id = (
+                    canonical_whatsapp_identifier(str(participant_id))
+                    or participant_id
+                )
+            if participant_id:
+                key_parts.append(str(participant_id))
+        if source.thread_id:
+            key_parts.append(str(source.thread_id))
+        return ":".join(key_parts)
+
+    key_parts = [ns, platform, source.chat_type]
+    if source.chat_id:
+        key_parts.append(source.chat_id)
+    if source.thread_id:
+        key_parts.append(str(source.thread_id))
+    return ":".join(key_parts)
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -965,6 +1037,13 @@ class SessionStore:
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
             profile=self._resolve_profile_for_key(source),
         )
+
+    def _generate_recall_scope_key(self, source: SessionSource) -> str:
+        """Generate the DB recall/search scope key for a source."""
+        return build_recall_scope_key(
+            source,
+            profile=self._resolve_profile_for_key(source),
+        )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -1095,7 +1174,7 @@ class SessionStore:
         # SQLite calls are made outside the lock to avoid holding it during I/O.
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
-        db_create_kwargs = None
+        db_create_kwargs: Optional[Dict[str, Any]] = None
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -1139,6 +1218,8 @@ class SessionStore:
                 auto_reset_reason = None
                 reset_had_activity = False
 
+            recall_scope_key = self._generate_recall_scope_key(source)
+
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
@@ -1162,6 +1243,8 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "scope_key": recall_scope_key,
+                "origin_json": _session_scope_origin_json(source),
             }
 
         # SQLite operations outside the lock
@@ -1355,7 +1438,7 @@ class SessionStore:
     def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
-        db_create_kwargs = None
+        db_create_kwargs: Optional[Dict[str, Any]] = None
         new_entry = None
 
         with self._lock:
@@ -1384,10 +1467,13 @@ class SessionStore:
 
             self._entries[session_key] = new_entry
             self._save()
+            recall_scope_key = self._generate_recall_scope_key(old_entry.origin) if old_entry.origin else session_key
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "scope_key": recall_scope_key,
+                "origin_json": _session_scope_origin_json(old_entry.origin),
             }
 
         if self._db and db_end_session_id:
@@ -1649,6 +1735,17 @@ def build_session_context(
     
     if session_entry:
         context.session_key = session_entry.session_key
+        _profile = None
+        if getattr(config, "multiplex_profiles", False):
+            if source.profile:
+                _profile = source.profile
+            else:
+                try:
+                    from hermes_cli.profiles import get_active_profile_name
+                    _profile = get_active_profile_name() or "default"
+                except Exception:
+                    _profile = None
+        context.recall_scope_key = build_recall_scope_key(source, profile=_profile)
         context.session_id = session_entry.session_id
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at

@@ -413,6 +413,7 @@ class AIAgent:
         chat_type: str = None,
         thread_id: str = None,
         gateway_session_key: str = None,
+        gateway_recall_scope_key: str = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
@@ -488,6 +489,7 @@ class AIAgent:
             chat_type=chat_type,
             thread_id=thread_id,
             gateway_session_key=gateway_session_key,
+            gateway_recall_scope_key=gateway_recall_scope_key,
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
@@ -527,6 +529,38 @@ class AIAgent:
         if self._session_db_created or not self._session_db:
             return
         source = _session_source_for_agent(self.platform)
+        scope_key = getattr(self, "_gateway_recall_scope_key", None) or None
+        session_env = {}
+        if not scope_key:
+            try:
+                from gateway.session_context import get_session_env
+
+                session_env = {
+                    "platform": get_session_env("HERMES_SESSION_PLATFORM", "") or None,
+                    "chat_id": get_session_env("HERMES_SESSION_CHAT_ID", "") or None,
+                    "thread_id": get_session_env("HERMES_SESSION_THREAD_ID", "") or None,
+                    "user_id": get_session_env("HERMES_SESSION_USER_ID", "") or None,
+                    "recall_scope_key": get_session_env("HERMES_RECALL_SCOPE_KEY", "") or None,
+                    "session_key": get_session_env("HERMES_SESSION_KEY", "") or None,
+                }
+            except Exception:
+                session_env = {}
+            if session_env.get("platform"):
+                scope_key = session_env.get("recall_scope_key") or None
+        origin_json = None
+        if scope_key:
+            origin_json = {
+                key: value
+                for key, value in {
+                    "platform": getattr(self, "platform", None) or session_env.get("platform") or source,
+                    "chat_id": getattr(self, "_chat_id", None) or session_env.get("chat_id"),
+                    "chat_type": getattr(self, "_chat_type", None),
+                    "thread_id": getattr(self, "_thread_id", None) or session_env.get("thread_id"),
+                    "user_id": getattr(self, "_user_id", None) or session_env.get("user_id"),
+                    "user_id_alt": getattr(self, "_user_id_alt", None),
+                }.items()
+                if value is not None and value != ""
+            }
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
@@ -537,6 +571,8 @@ class AIAgent:
                 user_id=None,
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
+                scope_key=scope_key,
+                origin_json=origin_json,
             )
             self._session_db_created = True
         except Exception as e:

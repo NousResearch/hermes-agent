@@ -1082,6 +1082,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     from hermes_state import format_session_db_unavailable
                     return json.dumps({"success": False, "error": format_session_db_unavailable()})
                 from tools.session_search_tool import session_search as _session_search
+                current_scope_key = getattr(agent, "_gateway_recall_scope_key", None)
+                gateway_context = False
+                try:
+                    from gateway.session_context import get_session_env
+                    platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+                    gateway_context = bool(platform)
+                    if not platform:
+                        current_scope_key = None
+                    elif not current_scope_key:
+                        current_scope_key = get_session_env("HERMES_RECALL_SCOPE_KEY", "") or None
+                except Exception:
+                    current_scope_key = None
+                    gateway_context = False
                 return _session_search(
                     query=next_args.get("query", ""),
                     role_filter=next_args.get("role_filter"),
@@ -1090,8 +1103,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),
                     sort=next_args.get("sort"),
+                    scope=next_args.get("scope"),
+                    profile=str(next_args.get("profile") or ""),
                     db=session_db,
                     current_session_id=agent.session_id,
+                    current_scope_key=current_scope_key,
+                    gateway_context=gateway_context,
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,

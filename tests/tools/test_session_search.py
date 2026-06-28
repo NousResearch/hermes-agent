@@ -75,6 +75,7 @@ class TestSchema:
         assert "window" in params
         # Shared
         assert "role_filter" in params
+        assert "scope" in params
 
     def test_no_mode_parameter(self):
         # Mode is inferred from which args are set — no explicit mode param
@@ -638,3 +639,162 @@ class TestCronDemotion:
         # Interactive rows first, in original relative order; cron last, in
         # original relative order.
         assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]
+
+# Current-chat scope
+# =========================================================================
+
+def _seed_scoped_sessions(db):
+    db.create_session("s_now", source="discord", scope_key="agent:main:discord:channel:now")
+    now_mid = db.append_message("s_now", role="user", content="weekly anchor phrase")
+
+    db.create_session("s_now_b", source="discord", scope_key="agent:main:discord:channel:now")
+    db.append_message("s_now_b", role="user", content="weekly anchor phrase")
+
+    db.create_session("s_other", source="discord", scope_key="agent:main:discord:channel:research")
+    other_mid = db.append_message("s_other", role="user", content="weekly anchor phrase")
+
+    db.create_session("s_legacy", source="discord")
+    db.append_message("s_legacy", role="user", content="weekly anchor phrase")
+
+    db.create_session("s_cjk_now", source="discord", scope_key="agent:main:discord:channel:now")
+    db.append_message("s_cjk_now", role="user", content="周文档")
+
+    db.create_session("s_cjk_other", source="discord", scope_key="agent:main:discord:channel:research")
+    db.append_message("s_cjk_other", role="user", content="周文档")
+    db._conn.commit()
+    return now_mid, other_mid
+
+
+class TestCurrentChatScope:
+    def test_gateway_default_discovery_scopes_to_current_chat(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            query="weekly anchor phrase",
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+        ))
+        sids = {r["session_id"] for r in result["results"]}
+        assert result["scope"] == "current"
+        assert "s_now" in sids
+        assert "s_now_b" in sids
+        assert "s_other" not in sids
+        assert "s_legacy" not in sids
+
+    def test_gateway_default_discovery_scopes_to_current_session_scope_key_when_hidden_key_missing(self, db):
+        _seed_scoped_sessions(db)
+        db.create_session("s_current", source="discord", scope_key="agent:main:discord:channel:now")
+        db.append_message("s_current", role="user", content="current turn should be skipped")
+        result = json.loads(session_search(
+            query="weekly anchor phrase",
+            db=db,
+            current_session_id="s_current",
+        ))
+        sids = {r["session_id"] for r in result["results"]}
+        assert result["scope"] == "current"
+        assert "s_now" in sids
+        assert "s_current" not in sids
+        assert "s_other" not in sids
+        assert "s_legacy" not in sids
+
+    def test_gateway_current_scope_missing_key_errors_instead_of_global(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            query="weekly anchor phrase",
+            db=db,
+            current_session_id="s_legacy",
+            gateway_context=True,
+        ))
+        assert result["success"] is False
+        assert "current chat scope is unavailable" in result.get("error", "")
+
+    def test_scope_all_preserves_profile_wide_discovery(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            query="weekly anchor phrase",
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+            scope="all",
+            limit=10,
+        ))
+        sids = {r["session_id"] for r in result["results"]}
+        assert result["scope"] == "all"
+        assert {"s_now", "s_other", "s_legacy"}.issubset(sids)
+
+    def test_cli_without_current_scope_keeps_global_default(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(query="weekly anchor phrase", db=db, limit=10))
+        sids = {r["session_id"] for r in result["results"]}
+        assert result["scope"] == "all"
+        assert {"s_now", "s_other", "s_legacy"}.issubset(sids)
+
+    def test_scoped_browse_hides_other_and_unknown_scope_sessions(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+            limit=10,
+        ))
+        sids = {r["session_id"] for r in result["results"]}
+        assert result["mode"] == "browse"
+        assert result["scope"] == "current"
+        assert "s_now" in sids
+        assert "s_cjk_now" in sids
+        assert "s_other" not in sids
+        assert "s_legacy" not in sids
+
+    def test_cjk_like_fallback_respects_current_scope(self, db):
+        _seed_scoped_sessions(db)
+        # Two CJK chars force the LIKE fallback rather than trigram FTS.
+        result = json.loads(session_search(
+            query="周文档",
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+            limit=10,
+        ))
+        sids = {r["session_id"] for r in result["results"]}
+        assert "s_cjk_now" in sids
+        assert "s_cjk_other" not in sids
+
+    def test_scoped_read_rejects_wrong_channel_session_id(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            session_id="s_other",
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+        ))
+        assert result["success"] is False
+        assert "current chat scope" in result.get("error", "")
+
+    def test_scope_all_allows_reading_explicit_session_id(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            session_id="s_other",
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+            scope="all",
+        ))
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["session_id"] == "s_other"
+
+    def test_scoped_scroll_rejects_wrong_channel_session_id(self, db):
+        _, other_mid = _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            session_id="s_other",
+            around_message_id=other_mid,
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+        ))
+        assert result["success"] is False
+        assert "current chat scope" in result.get("error", "")
+
+    def test_invalid_scope_value_returns_error(self, db):
+        _seed_scoped_sessions(db)
+        result = json.loads(session_search(
+            query="weekly anchor phrase",
+            db=db,
+            current_scope_key="agent:main:discord:channel:now",
+            scope="current_chat",
+        ))
+        assert result["success"] is False
+        assert "scope must be one of" in result.get("error", "")

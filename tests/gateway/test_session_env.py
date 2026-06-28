@@ -231,17 +231,20 @@ def test_set_session_env_includes_session_key():
         connected_platforms=[],
         home_channels={},
         session_key="tg:-1001:17585",
+        recall_scope_key="tg:-1001",
     )
 
     # Capture baseline value before setting (may be non-empty from another
     # test in the same pytest-xdist worker sharing the context).
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
+    assert get_session_env("HERMES_RECALL_SCOPE_KEY") == "tg:-1001"
     runner._clear_session_env(tokens)
     # After clearing, the session key must not retain the value we just set.
     # The exact post-clear value depends on context propagation from other
     # tests, so only check that our value was removed, not what replaced it.
     assert get_session_env("HERMES_SESSION_KEY") != "tg:-1001:17585"
+    assert get_session_env("HERMES_RECALL_SCOPE_KEY") != "tg:-1001"
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
@@ -303,6 +306,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         connected_platforms=[],
         home_channels={},
         session_key="agent:main:telegram:dm:2144471399",
+        recall_scope_key="agent:main:telegram:dm:2144471399",
     )
 
     tokens = runner._set_session_env(context)
@@ -313,6 +317,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
                 "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
                 "user_id": get_session_env("HERMES_SESSION_USER_ID"),
                 "session_key": get_session_env("HERMES_SESSION_KEY"),
+                "recall_scope_key": get_session_env("HERMES_RECALL_SCOPE_KEY"),
             }
         )
     finally:
@@ -324,6 +329,7 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         "chat_id": "2144471399",
         "user_id": "123456",
         "session_key": "agent:main:telegram:dm:2144471399",
+        "recall_scope_key": "agent:main:telegram:dm:2144471399",
     }
 
 

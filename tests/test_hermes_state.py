@@ -325,6 +325,73 @@ class TestSessionLifecycle:
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
 
+    def test_v18_migration_backfills_recall_scope_keys(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        origin = {
+            "platform": "discord",
+            "chat_id": "channel-a",
+            "chat_type": "group",
+            "user_id": "user-1",
+        }
+        origin_b = dict(origin, user_id="user-2")
+        origin_unknown = {
+            "platform": "discord",
+            "chat_type": "group",
+            "user_id": "user-3",
+        }
+        try:
+            seeded.create_session(
+                session_id="bad-full-key",
+                source="discord",
+                scope_key="agent:main:discord:group:channel-a:user-1",
+                origin_json=origin,
+            )
+            seeded.create_session(
+                session_id="missing-key",
+                source="discord",
+                scope_key=None,
+                origin_json=origin_b,
+            )
+            seeded.create_session(
+                session_id="custom-key",
+                source="discord",
+                scope_key="custom:scope",
+                origin_json=origin,
+            )
+            seeded.create_session(
+                session_id="unknown-origin",
+                source="discord",
+                scope_key="agent:main:discord:group:user-3",
+                origin_json=origin_unknown,
+            )
+            assert seeded._conn is not None
+            seeded._conn.execute("UPDATE schema_version SET version = 17")
+            seeded._conn.commit()
+        finally:
+            seeded.close()
+
+        migrated = SessionDB(db_path=db_path)
+        try:
+            bad = migrated.get_session("bad-full-key")
+            missing = migrated.get_session("missing-key")
+            custom = migrated.get_session("custom-key")
+            unknown = migrated.get_session("unknown-origin")
+            assert bad is not None
+            assert missing is not None
+            assert custom is not None
+            assert unknown is not None
+            assert bad["scope_key"] == "agent:main:discord:group:channel-a"
+            assert missing["scope_key"] == "agent:main:discord:group:channel-a"
+            assert custom["scope_key"] == "custom:scope"
+            assert unknown["scope_key"] == "agent:main:discord:group:user-3"
+            assert migrated._conn is not None
+            row = migrated._conn.execute("SELECT version FROM schema_version").fetchone()
+            assert row is not None
+            assert row["version"] == SCHEMA_VERSION
+        finally:
+            migrated.close()
+
     def test_db_initializes_without_fts5_module(self, tmp_path, monkeypatch):
         real_connect = sqlite3.connect
 

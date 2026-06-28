@@ -56,6 +56,58 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 _DISCOVER_SCAN_LIMIT = 300
 
 
+def _scope_key_for_call(
+    scope: Optional[str],
+    current_scope_key: Optional[str],
+    profile: Optional[str],
+    gateway_context: bool = False,
+) -> Optional[str]:
+    """Return the DB scope key to enforce for this call, if any.
+
+    Gateway turns pass ``current_scope_key`` as hidden tool context. In those
+    turns, omitted/``current`` scope means current chat/thread only; explicit
+    ``all`` preserves the old profile-wide search. CLI/TUI calls have no hidden
+    gateway scope and therefore keep the old global default. Cross-profile
+    reads are explicit links and remain global within that profile.
+    """
+    if profile is not None and str(profile).strip():
+        return None
+    scope_value = str(scope).strip().lower() if isinstance(scope, str) else ""
+    if scope_value not in ("", "current", "all"):
+        raise ValueError("scope must be one of: current, all")
+    if scope_value == "all":
+        return None
+    if current_scope_key:
+        return str(current_scope_key)
+    if gateway_context:
+        raise ValueError(
+            "current chat scope is unavailable for this gateway turn. "
+            "Pass scope='all' only when the user explicitly wants profile-wide history."
+        )
+    return None
+
+
+def _scope_label(scope_key: Optional[str]) -> str:
+    return "current" if scope_key else "all"
+
+
+def _scope_error(session_id: str) -> str:
+    return (
+        f"session_id {session_id} is outside the current chat scope. "
+        "Pass scope='all' only when the user explicitly wants profile-wide history."
+    )
+
+
+def _session_matches_scope(db, session_id: str, scope_key: Optional[str]) -> bool:
+    if not scope_key:
+        return True
+    try:
+        meta = db.get_session(session_id) or {}
+    except Exception:
+        return False
+    return meta.get("scope_key") == scope_key
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -208,7 +260,13 @@ def _locate_session_db(session_id: str):
     return None, None
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
+def _read_session(
+    db,
+    session_id: str,
+    head: int = 20,
+    tail: int = 10,
+    scope_key: Optional[str] = None,
+) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -223,6 +281,8 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         meta = {}
     if not meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    if scope_key and meta.get("scope_key") != scope_key:
+        return tool_error(_scope_error(session_id), success=False)
 
     try:
         rows = db.get_messages(session_id)
@@ -238,6 +298,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     response = {
         "success": True,
         "mode": "read",
+        "scope": _scope_label(scope_key),
         "session_id": session_id,
         "session_meta": {
             "when": _format_timestamp(meta.get("started_at")),
@@ -257,13 +318,19 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(
+    db,
+    limit: int,
+    current_session_id: str = None,
+    scope_key: Optional[str] = None,
+) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
             limit=limit + 5,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
+            scope_key=scope_key,
         )  # fetch extra so we can skip current
 
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
@@ -291,9 +358,14 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         return json.dumps({
             "success": True,
             "mode": "browse",
+            "scope": _scope_label(scope_key),
             "results": results,
             "count": len(results),
-            "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
+            "message": (
+                f"Showing {len(results)} most recent sessions"
+                + (" in the current chat scope" if scope_key else "")
+                + ". Pass a query= to search, or session_id+around_message_id to scroll."
+            ),
         }, ensure_ascii=False)
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
@@ -306,6 +378,7 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    scope_key: Optional[str] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -349,6 +422,8 @@ def _scroll(
         session_meta = {}
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
+    if scope_key and session_meta.get("scope_key") != scope_key:
+        return tool_error(_scope_error(session_id), success=False)
 
     # Fetch the window
     try:
@@ -377,6 +452,8 @@ def _scroll(
             logging.debug("owning-session lookup failed: %s", e, exc_info=True)
             owning = None
         if owning and owning != session_id:
+            if scope_key and not _session_matches_scope(db, owning, scope_key):
+                return tool_error(_scope_error(owning), success=False)
             a_root = _resolve_to_parent(db, session_id)
             o_root = _resolve_to_parent(db, owning)
             if a_root and o_root and a_root == o_root:
@@ -406,6 +483,7 @@ def _scroll(
     response = {
         "success": True,
         "mode": "scroll",
+        "scope": _scope_label(scope_key),
         "session_id": session_id,
         "around_message_id": around_message_id,
         "session_meta": {
@@ -503,6 +581,7 @@ def _discover(
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
+    scope_key: Optional[str] = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -519,6 +598,7 @@ def _discover(
             # of cron rows are still in hand for the demotion pass below.
             offset=0,
             sort=sort,
+            scope_key=scope_key,
         )
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
@@ -534,10 +614,14 @@ def _discover(
         return json.dumps({
             "success": True,
             "mode": "discover",
+            "scope": _scope_label(scope_key),
             "query": query,
             "results": [],
             "count": 0,
-            "message": "No matching sessions found.",
+            "message": (
+                "No matching sessions found"
+                + (" in the current chat scope." if scope_key else ".")
+            ),
         }, ensure_ascii=False)
 
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
@@ -609,6 +693,7 @@ def _discover(
     return json.dumps({
         "success": True,
         "mode": "discover",
+        "scope": _scope_label(scope_key),
         "query": query,
         "results": results,
         "count": len(results),
@@ -628,6 +713,9 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
+    scope: str = None,
+    current_scope_key: str = None,
+    gateway_context: bool = False,
     # Cross-profile (any shape)
     profile: str = None,
 ) -> str:
@@ -675,6 +763,18 @@ def session_search(
             db = profile_db
             current_session_id = None
 
+    if not current_scope_key and current_session_id and not (profile is not None and str(profile).strip()):
+        try:
+            current_meta = db.get_session(current_session_id) or {}
+            current_scope_key = current_meta.get("scope_key") or None
+        except Exception:
+            current_scope_key = None
+
+    try:
+        effective_scope_key = _scope_key_for_call(scope, current_scope_key, profile, gateway_context)
+    except ValueError as exc:
+        return tool_error(str(exc), success=False)
+
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
         return _scroll(
@@ -683,19 +783,22 @@ def session_search(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            scope_key=effective_scope_key,
         )
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
         sid = session_id.strip()
-        result = _read_session(db, sid)
+        result = _read_session(db, sid, scope_key=effective_scope_key)
         if json.loads(result).get("success"):
             return result
 
         # Miss in the target profile — the model may have dropped the owning
         # profile from the link. Scan every profile and read it from wherever
         # it lives, tagging the profile it was found in.
-        located, owner = _locate_session_db(sid)
+        located, owner = (None, None)
+        if effective_scope_key is None:
+            located, owner = _locate_session_db(sid)
         if located is not None:
             try:
                 found = json.loads(_read_session(located, sid))
@@ -716,7 +819,7 @@ def session_search(
 
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        return _list_recent_sessions(db, limit, current_session_id, scope_key=effective_scope_key)
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -737,6 +840,7 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+        scope_key=effective_scope_key,
     )
 
 
@@ -802,6 +906,11 @@ SESSION_SEARCH_SCHEMA = {
         "     session_search()\n"
         "     Returns recent sessions chronologically: titles, previews, timestamps. "
         "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
+        "SCOPE\n\n"
+        "  In gateway conversations this tool defaults to the current chat/thread "
+        "scope so Discord/Slack/Telegram/WeChat channels do not cross-contaminate. "
+        "Pass `scope='all'` only when the user explicitly asks for profile-wide "
+        "or global history. CLI/no-chat contexts keep the historical global default.\n\n"
         "FTS5 SYNTAX\n\n"
         "  AND is the default — multi-word queries require all terms. Use OR explicitly "
         "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "
@@ -882,6 +991,15 @@ SESSION_SEARCH_SCHEMA = {
                     "behaviour) or 'tool' to search tool output only."
                 ),
             },
+            "scope": {
+                "type": "string",
+                "enum": ["current", "all"],
+                "description": (
+                    "Optional. In gateway conversations, defaults to current chat/thread "
+                    "history. Set to 'all' only when the user explicitly asks for "
+                    "profile-wide/global history. CLI/no-chat contexts remain global."
+                ),
+            },
             "profile": {
                 "type": "string",
                 "description": (
@@ -912,9 +1030,12 @@ registry.register(
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),
         sort=args.get("sort"),
+        scope=args.get("scope"),
         profile=args.get("profile"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        current_scope_key=kw.get("current_scope_key"),
+        gateway_context=kw.get("gateway_context", False),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",

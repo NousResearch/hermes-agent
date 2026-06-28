@@ -35,8 +35,9 @@ $applyArgs = @("$RepoRoot\scripts\apply_operator_stack.py")
 if ($DryRun) { $applyArgs += "--dry-run" }
 Invoke-HermesPython -ScriptArgs $applyArgs
 
-Write-Host "[2/4] Syncing social traces into Ebbinghaus memory..."
-$socialArgs = @("$RepoRoot\scripts\memory\social_ebbinghaus_sync.py")
+Write-Host "[2/4] Syncing social traces into Ebbinghaus memory (+ Obsidian when vault is available)..."
+$socialArgs = @("$RepoRoot\sync_memory.py")
+if ($DryRun) { $socialArgs += "--dry-run" }
 Invoke-HermesPython -ScriptArgs $socialArgs
 
 Write-Host "[3/4] Syncing git memory vault (encrypted Ebbinghaus + brain docs)..."

@@ -25,7 +25,9 @@ try:  # pragma: no cover - exercised in real Hermes runtime, not unit fixtures
 except Exception:  # pragma: no cover
     get_hermes_home = None  # type: ignore[assignment]
 
-DEFAULT_SOURCES = ("line", "discord", "telegram")
+# Gateway session `source` values for social channels.  ``line-personal`` is kept
+# as an alias for forks that tag the LINE AI bot separately from Messaging API.
+DEFAULT_SOURCES = ("line", "line-personal", "discord", "telegram")
 SECRET_PATTERNS = (
     re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|token|secret|password|passwd|auth[_-]?token|ct0)\s*[:=]\s*[^\s,;]+"),
     re.compile(r"(?i)([?&](code|token|auth|key|secret)=)[^\s&#]+"),
@@ -167,12 +169,14 @@ class SocialMemorySync:
         memory_db: Path | None = None,
         x_activity_log: Path | None = None,
         sources: Sequence[str] = DEFAULT_SOURCES,
+        min_started_at: float | None = None,
     ) -> None:
         home = hermes_home()
         self.state_db = Path(state_db or home / "state.db").expanduser()
         self.memory_db = Path(memory_db or home / "ebbinghaus_memory.db").expanduser()
         self.x_activity_log = Path(x_activity_log or home / "lm-twitterer" / "activity.jsonl").expanduser()
-        self.sources = tuple(s.strip().lower() for s in sources if s.strip())
+        self.sources = tuple(dict.fromkeys(s.strip().lower() for s in sources if s.strip()))
+        self.min_started_at = min_started_at
 
     def run(self, *, max_sessions: int, max_x_events: int, sleep: bool) -> dict[str, Any]:
         self.memory_db.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +188,7 @@ class SocialMemorySync:
             "sessions_seen": 0,
             "x_events_seen": 0,
             "memories_written": 0,
+            "min_started_at": self.min_started_at,
             "sleep": None,
         }
         with sqlite3.connect(self.memory_db) as memory_conn:
@@ -205,18 +210,24 @@ class SocialMemorySync:
         if max_sessions <= 0 or not self.state_db.exists() or not self.sources:
             return []
         placeholders = ",".join("?" for _ in self.sources)
+        filters = [f"lower(source) IN ({placeholders})"]
+        params: list[Any] = list(self.sources)
+        if self.min_started_at is not None:
+            filters.append("started_at > ?")
+            params.append(float(self.min_started_at))
         query = f"""
             SELECT id, source, COALESCE(title, '') AS title, started_at
             FROM sessions
-            WHERE lower(source) IN ({placeholders})
+            WHERE {' AND '.join(filters)}
             ORDER BY started_at DESC
             LIMIT ?
         """
+        params.append(max_sessions)
         candidates: list[MemoryCandidate] = []
         try:
             with sqlite3.connect(self.state_db) as con:
                 con.row_factory = sqlite3.Row
-                sessions = con.execute(query, (*self.sources, max_sessions)).fetchall()
+                sessions = con.execute(query, tuple(params)).fetchall()
                 for session in sessions:
                     messages = con.execute(
                         """
@@ -318,6 +329,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-sessions", type=int, default=80)
     parser.add_argument("--max-x-events", type=int, default=80)
     parser.add_argument("--no-sleep", action="store_true", help="Skip Ebbinghaus rehearsal/forgetting pass")
+    parser.add_argument(
+        "--min-started-at",
+        type=float,
+        default=None,
+        help="Only import sessions with started_at greater than this Unix timestamp",
+    )
     return parser
 
 
@@ -328,6 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         memory_db=args.memory_db,
         x_activity_log=args.x_activity_log,
         sources=tuple(part.strip() for part in args.sources.split(",") if part.strip()),
+        min_started_at=args.min_started_at,
     )
     result = sync.run(max_sessions=args.max_sessions, max_x_events=args.max_x_events, sleep=not args.no_sleep)
     print(json.dumps(result, ensure_ascii=False, indent=2))

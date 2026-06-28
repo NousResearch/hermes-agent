@@ -827,7 +827,10 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
         import shutil
-        shutil.rmtree(d)
+        try:
+            shutil.rmtree(d)
+        except OSError as exc:
+            logger.warning("Failed to remove kanban board dir %s: %s", d, exc)
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 

@@ -527,7 +527,10 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
                     f"Plugin '{plugin_name}' already exists. Use force reinstall "
                     f"or run `hermes plugins update {plugin_name}`.",
                 )
-            shutil.rmtree(target)
+            try:
+                shutil.rmtree(target)
+            except OSError as exc:
+                logger.warning("Failed to remove existing plugin dir %s: %s", target, exc)
 
         shutil.move(str(tmp_target), str(target))
 
@@ -1796,7 +1799,10 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
             "error": f"Plugin '{name}' was not found under {plugins_dir}.",
         }
 
-    shutil.rmtree(target)
+    try:
+        shutil.rmtree(target)
+    except OSError as exc:
+        logger.warning("Failed to remove plugin dir %s: %s", target, exc)
     return {"ok": True, "name": name}
 
 

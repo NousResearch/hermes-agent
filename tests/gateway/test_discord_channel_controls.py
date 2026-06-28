@@ -281,6 +281,49 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
     adapter.handle_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_force_auto_thread_channel_overrides_free_response(adapter, monkeypatch):
+    """Configured force-auto-thread channels still thread even when ambient/free-response."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "777")
+    monkeypatch.setenv("DISCORD_FORCE_AUTO_THREAD_CHANNELS", "777")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=777), content="ambient idea")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+    assert event.source.parent_chat_id == "777"
+
+
+@pytest.mark.asyncio
+async def test_force_auto_thread_does_not_override_no_thread_channel(adapter, monkeypatch):
+    """Explicit no_thread_channels remains the stronger opt-out."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "777")
+    monkeypatch.setenv("DISCORD_FORCE_AUTO_THREAD_CHANNELS", "777")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "777")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=777), content="ambient idea")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 

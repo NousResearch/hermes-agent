@@ -5315,6 +5315,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
+        channel_ids: set[str] = set()
+        is_free_channel = False
         is_thread = isinstance(message.channel, discord.Thread)
         if is_thread:
             thread_id = str(message.channel.id)
@@ -5401,7 +5403,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            force_thread_channels_raw = os.getenv("DISCORD_FORCE_AUTO_THREAD_CHANNELS", "")
+            force_thread_channels = {ch.strip() for ch in force_thread_channels_raw.split(",") if ch.strip()}
+            force_thread = "*" in force_thread_channels or bool(channel_ids & force_thread_channels)
+            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not force_thread)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

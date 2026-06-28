@@ -51,11 +51,15 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import array
 import inspect
 import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
@@ -133,6 +137,87 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
+
+_MATRIX_VOICE_WAVEFORM_BINS = 30
+
+
+def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
+    """Return best-effort Matrix voice metadata for an audio file.
+
+    Matrix clients such as Element render ``m.audio`` events with
+    ``org.matrix.msc3245.voice`` as voice bubbles. They are more reliable when
+    the event also includes duration and MSC1767 waveform metadata. Metadata
+    extraction is deliberately best-effort: media delivery must still work on
+    systems without ffprobe/ffmpeg.
+    """
+    metadata: Dict[str, Any] = {}
+
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                duration = float((result.stdout or "").strip() or 0)
+                if duration > 0:
+                    metadata["duration"] = int(duration * 1000)
+        except Exception:
+            logger.debug("Matrix: failed to probe voice duration for %s", path, exc_info=True)
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "8000",
+                    "-f",
+                    "s16le",
+                    "-",
+                ],
+                capture_output=True,
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0 and result.stdout:
+                samples = array.array("h")
+                samples.frombytes(result.stdout)
+                if sys.byteorder != "little":
+                    samples.byteswap()
+                if samples:
+                    count = len(samples)
+                    waveform = []
+                    for idx in range(_MATRIX_VOICE_WAVEFORM_BINS):
+                        start = idx * count // _MATRIX_VOICE_WAVEFORM_BINS
+                        end = max(start + 1, (idx + 1) * count // _MATRIX_VOICE_WAVEFORM_BINS)
+                        peak = max(abs(value) for value in samples[start:end])
+                        waveform.append(min(1024, int(peak / 32767 * 1024)))
+                    metadata["waveform"] = waveform
+        except Exception:
+            logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
+
+    return metadata
 
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
@@ -2241,6 +2326,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         is_voice: bool = False,
+        voice_metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
         if len(data) > self._max_media_bytes:
@@ -2297,6 +2383,17 @@ class MatrixAdapter(BasePlatformAdapter):
         # Add MSC3245 voice flag for native voice messages.
         if is_voice:
             msg_content["org.matrix.msc3245.voice"] = {}
+            duration = (voice_metadata or {}).get("duration")
+            waveform = (voice_metadata or {}).get("waveform")
+            if duration is not None:
+                msg_content["info"]["duration"] = duration
+            if duration is not None or waveform is not None:
+                audio_metadata: Dict[str, Any] = {}
+                if duration is not None:
+                    audio_metadata["duration"] = duration
+                if waveform is not None:
+                    audio_metadata["waveform"] = waveform
+                msg_content["org.matrix.msc1767.audio"] = audio_metadata
 
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
@@ -2345,9 +2442,19 @@ class MatrixAdapter(BasePlatformAdapter):
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         data = p.read_bytes()
+        voice_metadata = _matrix_voice_metadata_for_file(p) if is_voice else None
 
         return await self._upload_and_send(
-            room_id, data, fname, ct, msgtype, caption, reply_to, metadata, is_voice
+            room_id,
+            data,
+            fname,
+            ct,
+            msgtype,
+            caption,
+            reply_to,
+            metadata,
+            is_voice,
+            voice_metadata,
         )
 
     # ------------------------------------------------------------------

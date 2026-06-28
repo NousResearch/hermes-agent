@@ -423,19 +423,22 @@ class TestSendVoiceReply:
         event.source.platform = Platform.TELEGRAM
         runner.adapters[event.source.platform] = mock_adapter
 
-        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.mp3"})
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._convert_to_opus", return_value="/tmp/test.ogg") as mock_convert, \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
             await runner._send_voice_reply(event, "Hello world")
 
         mock_adapter.send_voice.assert_called_once()
-        assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
+        mock_convert.assert_called_once_with("/tmp/test.mp3")
         call_args = mock_adapter.send_voice.call_args
         assert call_args.kwargs.get("chat_id") == "123"
+        assert call_args.kwargs.get("audio_path") == "/tmp/test.ogg"
 
     @pytest.mark.asyncio
     async def test_non_telegram_auto_voice_reply_uses_mp3(self, runner):
@@ -451,6 +454,7 @@ class TestSendVoiceReply:
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._convert_to_opus") as mock_convert, \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -458,6 +462,32 @@ class TestSendVoiceReply:
 
         mock_adapter.send_voice.assert_called_once()
         assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
+        mock_convert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_matrix_auto_voice_reply_converts_to_ogg_opus(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.MATRIX
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.mp3"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._convert_to_opus", return_value="/tmp/test.ogg") as mock_convert, \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello Matrix")
+
+        mock_adapter.send_voice.assert_called_once()
+        assert mock_tts.call_args.kwargs["output_path"].endswith(".mp3")
+        mock_convert.assert_called_once_with("/tmp/test.mp3")
+        assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == "/tmp/test.ogg"
 
     @pytest.mark.asyncio
     async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):

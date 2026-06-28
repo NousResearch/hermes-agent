@@ -620,6 +620,28 @@ def _run_review_in_thread(
             # -> codex_responses downgrade is applied inside the resolver.
             _rt = _resolve_review_runtime(agent)
             _routed = bool(_rt.get("routed"))
+            try:
+                from agent.capacity_governor import (
+                    check_capacity,
+                    format_capacity_block_message,
+                )
+
+                _capacity_decision = check_capacity(
+                    provider=_rt.get("provider") or agent.provider,
+                    model=_rt.get("model") or agent.model,
+                    task_class="background_review",
+                )
+                if not _capacity_decision.allowed:
+                    logger.info(
+                        "Background review deferred by capacity governor: %s",
+                        format_capacity_block_message(_capacity_decision),
+                    )
+                    return
+            except Exception:
+                logger.debug(
+                    "Background review capacity governor check failed; allowing review",
+                    exc_info=True,
+                )
             # skip_memory=True keeps the review fork from
             # touching external memory plugins (honcho, mem0,
             # supermemory, etc.).  Without it, the fork's

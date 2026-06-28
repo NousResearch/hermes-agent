@@ -5228,7 +5228,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
         # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
+        _thread_id = thread_id if reply_threads_enabled else None
         if _thread_id:
             body = self._build_create_message_body(
                 receive_id=_thread_id,

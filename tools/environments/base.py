@@ -482,9 +482,37 @@ class BaseEnvironment(ABC):
         """Quote an internal shell path using the same path dialect as cwd."""
         return shlex.quote(self._normalize_cwd_for_bash_cd(path))
 
+    def _normalize_command_cd_paths_for_bash(self, command: str) -> str:
+        """Normalize simple shell ``cd`` targets to the selected bash dialect.
+
+        Hermes controls the wrapper cwd, but models often include an explicit
+        ``cd <path> && ...`` inside the command text. On Windows, WSL and Git
+        Bash use different drive mount dialects, so a copied ``/mnt/c/...`` path
+        fails under Git Bash even though the same filesystem exists. Normalize
+        only standalone ``cd`` command targets; leave arbitrary arguments and
+        string literals alone.
+        """
+        if os.name != "nt" or not command:
+            return command
+
+        drive_path = r"(?:/mnt/[A-Za-z](?:/[^\s;&|]*)?|/[A-Za-z](?:/[^\s;&|]*)?|[A-Za-z]:[\\/][^\s;&|]*)"
+        prefix = r"(?P<prefix>(?:^|(?<=[;\n])|&&\s*|\|\|\s*)\s*(?:builtin\s+)?cd(?:\s+--)?\s+)"
+
+        quoted = re.compile(prefix + r"(?P<quote>['\"])(?P<path>[^'\"]+)(?P=quote)")
+        unquoted = re.compile(prefix + rf"(?P<path>{drive_path})")
+
+        def replace(match: re.Match[str]) -> str:
+            path = match.group("path")
+            normalized = self._normalize_cwd_for_bash_cd(path)
+            return match.group("prefix") + shlex.quote(normalized)
+
+        command = quoted.sub(replace, command)
+        return unquoted.sub(replace, command)
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
+        command = self._normalize_command_cd_paths_for_bash(command)
         escaped = command.replace("'", "'\\''")
 
         # Quote the snapshot / cwd-file paths so Git Bash on Windows handles

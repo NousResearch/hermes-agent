@@ -896,12 +896,21 @@ class TestWindowsBashPathDialects:
         assert "builtin cd -- /c/Users/NUC" in env._wrap_command(
             "pwd", r"C:\Users\NUC"
         )
+        assert "eval 'cd /c/Users/NUC && pwd'" in env._wrap_command(
+            "cd /mnt/c/Users/NUC && pwd", r"C:\Users\NUC"
+        )
+        assert "/mnt/c/Users/NUC && pwd" not in env._wrap_command(
+            "cd /mnt/c/Users/NUC && pwd", r"C:\Users\NUC"
+        )
 
         env._bash_path_style = "wsl"
         assert env._quote_cwd_for_cd(r"C:\Users\NUC") == "/mnt/c/Users/NUC"
         assert env._quote_cwd_for_cd("/c/Users/NUC") == "/mnt/c/Users/NUC"
         assert "builtin cd -- /mnt/c/Users/NUC" in env._wrap_command(
             "pwd", r"C:\Users\NUC"
+        )
+        assert "eval 'cd /mnt/c/Users/NUC && pwd'" in env._wrap_command(
+            "cd /c/Users/NUC && pwd", r"C:\Users\NUC"
         )
 
     def test_file_operations_paths_follow_attached_bash_dialect(self, monkeypatch):

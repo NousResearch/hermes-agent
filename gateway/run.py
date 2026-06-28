@@ -8931,6 +8931,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
             if command in quick_commands:
+                # Quick commands are slash capabilities too — and type:exec
+                # ones run a shell command in the gateway process. The early
+                # gate above only fires for registry-known commands, so quick
+                # commands (never in the registry) would otherwise reach this
+                # dispatch sink unchecked. Apply the same admin/user policy to
+                # the raw typed name here so non-admins can't invoke admin-only
+                # quick commands. (#44727)
+                _denied = self._check_slash_access(source, command)
+                if _denied is not None:
+                    return _denied
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")

@@ -626,10 +626,10 @@ agent:
   # gateway_timeout_warning: 900
 
   # Graceful drain timeout for gateway stop/restart (seconds).
-  # The gateway stops accepting new work, waits for in-flight agents to
-  # finish, then interrupts anything still running after this timeout.
-  # 0 = no drain, interrupt immediately.
-  # restart_drain_timeout: 60
+  # Default 0 = no drain: a restart interrupts in-flight agents immediately,
+  # cleans up, and exits. Set a positive value only if you want a grace
+  # window on /restart, and keep it well under systemd's TimeoutStopSec.
+  # restart_drain_timeout: 0
 
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this

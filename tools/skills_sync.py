@@ -15,10 +15,14 @@ Update logic:
       * If user copy matches origin hash: user hasn't modified it → safe to
         update from bundled if bundled changed. New origin hash recorded.
       * If user copy differs from origin hash: user customized it → SKIP.
-  - DELETED by user (in manifest, absent from user dir): respected, not re-added.
+  - MISSING (in manifest, absent from user dir):
+      * If explicit tombstone exists: treated as intentional user deletion, SKIP.
+      * Otherwise: restored from bundled source (covers profile clone gaps,
+        interrupted syncs, and skills shipped after profile creation).
   - REMOVED from bundled (in manifest, gone from repo): cleaned from manifest.
 
 The manifest lives at ~/.hermes/skills/.bundled_manifest.
+Tombstones (explicit user-deletion markers) live at ~/.hermes/skills/.bundled_tombstones."
 """
 
 import hashlib
@@ -48,6 +52,13 @@ MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 # hermes_cli.profiles.NO_BUNDLED_SKILLS_MARKER (kept as a literal here to
 # avoid importing the CLI layer into this low-level sync module).
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+
+# Tombstone file for explicitly deleted bundled skills.
+# When a bundled skill's name appears here, sync_skills() will NOT restore
+# it even if the bundled source still exists. This lets users permanently
+# remove a bundled skill without risking re-seeding on the next sync.
+# One skill name per line (same format as .curator_suppressed).
+TOMBSTONE_FILE = SKILLS_DIR / ".bundled_tombstones"
 
 
 def _get_bundled_dir() -> Path:
@@ -145,6 +156,85 @@ def _read_suppressed_names() -> set:
         except OSError:
             pass
         return names
+
+
+def _read_tombstone_names() -> set:
+    """Read explicitly deleted bundled skill names from the tombstone file.
+
+    Returns a set of skill names that the user intentionally removed and
+    should NOT be restored by sync_skills().
+    """
+    if not TOMBSTONE_FILE.exists():
+        return set()
+    names = set()
+    try:
+        for line in TOMBSTONE_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                names.add(line)
+    except OSError:
+        pass
+    return names
+
+
+def _write_tombstones(names: set) -> None:
+    """Write the tombstone file atomically with the given skill names."""
+    if not names:
+        try:
+            TOMBSTONE_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    TOMBSTONE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = "\n".join(sorted(names)) + "\n"
+    import tempfile
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(TOMBSTONE_FILE.parent),
+            prefix=".bundled_tombstones_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, TOMBSTONE_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except (OSError, IOError) as e:
+        logger.debug("Failed to write bundled tombstones %s: %s", TOMBSTONE_FILE, e, exc_info=True)
+
+
+def add_bundled_tombstone(name: str) -> bool:
+    """Explicitly mark a bundled skill as deleted so sync_skills() never restores it.
+
+    Returns True if the tombstone was added, False if already present.
+    """
+    names = _read_tombstone_names()
+    if name in names:
+        return False
+    names.add(name)
+    _write_tombstones(names)
+    return True
+
+
+def remove_bundled_tombstone(name: str) -> bool:
+    """Remove a tombstone entry so the bundled skill can be restored on next sync.
+
+    Returns True if the tombstone was removed, False if not present.
+    """
+    names = _read_tombstone_names()
+    if name not in names:
+        return False
+    names.discard(name)
+    _write_tombstones(names)
+    return True
 
 
 def _write_manifest(entries: Dict[str, str]):
@@ -515,6 +605,7 @@ def sync_skills(quiet: bool = False) -> dict:
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
     suppressed = _read_suppressed_names()
+    tombstone_names = _read_tombstone_names()
     # Index of skills already provided by external_dirs (skip writing them)
     external_index = _build_external_skill_index()
     shadowed_by_external: List[str] = []
@@ -523,6 +614,7 @@ def sync_skills(quiet: bool = False) -> dict:
     updated = []
     user_modified = []
     suppressed_skipped: List[str] = []
+    tombstoned_skills: List[str] = []
     skipped = 0
 
     for skill_name, skill_src in bundled_skills:
@@ -685,8 +777,28 @@ def sync_skills(quiet: bool = False) -> dict:
                 skipped += 1  # bundled unchanged, user unchanged
 
         else:
-            # ── In manifest but not on disk — user deleted it ──
-            skipped += 1
+            # ── In manifest but not on disk ──
+            # Before #54085 this was treated as "user deleted" unconditionally.
+            # That assumption broke profile clones (manifest copied without
+            # skill files), interrupted syncs, and profiles created before a
+            # bundled skill was available. Now we check the explicit tombstone
+            # file: if the skill is tombstoned, respect the deletion; otherwise
+            # restore from bundled source.
+            if skill_name in tombstone_names:
+                tombstoned_skills.append(skill_name)
+                skipped += 1
+            else:
+                # Not explicitly tombstoned — restore from bundled source.
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(skill_src, dest)
+                    manifest[skill_name] = bundled_hash
+                    copied.append(skill_name)
+                    if not quiet:
+                        print(f"  + {skill_name} (restored — manifest entry existed but was missing from disk)")
+                except (OSError, IOError) as e:
+                    if not quiet:
+                        print(f"  ! Failed to restore {skill_name}: {e}")
 
     # Clean stale manifest entries (skills removed from bundled dir)
     cleaned = sorted(set(manifest.keys()) - bundled_names)
@@ -714,6 +826,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "user_modified": user_modified,
         "cleaned": cleaned,
         "suppressed": suppressed_skipped,
+        "tombstoned": tombstoned_skills,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": optional_provenance_backfilled,
         "shadowed_by_external": shadowed_by_external,

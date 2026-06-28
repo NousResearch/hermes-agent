@@ -94,9 +94,10 @@ async def test_send_draft_falls_back_to_plain_text_on_markdownv2_error():
 
 
 @pytest.mark.asyncio
-async def test_send_draft_non_badrequest_propagates_without_retry():
-    """A non-BadRequest failure (e.g. drafts not allowed) returns failure
-    immediately so the caller falls back to the edit transport."""
+async def test_send_draft_non_badrequest_is_suppressed():
+    """A non-BadRequest failure (e.g. expired typing action, unsupported chat)
+    is suppressed with success=True so the caller stays in draft mode and never
+    cascades to rapid editMessageText calls that exhaust the rate-limit quota."""
     adapter = _make_adapter()
     adapter.format_message = lambda c: f"FMT::{c}"
 
@@ -110,5 +111,6 @@ async def test_send_draft_non_badrequest_propagates_without_retry():
 
     result = await adapter.send_draft("123", 11, "hi")
 
-    assert result.success is False
+    assert result.success is True
+    assert result.message_id is None
     assert len(calls) == 1  # no plain-text retry on non-BadRequest

@@ -324,6 +324,72 @@ class TestDraftFallbackOnFailure:
         assert consumer.final_response_sent is True
 
 
+class TestDraftSuppressionPreventsEditCascade:
+    """When sendMessageDraft is suppressed (success=True, message_id=None) the
+    consumer must stay in draft mode for the entire response and never fall
+    back to editMessageText — which is the cascade that exhausts the quota.
+
+    This mirrors what PR #51886 does for guest chats: returning success=True
+    keeps the consumer believing drafts are working, so it never switches paths.
+    The final message arrives via adapter.send() at finalize — one call, no edits.
+    """
+
+    @pytest.mark.asyncio
+    async def test_suppressed_drafts_never_call_edit_message(self):
+        """When every draft frame is suppressed (success=True, no message_id),
+        the consumer must not call edit_message at any point mid-stream."""
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_draft_capable_adapter()
+        # Simulate the adapter suppressing every frame (typing expired, etc.)
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=True, message_id=None)
+        )
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        for i in range(5):
+            consumer.on_delta(f"token{i} ")
+            await asyncio.sleep(0.03)
+        consumer.finish()
+        await task
+
+        # Consumer stayed in draft mode throughout — no edit calls.
+        adapter.edit_message.assert_not_called()
+        # _message_id was never set mid-stream (would only exist if edits fired).
+        # Final response still delivered via send().
+        adapter.send.assert_awaited()
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_suppressed_drafts_do_not_accumulate_failures(self):
+        """Suppressed frames (success=True) must not increment _draft_failures,
+        so draft streaming is never permanently disabled by suppressed frames."""
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_draft_capable_adapter()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=True, message_id=None)
+        )
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer._use_draft_streaming = True
+        consumer._draft_id = 1
+
+        for _ in range(20):
+            await consumer._send_draft_frame("frame")
+
+        assert consumer._draft_failures == 0
+        assert consumer._use_draft_streaming is True
+
+
 class TestDraftIdLifecycle:
     """Each response gets its own draft_id (no animation collision across
     consecutive responses to the same chat)."""
@@ -660,9 +726,10 @@ class TestTryStripCursor:
         assert consumer._last_sent_text == "Partial reply so far"
 
     @pytest.mark.asyncio
-    async def test_flood_controlled_edit_triggers_delete(self):
-        """A flood-control result on the cursor-strip edit must cause a
-        delete_message call so the stuck cursor disappears."""
+    async def test_flood_controlled_edit_leaves_message_intact(self):
+        """A flood-control result on the cursor-strip edit must NOT delete the
+        message — a partial with a stuck cursor is better UX than a blank screen
+        for the duration of the flood-control wait."""
         from gateway.platforms.base import SendResult
 
         consumer, adapter = self._make_consumer()
@@ -672,20 +739,20 @@ class TestTryStripCursor:
 
         await consumer._try_strip_cursor()
 
-        adapter.delete_message.assert_awaited_once_with("12345", "msg_abc")
-        assert consumer._message_id is None
+        adapter.delete_message.assert_not_awaited()
+        # message_id preserved — the partial message is still visible.
+        assert consumer._message_id == "msg_abc"
 
     @pytest.mark.asyncio
-    async def test_raised_edit_exception_triggers_delete(self):
-        """If _edit_message raises rather than returning a flood result, the
-        fallback treats the exception as flood-controlled and calls delete_message."""
+    async def test_raised_edit_exception_leaves_message_intact(self):
+        """If _edit_message raises, the message must be left as-is — no delete."""
         consumer, adapter = self._make_consumer()
         adapter.edit_message = AsyncMock(side_effect=RuntimeError("rate limit"))
 
         await consumer._try_strip_cursor()
 
-        adapter.delete_message.assert_awaited_once_with("12345", "msg_abc")
-        assert consumer._message_id is None
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._message_id == "msg_abc"
 
     @pytest.mark.asyncio
     async def test_missing_delete_message_does_not_raise(self):
@@ -739,17 +806,3 @@ class TestTryStripCursor:
         # so _is_flood_error must return False and delete must not be called.
         adapter.delete_message.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_delete_message_raises_is_swallowed(self):
-        """If delete_message itself raises (network error, permissions), the
-        exception must be silently swallowed — _try_strip_cursor is best-effort."""
-        from gateway.platforms.base import SendResult
-
-        consumer, adapter = self._make_consumer()
-        adapter.edit_message = AsyncMock(
-            return_value=SendResult(success=False, error="flood_control:260")
-        )
-        adapter.delete_message = AsyncMock(side_effect=RuntimeError("network error"))
-
-        # Must not raise even though delete_message throws.
-        await consumer._try_strip_cursor()

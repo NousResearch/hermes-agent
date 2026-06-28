@@ -67,6 +67,24 @@ async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_ignores_imessage_object_placeholder_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Voice notes may arrive as U+FFFC placeholder text followed by media.
+
+    Dispatching the placeholder starts a bogus text turn; the real voice event
+    then lands during that turn and triggers the gateway's busy interrupt ack.
+    Drop placeholder-only text so only the actual voice/attachment is processed.
+    """
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_dm_event("\ufffc", msg_id="placeholder"))
+
+    assert captured == []
+
+
+@pytest.mark.asyncio
 async def test_dispatch_group_type(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     captured = _capture(adapter, monkeypatch)

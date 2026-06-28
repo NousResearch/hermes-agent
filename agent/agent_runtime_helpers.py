@@ -1621,6 +1621,20 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         if (new_provider or "").strip().lower() == "moa":
             from agent.moa_loop import MoAClient
 
+            # MoA is a virtual chat-completions facade: ``MoAClient`` exposes
+            # only ``chat.completions.create()`` and the runtime carries a
+            # non-HTTP ``base_url`` ("moa://local"). If the session was
+            # previously on a provider with a different ``api_mode`` (e.g.
+            # ``codex_responses`` from a codex slot) the conversation loop
+            # would route the primary call through ``client.responses.create``
+            # or an OpenAI SDK bound to the placeholder URL, returning 404 and
+            # falling back to a reference model. Force ``chat_completions`` so
+            # the existing ``elif agent.provider == "moa"`` branch in
+            # ``interruptible_api_call`` / ``interruptible_streaming_api_call``
+            # is the only one that can match. Mirrors the init-time force in
+            # ``agent_init.py`` (line 724).
+            agent.api_mode = "chat_completions"
+            api_mode = "chat_completions"
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}

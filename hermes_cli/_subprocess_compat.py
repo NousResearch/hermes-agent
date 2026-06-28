@@ -34,6 +34,9 @@ from typing import Sequence
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "is_windows_batch_shim",
+    "windows_batch_quote",
+    "windows_batch_safe_args",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -85,6 +88,77 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     if resolved:
         return [resolved, *argv]
     return [name, *argv]
+
+
+# -----------------------------------------------------------------------------
+# Windows batch-shim (.cmd / .bat) argument quoting
+# -----------------------------------------------------------------------------
+
+
+def is_windows_batch_shim(executable: str) -> bool:
+    """True when ``executable`` is a Windows batch shim (``.cmd`` / ``.bat``).
+
+    Only ever True on Windows.  ``npx.cmd``, ``npm.cmd``, and the
+    ``node_modules/.bin/<tool>.cmd`` shims npm drops on Windows all match.
+    Launching such a file routes execution through ``cmd.exe``, which
+    treats ``& | < > ^ ( )`` as shell metacharacters — so unquoted
+    arguments that contain them (e.g. a URL query string
+    ``...?q=a&tbm=b``) get split, and the tail is run as a bogus second
+    command.  Callers use this predicate to decide whether to route the
+    argv through :func:`windows_batch_quote`.
+    """
+    if not IS_WINDOWS or not executable:
+        return False
+    low = executable.lower()
+    return low.endswith(".cmd") or low.endswith(".bat")
+
+
+def windows_batch_quote(parts: Sequence[str]) -> str:
+    """Build a ``cmd.exe``-safe command-line string from an argv list.
+
+    When the launched program is a ``.cmd`` / ``.bat`` shim, Windows
+    routes execution through ``cmd.exe``, which treats ``& | < > ^ ( )``
+    as shell metacharacters.  ``subprocess.list2cmdline`` (used implicitly
+    when you pass a *list* to ``subprocess.Popen``) only quotes for spaces
+    and the C-runtime argv parser — it does NOT escape cmd metacharacters
+    — so an argument like ``https://x/?q=a&tbm=b`` is split at ``&`` and
+    the tail (``tbm=b``) is executed as a second command, surfacing as
+    ``'tbm' is not recognized as an internal or external command``.
+
+    Wrapping every token in double quotes neutralizes those metacharacters
+    at the ``cmd.exe`` layer, while the downstream program still receives
+    the original, unsplit argument via ``CommandLineToArgvW``.  Embedded
+    double quotes are doubled (``"`` → ``""``), the cmd.exe convention for
+    a literal quote inside a quoted token.
+
+    Returns a single string suitable for ``subprocess.Popen(cmdline, ...)``
+    with ``shell=False``.  Only meaningful when :func:`is_windows_batch_shim`
+    is True for ``parts[0]``; use :func:`windows_batch_safe_args` to apply
+    it conditionally.
+    """
+    return " ".join('"' + str(p).replace('"', '""') + '"' for p in parts)
+
+
+def windows_batch_safe_args(parts: Sequence[str]):
+    """Return ``subprocess.Popen`` args safe for a possibly-shim first token.
+
+    On Windows, if ``parts[0]`` is a ``.cmd`` / ``.bat`` shim, returns a
+    ``cmd.exe``-quoted command-line STRING (so ``& | < >`` in later
+    arguments aren't treated as shell metacharacters — see
+    :func:`windows_batch_quote`).  Otherwise returns the original argv as
+    a list, unchanged.
+
+    No-op on POSIX and for real executables (``.exe`` / extensionless),
+    so call sites can apply it unconditionally:
+
+    .. code-block:: python
+
+        proc = subprocess.Popen(windows_batch_safe_args(argv), ...)
+    """
+    parts = list(parts)
+    if parts and is_windows_batch_shim(parts[0]):
+        return windows_batch_quote(parts)
+    return parts
 
 
 # -----------------------------------------------------------------------------

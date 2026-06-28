@@ -1,0 +1,18 @@
+name: voicebox
+version: 0.1.0
+description: Local Voicebox AI voice studio via REST API (zapabob/voicebox).
+author: zapabob
+kind: backend
+platforms:
+  - windows
+  - linux
+  - darwin
+entrypoint: plugins.voicebox
+provides_tools:
+  - voicebox_status
+  - voicebox_synthesize
+  - voicebox_transcribe
+provides_cli:
+  - voicebox
+provides_tts_providers:
+  - voicebox

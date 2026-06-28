@@ -21,9 +21,12 @@ DEFAULT_IRODORI_REPO_DIR = HERMES_ROOT.parent / "irodori-tts-server"
 DEFAULT_BASE_URL = "http://127.0.0.1:8088"
 DEFAULT_MODEL = "irodori-tts"
 DEFAULT_VOICE = "none"
+HAKUA_VOICE_ID = "hakua"
 DEFAULT_SPEED = 1.0
 DEFAULT_TIMEOUT = 900
 SUPPORTED_FORMATS = {"wav", "mp3", "flac", "opus", "aac", "pcm"}
+VOICE_FILE_EXTENSIONS = (".toml", ".ogg", ".wav", ".mp3", ".flac", ".opus", ".aac")
+HAKUA_REFERENCE_NAMES = ("hakua.ogg", "Hakua.ogg", "hakua.wav", "Hakua.wav")
 
 
 @dataclass(frozen=True)
@@ -38,26 +41,84 @@ class IrodoriSettings:
     timeout: int
 
 
-def _env_path(name: str, default: Path) -> Path:
-    value = os.environ.get(name)
-    return Path(value).expanduser() if value else default
+
+def _load_tts_section() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return {}
+    tts = config.get("tts", {})
+    return tts if isinstance(tts, dict) else {}
 
 
-def settings() -> IrodoriSettings:
-    repo_dir = _env_path("IRODORI_TTS_REPO_DIR", DEFAULT_IRODORI_REPO_DIR)
-    start_script = _env_path(
-        "IRODORI_TTS_START_SCRIPT",
+def _irodori_config(tts_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    tts = tts_config if isinstance(tts_config, dict) else _load_tts_section()
+    section = tts.get("irodori", {})
+    return section if isinstance(section, dict) else {}
+
+
+def _path_value(value: Any, default: Path) -> Path:
+    if value is None or value == "":
+        return default
+    return Path(str(value)).expanduser()
+
+
+def hakua_reference_path(repo_dir: Path) -> Path | None:
+    voices_dir = repo_dir / "voices"
+    for name in HAKUA_REFERENCE_NAMES:
+        candidate = voices_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def resolve_default_voice(repo_dir: Path, configured_voice: str | None) -> str:
+    voice = (configured_voice or "").strip()
+    if voice and voice.lower() != DEFAULT_VOICE:
+        return voice
+    if hakua_reference_path(repo_dir):
+        return HAKUA_VOICE_ID
+    return DEFAULT_VOICE
+
+
+def settings(tts_config: dict[str, Any] | None = None) -> IrodoriSettings:
+    cfg = _irodori_config(tts_config)
+    repo_dir = _path_value(
+        cfg.get("repo_dir") or os.environ.get("IRODORI_TTS_REPO_DIR"),
+        DEFAULT_IRODORI_REPO_DIR,
+    )
+    start_script = _path_value(
+        cfg.get("start_script") or os.environ.get("IRODORI_TTS_START_SCRIPT"),
         HERMES_ROOT / "scripts" / "windows" / "start-irodori-tts.ps1",
     )
-    invoke_script = _env_path(
-        "IRODORI_TTS_INVOKE_SCRIPT",
+    invoke_script = _path_value(
+        cfg.get("invoke_script") or os.environ.get("IRODORI_TTS_INVOKE_SCRIPT"),
         HERMES_ROOT / "scripts" / "windows" / "invoke-irodori-tts.ps1",
     )
-    base_url = os.environ.get("IRODORI_TTS_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    model = os.environ.get("IRODORI_TTS_MODEL", DEFAULT_MODEL)
-    voice = os.environ.get("IRODORI_TTS_VOICE", DEFAULT_VOICE)
-    speed = _float_env("IRODORI_TTS_SPEED", DEFAULT_SPEED)
-    timeout = _int_env("IRODORI_TTS_TIMEOUT", DEFAULT_TIMEOUT)
+    base_url = str(
+        cfg.get("base_url")
+        or cfg.get("url")
+        or os.environ.get("IRODORI_TTS_BASE_URL")
+        or DEFAULT_BASE_URL
+    ).rstrip("/")
+    model = str(
+        cfg.get("model") or os.environ.get("IRODORI_TTS_MODEL") or DEFAULT_MODEL
+    )
+    configured_voice = cfg.get("voice") or os.environ.get("IRODORI_TTS_VOICE")
+    voice = resolve_default_voice(
+        repo_dir,
+        str(configured_voice) if configured_voice else None,
+    )
+    speed = _float_value(
+        cfg.get("speed", os.environ.get("IRODORI_TTS_SPEED")),
+        DEFAULT_SPEED,
+    )
+    timeout = _int_value(
+        cfg.get("timeout", os.environ.get("IRODORI_TTS_TIMEOUT")),
+        DEFAULT_TIMEOUT,
+    )
     return IrodoriSettings(
         repo_dir=repo_dir,
         start_script=start_script,
@@ -70,18 +131,26 @@ def settings() -> IrodoriSettings:
     )
 
 
-def _float_env(name: str, default: float) -> float:
+def _float_value(value: Any, default: float) -> float:
     try:
-        return float(os.environ.get(name, default))
+        return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _int_value(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    return _float_value(os.environ.get(name), default)
 
 
 def _int_env(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return default
+    return _int_value(os.environ.get(name), default)
 
 
 def powershell_path() -> str | None:
@@ -119,11 +188,12 @@ def server_health(base_url: str | None = None, timeout: float = 3.0) -> dict[str
         }
 
 
-def status_payload() -> dict[str, Any]:
-    cfg = settings()
+def status_payload(tts_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = settings(tts_config)
     ps = powershell_path()
     curl_path = shutil.which("curl.exe") or shutil.which("curl")
     health = server_health(cfg.base_url)
+    hakua_ref = hakua_reference_path(cfg.repo_dir)
     checks = {
         "repo_dir": cfg.repo_dir.exists(),
         "start_script": cfg.start_script.exists(),
@@ -144,6 +214,11 @@ def status_payload() -> dict[str, Any]:
             "powershell": ps,
             "curl": curl_path,
         },
+        "hakua_ref": {
+            "path": str(hakua_ref) if hakua_ref else None,
+            "present": hakua_ref is not None,
+            "default_voice": cfg.voice,
+        },
         "defaults": {
             "base_url": cfg.base_url,
             "model": cfg.model,
@@ -154,16 +229,25 @@ def status_payload() -> dict[str, Any]:
     }
 
 
-def list_local_voices() -> list[dict[str, str]]:
-    cfg = settings()
-    voices = [{"id": DEFAULT_VOICE, "name": "Default Irodori voice"}]
+def list_local_voices(tts_config: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    cfg = settings(tts_config)
+    voices = [{"id": DEFAULT_VOICE, "name": "Default Irodori voice", "display": "Default Irodori voice"}]
+    seen = {DEFAULT_VOICE}
     voices_dir = cfg.repo_dir / "voices"
-    if voices_dir.exists():
-        for path in sorted(voices_dir.glob("*.toml")):
+    if not voices_dir.exists():
+        return voices
+
+    for ext in VOICE_FILE_EXTENSIONS:
+        for path in sorted(voices_dir.glob(f"*{ext}")):
             voice_id = path.stem
-            if voice_id == DEFAULT_VOICE:
+            key = voice_id.lower()
+            if key in seen:
                 continue
-            voices.append({"id": voice_id, "name": voice_id})
+            seen.add(key)
+            display = voice_id
+            if key == HAKUA_VOICE_ID:
+                display = "Hakua (reference clone voice)"
+            voices.append({"id": voice_id, "name": voice_id, "display": display})
     return voices
 
 

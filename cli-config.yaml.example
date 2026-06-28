@@ -904,9 +904,18 @@ platform_toolsets:
 #   # Local Japanese TTS plugins:
 #   # provider: "irodori"   # requires: hermes plugins enable irodori-tts
 #   # provider: "voicevox"  # requires: hermes plugins enable voicevox-tts
+#   # provider: "voicebox"  # requires: hermes plugins enable voicebox
 #   irodori:
 #     model: "irodori-tts"
-#     voice: "none"
+#     voice: "hakua"
+#     base_url: "http://127.0.0.1:8088"
+#     repo_dir: "C:/path/to/irodori-tts-server"
+#   voicebox:
+#     base_url: "http://127.0.0.1:17493"
+#     client_id: "hermes"
+#     profile: "hakua"
+#     auto_import_profile: true
+#     irodori_ref_audio: "C:/path/to/irodori-tts-server/voices/hakua.ogg"
 #   voicevox:
 #     base_url: "http://127.0.0.1:50021"
 #     speaker: 8

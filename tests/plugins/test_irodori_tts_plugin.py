@@ -61,6 +61,7 @@ def test_synthesize_uses_windows_script(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("IRODORI_TTS_REPO_DIR", str(repo_dir))
     monkeypatch.setenv("IRODORI_TTS_INVOKE_SCRIPT", str(invoke_script))
     monkeypatch.setenv("IRODORI_TTS_BASE_URL", "http://127.0.0.1:8088")
+    monkeypatch.setattr(core, "_load_tts_section", lambda: {})
     monkeypatch.setattr(core, "powershell_path", lambda: "powershell")
     monkeypatch.setattr(core.subprocess, "run", fake_run)
 

@@ -210,6 +210,19 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Turn-exit observability hook. Fired once per turn by
+    # ``agent.turn_finalizer.finalize_turn`` ONLY for non-clean exits — i.e.
+    # any error / exhaustion / interrupt / guardrail ``_turn_exit_reason``, OR
+    # whenever the last message is a tool result (``last_msg_role == "tool"``,
+    # the agent stopped mid-work: the protocol_violation / "breads-pc"
+    # premature-stop class). A healthy ``text_response(finish_reason=stop)``
+    # exit with ``last_msg_role != "tool"`` never fires it. Observers only:
+    # return values are ignored; a failing handler never breaks finalization.
+    #
+    # Kwargs: reason: str, model: str, session_id: str | None,
+    #   turn_id: str | None, last_msg_role: str | None, api_calls: int,
+    #   tool_turns: int, response_len: int.
+    "turn_failed",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

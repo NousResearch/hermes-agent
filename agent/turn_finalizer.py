@@ -27,6 +27,23 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _should_emit_turn_failed(reason, last_msg_role) -> bool:
+    """Return True when the ``turn_failed`` hook should fire for this exit.
+
+    Fire for every NON-clean turn exit:
+      * the agent stopped mid-work — ``last_msg_role == "tool"`` (the
+        protocol_violation / "breads-pc" premature-stop class), OR
+      * the reason is anything other than a healthy ``text_response(...)``
+        completion (errors, exhaustion, interrupt, guardrail, etc.).
+
+    Do NOT fire on a healthy completion: a ``text_response(...)`` exit whose
+    last message is not a pending tool result. Mirrors the
+    ``normal_text_response`` classification used for the diagnostic log.
+    """
+    normal_text_response = str(reason).startswith("text_response(")
+    return last_msg_role == "tool" or not normal_text_response
+
+
 def finalize_turn(
     agent,
     *,
@@ -252,6 +269,29 @@ def finalize_turn(
         )
     else:
         logger.info(_diag_msg, *_diag_args)
+
+    # Plugin hook: turn_failed
+    # Fired once per turn at the same point the turn-exit diagnostic is
+    # logged, reusing the exact diag fields (no new computation). Observers
+    # only — for Phase-0 agent-failure observability capture. Gated to
+    # non-clean exits via the shared classification so healthy turns stay
+    # quiet, and wrapped so a failing handler never breaks finalization.
+    if _should_emit_turn_failed(_turn_exit_reason, _last_msg_role):
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "turn_failed",
+                reason=str(_turn_exit_reason),
+                model=agent.model,
+                session_id=agent.session_id,
+                turn_id=turn_id,
+                last_msg_role=_last_msg_role,
+                api_calls=api_call_count,
+                tool_turns=_turn_tool_count,
+                response_len=_resp_len,
+            )
+        except Exception as exc:
+            logger.warning("turn_failed hook failed: %s", exc)
 
     # File-mutation verifier footer.
     # If one or more ``write_file`` / ``patch`` calls failed during this

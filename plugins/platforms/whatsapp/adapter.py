@@ -418,6 +418,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._human_cascade_max_total_chars = self._coerce_int_extra(
             "human_cascade_max_total_chars", 900, env_var="WHATSAPP_HUMAN_CASCADE_MAX_TOTAL_CHARS"
         )
+        self._human_cascade_min_total_chars = self._coerce_int_extra(
+            "human_cascade_min_total_chars", 420
+        )
+        self._human_cascade_min_lead_chars = self._coerce_int_extra(
+            "human_cascade_min_lead_chars", 40
+        )
         self._human_cascade_max_bubble_chars = self._coerce_int_extra(
             "human_cascade_max_bubble_chars", 320, env_var="WHATSAPP_HUMAN_CASCADE_MAX_BUBBLE_CHARS"
         )
@@ -511,6 +517,43 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 structured_lines += 1
         return structured_lines >= 3
 
+    @staticmethod
+    def _word_count(text: str) -> int:
+        return len(re.findall(r"\b[\w'’.-]+\b", text))
+
+    def _is_substantive_cascade_lead(self, paragraph: str) -> bool:
+        """Return True when a paragraph is worth its own WhatsApp bubble."""
+        stripped = paragraph.strip()
+        if self._looks_structured_outbound(stripped):
+            return False
+        if len(stripped) < self._human_cascade_min_lead_chars:
+            return False
+        return self._word_count(stripped) >= 6
+
+    def _should_human_cascade(self, text: str, paragraphs: list[str], *, force: bool) -> bool:
+        """Gate human cascade on reading value, not just blank-line presence."""
+        if force:
+            return True
+        min_total = self._human_cascade_min_total_chars
+        if min_total > 0 and len(text) < min_total:
+            return False
+        return self._is_substantive_cascade_lead(paragraphs[0])
+
+    def _merge_structured_tail(self, paragraphs: list[str], max_bubbles: int) -> list[str] | None:
+        """Return lead paragraphs + glued structured tail, or None if not worth cascading."""
+        lead_limit = max(1, max_bubbles - 1)
+        lead: list[str] = []
+        for paragraph in paragraphs:
+            if len(lead) >= lead_limit or self._looks_structured_outbound(paragraph):
+                break
+            lead.append(paragraph)
+        if not lead or len(lead) >= len(paragraphs):
+            return None
+        if not self._is_substantive_cascade_lead(lead[0]):
+            return None
+        tail = "\n\n".join(paragraphs[len(lead):]).strip()
+        return [*lead, tail]
+
     def _split_outgoing_text(
         self,
         formatted: str,
@@ -558,19 +601,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         max_bubbles = self._human_cascade_max_bubbles
         if max_bubbles <= 1:
             return self.truncate_message(formatted, limit), False
+        if not self._should_human_cascade(text, paragraphs, force=force_cascade):
+            return self.truncate_message(formatted, limit), False
 
         merged_tail = False
         if not force_cascade and self._looks_structured_outbound(text):
-            lead_limit = max(1, max_bubbles - 1)
-            lead: list[str] = []
-            for paragraph in paragraphs:
-                if len(lead) >= lead_limit or self._looks_structured_outbound(paragraph):
-                    break
-                lead.append(paragraph)
-            if not lead or len(lead) >= len(paragraphs):
+            merged = self._merge_structured_tail(paragraphs, max_bubbles)
+            if merged is None:
                 return self.truncate_message(formatted, limit), False
-            tail = "\n\n".join(paragraphs[len(lead):]).strip()
-            paragraphs = [*lead, tail]
+            paragraphs = merged
             merged_tail = True
 
         if len(paragraphs) > max_bubbles and not force_cascade:

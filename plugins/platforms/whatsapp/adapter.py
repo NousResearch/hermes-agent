@@ -543,10 +543,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ):
             return self.truncate_message(formatted, limit), False
 
-        max_total = self._human_cascade_max_total_chars
-        if not force_cascade and max_total > 0 and len(text) > max_total:
-            return self.truncate_message(formatted, limit), False
-
+        # Do not reject long prose up front.  If a reply starts as a natural
+        # multi-paragraph chat but grows into a longer answer, still send the
+        # first few clean paragraphs as human-paced bubbles and fold/chunk the
+        # rest later.  Code/structured payloads are guarded above.
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
         if len(paragraphs) < 2:
             return self.truncate_message(formatted, limit), False
@@ -568,13 +568,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         max_bubble = self._human_cascade_max_bubble_chars
         if not force_cascade and max_bubble > 0:
-            normal_bubbles = paragraphs[:-1] if merged_tail else paragraphs
+            # Keep the lead-in bubbles compact; the final/tail bubble can be
+            # longer and will be chunked by WhatsApp's normal safety splitter.
+            normal_bubbles = paragraphs[:-1]
             if any(len(paragraph) > max_bubble for paragraph in normal_bubbles):
                 return self.truncate_message(formatted, limit), False
-            if merged_tail:
-                merged_limit = self._human_cascade_max_merged_bubble_chars or (max_bubble * 2)
-                if merged_limit > 0 and len(paragraphs[-1]) > merged_limit:
-                    return self.truncate_message(formatted, limit), False
+            # The merged tail may be long.  Keep the first bubbles human-sized
+            # and let the normal WhatsApp chunker handle the tail, instead of
+            # collapsing the whole answer into one wall of text.
 
         chunks: list[str] = []
         for idx, paragraph in enumerate(paragraphs):

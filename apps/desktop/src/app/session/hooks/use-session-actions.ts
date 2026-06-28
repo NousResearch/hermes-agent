@@ -252,6 +252,10 @@ function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): 
   return session.id === storedSessionId || session._lineage_root_id === storedSessionId
 }
 
+function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
+  return (session?.message_count ?? 0) > 0
+}
+
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
@@ -652,7 +656,7 @@ export function useSessionActions({
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
       if (cachedRuntimeId && cachedState) {
-        const stored = $sessions.get().find(session => session.id === storedSessionId)
+        const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -666,41 +670,46 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
         }
 
-        setFreshDraftReady(false)
-        clearNotifications()
-        setSelectedStoredSessionId(storedSessionId)
-        selectedStoredSessionIdRef.current = storedSessionId
-        setActiveSessionId(cachedRuntimeId)
-        activeSessionIdRef.current = cachedRuntimeId
-        syncSessionStateToView(cachedRuntimeId, cachedViewState)
-        setCurrentCwd(cachedViewState.cwd)
-        setCurrentBranch(cachedViewState.branch)
-        setSessionStartedAt(Date.now())
-
-        try {
-          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
-
-          if (!isCurrentResume()) {
-            return
-          }
-
-          if (usage) {
-            setCurrentUsage(current => ({ ...current, ...usage }))
-          }
-
-          return
-        } catch {
-          // The cached runtime id was minted by a prior backend instance. A
-          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
-          // and respawned across a profile swap mints fresh ids, so this mapping
-          // now 404s ("session not found"). Drop it and fall through to a full
-          // resume that rebinds a live runtime id.
-          if (!isCurrentResume()) {
-            return
-          }
-
+        if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+        } else {
+          setFreshDraftReady(false)
+          clearNotifications()
+          setSelectedStoredSessionId(storedSessionId)
+          selectedStoredSessionIdRef.current = storedSessionId
+          setActiveSessionId(cachedRuntimeId)
+          activeSessionIdRef.current = cachedRuntimeId
+          syncSessionStateToView(cachedRuntimeId, cachedViewState)
+          setCurrentCwd(cachedViewState.cwd)
+          setCurrentBranch(cachedViewState.branch)
+          setSessionStartedAt(Date.now())
+
+          try {
+            const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (usage) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+
+            return
+          } catch {
+            // The cached runtime id was minted by a prior backend instance. A
+            // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+            // and respawned across a profile swap mints fresh ids, so this mapping
+            // now 404s ("session not found"). Drop it and fall through to a full
+            // resume that rebinds a live runtime id.
+            if (!isCurrentResume()) {
+              return
+            }
+
+            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+            sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+          }
         }
       }
 
@@ -714,7 +723,7 @@ export function useSessionActions({
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
-      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
       applyStoredSessionPreviewRuntimeInfo(stored)
 
       if (stored) {
@@ -803,6 +812,15 @@ export function useSessionActions({
           preferredMessages === currentMessages
             ? currentMessages
             : preserveLocalAssistantErrors(preferredMessages, currentMessages)
+
+        if (sessionShouldHaveTranscript(stored) && messagesForView.length === 0) {
+          setActiveSessionId(null)
+          activeSessionIdRef.current = null
+          setResumeFailedSessionId(storedSessionId)
+          resumedRunning = false
+
+          return
+        }
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id

@@ -170,6 +170,25 @@ class TestAuthHeaders:
         text = "the authorization model is fully open"
         assert redact_sensitive_text(text) == text
 
+    def test_token_flush_against_double_quote_preserves_quote(self):
+        # Regression for #43083: a token sitting flush against a closing
+        # double quote must NOT pull that quote into the mask. Greedy \S+
+        # used to eat it, turning value corruption into syntax corruption
+        # (unterminated quote → shell EOF).
+        text = 'curl -H "Authorization: Bearer sk-abcdef1234567890"'
+        result = redact_sensitive_text(text)
+        assert "sk-abcdef1234567890" not in result
+        assert result.count('"') == 2, result  # both quotes survive
+        assert result.endswith('"'), result
+
+    def test_token_flush_against_single_quote_preserves_quote(self):
+        # Regression for #43083: same as above with single quotes (Python
+        # f-string context). The closing ' must survive the mask.
+        text = "auth = f'Authorization: Bearer {placeholder}'"
+        result = redact_sensitive_text(text)
+        assert result.count("'") == 2, result
+        assert result.endswith("'"), result
+
 
 class TestApiKeyHeaders:
     def test_x_api_key_header_masked(self):

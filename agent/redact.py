@@ -173,8 +173,15 @@ _JSON_FIELD_RE = re.compile(
 # while the header name and scheme word are preserved for debuggability. The
 # previous rule only matched ``Bearer``, so ``Basic <base64 user:pass>`` and
 # ``token <pat>`` leaked verbatim into logs/transcripts.
+#
+# The credential class excludes quote characters (``"`` / ``'``): a token sitting
+# flush against a closing quote (``"Authorization: Bearer sk-..."``) must not pull
+# that quote into the match, or masking turns value corruption into *syntax*
+# corruption — the closing quote vanishes and the command/string no longer parses
+# (unterminated quote → shell EOF / Python SyntaxError). Real credentials never
+# contain ``"`` or ``'``, so excluding them is safe. See #43083.
 _AUTH_HEADER_RE = re.compile(
-    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(\S+)",
+    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)",
     re.IGNORECASE,
 )
 

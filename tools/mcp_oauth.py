@@ -816,25 +816,28 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> int:
-    """Pick or validate the OAuth callback port.
+def _configure_callback_port(cfg: dict) -> "OAuthCallbackServer":
+    """Resolve the OAuth callback port and bind the callback server.
 
-    Stores the resolved port into ``cfg['_resolved_port']`` so sibling
-    helpers (and the manager) can read it from the same dict. Returns the
-    resolved port.
+    Creates and starts an :class:`OAuthCallbackServer` so the port is
+    consumed immediately — no TOCTOU gap between port discovery and
+    actual server startup (issue #34260).  Stores the server in
+    ``cfg['_callback_server']`` and the resolved port in
+    ``cfg['_resolved_port']``.
 
-    NOTE: also sets the legacy module-level ``_oauth_port`` so existing
-    calls to ``_wait_for_callback`` keep working. The legacy global is
-    the root cause of issue #5344 (port collision on concurrent OAuth
-    flows); replacing it with a ContextVar is out of scope for this
-    consolidation PR.
+    Also sets the legacy module-level ``_oauth_port`` so existing
+    callers of ``_wait_for_callback`` that haven't been migrated to
+    ``functools.partial`` yet keep working.  The legacy global will be
+    removed in a follow-up PR once all consumers use the server instance.
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    port = _find_free_port() if requested == 0 else requested
-    cfg["_resolved_port"] = port
-    _oauth_port = port  # legacy consumer: _wait_for_callback reads this
-    return port
+    server = OAuthCallbackServer(port=requested)
+    server.start()
+    cfg["_resolved_port"] = server.port
+    cfg["_callback_server"] = server
+    _oauth_port = server.port  # legacy: _wait_for_callback + _redirect_handler compat
+    return server
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":

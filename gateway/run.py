@@ -9167,20 +9167,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _final_text = str(_agent_result.get("final_response") or "")
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
-                # Skip for empty responses (interrupted / errored) — the
-                # judge would almost always say "continue" and we'd loop
-                # on error. Let the user drive the next turn.
-                if _final_text.strip():
-                    try:
-                        session_entry = self.session_store.get_or_create_session(source)
-                    except Exception:
-                        session_entry = None
-                    if session_entry is not None:
-                        await self._post_turn_goal_continuation(
-                            session_entry=session_entry,
-                            source=source,
-                            final_response=_final_text,
-                        )
+                # NOTE: _final_text is often empty here even on a successful
+                # turn — when the reply was streamed (or the run was
+                # superseded) _handle_message_with_agent returns None / no
+                # final_response, because the text was already delivered
+                # out-of-band. Previously we skipped the goal hook on empty
+                # text, which silently stalled every streamed /goal at
+                # turns_used=0 (the judge never ran). Always invoke the hook
+                # when a session resolves; it recovers the real last response
+                # from the transcript when needed and is a cheap no-op when no
+                # goal is active.
+                try:
+                    session_entry = self.session_store.get_or_create_session(source)
+                except Exception:
+                    session_entry = None
+                if session_entry is not None:
+                    await self._post_turn_goal_continuation(
+                        session_entry=session_entry,
+                        source=source,
+                        final_response=_final_text,
+                    )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
@@ -11390,6 +11396,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await _deliver()
 
+    def _recover_last_assistant_text(self, session_id: str) -> str:
+        """Most recent assistant message text for a session, or "".
+
+        The goal-continuation hook needs the turn's final reply, but streamed
+        turns return no final_response to the caller (it was delivered
+        out-of-band). Reading the persisted transcript recovers the real last
+        assistant turn so the judge can evaluate it instead of being skipped.
+        """
+        if not session_id:
+            return ""
+        try:
+            from hermes_cli.goals import _get_session_db
+            db = _get_session_db()
+            if db is None:
+                return ""
+            msgs = db.get_messages(session_id)
+        except Exception as exc:
+            logger.debug("goal continuation: transcript recovery failed: %s", exc)
+            return ""
+        for m in reversed(msgs or []):
+            if m.get("role") != "assistant":
+                continue
+            content = m.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+            # Multimodal turns store content as a list of parts.
+            if isinstance(content, list):
+                joined = " ".join(
+                    p.get("text", "")
+                    for p in content
+                    if isinstance(p, dict) and p.get("text")
+                ).strip()
+                if joined:
+                    return joined
+        return ""
+
     async def _post_turn_goal_continuation(
         self,
         *,
@@ -11421,6 +11463,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         if not mgr.is_active():
+            return
+
+        # Streamed replies leave `final_response` empty (the inner handler
+        # returned None because the text was delivered out-of-band). Recover
+        # the turn's real last assistant message from the persisted transcript
+        # so the judge evaluates actual progress instead of being skipped —
+        # the skip is what stalled streamed /goal loops at turns_used=0.
+        if not (final_response or "").strip():
+            final_response = self._recover_last_assistant_text(sid)
+        if not (final_response or "").strip():
+            # Genuinely empty turn (interrupted / errored). Skip — judging an
+            # empty reply would just say "continue" and busy-loop.
             return
 
         try:

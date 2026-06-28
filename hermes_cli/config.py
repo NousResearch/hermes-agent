@@ -939,6 +939,16 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Intent-ack continuation: when the model opens a turn by narrating an
+        # action it will take ("I'll go check the logs...") but emits no tool
+        # call, intercept the turn-end, inject a "continue now, execute the
+        # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
+        # per turn). This is the corrective sibling of tool_use_enforcement (the
+        # preventive prompt-side guard). Values: "auto" (default — fires only on
+        # the codex_responses api_mode, the historical behavior), true (all
+        # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
+        # false (never), or a list of model-name substrings to match.
+        "intent_ack_continuation": "auto",
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating

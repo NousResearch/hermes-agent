@@ -4637,14 +4637,20 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
+                from agent.agent_runtime_helpers import (
+                    intent_ack_continuation_mode,
+                )
+
+                _ack_mode = intent_ack_continuation_mode(agent)
                 if (
-                    agent.api_mode == "codex_responses"
+                    _ack_mode != "off"
                     and agent.valid_tool_names
                     and codex_ack_continuations < 2
                     and agent._looks_like_codex_intermediate_ack(
                         user_message=user_message,
                         assistant_content=final_response,
                         messages=messages,
+                        require_workspace=(_ack_mode == "codex_only"),
                     )
                 ):
                     codex_ack_continuations += 1

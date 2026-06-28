@@ -1116,7 +1116,8 @@ KANBAN_COMPLETE_SCHEMA = {
     "description": (
         "Mark your current task done with a structured handoff for "
         "downstream workers and humans. Prefer ``summary`` for a "
-        "human-readable 1-3 sentence description of what you did; put "
+        "short human-readable conclusion: 1-3 sentences, outcome first, "
+        "then evidence and remaining risk only. Put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
         "``summary`` or ``result`` is required. If you created new "
@@ -1140,7 +1141,9 @@ KANBAN_COMPLETE_SCHEMA = {
             "summary": {
                 "type": "string",
                 "description": (
-                    "Human-readable handoff, 1-3 sentences. Appears in "
+                    "Human-readable handoff, 1-3 short sentences: outcome, "
+                    "evidence, remaining risk/next action. No long logs or "
+                    "technical rambling. Appears in "
                     "Run History on the dashboard and in downstream "
                     "workers' context."
                 ),
@@ -1281,7 +1284,10 @@ KANBAN_COMMENT_SCHEMA = {
     "description": (
         "Append a comment to a task's thread. Use for durable notes "
         "that should outlive this run (questions for the next worker, "
-        "partial findings, rationale). Ephemeral reasoning doesn't "
+        "partial findings, rationale). Write concise, human-readable "
+        "comments: short statements, concrete facts, next action/blocker. "
+        "Do not paste raw logs, private reasoning, or verbose technical "
+        "narratives. Ephemeral reasoning doesn't "
         "belong here — use your normal response instead."
     ),
     "parameters": {
@@ -1296,7 +1302,11 @@ KANBAN_COMMENT_SCHEMA = {
             },
             "body": {
                 "type": "string",
-                "description": "Markdown-supported comment body.",
+                "description": (
+                    "Markdown-supported comment body. Keep it short and useful: "
+                    "what changed, evidence, blocker/next action. Avoid raw logs "
+                    "and verbose implementation detail."
+                ),
             },
             "board": _board_schema_prop(),
         },

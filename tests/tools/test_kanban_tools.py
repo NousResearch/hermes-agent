@@ -14,6 +14,29 @@ import os
 import pytest
 
 
+def test_kanban_agent_comment_and_completion_guidance_stays_concise():
+    """Kanban comments/conclusions are read by humans, not just by agents."""
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    from tools.kanban_tools import KANBAN_COMMENT_SCHEMA, KANBAN_COMPLETE_SCHEMA
+
+    comment_desc = KANBAN_COMMENT_SCHEMA["description"]
+    comment_body_desc = KANBAN_COMMENT_SCHEMA["parameters"]["properties"]["body"]["description"]
+    complete_desc = KANBAN_COMPLETE_SCHEMA["description"]
+    summary_desc = KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]["summary"]["description"]
+
+    assert "concise, human-readable" in comment_desc
+    assert "Do not paste raw logs" in comment_desc
+    assert "private reasoning" in comment_desc
+    assert "verbose technical" in comment_desc
+    assert "Keep it short and useful" in comment_body_desc
+    assert "blocker/next action" in comment_body_desc
+    assert "1-3 sentences, outcome first" in complete_desc
+    assert "1-3 short sentences" in summary_desc
+    assert "No long logs" in summary_desc
+    assert "Keep notes short" in KANBAN_GUIDANCE
+    assert "outcome, evidence, and remaining risk only" in KANBAN_GUIDANCE
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------

@@ -1300,6 +1300,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
+            attempted_legacy_fallback = False
             for i, chunk_kwargs in enumerate(chunks_iterable):
                 kwargs = {
                     "channel": chat_id,
@@ -1314,7 +1315,56 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                try:
+                    last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                except Exception as e:
+                    # Slack rejected a markdown-block payload? Retry once
+                    # with the legacy text= + mrkdwn=true path. This catches
+                    # invalid_blocks / markdown_text_too_long / msg_too_long
+                    # (the family of errors that means "blocks not accepted
+                    # here", not auth/network failures). #53893 item 3.
+                    if (
+                        is_blocks_mode
+                        and not attempted_legacy_fallback
+                        and self._is_markdown_block_rejection(e)
+                    ):
+                        attempted_legacy_fallback = True
+                        err_code = "?"
+                        resp = getattr(e, "response", None)
+                        if isinstance(resp, dict):
+                            err_code = resp.get("error", "?")
+                        logger.info(
+                            "[Slack] markdown-block payload rejected (%s); "
+                            "retrying send() as legacy mrkdwn",
+                            err_code,
+                        )
+                        legacy_payload = self.format_message(content)
+                        legacy_chunks = self.truncate_message(
+                            legacy_payload, self.MAX_MESSAGE_LENGTH
+                        )
+                        # Replace the remaining chunk plan with legacy text
+                        # sends so we don't keep poking the rejected blocks
+                        # path. The first legacy send re-uses the thread +
+                        # broadcast flags from the original first chunk.
+                        chunks_iterable = [
+                            {"text": c, "mrkdwn": True}
+                            for c in legacy_chunks
+                        ]
+                        # Restart the loop at i=0 with legacy chunks; preserve
+                        # thread_ts/broadcast for the first message only.
+                        for j, legacy_kwargs in enumerate(chunks_iterable):
+                            legacy_kwargs = {
+                                "channel": chat_id,
+                                "mrkdwn": True,
+                                **legacy_kwargs,
+                            }
+                            if thread_ts:
+                                legacy_kwargs["thread_ts"] = thread_ts
+                                if broadcast and j == 0:
+                                    legacy_kwargs["reply_broadcast"] = True
+                            last_result = await self._get_client(chat_id).chat_postMessage(**legacy_kwargs)
+                        break
+                    raise
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1403,7 +1453,33 @@ class SlackAdapter(BasePlatformAdapter):
             }
             if "blocks" in payload:
                 update_kwargs["blocks"] = payload["blocks"]
-            await self._get_client(chat_id).chat_update(**update_kwargs)
+            try:
+                await self._get_client(chat_id).chat_update(**update_kwargs)
+            except Exception as e:
+                # Slack rejected the markdown-block payload — retry once with
+                # the legacy text= + mrkdwn=true path AND clear stale blocks so
+                # Slack doesn't render the prior blocks alongside the new text
+                # on clients that already cached them (#53893 item 3).
+                if "blocks" in payload and self._is_markdown_block_rejection(e):
+                    err_code = "?"
+                    resp = getattr(e, "response", None)
+                    if isinstance(resp, dict):
+                        err_code = resp.get("error", "?")
+                    logger.info(
+                        "[Slack] markdown-block edit rejected (%s); "
+                        "retrying chat_update as legacy mrkdwn with blocks=[]",
+                        err_code,
+                    )
+                    legacy = self.format_message(content)[: self.MAX_MESSAGE_LENGTH]
+                    await self._get_client(chat_id).chat_update(
+                        channel=chat_id,
+                        ts=message_id,
+                        text=legacy,
+                        mrkdwn=True,
+                        blocks=[],
+                    )
+                else:
+                    raise
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)
@@ -1963,6 +2039,34 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Legacy path: convert to Slack mrkdwn syntax.
         return {"text": self.format_message(content)}
+
+    @staticmethod
+    def _is_markdown_block_rejection(e: BaseException) -> bool:
+        """True if Slack rejected a markdown-block payload worth a legacy retry.
+
+        SlackApiError carries a ``.response`` dict with an ``error`` field set
+        to one of these codes when a Block Kit payload is malformed or too
+        large. They're recoverable by retrying the legacy ``text=`` +
+        ``mrkdwn=true`` path (#53893 item 3, tw0316 review).
+
+        Non-markdown errors (network failures, auth errors, rate limits) must
+        NOT match — those are not mitigated by switching to mrkdwn and the
+        retry would only double the failure.
+        """
+        recoverable_codes = {
+            "invalid_blocks",
+            "markdown_text_too_long",
+            "msg_too_long",
+        }
+        # SlackApiError.response is a dict; our test helper mirrors the shape.
+        resp = getattr(e, "response", None)
+        if isinstance(resp, dict) and resp.get("error") in recoverable_codes:
+            return True
+        # Fallback: some errors surface as bare message strings. Match any
+        # known code substring in the message so SDK-version differences
+        # (or plain ValueError wraps from slack-bolt adapters) still retry.
+        msg = str(e)
+        return any(code in msg for code in recoverable_codes)
 
     @staticmethod
     def _strip_markdown_for_fallback(content: str) -> str:

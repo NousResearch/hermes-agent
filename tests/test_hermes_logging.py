@@ -818,6 +818,79 @@ class TestAddRotatingHandler:
                 h.close()
 
 
+class TestWindowsConcurrentLogLockTimeout:
+    """Windows concurrent-log-handler lock timeouts stay inside logging."""
+
+    def _make_logger_and_handler(self, log_path: Path):
+        logger = logging.getLogger(f"_test_concurrent_lock_timeout_{log_path.stem}")
+        logger.handlers.clear()
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+
+        handler = hermes_logging._ManagedRotatingFileHandler(
+            str(log_path), maxBytes=1, backupCount=1, encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        return logger, handler
+
+    def test_helper_only_matches_windows_concurrent_lock_timeout(self):
+        with patch.object(hermes_logging.sys, "platform", "win32"):
+            assert hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("Cannot acquire lock after 20 attempts")
+            )
+            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("some other logging failure")
+            )
+
+        with patch.object(hermes_logging.sys, "platform", "linux"):
+            assert not hermes_logging._is_windows_concurrent_log_lock_timeout(
+                RuntimeError("Cannot acquire lock after 20 attempts")
+            )
+
+    def test_lock_timeout_during_emit_is_suppressed(self, tmp_path, capsys):
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        try:
+            with (
+                patch.object(hermes_logging.sys, "platform", "win32"),
+                patch.object(
+                    handler,
+                    "doRollover",
+                    side_effect=RuntimeError("Cannot acquire lock after 20 attempts"),
+                ),
+            ):
+                logger.info("force rollover")
+
+            captured = capsys.readouterr()
+            assert "Cannot acquire lock after 20 attempts" not in captured.err
+            assert "--- Logging error ---" not in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_other_runtime_errors_during_emit_still_use_normal_logging_error(
+        self, tmp_path, capsys,
+    ):
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        try:
+            with (
+                patch.object(hermes_logging.sys, "platform", "win32"),
+                patch.object(
+                    handler,
+                    "doRollover",
+                    side_effect=RuntimeError("unexpected rollover failure"),
+                ),
+            ):
+                logger.info("force rollover")
+
+            captured = capsys.readouterr()
+            assert "unexpected rollover failure" in captured.err
+            assert "--- Logging error ---" in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+
 class TestReadLoggingConfig:
     """_read_logging_config() reads from config.yaml."""
 

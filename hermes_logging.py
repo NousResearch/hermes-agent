@@ -115,6 +115,26 @@ def _safe_stderr():  # type: ignore[return]
     # Best-effort: if wrapping fails, return the original stream.
     return stream
 
+
+_CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after 20 attempts"
+
+
+def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
+    """Return True for concurrent-log-handler's Windows lock timeout.
+
+    On Windows Desktop, slash-command workers and the gateway can all write to
+    the same rotating log files. ``concurrent-log-handler`` serializes rollover
+    with a cross-process lock, but when another process holds that lock too
+    long it raises this RuntimeError. Logging failures should not escape into
+    Desktop chat output.
+    """
+    return (
+        sys.platform == "win32"
+        and isinstance(exc, RuntimeError)
+        and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
+    )
+
+
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
     "openai",
@@ -492,7 +512,19 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         # so the syscall is sub-microsecond on a hot file.
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
-        super().emit(record)
+        try:
+            super().emit(record)
+        except RuntimeError as exc:
+            if _is_windows_concurrent_log_lock_timeout(exc):
+                return
+            raise
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        """Suppress known Windows CLH lock timeouts instead of printing tracebacks."""
+        exc = sys.exc_info()[1]
+        if _is_windows_concurrent_log_lock_timeout(exc):
+            return
+        super().handleError(record)
 
     def _open(self):
         stream = super()._open()
@@ -500,7 +532,13 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except RuntimeError as exc:
+            if _is_windows_concurrent_log_lock_timeout(exc):
+                self._record_stream_stat()
+                return
+            raise
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.

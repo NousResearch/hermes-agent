@@ -1534,11 +1534,32 @@ function dynamicTitle(
 
   if (part.toolName === 'browser_navigate') {
     const url = findFirstUrl(args, result)
+
+    if (!url) {
+      return fallback
+    }
+
+    const failed =
+      part.isError ||
+      result.success === false ||
+      result.ok === false ||
+      Boolean(firstStringField(result, ['error']))
+
+    if (failed) {
+      const failAction = translateNow('assistant.tool.actions.failedToOpen')
+
+      return titledAction(
+        failAction,
+        translateNow('assistant.tool.titleTemplates.actionTarget', failAction, hostnameOf(url))
+      )
+    }
+
     const action = verb(translateNow('assistant.tool.actions.opening'), translateNow('assistant.tool.actions.opened'))
 
-    return url
-      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url)))
-      : fallback
+    return titledAction(
+      action,
+      translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url))
+    )
   }
 
   if (part.toolName === 'web_search') {

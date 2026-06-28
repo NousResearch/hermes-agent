@@ -1520,19 +1520,17 @@ function readVenvHome(venvRoot) {
 function getNoConsoleVenvPython(venvRoot) {
   if (!IS_WINDOWS) return getVenvPython(venvRoot)
 
-  // Prefer the venv's own pythonw shim — it carries pyvenv.cfg / site-packages
-  // wiring. Falling back to the base uv/python.org pythonw.exe skips the venv
-  // and breaks imports (yaml, hermes_cli, …) even when PYTHONPATH is patched.
-  const venvPythonw = path.join(venvRoot, 'Scripts', 'pythonw.exe')
-  if (fileExists(venvPythonw)) return venvPythonw
-
+  // The venv's ``Scripts\pythonw.exe`` is a uv launcher shim that re-execs the
+  // base console ``python.exe``, allocating a conhost/Windows Terminal window
+  // that CREATE_NO_WINDOW can't suppress. Use the base ``pythonw.exe`` directly;
+  // callers put the venv site-packages on PYTHONPATH so imports still resolve.
   const baseHome = readVenvHome(venvRoot)
   if (baseHome) {
     const basePythonw = path.join(baseHome, 'pythonw.exe')
     if (fileExists(basePythonw)) return basePythonw
   }
 
-  return venvPythonw
+  return path.join(venvRoot, 'Scripts', 'pythonw.exe')
 }
 
 function toNoConsolePython(pythonPath) {
@@ -2819,7 +2817,7 @@ function createActiveBackend(dashboardArgs) {
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT],
+      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
       venvRoot: VENV_ROOT
     }),
     root: ACTIVE_HERMES_ROOT,

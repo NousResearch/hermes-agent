@@ -2592,7 +2592,7 @@ class BasePlatformAdapter(ABC):
             + '. Stop the other gateway first.'
         )
         logger.error('[%s] %s', self.name, message)
-        self._set_fatal_error(f'{scope}_lock', message, retryable=False)
+        self._set_fatal_error(f'{scope}_lock', message, retryable=True)
         return False
 
     def _release_platform_lock(self) -> None:

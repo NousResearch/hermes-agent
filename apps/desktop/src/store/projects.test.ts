@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $projectScope,
@@ -6,8 +6,20 @@ import {
   ALL_PROJECTS,
   enterProject,
   exitProjectScope,
+  pickProjectFolder,
   refreshWorktrees
 } from './projects'
+
+vi.mock('@/lib/desktop-fs', () => ({
+  desktopDefaultCwd: vi.fn(),
+  isDesktopFsRemoteMode: vi.fn(),
+  selectDesktopPaths: vi.fn()
+}))
+
+const fs = await import('@/lib/desktop-fs')
+const desktopDefaultCwd = vi.mocked(fs.desktopDefaultCwd)
+const isDesktopFsRemoteMode = vi.mocked(fs.isDesktopFsRemoteMode)
+const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 
 describe('project scope', () => {
   beforeEach(() => {
@@ -48,5 +60,40 @@ describe('worktree refresh', () => {
     const before = $worktreeRefreshToken.get()
     refreshWorktrees()
     expect($worktreeRefreshToken.get()).toBe(before + 1)
+  })
+})
+
+describe('pickProjectFolder', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('uses the remote-aware directory picker locally (no backend default cwd probe)', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(false)
+    selectDesktopPaths.mockResolvedValue(['/local/repo'])
+
+    await expect(pickProjectFolder()).resolves.toBe('/local/repo')
+    expect(selectDesktopPaths).toHaveBeenCalledWith({ defaultPath: undefined, directories: true, multiple: false })
+    expect(desktopDefaultCwd).not.toHaveBeenCalled()
+  })
+
+  it('seeds the picker with the backend cwd on a remote gateway', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(true)
+    desktopDefaultCwd.mockResolvedValue({ branch: 'main', cwd: '/backend/work' })
+    selectDesktopPaths.mockResolvedValue(['/backend/work/repo'])
+
+    await expect(pickProjectFolder()).resolves.toBe('/backend/work/repo')
+    expect(selectDesktopPaths).toHaveBeenCalledWith({
+      defaultPath: '/backend/work',
+      directories: true,
+      multiple: false
+    })
+  })
+
+  it('returns null when the picker is cancelled (empty selection)', async () => {
+    isDesktopFsRemoteMode.mockReturnValue(false)
+    selectDesktopPaths.mockResolvedValue([])
+
+    await expect(pickProjectFolder()).resolves.toBeNull()
   })
 })

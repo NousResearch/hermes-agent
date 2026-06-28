@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBranch } from '@/global'
+import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths } from '@/lib/desktop-fs'
 import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
@@ -732,19 +733,18 @@ export async function copyPath(path: null | string): Promise<void> {
   }
 }
 
-// Open the native directory picker (reuses the Electron default-project-dir
-// chooser). Returns the chosen absolute path, or null when cancelled.
+// Pick a folder for a project. Routes through the remote-aware folder picker
+// (selectDesktopPaths): a remote gateway browses the BACKEND filesystem via the
+// in-app RemoteFolderPicker — where sessions actually run — while local mode
+// uses the native directory dialog. Returns the chosen absolute path, or null
+// when cancelled. Seeded with the backend's default cwd on remote so the picker
+// opens somewhere useful instead of "/".
 export async function pickProjectFolder(): Promise<null | string> {
-  const pick = window.hermesDesktop?.settings?.pickDefaultProjectDir
-
-  if (!pick) {
-    return null
-  }
-
   try {
-    const result = await pick()
+    const defaultPath = isDesktopFsRemoteMode() ? (await desktopDefaultCwd())?.cwd : undefined
+    const [dir] = await selectDesktopPaths({ defaultPath, directories: true, multiple: false })
 
-    return result.canceled ? null : result.dir
+    return dir || null
   } catch {
     return null
   }

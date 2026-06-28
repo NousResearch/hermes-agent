@@ -1,15 +1,14 @@
 import os
 import sys
 
-# Guard against a local utils/ (or other package) in CWD shadowing installed
-# hermes modules.  hermes_cli sets HERMES_PYTHON_SRC_ROOT before spawning this
-# subprocess; inserting it first ensures the installed packages win.
-_src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-if _src_root and _src_root not in sys.path:
-    sys.path.insert(0, _src_root)
-# Strip '' and '.' — both resolve to CWD at import time and can let a local
-# directory shadow installed packages.
-sys.path = [p for p in sys.path if p not in {"", "."}]
+# Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
+# from shadowing Hermes's own top-level modules.  ``hermes_bootstrap`` lives at
+# the repo root next to this package, so importing it is safe before the guard
+# runs (its name won't collide with a user package), and it owns the canonical
+# path-hardening logic shared with the other entry points.
+import hermes_bootstrap
+
+hermes_bootstrap.harden_import_path()
 
 import json
 import logging
@@ -130,6 +129,19 @@ def _log_signal(signum: int, frame) -> None:
     timer.daemon = True
     timer.start()
 
+    # ── Flush sessions before exit ───────────────────────────────────
+    # The atexit handler (_shutdown_sessions) is registered in
+    # tui_gateway/server.py, but a worker thread holding the GIL or
+    # _stdout_lock can block atexit from completing within the grace
+    # window.  Explicitly finalize sessions here so that unpersisted
+    # messages reach state.db before the hard-exit timer fires.
+    try:
+        from tui_gateway.server import _shutdown_sessions
+
+        _shutdown_sessions()
+    except Exception:
+        pass
+
     try:
         sys.exit(0)
     except SystemExit:
@@ -192,22 +204,59 @@ def _log_exit(reason: str) -> None:
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly block until background MCP discovery finishes, up to ``timeout``.
+def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
+    """Block until background MCP discovery finishes, up to the resolved bound.
 
     MCP discovery runs in a daemon thread spawned at startup (see main()) so a
     slow/dead server can't freeze ``gateway.ready``.  But the agent snapshots
     its tool list ONCE at build time and never re-reads it, so a reachable-but-
     slow server that finishes connecting *after* the first prompt would be
-    invisible for the whole session.  Joining with a short bounded timeout
-    before the first agent build lets already-spawning fast servers land
-    without re-introducing the startup hang: a dead server simply isn't waited
-    on beyond ``timeout``.  No-op when no discovery thread was started.
+    invisible for the whole session.  Joining with a bounded timeout before the
+    first agent build lets already-spawning servers land without re-introducing
+    the startup hang: ``thread.join(timeout)`` returns the instant discovery
+    completes (so fast/no-MCP startups pay ~0s), and a dead server is simply not
+    waited on beyond the bound.  No-op when no discovery thread was started.
+
+    The bound comes from ``mcp_discovery_timeout`` in config (shared with the
+    CLI path via ``hermes_cli.mcp_startup``); ``timeout`` overrides it.
     """
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return
+    try:
+        from hermes_cli.mcp_startup import _resolve_discovery_timeout
+
+        bound = _resolve_discovery_timeout(timeout)
+    except Exception:
+        bound = timeout if timeout is not None else 0.75
+    thread.join(timeout=bound)
+
+
+def mcp_discovery_in_flight() -> bool:
+    """Return True if the background MCP discovery thread is still running.
+
+    Used by the agent-build path to decide whether to schedule a late tool
+    snapshot refresh: if discovery didn't land within the bounded
+    ``wait_for_mcp_discovery`` join, the agent was built without those tools
+    and the banner/tool count will be stale until they arrive.
+    """
+    thread = _mcp_discovery_thread
+    return thread is not None and thread.is_alive()
+
+
+def join_mcp_discovery(timeout: float | None = None) -> bool:
+    """Block until background MCP discovery finishes, up to ``timeout`` seconds.
+
+    Returns True if discovery has completed (thread absent or no longer alive),
+    False if it is still running after the timeout. Unlike
+    ``wait_for_mcp_discovery`` this accepts an unbounded/long wait and reports
+    the outcome, for the off-critical-path late-refresh waiter.
+    """
+    thread = _mcp_discovery_thread
+    if thread is None:
+        return True
     thread.join(timeout=timeout)
+    return not thread.is_alive()
 
 
 def main():
@@ -244,8 +293,11 @@ def main():
     if _has_mcp_servers:
         def _discover_mcp_background() -> None:
             try:
-                from tools.mcp_tool import discover_mcp_tools
-                discover_mcp_tools()
+                from hermes_cli.mcp_startup import (
+                    _discover_mcp_tools_without_interactive_oauth,
+                )
+
+                _discover_mcp_tools_without_interactive_oauth()
             except Exception:
                 logger.warning(
                     "Background MCP tool discovery failed", exc_info=True

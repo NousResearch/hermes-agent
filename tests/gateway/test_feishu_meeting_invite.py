@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from gateway.platforms.base import MessageEvent
-from gateway.platforms.feishu_meeting_invite import (
+from plugins.platforms.feishu.feishu_meeting_invite import (
     build_meeting_invite_prompt,
     handle_meeting_invited_event,
     parse_meeting_invited_event,
@@ -212,7 +212,7 @@ class TestMeetingInviteSendRouting(unittest.TestCase):
 
     def test_feishu_user_id_prefix_sends_with_user_id_receive_type(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         created_requests = []
 

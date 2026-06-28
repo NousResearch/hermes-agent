@@ -51,6 +51,11 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # NOTE: the desktop Project tools (project_list/create/switch) are
+    # deliberately NOT here. They only make sense where a GUI can follow the
+    # move, so they live in the `project` toolset and are enabled solely by the
+    # GUI gateway (tui_gateway/server.py::_load_enabled_toolsets) — keeping them
+    # off every CLI/messaging/cron schema (narrow waist).
     # Session history search
     "session_search",
     # Clarifying questions
@@ -59,8 +64,6 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
-    # Cross-platform messaging (gated on gateway running via check_fn)
-    "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -144,9 +147,9 @@ TOOLSETS = {
 
     "computer_use": {
         "description": (
-            "Background macOS desktop control via cua-driver — screenshots, "
-            "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
-            "or keyboard focus. Works with any tool-capable model."
+            "Background desktop control via cua-driver (macOS/Windows/Linux) — "
+            "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the "
+            "user's cursor or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
         "includes": []
@@ -155,12 +158,6 @@ TOOLSETS = {
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
-        "includes": []
-    },
-    
-    "moa": {
-        "description": "Advanced reasoning and problem-solving tools",
-        "tools": ["mixture_of_agents"],
         "includes": []
     },
     
@@ -188,13 +185,7 @@ TOOLSETS = {
         "includes": []
     },
     
-    "messaging": {
-        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
-        "includes": []
-    },
 
-    
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
@@ -228,6 +219,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "project": {
+        "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
+        "tools": ["project_list", "project_create", "project_switch"],
         "includes": []
     },
     
@@ -370,8 +367,10 @@ TOOLSETS = {
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools (including send_message,
-    # which is gated on gateway running via its check_fn).
+    # All platforms share the same core tools. Note: agents do NOT get an
+    # agent-callable send_message tool — outbound platform messaging is handled
+    # outside the agent loop (cron delivery, the gateway kanban notifier, and
+    # the `hermes send` CLI), not by the model deciding to send on its own.
     # ==========================================================================
 
     "hermes-acp": {
@@ -631,6 +630,34 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
         "tools": registry.get_tool_names_for_toolset(registry_toolset),
         "includes": [],
     }
+
+
+def bundle_non_core_tools(toolset_name: str) -> Set[str]:
+    """Return a ``hermes-*`` bundle's platform-specific tools, excluding core.
+
+    Platform bundles are defined as ``_HERMES_CORE_TOOLS + [platform extras]``.
+    When a bundle name appears in ``disabled_toolsets``, subtracting the whole
+    bundle would strip core tools (terminal, read_file, …) shared by every
+    other enabled toolset, emptying the model's tool list (#33924). This
+    returns only the bundle's non-core delta (its own extras plus those of any
+    one-level ``includes``), so disabling a bundle removes its platform tools
+    while leaving core intact.
+
+    Bundle nesting is one level deep in practice (only ``hermes-gateway``
+    includes other bundles, and those leaves don't nest further), so a single
+    ``includes`` pass is sufficient. Unknown/garbage names fall back to the
+    full resolution minus core — never re-introducing the core wipe.
+    """
+    core = set(_HERMES_CORE_TOOLS)
+    ts_def = get_toolset(toolset_name)
+    if not (ts_def and "tools" in ts_def):
+        return set(resolve_toolset(toolset_name)) - core
+    to_remove = set(ts_def["tools"]) - core
+    for inc in ts_def.get("includes", []):
+        inc_def = get_toolset(inc)
+        if inc_def and "tools" in inc_def:
+            to_remove.update(set(inc_def["tools"]) - core)
+    return to_remove
 
 
 def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:

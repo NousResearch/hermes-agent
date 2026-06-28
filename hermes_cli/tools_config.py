@@ -34,6 +34,11 @@ from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+# Platforms already warned about an all-invalid platform_toolsets list, so the
+# runtime check in _get_platform_tools warns once per platform instead of on
+# every tool resolution for a persistently-corrupt config (#38798).
+_warned_invalid_platform_toolsets: Set[str] = set()
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
@@ -63,7 +68,6 @@ CONFIGURABLE_TOOLSETS = [
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
-    ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
     ("todo",            "📋 Task Planning",             "todo"),
@@ -73,13 +77,12 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
-    ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
-    ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]
 
 
@@ -112,7 +115,7 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 
 def _xai_credentials_present() -> bool:
@@ -517,21 +520,24 @@ TOOL_CATEGORIES = {
         ],
     },
     "computer_use": {
-        "name": "Computer Use (macOS)",
+        "name": "Computer Use (macOS/Windows/Linux)",
         "icon": "🖱️",
-        "platform_gate": "darwin",
+        # Runtime backends ship for macOS, Windows, and Linux (X11 today,
+        # Wayland via XWayland). Per-host gaps surface via `computer-use doctor`.
+        "platform_gate": ["darwin", "win32", "linux"],
         "providers": [
             {
                 "name": "cua-driver (background)",
                 "badge": "★ recommended · free · local",
                 "tag": (
-                    "macOS background computer-use via SkyLight SPIs — does "
-                    "NOT steal your cursor or focus. Works with any model."
+                    "Background computer-use via cua-driver — does NOT steal "
+                    "your cursor or focus. Works with any model."
                 ),
                 "env_vars": [
                     # cua-driver reads HOME/TMPDIR from the process env, no
-                    # extra keys required. HERMES_CUA_DRIVER_VERSION is an
-                    # optional pin for reproducibility across macOS updates.
+                    # extra keys required. Set HERMES_CUA_DRIVER_CMD to use a
+                    # specific binary (e.g. a local build); there is no
+                    # version-pin env var.
                 ],
                 "post_setup": "cua_driver",
             },
@@ -565,10 +571,17 @@ TOOL_CATEGORIES = {
 }
 
 # Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
-# Used as a fallback for tools like vision/moa that just need an API key.
+# Used as a fallback for toolsets that just need an API key.
+#
+# `vision` is listed here only so it registers as a *configurable* toolset
+# (the value gates the reconfigure menu + the "[no API key]" suffix). Its
+# actual setup runs through `_configure_vision_backend()` — a full
+# provider+model picker like `hermes model` — NOT this single-key prompt, so
+# users are never forced onto OpenRouter. `_toolset_has_keys("vision")`
+# resolves via `resolve_vision_provider_client()`, so the tuple below is never
+# prompted or read for vision; it's purely a presence marker.
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
-    "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
 }
 
 
@@ -578,6 +591,22 @@ TOOLSET_ENV_REQUIREMENTS = {
 def _cua_driver_cmd() -> str:
     """Return the cua-driver executable name/path, honoring non-empty overrides."""
     return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
+
+
+def _cua_driver_env() -> dict:
+    """cua-driver child env with the Hermes telemetry policy applied.
+
+    Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
+    default; user opt-in via ``computer_use.cua_telemetry``). Falls back to the
+    current environment if the helper can't be imported, so install/status
+    never break on a telemetry-helper error.
+    """
+    try:
+        from tools.computer_use.cua_backend import cua_driver_child_env
+
+        return cua_driver_child_env()
+    except Exception:
+        return dict(os.environ)
 
 
 def _pip_install(
@@ -649,52 +678,31 @@ def _pip_install(
 
 
 
-def _check_cua_driver_asset_for_arch() -> bool:
-    """Check whether the latest CUA release ships an asset for this architecture.
-
-    Returns True if the asset likely exists (or if we cannot determine it).
-    Returns False and prints a warning when the asset is confirmed missing,
-    so callers can skip the install attempt and avoid a raw 404.
-    """
-    import platform as _plat
-    import urllib.request
-
-    machine = _plat.machine()  # "x86_64" or "arm64"
-    if machine == "arm64":
-        # arm64 (Apple Silicon) assets are always published.
-        return True
-
-    # x86_64 / Intel — probe the latest release for an architecture-specific
-    # asset before falling through to the upstream installer.
-    api_url = (
-        "https://api.github.com/repos/trycua/cua/releases/latest"
-    )
-    try:
-        req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            release = _json.loads(resp.read().decode())
-        tag = release.get("tag_name", "")
-        assets = release.get("assets", [])
-        arch_names = {"x86_64", "amd64"}
-        has_asset = any(
-            any(a in a_info.get("name", "").lower() for a in arch_names)
-            for a_info in assets
-        )
-        if not has_asset:
-            _print_warning(
-                f"    Latest CUA release ({tag}) has no Intel (x86_64) asset."
-            )
-            _print_info(
-                "    CUA Driver currently only ships Apple Silicon builds."
-            )
-            _print_info(
-                "    See: https://github.com/trycua/cua/issues/1493"
-            )
-            return False
-    except Exception:
-        # Network / API failure — proceed and let the installer handle it.
-        pass
-    return True
+# The asset-probe that lived here used to hit `/releases/latest` on
+# trycua/cua and inspect the release's asset list before piping the
+# installer to bash. It was broken in two places:
+#
+#   1. cua-driver-rs releases are marked **prerelease** on every cut,
+#      and GitHub's `/releases/latest` endpoint explicitly skips
+#      prereleases. On the live trycua/cua repo today, `/releases/latest`
+#      returns the Python `cua-agent v0.8.3` package (zero binary
+#      assets) instead of `cua-driver-rs-v0.6.0` (19 binary assets).
+#      The probe then reported "no asset for this arch" and skipped the
+#      install on every non-arm64 host — Linux x86_64, Windows, macOS
+#      Intel, Linux arm64 — even when the upstream installer would have
+#      succeeded.
+#   2. Even with the right endpoint, we'd be duplicating tag-resolution
+#      logic the upstream installer already does correctly via
+#      `CUA_DRIVER_RS_BAKED_VERSION` (auto-baked by CD on every release,
+#      with an API fallback). Drift between our probe and theirs is a
+#      maintenance hazard.
+#
+# Resolution: trust the upstream installer. For fresh installs, run
+# install.sh directly — it errors clean if the target arch has no
+# asset. For the upgrade path, `cua_driver_update_check()` (which calls
+# `cua-driver check-update --json`) gives us the canonical update
+# answer from the binary itself — same tag-resolution as the installer,
+# no Python-side duplication.
 
 
 def install_cua_driver(upgrade: bool = False) -> bool:
@@ -711,32 +719,41 @@ def install_cua_driver(upgrade: bool = False) -> bool:
       by ``hermes computer-use install --upgrade``.
 
     Returns True iff cua-driver is installed (or successfully refreshed)
-    when the function returns. macOS-only — silently returns False on
-    other platforms.
+    when the function returns. Supported on macOS, Windows, and Linux
+    (Linux is alpha). Silently returns False on unsupported platforms.
     """
     import platform as _plat
     import shutil
     import subprocess
 
-    if _plat.system() != "Darwin":
+    system = _plat.system()
+    if system not in ("Darwin", "Windows", "Linux"):
         if upgrade:
-            # Silent on non-macOS — `hermes update` calls this for every
-            # user; only macOS users with cua-driver care.
+            # Silent on unsupported platforms — `hermes update` calls this
+            # for every user; only macOS/Windows/Linux users care.
             return False
-        _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
+        _print_warning("    Computer Use (cua-driver) is unsupported on this platform; skipping.")
         return False
+
+    is_windows = system == "Windows"
+    is_linux = system == "Linux"
+
+    # The Windows installer (install.ps1) is fetched via PowerShell's `irm`,
+    # so it needs PowerShell rather than curl. macOS/Linux use curl | bash.
+    fetch_tool = "powershell" if is_windows else "curl"
 
     driver_cmd = _cua_driver_cmd()
     binary = shutil.which(driver_cmd)
 
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
-        if not shutil.which("curl"):
-            _print_warning("    curl not found — install manually:")
+        if not shutil.which(fetch_tool):
+            _print_warning(f"    {fetch_tool} not found — install manually:")
             _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
             return False
-        if not _check_cua_driver_asset_for_arch():
-            return False
+        # Pre-install asset probe deleted — see comment near the top of
+        # tools_config.py for why. install.sh has CUA_DRIVER_RS_BAKED_VERSION
+        # baked in by CD and errors cleanly on missing-arch assets.
         return _run_cua_driver_installer(label="Installing")
 
     # Already installed and caller didn't ask to upgrade → just confirm.
@@ -744,30 +761,55 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         try:
             version = subprocess.run(
                 [driver_cmd, "--version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, env=_cua_driver_env(),
             ).stdout.strip()
             _print_success(f"    {driver_cmd} already installed: {version or 'unknown version'}")
         except Exception:
             _print_success(f"    {driver_cmd} already installed.")
-        _print_info("    Grant macOS permissions if not done yet:")
-        _print_info("      System Settings > Privacy & Security > Accessibility")
-        _print_info("      System Settings > Privacy & Security > Screen Recording")
+        if is_windows:
+            _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
+            _print_info("    Windows/SmartScreen may prompt the first time it runs.")
+        elif is_linux:
+            _print_warning("    Linux support is alpha.")
+        else:
+            _print_info("    Grant macOS permissions if not done yet:")
+            _print_info("      System Settings > Privacy & Security > Accessibility")
+            _print_info("      System Settings > Privacy & Security > Screen Recording")
         return True
 
     # upgrade=True path — refresh to the latest upstream release.
-    if not shutil.which("curl"):
-        _print_warning("    curl not found — cannot refresh cua-driver.")
+    if not shutil.which(fetch_tool):
+        _print_warning(f"    {fetch_tool} not found — cannot refresh cua-driver.")
         return bool(binary)
 
-    if not _check_cua_driver_asset_for_arch():
-        return bool(binary)
+    # Pre-install asset probe deleted (see top-of-file comment). The
+    # `cua_driver_update_check()` call further down asks the installed
+    # cua-driver binary itself whether an update exists — same
+    # tag-resolution as the installer, no duplication.
+
+    # Skip the (network) re-install when the driver itself reports it's already
+    # on the latest release. Best-effort: an older driver (no check-update
+    # verb) or an offline check returns None, in which case we fall through and
+    # re-run the installer as before.
+    if binary:
+        try:
+            from tools.computer_use.cua_backend import cua_driver_update_check
+            _state = cua_driver_update_check()
+            if _state is not None and not _state.get("update_available"):
+                _print_success(
+                    f"    {driver_cmd} is already on the latest release "
+                    f"({_state.get('current_version') or 'unknown'})."
+                )
+                return True
+        except Exception:
+            pass
 
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
         try:
             before = subprocess.run(
                 [driver_cmd, "--version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, env=_cua_driver_env(),
             ).stdout.strip()
         except Exception:
             before = ""
@@ -779,7 +821,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         try:
             after = subprocess.run(
                 [driver_cmd, "--version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, env=_cua_driver_env(),
             ).stdout.strip()
             if after and after != before:
                 _print_success(f"    {driver_cmd} upgraded: {before} → {after}")
@@ -791,36 +833,101 @@ def install_cua_driver(upgrade: bool = False) -> bool:
 
 
 def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -> bool:
-    """Run the upstream cua-driver install.sh. Returns True on success.
+    """Run the upstream cua-driver installer for this platform.
 
-    The script is idempotent: it always downloads the latest release, so
-    re-running it on an already-installed system performs an upgrade.
+    The scripts are idempotent: they always download the latest release, so
+    re-running on an already-installed system performs an upgrade.
+
+    * macOS / Linux → ``curl -fsSL …/install.sh | /bin/bash``.
+    * Windows       → ``powershell -NoProfile -ExecutionPolicy Bypass -Command
+      "irm …/install.ps1 | iex"``.
     """
+    import platform as _plat
     import shutil
     import subprocess
 
-    install_cmd = (
-        "/bin/bash -c \"$(curl -fsSL "
-        "https://raw.githubusercontent.com/trycua/cua/main/"
-        "libs/cua-driver/scripts/install.sh)\""
-    )
+    system = _plat.system()
+    is_windows = system == "Windows"
+    is_linux = system == "Linux"
+
+    if is_windows:
+        # Mirror the one-liner printed by cua_driver_install_hint().
+        ps_oneliner = (
+            "irm https://raw.githubusercontent.com/trycua/cua/main/"
+            "libs/cua-driver/scripts/install.ps1 | iex"
+        )
+        install_cmd = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-Command", ps_oneliner,
+        ]
+        use_shell = False
+        manual_hint = (
+            'powershell -NoProfile -ExecutionPolicy Bypass -Command '
+            f'"{ps_oneliner}"'
+        )
+    else:
+        install_cmd = (
+            "/bin/bash -c \"$(curl -fsSL "
+            "https://raw.githubusercontent.com/trycua/cua/main/"
+            "libs/cua-driver/scripts/install.sh)\""
+        )
+        use_shell = True
+        manual_hint = install_cmd
+
     if verbose:
-        _print_info(f"    {label} cua-driver (macOS background computer-use)...")
+        _print_info(f"    {label} cua-driver (background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
     driver_cmd = _cua_driver_cmd()
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        # When not verbose (e.g. `hermes update`'s refresh), capture the
+        # installer's chatty "Next steps" wall instead of dumping it to the
+        # terminal. The combined output is logged so a failure stays
+        # debuggable. Verbose installs (interactive `computer-use install`)
+        # keep streaming live.
+        if verbose:
+            result = subprocess.run(install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env())
+        else:
+            result = subprocess.run(
+                install_cmd, shell=use_shell, timeout=300, env=_cua_driver_env(),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            # Preserve the full installer output. During `hermes update`,
+            # sys.stdout is the mirroring _UpdateOutputStream whose `_log`
+            # handle is ~/.hermes/logs/update.log — write straight to it so
+            # the captured "Next steps" wall is kept in full (success AND
+            # failure), without echoing it to the terminal.
+            if result.stdout:
+                _update_log = getattr(sys.stdout, "_log", None)
+                if _update_log is not None:
+                    try:
+                        _update_log.write(
+                            "\n--- cua-driver installer output ---\n"
+                            + result.stdout
+                            + "\n"
+                        )
+                        _update_log.flush()
+                    except Exception:
+                        pass
+                if result.returncode != 0:
+                    logger.debug("cua-driver installer output:\n%s", result.stdout)
         if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
-                _print_info("    IMPORTANT — grant macOS permissions now:")
-                _print_info("      System Settings > Privacy & Security > Accessibility")
-                _print_info("      System Settings > Privacy & Security > Screen Recording")
-                _print_info("    Both must allow the terminal / Hermes process.")
+                if is_windows:
+                    _print_info("    cua-driver may spawn a UIAccess worker (cua-driver-uia.exe);")
+                    _print_info("    Windows/SmartScreen may prompt the first time it runs.")
+                elif is_linux:
+                    _print_warning("    Linux support is alpha.")
+                else:
+                    _print_info("    IMPORTANT — grant macOS permissions now:")
+                    _print_info("      System Settings > Privacy & Security > Accessibility")
+                    _print_info("      System Settings > Privacy & Security > Screen Recording")
+                    _print_info("    Both must allow the terminal / Hermes process.")
             return True
         _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
-        _print_info(f"      {install_cmd}")
+        _print_info(f"      {manual_hint}")
         return False
     except subprocess.TimeoutExpired:
         _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")
@@ -1285,6 +1392,24 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+def enabled_mcp_server_names(config: dict) -> Set[str]:
+    """Names of MCP servers globally enabled in config.yaml.
+
+    Shared by the gateway/CLI platform resolver (``_get_platform_tools``) and
+    the cron per-job toolset resolver (``cron.scheduler``) so every path agrees
+    on MCP membership. A server is enabled unless its config sets an explicitly
+    falsey ``enabled`` (per ``_parse_enabled_flag``: false/0/no/off) — a missing
+    flag or an unrecognized value is treated as enabled.
+    """
+    mcp_servers = (config or {}).get("mcp_servers") or {}
+    return {
+        str(name)
+        for name, server_cfg in mcp_servers.items()
+        if isinstance(server_cfg, dict)
+        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+    }
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1504,13 +1629,7 @@ def _get_platform_tools(
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
-    mcp_servers = config.get("mcp_servers") or {}
-    enabled_mcp_servers = {
-        str(name)
-        for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict)
-        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
-    }
+    enabled_mcp_servers = enabled_mcp_server_names(config)
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
@@ -1535,6 +1654,31 @@ def _get_platform_tools(
     if disabled_toolsets:
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
+
+    # #38798: if this platform was explicitly configured but every toolset name
+    # is invalid (e.g. a migration or hand-edit left `hermes` instead of
+    # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends
+    # up with no native tools — silently, with no error. Surface it at the point
+    # tools are resolved for a session so an already-corrupted config is caught
+    # at runtime, not only during the next `hermes update`/`hermes doctor`.
+    _explicit = platform_toolsets.get(platform)
+    if isinstance(_explicit, list) and _explicit:
+        from toolsets import validate_toolset
+
+        _named = [str(t) for t in _explicit if isinstance(t, str) and t]
+        if (
+            _named
+            and not any(validate_toolset(t) for t in _named)
+            and platform not in _warned_invalid_platform_toolsets
+        ):
+            _warned_invalid_platform_toolsets.add(platform)
+            logger.warning(
+                "platform '%s' has no valid toolsets configured (unknown "
+                "name(s): %s) - tools will be unavailable. Run `hermes tools` "
+                "to reconfigure. See issue #38798.",
+                platform,
+                ", ".join(_named),
+            )
 
     return enabled_toolsets
 
@@ -2182,13 +2326,8 @@ def _toolset_needs_configuration_prompt(
         tts_cfg = config.get("tts", {})
         return not isinstance(tts_cfg, dict) or "provider" not in tts_cfg
     if ts_key == "web":
-        # Web works out of the box via Parallel's free Search MCP (no key), so
-        # don't force setup just because ``web.backend`` is unset — only prompt
-        # when web isn't actually usable (e.g. an explicit backend configured
-        # without its credentials). Lazy import: web_tools is heavy and most
-        # tools_config callers don't need it.
-        from tools.web_tools import check_web_api_key
-        return not check_web_api_key()
+        web_cfg = config.get("web", {})
+        return not isinstance(web_cfg, dict) or "backend" not in web_cfg
     if ts_key == "browser":
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
@@ -3010,44 +3149,157 @@ def _configure_provider(
                 img_cfg["provider"] = "fal"
 
 
+def _configure_vision_backend() -> None:
+    """Interactive vision-backend configuration.
+
+    Vision is an auxiliary task whose provider/model are resolved from
+    ``auxiliary.vision.{provider,model,base_url}`` in config.yaml (see
+    ``agent/auxiliary_client.resolve_vision_provider_client``). Rather than
+    forcing the user onto OpenRouter, let them pick any authenticated
+    provider + model — the same surface as ``hermes model`` — or point at a
+    custom OpenAI-compatible endpoint. "Auto" leaves the config keys empty so
+    the resolver uses the main model / aggregator fallback chain.
+    """
+    print()
+    print(color("  Vision / Image Analysis needs a multimodal model.", Colors.YELLOW))
+    print(color(
+        "  Pick any provider + model (like /model), or let it auto-detect.",
+        Colors.DIM,
+    ))
+
+    choices = [
+        "Auto — use your main model / aggregator fallback (recommended)",
+        "Pick a provider and model",
+        "Custom OpenAI-compatible endpoint — base URL, API key, model",
+        "Skip",
+    ]
+    idx = _prompt_choice("  Configure vision backend", choices, 0)
+
+    config = load_config()
+    aux = config.setdefault("auxiliary", {})
+    if not isinstance(aux, dict):
+        aux = {}
+        config["auxiliary"] = aux
+    vision_cfg = aux.setdefault("vision", {})
+    if not isinstance(vision_cfg, dict):
+        vision_cfg = {}
+        aux["vision"] = vision_cfg
+
+    if idx == 0:
+        # Auto: clear any pinned override so the resolver auto-detects.
+        for key in ("provider", "model", "base_url", "api_key", "api_mode"):
+            vision_cfg.pop(key, None)
+        save_config(config)
+        _print_success("  Vision set to auto (main model / aggregator fallback)")
+        return
+
+    if idx == 1:
+        _configure_vision_provider_model(config, vision_cfg)
+        return
+
+    if idx == 2:
+        base_url = _prompt("    Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
+        is_native_openai = base_url_hostname(base_url) == "api.openai.com"
+        key_label = "    OPENAI_API_KEY" if is_native_openai else "    API key"
+        api_key = _prompt(key_label, password=True)
+        if not (api_key and api_key.strip()):
+            _print_warning("    Skipped")
+            return
+        default_model = "gpt-4o-mini" if is_native_openai else ""
+        model = _prompt(
+            f"    Vision model{f' (blank for {default_model})' if default_model else ''}"
+        ).strip() or default_model
+        save_env_value("OPENAI_API_KEY", api_key.strip())
+        # Only base_url + model go to config.yaml; the key is the secret.
+        # Pin provider="custom" so the resolver routes through this endpoint —
+        # leaving it at the "auto" default would make _resolve_task_provider_model
+        # ignore the base_url (it only honors base_url when paired with an
+        # api_key in config or a non-auto provider).
+        vision_cfg["provider"] = "custom"
+        vision_cfg["base_url"] = base_url
+        if model:
+            vision_cfg["model"] = model
+        else:
+            vision_cfg.pop("model", None)
+        save_config(config)
+        _print_success(f"  Vision set to custom endpoint{f' ({model})' if model else ''}")
+        return
+
+    # Skip
+    _print_info("  Skipped vision configuration")
+
+
+def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
+    """Provider + model picker for vision, mirroring the ``/model`` surface.
+
+    Lists authenticated providers (same data source as the model switcher),
+    lets the user pick one and then a model from its curated list (or type a
+    custom id), and persists ``auxiliary.vision.provider`` + ``.model``.
+    """
+    try:
+        from hermes_cli.model_switch import list_authenticated_providers
+    except Exception as exc:  # pragma: no cover - import guard
+        _print_warning(f"  Could not load provider list: {exc}")
+        return
+
+    try:
+        providers = list_authenticated_providers(max_models=40)
+    except Exception as exc:
+        _print_warning(f"  Could not detect providers: {exc}")
+        providers = []
+
+    if not providers:
+        _print_warning(
+            "  No authenticated providers found. Configure a provider first "
+            "with `hermes model`, then re-run this."
+        )
+        return
+
+    provider_labels = []
+    for p in providers:
+        name = p.get("name") or p.get("slug")
+        total = p.get("total_models", len(p.get("models", [])))
+        provider_labels.append(f"{name}  ({total} models)" if total else str(name))
+    provider_labels.append("Cancel")
+
+    pidx = _prompt_choice("  Choose vision provider:", provider_labels, 0)
+    if pidx >= len(providers):
+        _print_info("  Cancelled")
+        return
+
+    chosen = providers[pidx]
+    slug = chosen.get("slug")
+    models = list(chosen.get("models", []))
+
+    model_choices = list(models) + ["Type a custom model id…"]
+    midx = _prompt_choice(
+        f"  Choose vision model for {chosen.get('name') or slug}:",
+        model_choices,
+        0,
+    )
+    if midx < len(models):
+        model = models[midx]
+    else:
+        model = _prompt("    Model id").strip()
+        if not model:
+            _print_warning("  No model entered — cancelled")
+            return
+
+    vision_cfg["provider"] = slug
+    vision_cfg["model"] = model
+    # A provider selection supersedes any prior custom endpoint override.
+    vision_cfg.pop("base_url", None)
+    vision_cfg.pop("api_key", None)
+    save_config(config)
+    _print_success(f"  Vision set to {slug} / {model}")
+
+
 def _configure_simple_requirements(ts_key: str):
     """Simple fallback for toolsets that just need env vars (no provider selection)."""
     if ts_key == "vision":
         if _toolset_has_keys("vision"):
             return
-        print()
-        print(color("  Vision / Image Analysis requires a multimodal backend:", Colors.YELLOW))
-        choices = [
-            "OpenRouter — uses Gemini",
-            "OpenAI-compatible endpoint — base URL, API key, and vision model",
-            "Skip",
-        ]
-        idx = _prompt_choice("  Configure vision backend", choices, 2)
-        if idx == 0:
-            _print_info("  Get key at: https://openrouter.ai/keys")
-            value = _prompt("    OPENROUTER_API_KEY", password=True)
-            if value and value.strip():
-                save_env_value("OPENROUTER_API_KEY", value.strip())
-                _print_success("    Saved")
-            else:
-                _print_warning("    Skipped")
-        elif idx == 1:
-            base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
-            is_native_openai = base_url_hostname(base_url) == "api.openai.com"
-            key_label = "    OPENAI_API_KEY" if is_native_openai else "    API key"
-            api_key = _prompt(key_label, password=True)
-            if api_key and api_key.strip():
-                save_env_value("OPENAI_API_KEY", api_key.strip())
-                # Save vision base URL to config (not .env — only secrets go there)
-                _cfg = load_config()
-                _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
-                _aux["base_url"] = base_url
-                save_config(_cfg)
-                if is_native_openai:
-                    save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
-                _print_success("    Saved")
-            else:
-                _print_warning("    Skipped")
+        _configure_vision_backend()
         return
 
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
@@ -3354,6 +3606,13 @@ def _reconfigure_provider(
 
 def _reconfigure_simple_requirements(ts_key: str):
     """Reconfigure simple env var requirements."""
+    if ts_key == "vision":
+        # Vision has its own provider/model picker (any provider, like
+        # `hermes model`). Run it directly so reconfigure doesn't fall back to
+        # the generic single-key prompt (which would re-ask for OPENROUTER_API_KEY).
+        _configure_vision_backend()
+        return
+
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
     if not requirements:
         return

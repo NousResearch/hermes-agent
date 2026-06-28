@@ -961,7 +961,7 @@ def _execute_remote(
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
         if tz:
-            env_prefix += f" TZ={tz}"
+            env_prefix += f" TZ={shlex.quote(tz)}"
 
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
@@ -1031,9 +1031,11 @@ def _execute_remote(
     from tools.ansi_strip import strip_ansi
     stdout_text = strip_ansi(stdout_text)
 
-    # Redact secrets
+    # Redact secrets. code_file=True: execute_code output is code-execution
+    # output that often echoes source/config — skip false-positive ENV/JSON/
+    # f-string-template redaction while still masking real credentials.
     from agent.redact import redact_sensitive_text
-    stdout_text = redact_sensitive_text(stdout_text)
+    stdout_text = redact_sensitive_text(stdout_text, code_file=True)
 
     # Build response
     result: Dict[str, Any] = {
@@ -1270,12 +1272,8 @@ def execute_code(
             child_env["TZ"] = _tz_name
         child_env.pop("HERMES_TIMEZONE", None)
 
-        # Per-profile HOME isolation: redirect system tool configs into
-        # {HERMES_HOME}/home/ when that directory exists.
-        from hermes_constants import get_subprocess_home
-        _profile_home = get_subprocess_home()
-        if _profile_home:
-            child_env["HOME"] = _profile_home
+        from hermes_constants import apply_subprocess_home_env
+        apply_subprocess_home_env(child_env)
 
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).
@@ -1294,7 +1292,7 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
 
@@ -1445,9 +1443,11 @@ def execute_code(
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
         # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
         # This ensures leaked secrets never enter the model context.
+        # code_file=True: this is code-execution output — skip false-positive
+        # ENV/JSON/f-string-template redaction; real credentials still masked.
         from agent.redact import redact_sensitive_text
-        stdout_text = redact_sensitive_text(stdout_text)
-        stderr_text = redact_sensitive_text(stderr_text)
+        stdout_text = redact_sensitive_text(stdout_text, code_file=True)
+        stderr_text = redact_sensitive_text(stderr_text, code_file=True)
 
         # Build response
         result: Dict[str, Any] = {

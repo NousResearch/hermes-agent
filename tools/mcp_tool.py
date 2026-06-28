@@ -3513,6 +3513,21 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     #
     # Enabled: false servers are skipped without removing existing sessions.
     with _lock:
+        # Cancel lingering background tasks for stale entries BEFORE building
+        # new_servers.  Otherwise a stale MCPServerTask may still be parked
+        # in its reconnect backoff loop (or waiting on _reconnect_event).  If
+        # we launch a new _discover_and_register_server for the same name
+        # while the old task later finishes its reconnection, two sessions
+        # race for the same server name (TOCTOU on _servers[<name>]) and the
+        # old task is orphaned, leaking an asyncio Task (#37899 review).
+        for k in list(_servers.keys()):
+            srv = _servers[k]
+            if getattr(srv, "session", None) is None:
+                old_task = getattr(srv, "_task", None)
+                if old_task is not None and not old_task.done():
+                    old_task.cancel()
+                del _servers[k]
+
         new_servers = {
             k: v
             for k, v in servers.items()

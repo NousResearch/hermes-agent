@@ -3844,6 +3844,47 @@ class TestRegisterMcpServers:
 
         _servers.pop("srv", None)
 
+    def test_mixed_stale_and_healthy_servers(self):
+        """Only the stale server (session=None) should be reconnected;
+        the healthy one (active session) must be left untouched."""
+        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+
+        active_session = MagicMock(name="active-session")
+        healthy = _make_mock_server("healthy", session=active_session)
+        healthy._registered_tool_names = ["mcp_healthy_tool"]
+        _servers["healthy"] = healthy
+
+        stale = _make_mock_server("stale", session=None)
+        stale._registered_tool_names = ["mcp_stale_tool"]
+        _servers["stale"] = stale
+
+        async def fake_register(name, cfg):
+            if name != "stale":
+                pytest.fail(f"unexpected reconnect for {name!r}")
+            server = _make_mock_server(name)
+            server._registered_tool_names = ["mcp_stale_tool"]
+            _servers[name] = server
+            return ["mcp_stale_tool"]
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server",
+                       side_effect=fake_register) as mock_register, \
+                 patch("tools.mcp_tool._existing_tool_names",
+                       return_value=["mcp_healthy_tool", "mcp_stale_tool"]):
+                _ensure_mcp_loop()
+                result = register_mcp_servers({
+                    "healthy": {"command": "test-healthy"},
+                    "stale": {"command": "test-stale"},
+                })
+            assert sorted(result) == ["mcp_healthy_tool", "mcp_stale_tool"]
+            mock_register.assert_called_once_with(
+                "stale", {"command": "test-stale"}
+            )
+        finally:
+            _servers.pop("healthy", None)
+            _servers.pop("stale", None)
+
 
 # ---------------------------------------------------------------------------
 # Tests for parallel tool call support (port from openai/codex#17667)

@@ -627,6 +627,226 @@ class TestConfigHelpers:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _update_mcp_browser_url (browser-cdp-mcp integration)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateMcpBrowserUrl:
+    """Tests for _update_mcp_browser_url — chrome-devtools --browser-url sync."""
+
+    def _make_chrome_devtools_cfg(
+        self,
+        args: list[str] | None = None,
+        *,
+        with_args_literal: bool = False,
+        with_autoconnect: bool = False,
+    ) -> dict:
+        """Build a chrome-devtools server config dict for test seeding."""
+        cfg: dict = {"command": "npx", "enabled": True}
+        if args is not None:
+            cfg["args"] = list(args)
+        else:
+            cfg["args"] = ["chrome-devtools-mcp@latest"]
+            if with_args_literal:
+                cfg["args"].append("--args")
+            cfg["args"].append("--browser-url=http://192.168.1.5:9223")
+            if with_autoconnect:
+                cfg["args"].append("--autoconnect")
+        return cfg
+
+    # ── arg replacement ──────────────────────────────────────────────
+
+    def test_replaces_existing_browser_url(self, tmp_path):
+        """Should find and replace the existing --browser-url arg."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(
+            with_args_literal=False, with_autoconnect=True
+        )
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+        tmp_path.joinpath("config.yaml").touch()
+
+        result = _update_mcp_browser_url("http://10.0.0.1:9222")
+        assert result is True
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert "--browser-url=http://10.0.0.1:9222" in args
+        assert "--browser-url=http://192.168.1.5:9223" not in args
+
+    def test_replaces_camelcase_browser_url(self, tmp_path):
+        """Should handle --browserUrl=... (camelCase variant)."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(
+            args=["chrome-devtools-mcp@latest", "--browserUrl=http://old:9222"],
+        )
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is True
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert "--browser-url=http://new:9222" in args
+        # Should have converted to kebab-case
+        assert "--browserUrl=http://old:9222" not in args
+
+    def test_adds_browser_url_when_missing(self, tmp_path):
+        """Should append --browser-url when not present in args."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(
+            args=["chrome-devtools-mcp@latest", "--autoconnect"],
+        )
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is True
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert "--browser-url=http://new:9222" in args
+        assert "--autoconnect" in args
+
+    # ── cleanup of spurious --args literal ───────────────────────────
+
+    def test_strips_spurious_args_literal(self, tmp_path):
+        """Should remove literal '--args' from the args list (REMAINDER bug)."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(with_args_literal=True)
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is True
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert "--args" not in args
+        assert "--browser-url=http://new:9222" in args
+        assert "--autoconnect" in args  # should have been added
+
+    def test_handles_multiple_args_literals(self, tmp_path):
+        """Should strip all spurious '--args' literals."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(
+            args=[
+                "chrome-devtools-mcp@latest",
+                "--args",
+                "--args",
+                "--browser-url=http://old:9222",
+            ],
+        )
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is True
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert args.count("--args") == 0
+        assert args.count("--browser-url=http://new:9222") == 1
+
+    # ── autoconnect restoration ──────────────────────────────────────
+
+    def test_adds_autoconnect_when_missing(self, tmp_path):
+        """Should append --autoconnect if not present in args."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(
+            args=["chrome-devtools-mcp@latest", "--browser-url=http://old:9222"],
+        )
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is True
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert "--autoconnect" in args
+        assert args[-1] == "--autoconnect"  # should be last
+
+    def test_preserves_existing_autoconnect(self, tmp_path):
+        """Should not duplicate --autoconnect if already present."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(
+            args=[
+                "chrome-devtools-mcp@latest",
+                "--browser-url=http://old:9222",
+                "--autoconnect",
+            ],
+        )
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is True
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert args.count("--autoconnect") == 1
+
+    # ── edge cases ───────────────────────────────────────────────────
+
+    def test_returns_false_when_missing_chrome_devtools(self, tmp_path):
+        """Should return False when chrome-devtools is not configured."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url
+
+        _seed_config(tmp_path, {"some-other-server": {"command": "echo"}})
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is False
+
+    def test_returns_false_when_no_servers(self, tmp_path):
+        """Should return False when mcp_servers section is empty."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url
+
+        _seed_config(tmp_path, {})
+        result = _update_mcp_browser_url("http://new:9222")
+        assert result is False
+
+    def test_preserves_other_args(self, tmp_path):
+        """Should keep non-browser-url args intact."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(
+            args=[
+                "chrome-devtools-mcp@latest",
+                "--browser-url=http://old:9222",
+                "--log-file=/tmp/mcp.log",
+                "--viewport=1280x720",
+            ],
+        )
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        _update_mcp_browser_url("http://new:9222")
+
+        servers = _get_mcp_servers()
+        args = servers["chrome-devtools"]["args"]
+        assert "--log-file=/tmp/mcp.log" in args
+        assert "--viewport=1280x720" in args
+        assert "--autoconnect" in args
+
+    def test_round_trip_via_disk(self, tmp_path):
+        """Config written by _save_mcp_server is readable back identically."""
+        from hermes_cli.mcp_config import _update_mcp_browser_url, _get_mcp_servers
+
+        cfg = self._make_chrome_devtools_cfg(with_args_literal=True)
+        _seed_config(tmp_path, {"chrome-devtools": cfg})
+
+        _update_mcp_browser_url("http://disk-test:9222")
+
+        # Read back fresh from disk
+        import yaml
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        args = raw["mcp_servers"]["chrome-devtools"]["args"]
+        assert "--browser-url=http://disk-test:9222" in args
+        assert "--args" not in args
+        assert "--autoconnect" in args
+
+
+# ---------------------------------------------------------------------------
 # Tests: dispatcher
 # ---------------------------------------------------------------------------
 

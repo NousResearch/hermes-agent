@@ -117,6 +117,60 @@ def _remove_mcp_server(name: str) -> bool:
     return True
 
 
+def _update_mcp_browser_url(url: str) -> bool:
+    """Update a browser MCP server's CDP URL argument in config.yaml.
+
+    Finds the MCP server entry named by ``browser.mcp_server_name`` (default
+    ``chrome-devtools``) under ``mcp_servers`` and replaces the browser URL
+    argument (``browser.mcp_browser_url_arg``, default ``--browser-url``) with
+    the new URL.  Also cleans up spurious ``--args`` literals (byproduct of
+    the ``nargs=REMAINDER`` bug in ``hermes mcp add``) and ensures
+    ``--autoconnect`` is present.
+
+    Returns False when the configured server is not found (so callers know
+    they can skip any MCP-relative work without spurious warnings).
+    """
+    from hermes_cli.browser_connect import get_mcp_server_name, get_mcp_browser_url_arg
+
+    server_name = get_mcp_server_name()
+    url_arg_prefix = get_mcp_browser_url_arg()
+    # Also accept the camelCase variant that some MCP servers use.
+    alt_prefix = url_arg_prefix.replace("--browser-url", "--browserUrl")
+
+    servers = _get_mcp_servers()
+    if server_name not in servers:
+        return False
+
+    existing = servers[server_name]
+    args = existing.get("args", [])
+
+    # Build a cleaned args list:
+    # 1. Find & replace the browser URL arg with the new URL.
+    # 2. Strip spurious "--args" literals (nargs=REMAINDER artifact).
+    # 3. Restore --autoconnect if it was lost (hermes mcp add overwrite).
+    new_args: list[str] = []
+    found_browser_url = False
+    has_autoconnect = False
+    for arg in args:
+        if arg in ("--args",):
+            continue  # Strip literal "--args" — not a browser MCP flag.
+        if arg.startswith(f"{url_arg_prefix}=") or arg.startswith(f"{alt_prefix}="):
+            new_args.append(f"{url_arg_prefix}={url}")
+            found_browser_url = True
+        else:
+            new_args.append(arg)
+            if arg == "--autoconnect":
+                has_autoconnect = True
+
+    if not found_browser_url:
+        new_args.append(f"{url_arg_prefix}={url}")
+    if not has_autoconnect:
+        new_args.append("--autoconnect")
+
+    existing["args"] = new_args
+    return _save_mcp_server(server_name, existing)
+
+
 def _env_key_for_server(name: str) -> str:
     """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
     return f"MCP_{name.upper().replace('-', '_')}_API_KEY"

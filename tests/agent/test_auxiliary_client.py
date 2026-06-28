@@ -288,6 +288,57 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_maps_deepseek_alias(self):
+        assert _normalize_aux_provider("deep-seek") == "deepseek"
+
+    def test_maps_alibaba_aliases(self):
+        assert _normalize_aux_provider("dashscope") == "alibaba"
+        assert _normalize_aux_provider("aliyun") == "alibaba"
+        assert _normalize_aux_provider("qwen") == "alibaba"
+        assert _normalize_aux_provider("alibaba-cloud") == "alibaba"
+
+    def test_maps_nvidia_aliases(self):
+        assert _normalize_aux_provider("nim") == "nvidia"
+        assert _normalize_aux_provider("nvidia-nim") == "nvidia"
+        assert _normalize_aux_provider("build-nvidia") == "nvidia"
+        assert _normalize_aux_provider("nemotron") == "nvidia"
+
+    def test_maps_huggingface_aliases(self):
+        assert _normalize_aux_provider("hf") == "huggingface"
+        assert _normalize_aux_provider("hugging-face") == "huggingface"
+        assert _normalize_aux_provider("huggingface-hub") == "huggingface"
+
+    def test_maps_bedrock_aliases(self):
+        assert _normalize_aux_provider("aws") == "bedrock"
+        assert _normalize_aux_provider("aws-bedrock") == "bedrock"
+        assert _normalize_aux_provider("amazon-bedrock") == "bedrock"
+        assert _normalize_aux_provider("amazon") == "bedrock"
+
+    def test_maps_stepfun_aliases(self):
+        assert _normalize_aux_provider("step") == "stepfun"
+        assert _normalize_aux_provider("stepfun-coding-plan") == "stepfun"
+
+    def test_maps_remaining_aliases(self):
+        assert _normalize_aux_provider("novita-ai") == "novita"
+        assert _normalize_aux_provider("novitaai") == "novita"
+        assert _normalize_aux_provider("mimo") == "xiaomi"
+        assert _normalize_aux_provider("xiaomi-mimo") == "xiaomi"
+        assert _normalize_aux_provider("arcee-ai") == "arcee"
+        assert _normalize_aux_provider("arceeai") == "arcee"
+        assert _normalize_aux_provider("opencode") == "opencode-zen"
+        assert _normalize_aux_provider("zen") == "opencode-zen"
+        assert _normalize_aux_provider("go") == "opencode-go"
+        assert _normalize_aux_provider("lmstudio") == "lmstudio"
+        assert _normalize_aux_provider("lm-studio") == "lmstudio"
+        assert _normalize_aux_provider("ollama") == "custom"
+        assert _normalize_aux_provider("ollama_cloud") == "ollama-cloud"
+        assert _normalize_aux_provider("grok-oauth") == "xai-oauth"
+        assert _normalize_aux_provider("xai-oauth") == "xai-oauth"
+        assert _normalize_aux_provider("minimax-portal") == "minimax-oauth"
+        assert _normalize_aux_provider("qwen-portal") == "qwen-oauth"
+        assert _normalize_aux_provider("kilo") == "kilocode"
+        assert _normalize_aux_provider("kilo-code") == "kilocode"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

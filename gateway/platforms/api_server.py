@@ -14,6 +14,7 @@ Exposes an HTTP server with endpoints:
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
+- POST /api/sessions/{session_id}/steer — inject non-interrupting guidance into an active session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -785,6 +786,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        # Active agents keyed by session identity (X-Hermes-Session-Key or session_id).
+        # The OpenAI-compatible streaming path needs this for /api/sessions/{id}/steer:
+        # clients address the short-lived WebUI session id while the running AIAgent
+        # lives inside a background executor thread.
+        self._active_session_agents: Dict[str, Any] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
@@ -1038,6 +1044,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    @staticmethod
+    def _client_platform_from_request(
+        request: Any,
+        gateway_session_key: Optional[str] = None,
+    ) -> str:
+        """Return the presentation platform for an API-server request.
+
+        The API server remains the transport for auth, toolset resolution and
+        session persistence.  Hermes WebUI still needs the WebUI prompt hint so
+        final answers use rich Markdown instead of the conservative plain-text
+        API hint.  ``X-Hermes-Client`` is deliberately non-sensitive and does
+        not grant session/memory access; ``X-Hermes-Session-Key`` keeps its
+        existing API-key requirement.
+        """
+        raw_client = request.headers.get("X-Hermes-Client", "") if request is not None else ""
+        client = str(raw_client or "").strip().lower().replace("_", "-")
+        if client in {"webui", "hermes-webui"}:
+            return "webui"
+        if isinstance(gateway_session_key, str) and gateway_session_key.lower().startswith("webui:"):
+            return "webui"
+        return "api_server"
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -1069,6 +1097,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        client_platform: str = "api_server",
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1099,7 +1128,10 @@ class APIServerAdapter(BasePlatformAdapter):
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 
+        client_platform = client_platform if client_platform in {"api_server", "webui"} else "api_server"
         user_config = _load_gateway_config()
+        # Tool capability remains governed by the API-server transport config.
+        # ``client_platform`` only selects presentation prompt hints.
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = _current_max_iterations()
@@ -1117,7 +1149,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=client_platform,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1245,6 +1277,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
+                "session_steer": True,
                 "session_fork": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
@@ -1278,6 +1311,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "session_steer": {"method": "POST", "path": "/api/sessions/{session_id}/steer"},
             },
         })
 
@@ -1619,6 +1653,71 @@ class APIServerAdapter(BasePlatformAdapter):
         fork = db.get_session(fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
+    async def _handle_session_steer(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/steer — inject guidance into an active run.
+
+        WebUI's gateway-backed chat uses /v1/chat/completions with
+        X-Hermes-Session-Id and X-Hermes-Session-Key: webui:{session_id}.  The
+        non-interrupting /steer control must reach that in-flight AIAgent rather
+        than queue or cancel the browser turn.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        session_id = str(request.match_info["session_id"] or "").strip()
+        text = str((body or {}).get("text") or (body or {}).get("message") or "").strip()
+        if not session_id:
+            return web.json_response(_openai_error("Missing session_id", code="missing_session_id"), status=400)
+        if not text:
+            return web.json_response(_openai_error("Missing steer text", code="missing_text"), status=400)
+
+        candidate_keys = []
+        if gateway_session_key:
+            candidate_keys.append(gateway_session_key)
+        candidate_keys.extend([f"webui:{session_id}", session_id])
+        agent = None
+        matched_key = None
+        for key in candidate_keys:
+            if not key:
+                continue
+            agent = self._active_session_agents.get(key)
+            if agent is not None:
+                matched_key = key
+                break
+        if agent is None:
+            return web.json_response({
+                "accepted": False,
+                "fallback": "not_running",
+                "session_id": session_id,
+            })
+        if not hasattr(agent, "steer"):
+            return web.json_response({
+                "accepted": False,
+                "fallback": "agent_lacks_steer",
+                "session_id": session_id,
+            })
+        try:
+            accepted = bool(agent.steer(text))
+        except Exception as exc:
+            logger.warning("API server steer failed for session %s (%s): %s", session_id, matched_key, exc)
+            return web.json_response({
+                "accepted": False,
+                "fallback": "steer_error",
+                "session_id": session_id,
+                "error": str(exc)[:500],
+            })
+        return web.json_response({
+            "accepted": accepted,
+            "fallback": None if accepted else "steer_rejected",
+            "session_id": session_id,
+        })
+
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
         auth_err = self._check_auth(request)
@@ -1627,6 +1726,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        client_platform = self._client_platform_from_request(request, gateway_session_key)
         session_id = request.match_info["session_id"]
         _, err = self._get_existing_session_or_404(session_id)
         if err:
@@ -1647,6 +1747,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            client_platform=client_platform,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
@@ -1671,6 +1772,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        client_platform = self._client_platform_from_request(request, gateway_session_key)
         session_id = request.match_info["session_id"]
         _, err = self._get_existing_session_or_404(session_id)
         if err:
@@ -1738,6 +1840,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    client_platform=client_platform,
                 )
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -1873,6 +1976,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        client_platform = self._client_platform_from_request(request, gateway_session_key)
 
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
@@ -2009,6 +2113,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                client_platform=client_platform,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2028,6 +2133,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                client_platform=client_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2937,6 +3043,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        client_platform = self._client_platform_from_request(request, gateway_session_key)
 
         # Parse request body
         try:
@@ -3090,6 +3197,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                client_platform=client_platform,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3123,6 +3231,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                client_platform=client_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3715,16 +3824,19 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        client_platform: str = "api_server",
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
         This is the SINGLE structural chokepoint every API-server agent-entry
-        path must use to seed session context — it hardwires
-        ``platform="api_server"`` and ``async_delivery=False`` so a new route
-        physically cannot reintroduce the silent-no-op bug (#10760) by
-        forgetting to mark the channel as non-delivering. There is no
-        ``async_delivery`` parameter to get wrong; the stateless HTTP path can
-        never wake the agent after the turn ends, on ANY route.
+        path must use to seed session context.  It hardwires the transport
+        context to ``platform="api_server"`` and ``async_delivery=False`` so a
+        new route physically cannot reintroduce the silent-no-op bug (#10760)
+        by forgetting to mark the channel as non-delivering.  ``client_platform``
+        is accepted for call-site symmetry with agent creation, but it must not
+        change delivery/session context: Hermes WebUI presentation hints are
+        selected via ``AIAgent.platform`` while stateless HTTP still cannot wake
+        the agent after the turn ends, on ANY route.
 
         Returns reset tokens; pass them to ``clear_session_vars`` in a
         ``finally`` block (the binding is request-scoped and must not outlive
@@ -3753,6 +3865,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        client_platform: str = "api_server",
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3765,6 +3878,7 @@ class APIServerAdapter(BasePlatformAdapter):
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
         """
+        client_platform = client_platform if client_platform in {"api_server", "webui"} else "api_server"
         loop = asyncio.get_running_loop()
 
         def _run():
@@ -3774,6 +3888,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 chat_id=session_id or "",
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
+                client_platform=client_platform,
             )
             try:
                 agent = self._create_agent(
@@ -3784,9 +3899,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
+                    client_platform=client_platform,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
+                active_keys = []
+                if gateway_session_key:
+                    active_keys.append(gateway_session_key)
+                if session_id:
+                    active_keys.append(session_id)
+                for key in dict.fromkeys(active_keys):
+                    self._active_session_agents[key] = agent
                 effective_task_id = session_id or str(uuid.uuid4())
                 result = agent.run_conversation(
                     user_message=user_message,
@@ -3806,6 +3929,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     result["session_id"] = _eff_sid
                 return result, usage
             finally:
+                try:
+                    agent_obj = locals().get("agent")
+                    for key in dict.fromkeys([gateway_session_key, session_id]):
+                        if key and self._active_session_agents.get(key) is agent_obj:
+                            self._active_session_agents.pop(key, None)
+                except Exception:
+                    pass
                 clear_session_vars(tokens)
 
         self._inflight_agent_runs += 1
@@ -3892,6 +4022,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        client_platform = self._client_platform_from_request(request, gateway_session_key)
 
         # Enforce concurrency limit (shared across all agent-serving
         # endpoints; configurable via gateway.api_server.max_concurrent_runs).
@@ -4003,6 +4134,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    client_platform=client_platform,
                 )
                 self._active_run_agents[run_id] = agent
 
@@ -4051,6 +4183,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         approval_token = set_current_session_key(approval_session_key)
                         session_tokens = self._bind_api_server_session(
                             session_key=approval_session_key,
+                            client_platform=client_platform,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(
@@ -4443,6 +4576,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            self._app.router.add_post("/api/sessions/{session_id}/steer", self._handle_session_steer)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

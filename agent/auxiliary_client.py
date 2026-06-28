@@ -5633,6 +5633,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    api_mode: str = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -5645,6 +5646,8 @@ def call_llm(
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
         model: Explicit model override.
+        api_mode: Explicit API mode override (e.g. "codex_responses",
+              "anthropic_messages"). Takes precedence over task config.
         messages: Chat messages list.
         temperature: Sampling temperature (None = provider default).
         max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
@@ -5660,6 +5663,8 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if api_mode:
+        resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 

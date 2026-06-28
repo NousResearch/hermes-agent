@@ -336,6 +336,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    if os.environ.get("_HERMES_PROFILE_PROCESSED") == "1":
+        return
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
@@ -504,6 +506,8 @@ def _apply_profile_override() -> None:
         if consume > 0 and profile_index is not None:
             start = profile_index + 1  # +1 because argv is sys.argv[1:]
             sys.argv = sys.argv[:start] + sys.argv[start + consume :]
+
+    os.environ["_HERMES_PROFILE_PROCESSED"] = "1"
 
 
 _apply_profile_override()

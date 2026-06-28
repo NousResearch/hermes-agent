@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -302,6 +303,7 @@ class GitHubAuth:
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, timeout=5,
                 stdin=subprocess.DEVNULL,
+                **({"creationflags": windows_hide_flags()} if IS_WINDOWS else {}),
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()

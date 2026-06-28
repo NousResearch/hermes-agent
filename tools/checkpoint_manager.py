@@ -58,6 +58,7 @@ import subprocess
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
@@ -321,6 +322,10 @@ def _run_git(
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     cmd = ["git"] + list(args)
     allowed_returncodes = allowed_returncodes or set()
+    # Checkpoints run inside the console-less desktop/gateway backend; a bare
+    # git spawn there pops a fresh conhost window per call (status, add,
+    # commit, …) on Windows. No-op on POSIX.
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             cmd,
@@ -330,6 +335,7 @@ def _run_git(
             env=env,
             cwd=str(normalized_working_dir),
             stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
         ok = result.returncode == 0
         stdout = result.stdout.strip()
@@ -450,6 +456,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             capture_output=True, text=True,
             env=init_env, timeout=_GIT_TIMEOUT,
             stdin=subprocess.DEVNULL,
+            **({"creationflags": windows_hide_flags()} if IS_WINDOWS else {}),
         )
         if result.returncode != 0:
             return f"Shadow store init failed: {result.stderr.strip()}"

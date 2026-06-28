@@ -9,6 +9,7 @@ import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { useSessionSlice } from '@/lib/use-session-slice'
@@ -68,6 +69,9 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
 
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
 }
+
+const hasRunningTodo = (group: StatusGroup) =>
+  group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
 
 interface ComposerStatusStackProps {
   /** The queue, built by the composer (it owns the queue's callbacks). Rendered
@@ -168,6 +172,15 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
                   {t.statusStack.agents}
                 </Button>
               </Tip>
+            ) : undefined
+          }
+          collapsedIndicator={
+            hasRunningTodo(group) ? (
+              <GlyphSpinner
+                ariaLabel={t.statusStack.running}
+                className="text-[0.8rem] leading-none text-muted-foreground/80"
+                spinner="braille"
+              />
             ) : undefined
           }
           defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}

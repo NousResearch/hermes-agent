@@ -495,10 +495,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return parsed
 
     @staticmethod
+    def _has_approval_gate(text: str) -> bool:
+        """Return True for explicit approval/control prompts that must stay intact."""
+        return bool(re.search(r"`/(approve|deny|reject|confirm|cancel|stop|new|reset)\b", text, re.IGNORECASE))
+
+    @staticmethod
     def _looks_structured_outbound(text: str) -> bool:
-        """Return True for approval gates / reports / artifacts we should not cascade."""
-        if re.search(r"`/(approve|deny|reject|confirm|cancel|stop|new|reset)\b", text, re.IGNORECASE):
-            return True
+        """Return True for reports/artifacts that should not be split mid-body."""
         structured_lines = 0
         for line in text.splitlines():
             stripped = line.strip()
@@ -539,14 +542,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         force_cascade = style in {"cascade", "human_cascade", "human-cascade"}
         if not force_cascade and (
             (is_group and not self._human_cascade_groups)
-            or self._looks_structured_outbound(text)
+            or self._has_approval_gate(text)
         ):
             return self.truncate_message(formatted, limit), False
 
         # Do not reject long prose up front.  If a reply starts as a natural
         # multi-paragraph chat but grows into a longer answer, still send the
         # first few clean paragraphs as human-paced bubbles and fold/chunk the
-        # rest later.  Code/structured payloads are guarded above.
+        # rest later.  Code/approval payloads are guarded above; report/list
+        # tails are merged below so only the prose lead-in cascades.
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
         if len(paragraphs) < 2:
             return self.truncate_message(formatted, limit), False
@@ -556,6 +560,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return self.truncate_message(formatted, limit), False
 
         merged_tail = False
+        if not force_cascade and self._looks_structured_outbound(text):
+            lead_limit = max(1, max_bubbles - 1)
+            lead: list[str] = []
+            for paragraph in paragraphs:
+                if len(lead) >= lead_limit or self._looks_structured_outbound(paragraph):
+                    break
+                lead.append(paragraph)
+            if not lead or len(lead) >= len(paragraphs):
+                return self.truncate_message(formatted, limit), False
+            tail = "\n\n".join(paragraphs[len(lead):]).strip()
+            paragraphs = [*lead, tail]
+            merged_tail = True
+
         if len(paragraphs) > max_bubbles and not force_cascade:
             # Keep the human cadence without machine-gunning the chat: send the
             # first few thoughts as separate bubbles, then fold the remainder

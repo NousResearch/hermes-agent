@@ -327,18 +327,36 @@ class TestSendChunking:
         assert "Reply `/approve`" in payload["message"]
 
     @pytest.mark.asyncio
-    async def test_structured_reports_do_not_human_cascade(self):
+    async def test_structured_report_tail_cascades_plain_lead_in_only(self):
+        adapter = _make_adapter()
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        content = "done\n\n- changed adapter\n- added tests\n- ran suite\n\n44 passed"
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == "done"
+        assert payloads[1]["message"] == "- changed adapter\n- added tests\n- ran suite\n\n44 passed"
+
+    @pytest.mark.asyncio
+    async def test_structured_report_without_plain_lead_in_stays_single(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
         resp.json = AsyncMock(return_value={"messageId": "msg1"})
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
-        content = "done\n\n- changed adapter\n- added tests\n- ran suite\n\n44 passed"
+        content = "- changed adapter\n- added tests\n- ran suite\n\n44 passed"
         await adapter.send("chat1", content)
 
         assert adapter._http_session.post.call_count == 1
         payload = adapter._http_session.post.call_args.kwargs["json"]
-        assert "- changed adapter" in payload["message"]
+        assert payload["message"].startswith("- changed adapter")
 
     @pytest.mark.asyncio
     async def test_long_briefs_cascade_lead_in_then_chunk_tail(self):

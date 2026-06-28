@@ -565,6 +565,42 @@ class TestBaseAdapterClarifyFallback:
         assert "2." in text and "banana" in text
 
     @pytest.mark.asyncio
+    async def test_allow_other_false_text_fallback_does_not_invite_custom_answer(self):
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        class _Stub(BasePlatformAdapter):
+            name = "stub"
+
+            def __init__(self):
+                self.sent: list = []
+
+            async def connect(self, *, is_reconnect: bool = False): pass
+            async def disconnect(self): pass
+            async def send(self, chat_id, content, **kw):
+                self.sent.append({"chat_id": chat_id, "content": content})
+                return SendResult(success=True, message_id="1")
+            async def edit(self, *a, **k): return SendResult(success=False)
+            async def get_history(self, *a, **k): return []
+            async def get_chat_info(self, *a, **k): return {}
+
+        adapter = _Stub()
+
+        result = await adapter.send_clarify(
+            chat_id="c",
+            question="Pick fruits",
+            choices=["apple", "banana"],
+            clarify_id="x-no-other",
+            session_key="s-no-other",
+            multi_select=True,
+            allow_other=False,
+        )
+
+        assert result.success is True
+        text = adapter.sent[0]["content"]
+        assert "Reply with one or more numbers/letters or option text." in text
+        assert "own answer" not in text
+
+    @pytest.mark.asyncio
     async def test_open_ended_fallback_renders_question_only(self):
         from gateway.platforms.base import BasePlatformAdapter, SendResult
 

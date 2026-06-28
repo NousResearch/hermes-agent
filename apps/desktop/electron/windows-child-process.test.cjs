@@ -84,5 +84,5 @@ test('bootstrap PowerShell runner hides Windows console children', () => {
   const source = readElectronFile('bootstrap-runner.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
-  requireHiddenChildOptions(source, 'spawn(ps, fullArgs')
+  requireHiddenChildOptions(source, /spawn\(\s*ps,\s*fullArgs/)
 })

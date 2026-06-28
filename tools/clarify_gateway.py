@@ -136,17 +136,15 @@ def parse_multi_select_response(raw: str, choices: List[str]) -> Optional[List[s
     selected: List[str] = []
 
     for token in tokens:
-        label = None
-        if token.isdigit():
+        label = label_map.get(token.lower())
+        if label is None and token.isdigit():
             idx = int(token) - 1
             if 0 <= idx < len(labels):
                 label = labels[idx]
-        elif len(token) == 1 and token.isalpha():
+        elif label is None and len(token) == 1 and token.isalpha():
             idx = ord(token.upper()) - ord("A")
             if 0 <= idx < len(labels):
                 label = labels[idx]
-        else:
-            label = label_map.get(token.lower())
 
         if label is None:
             return None
@@ -243,20 +241,48 @@ def get_pending_for_session(
         return None
 
 
-def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
-    """Map typed choice replies to canonical choice text, otherwise keep custom text."""
+def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
+    """Map typed replies to canonical choice text, or reject disallowed custom text."""
     text = str(response).strip()
     if entry.choices:
+        if entry.multi_select:
+            parsed = parse_multi_select_response(text, entry.choices)
+            if parsed:
+                if len(parsed) < int(entry.min_selections or 0):
+                    return None
+                if entry.max_selections is not None and len(parsed) > int(entry.max_selections):
+                    return None
+                return ", ".join(parsed)
+            return text if entry.allow_other else None
+
+        label_map = {str(choice).strip().casefold(): str(choice).strip() for choice in entry.choices}
+        exact = label_map.get(text.casefold())
+        if exact is not None:
+            return exact
         try:
             idx = int(text) - 1
         except ValueError:
             idx = -1
         if 0 <= idx < len(entry.choices):
             return entry.choices[idx]
-        for choice in entry.choices:
-            if text.casefold() == str(choice).strip().casefold():
-                return str(choice).strip()
+        return text if entry.allow_other else None
     return text
+
+
+def format_invalid_text_response_message(entry: _ClarifyEntry) -> str:
+    """Human retry hint for a typed reply that failed clarify coercion."""
+    if entry.multi_select:
+        bounds: List[str] = []
+        if entry.min_selections:
+            bounds.append(f"at least {entry.min_selections}")
+        if entry.max_selections is not None:
+            bounds.append(f"at most {entry.max_selections}")
+        bound_text = f" ({', '.join(bounds)})" if bounds else ""
+        return (
+            "That doesn't match this multi-select prompt. "
+            f"Reply with listed choices{bound_text}, for example `1,3` or `A+C`."
+        )
+    return "That doesn't match this prompt. Reply with one of the listed choices."
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
@@ -264,10 +290,10 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
         return False
-    return resolve_gateway_clarify(
-        entry.clarify_id,
-        _coerce_text_response(entry, response),
-    )
+    coerced = _coerce_text_response(entry, response)
+    if coerced is None:
+        return False
+    return resolve_gateway_clarify(entry.clarify_id, coerced)
 
 
 def mark_awaiting_text(clarify_id: str) -> bool:

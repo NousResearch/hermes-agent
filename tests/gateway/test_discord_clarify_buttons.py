@@ -173,6 +173,18 @@ class TestClarifyChoiceViewConstruction:
             f"Label cuts mid-word at {last_char!r}: {first_label!r}"
         )
 
+    def test_allow_other_false_omits_other_button(self):
+        view = ClarifyChoiceView(
+            choices=["apple", "banana"],
+            clarify_id="cidNoOther",
+            allowed_user_ids={"42"},
+            allow_other=False,
+        )
+
+        labels = [b.label for b in view.children]
+        assert len(labels) == 2
+        assert all("Other" not in label for label in labels)
+
 
 # ===========================================================================
 # Choice callback → resolve_gateway_clarify
@@ -411,6 +423,33 @@ class TestDiscordSendClarify:
         assert isinstance(kwargs["view"], ClarifyChoiceView)
         # 3 choice buttons + 1 Other
         assert len(kwargs["view"].children) == 4
+
+    @pytest.mark.asyncio
+    async def test_allow_other_false_omits_single_select_other_button(self):
+        adapter = _make_adapter(allowed_users={"42"})
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 123458
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick a color",
+            choices=["red", "green"],
+            clarify_id="cidNoOtherSend",
+            session_key="sk-no-other-send",
+            allow_other=False,
+        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+        view = kwargs["view"]
+        assert isinstance(view, ClarifyChoiceView)
+        assert len(view.children) == 2
+        assert all("Other" not in child.label for child in view.children)
+        embed = kwargs["embed"]
+        assert all("Other" not in field["value"] for field in embed.fields)
 
     @pytest.mark.asyncio
     async def test_multi_select_attaches_native_multiselect_view(self):

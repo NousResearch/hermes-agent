@@ -287,6 +287,40 @@ class TestClarifyMultiSelect:
         assert "error" in result
         assert "min_selections" in result["error"]
 
+    def test_multi_select_min_cannot_exceed_available_choices(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["A"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+            min_selections=2,
+        ))
+
+        assert "error" in result
+        assert "available choices" in result["error"]
+
+    def test_multi_select_max_cannot_exceed_available_choices(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["A", "B"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+            max_selections=3,
+        ))
+
+        assert "error" in result
+        assert "available choices" in result["error"]
+
+    def test_selected_choices_exact_label_beats_letter_shortcut(self):
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["Alpha", "A", "Gamma"],
+            callback=lambda q, c, **kw: "A",
+            multi_select=True,
+        ))
+
+        assert result["selected_choices"] == ["A"]
+
 
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""

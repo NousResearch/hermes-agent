@@ -4999,9 +4999,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if clean_choices:
                 if multi_select:
+                    help_text = "Pick one or more below, then submit selected"
+                    if allow_other:
+                        help_text += ", or click ✏️ Other to type a custom answer"
+                    help_text += "."
                     embed.add_field(
                         name="Choices",
-                        value="Pick one or more below, then submit selected, or click ✏️ Other to type a custom answer.",
+                        value=help_text,
                         inline=False,
                     )
                     view = ClarifyMultiSelectView(
@@ -5014,9 +5018,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         allow_other=allow_other,
                     )
                 else:
+                    help_text = "Pick one below"
+                    if allow_other:
+                        help_text += ", or click ✏️ Other to type a custom answer"
+                    help_text += "."
                     embed.add_field(
                         name="Choices",
-                        value="Pick one below, or click ✏️ Other to type a custom answer.",
+                        value=help_text,
                         inline=False,
                     )
                     view = ClarifyChoiceView(
@@ -5024,6 +5032,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         clarify_id=clarify_id,
                         allowed_user_ids=self._allowed_user_ids,
                         allowed_role_ids=self._allowed_role_ids,
+                        allow_other=allow_other,
                     )
             else:
                 embed.add_field(
@@ -6798,12 +6807,14 @@ def _define_discord_view_classes() -> None:
             clarify_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            allow_other: bool = True,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.allow_other = bool(allow_other)
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
@@ -6854,13 +6865,14 @@ def _define_discord_view_classes() -> None:
                 button.callback = self._make_choice_callback(index, choice)
                 self.add_item(button)
 
-            other_btn = discord.ui.Button(
-                label="✏️ Other (type answer)",
-                style=discord.ButtonStyle.secondary,
-                custom_id=f"clarify:{clarify_id}:other",
-            )
-            other_btn.callback = self._on_other
-            self.add_item(other_btn)
+            if self.allow_other:
+                other_btn = discord.ui.Button(
+                    label="✏️ Other (type answer)",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"clarify:{clarify_id}:other",
+                )
+                other_btn.callback = self._on_other
+                self.add_item(other_btn)
 
         def _check_auth(self, interaction: "discord.Interaction") -> bool:
             return _component_check_auth(

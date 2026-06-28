@@ -8128,21 +8128,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # so the user can retry; if it times out, the agent unblocks
             # with an empty response.
             if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
-                if getattr(_pending_clarify, "multi_select", False) and getattr(_pending_clarify, "choices", None):
-                    _resolved_reply = _raw_clarify_reply
-                    _parsed = _clarify_mod.parse_multi_select_response(
-                        _raw_clarify_reply,
-                        list(_pending_clarify.choices or []),
-                    )
-                    if _parsed:
-                        _resolved_reply = ", ".join(_parsed)
-                    _resolved = _clarify_mod.resolve_gateway_clarify(
-                        _pending_clarify.clarify_id, _resolved_reply,
-                    )
-                else:
-                    _resolved = _clarify_mod.resolve_text_response_for_session(
-                        _quick_key, _raw_clarify_reply,
-                    )
+                _resolved = _clarify_mod.resolve_text_response_for_session(
+                    _quick_key, _raw_clarify_reply,
+                )
                 if _resolved:
                     logger.info(
                         "Gateway intercepted clarify text response (session=%s, id=%s)",
@@ -8152,6 +8140,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # the agent's response don't double-post.  The agent
                     # itself will produce the next user-facing message.
                     return ""
+                logger.info(
+                    "Gateway rejected invalid clarify text response (session=%s, id=%s)",
+                    _quick_key, _pending_clarify.clarify_id,
+                )
+                return _clarify_mod.format_invalid_text_response_message(_pending_clarify)
 
         # Intercept messages that are responses to a pending /reload-mcp
         # (or future) slash-confirm prompt.  Recognized confirm replies are

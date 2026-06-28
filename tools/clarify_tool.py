@@ -73,17 +73,17 @@ def _selected_choices_from_response(response: str, choices: Optional[List[str]])
         tokens = [response.strip()]
 
     for token in tokens:
-        label = None
-        if token.isdigit():
+        # Exact labels win before numeric/letter shortcuts so a real choice
+        # named "A" is not misread as shortcut A -> first option.
+        label = label_map.get(token.lower())
+        if label is None and token.isdigit():
             idx = int(token) - 1
             if 0 <= idx < len(labels):
                 label = labels[idx]
-        elif len(token) == 1 and token.isalpha():
+        elif label is None and len(token) == 1 and token.isalpha():
             idx = ord(token.upper()) - ord("A")
             if 0 <= idx < len(labels):
                 label = labels[idx]
-        else:
-            label = label_map.get(token.lower())
         if label and label not in selected:
             selected.append(label)
     return selected
@@ -153,6 +153,11 @@ def clarify_tool(
             choices = choices[:MAX_CHOICES]
         if not choices:
             choices = None  # empty list → open-ended
+        elif multi_select:
+            if min_selections > len(choices):
+                return tool_error("min_selections cannot exceed the number of available choices.")
+            if max_selections is not None and max_selections > len(choices):
+                return tool_error("max_selections cannot exceed the number of available choices.")
 
     if callback is None:
         return json.dumps(

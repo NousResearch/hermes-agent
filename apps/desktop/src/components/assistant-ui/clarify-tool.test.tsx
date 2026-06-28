@@ -11,13 +11,28 @@ vi.mock('@/lib/haptics', () => ({
   triggerHaptic: vi.fn()
 }))
 
-function renderClarifyTool(requestMock = vi.fn().mockResolvedValue({ ok: true })) {
+type TestClarifyArgs = {
+  allowOther?: boolean
+  choices: string[]
+  maxSelections?: number | null
+  minSelections?: number | null
+  multiSelect?: boolean
+  question: string
+}
+
+function renderClarifyTool(requestMock = vi.fn().mockResolvedValue({ ok: true }), argsOverride: Partial<TestClarifyArgs> = {}) {
+  const args: TestClarifyArgs = {
+    question: 'Which context should Hermes use?',
+    choices: ['Past sessions', 'Local reports', 'Web sources'],
+    ...argsOverride
+  }
   $clarifyRequests.set({})
   $gateway.set({ request: requestMock } as never)
   setClarifyRequest({
     requestId: 'req-1',
     question: 'Which context should Hermes use?',
     choices: ['Past sessions', 'Local reports', 'Web sources'],
+    multiSelect: Boolean(args.multiSelect),
     sessionId: null
   })
 
@@ -25,10 +40,7 @@ function renderClarifyTool(requestMock = vi.fn().mockResolvedValue({ ok: true })
     type: 'tool-call',
     toolCallId: 'tool-1',
     toolName: 'clarify',
-    args: {
-      question: 'Which context should Hermes use?',
-      choices: ['Past sessions', 'Local reports', 'Web sources']
-    },
+    args,
     argsText: '',
     result: undefined,
     status: { type: 'running' },
@@ -85,8 +97,15 @@ describe('ClarifyTool selection status UX', () => {
     expect(status.textContent).toContain('Past sessions')
   })
 
-  it('uses the right-side circle to stage multiple choices without submitting until Send selected', async () => {
-    const request = renderClarifyTool()
+  it('does not expose staged multi-select controls for single-choice prompts', () => {
+    renderClarifyTool()
+
+    expect(screen.queryByRole('button', { name: 'Toggle Past sessions for multi-select' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Send selected' })).toBeNull()
+  })
+
+  it('uses multi-select rows to stage multiple choices without submitting until Send selected', async () => {
+    const request = renderClarifyTool(vi.fn().mockResolvedValue({ ok: true }), { multiSelect: true })
 
     fireEvent.click(screen.getByRole('button', { name: 'Toggle Past sessions for multi-select' }))
     fireEvent.click(screen.getByRole('button', { name: 'Toggle Web sources for multi-select' }))

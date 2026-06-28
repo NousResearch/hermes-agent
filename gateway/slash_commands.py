@@ -2936,7 +2936,6 @@ class GatewaySlashCommandsMixin:
         cycle = ["off", "new", "all", "verbose", "log"]
         descriptions = {
             "off": t("gateway.verbose.mode_off"),
-            "generic": "GENERIC — show human-friendly placeholders instead of tool details.",
             "new": t("gateway.verbose.mode_new"),
             "all": t("gateway.verbose.mode_all"),
             "verbose": t("gateway.verbose.mode_verbose"),

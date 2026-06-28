@@ -26,6 +26,7 @@ from plugins.memory.hindsight import (
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
+    _run_sync,
     _sanitize_bank_segment,
     _sanitize_hindsight_input,
 )
@@ -35,6 +36,24 @@ from plugins.memory.hindsight.session_summary import SessionSummaryWrite
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def test_run_sync_cold_start_returns_without_timeout():
+    async def sample():
+        return "ok"
+
+    assert _run_sync(sample(), timeout=5) == "ok"
+
+
+def test_run_sync_falls_back_when_shared_loop_unavailable(monkeypatch):
+    async def sample():
+        return "ok"
+
+    def fail_loop():
+        raise RuntimeError("loop blocked")
+
+    monkeypatch.setattr("plugins.memory.hindsight._get_loop", fail_loop)
+    assert _run_sync(sample(), timeout=5) == "ok"
 
 
 @pytest.fixture(autouse=True)

@@ -288,6 +288,7 @@ def _check_api_supports_update_mode_append(api_url: str,
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _loop_lock = threading.Lock()
+_LOOP_START_TIMEOUT = 5.0
 
 # Sentinel pushed to the per-provider retain queue to wake the writer for a
 # clean exit. A unique object so it can never collide with a real job.
@@ -301,20 +302,45 @@ def _get_loop() -> asyncio.AbstractEventLoop:
         if _loop is not None and _loop.is_running():
             return _loop
         _loop = asyncio.new_event_loop()
+        ready = threading.Event()
 
         def _run():
             asyncio.set_event_loop(_loop)
+            ready.set()
             _loop.run_forever()
 
         _loop_thread = threading.Thread(target=_run, daemon=True, name="hindsight-loop")
         _loop_thread.start()
+        if not ready.wait(timeout=_LOOP_START_TIMEOUT):
+            _loop = None
+            _loop_thread = None
+            raise RuntimeError("Hindsight loop failed to start")
+        running = threading.Event()
+        try:
+            _loop.call_soon_threadsafe(running.set)
+        except Exception as exc:
+            _loop = None
+            _loop_thread = None
+            raise RuntimeError("Hindsight loop failed readiness probe") from exc
+        if not running.wait(timeout=_LOOP_START_TIMEOUT):
+            try:
+                _loop.call_soon_threadsafe(_loop.stop)
+            except Exception:
+                pass
+            _loop = None
+            _loop_thread = None
+            raise RuntimeError("Hindsight loop failed readiness probe")
         return _loop
 
 
 def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     """Schedule *coro* on the shared loop and block until done."""
     from agent.async_utils import safe_schedule_threadsafe
-    loop = _get_loop()
+    try:
+        loop = _get_loop()
+    except Exception as exc:
+        logger.debug("Hindsight shared loop unavailable; falling back to one-shot run: %s", exc)
+        return asyncio.run(coro)
     future = safe_schedule_threadsafe(coro, loop)
     if future is None:
         raise RuntimeError("Hindsight loop unavailable")

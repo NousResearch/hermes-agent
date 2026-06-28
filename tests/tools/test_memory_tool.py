@@ -586,7 +586,8 @@ class TestMemoryBatch:
             old_text="old value", content="new value", store=store,
         ))
         assert result["success"] is True
-        assert "new value" in result["entries"]
+        assert result["entry_count"] == 1
+        assert "new value" in store.memory_entries
 
     def test_remove_full_roundtrip(self, store):
         """Dispatcher must wire old_text to store.remove correctly."""
@@ -595,7 +596,8 @@ class TestMemoryBatch:
             action="remove", target="memory", old_text="to drop", store=store,
         ))
         assert result["success"] is True
-        assert len(result["entries"]) == 0
+        assert result["entry_count"] == 0
+        assert store.memory_entries == []
 
 
 # =========================================================================

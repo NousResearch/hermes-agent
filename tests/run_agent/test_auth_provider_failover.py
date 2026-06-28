@@ -124,3 +124,58 @@ class TestAuthFailoverActivation:
         err.status_code = 500
         classified = classify_api_error(err)
         assert self._should_failover(agent, classified, retry) is False
+
+
+class TestFallbackBaseUrlAwareSkip:
+    """A fallback entry that shares (provider, model) with the current backend
+    but points at a DIFFERENT ``base_url`` is a distinct endpoint and must be
+    activated, not skipped as a self-fallback (#54251). An entry with the SAME
+    base_url is still skipped (preserves the self-loop guard)."""
+
+    def test_failover_activates_for_same_provider_model_different_base_url(self):
+        agent = _make_agent(
+            fallback_model=[{
+                "provider": "custom",
+                "model": "my-model",
+                "base_url": "https://b.example/v1",
+                "api_key": "k",
+            }]
+        )
+        # Primary backend: same provider+model, but a DIFFERENT endpoint.
+        agent.provider = "custom"
+        agent.model = "my-model"
+        agent.base_url = "https://a.example/v1"
+        agent._fallback_index = 0
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://b.example/v1"), "my-model"),
+        ):
+            advanced = agent._try_activate_fallback(reason=FailoverReason.auth)
+        # Before the fix the entry is wrongly skipped as a self-fallback and,
+        # with no further entries, activation returns False without advancing.
+        assert advanced is True
+        assert agent._fallback_index == 1
+
+    def test_failover_skips_same_provider_model_same_base_url(self):
+        agent = _make_agent(
+            fallback_model=[{
+                "provider": "custom",
+                "model": "my-model",
+                "base_url": "https://a.example/v1",
+                "api_key": "k",
+            }]
+        )
+        # Primary backend: identical provider+model+base_url — a true self-loop.
+        agent.provider = "custom"
+        agent.model = "my-model"
+        agent.base_url = "https://a.example/v1"
+        agent._fallback_index = 0
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://a.example/v1"), "my-model"),
+        ):
+            advanced = agent._try_activate_fallback(reason=FailoverReason.auth)
+        # The lone entry is the same endpoint → skipped → chain exhausted.
+        assert advanced is False

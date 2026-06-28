@@ -693,3 +693,76 @@ class TestCustomProviderDiscoverModels:
             _model_flow_named_custom({}, provider_info)
 
         mock_fetch.assert_not_called()
+
+
+class TestFallbackAddBaseUrlAware:
+    """`hermes fallback add` must accept a fallback entry that shares
+    (provider, model) with the primary but uses a DIFFERENT ``base_url`` —
+    those are distinct backend endpoints (#54251). An entry with the SAME
+    provider+model+base_url is still rejected as a self-fallback / duplicate.
+    """
+
+    def _run_add_with_pick(self, primary_model_cfg, picked_model_cfg):
+        """Drive ``cmd_fallback_add`` with the picker yielding ``picked_model_cfg``.
+
+        Returns the fallback chain persisted after the command runs.
+        """
+        from argparse import Namespace
+        from hermes_cli.config import load_config, save_config
+        import hermes_cli.fallback_cmd as fallback_cmd
+
+        # Seed the primary into config["model"] before the picker runs.
+        cfg = load_config()
+        cfg["model"] = dict(primary_model_cfg)
+        save_config(cfg)
+
+        def _fake_picker(args=None):
+            # The picker writes the user's selection to config["model"].
+            c = load_config()
+            c["model"] = dict(picked_model_cfg)
+            save_config(c)
+
+        with patch("hermes_cli.main._require_tty"), \
+             patch("hermes_cli.main.select_provider_and_model", side_effect=_fake_picker), \
+             patch("builtins.print"):
+            fallback_cmd.cmd_fallback_add(Namespace())
+
+        return fallback_cmd._read_chain(load_config())
+
+    def test_fallback_add_accepts_same_model_different_base_url(self, config_home):
+        chain = self._run_add_with_pick(
+            primary_model_cfg={
+                "provider": "custom",
+                "default": "my-model",
+                "base_url": "https://a.example/v1",
+            },
+            picked_model_cfg={
+                "provider": "custom",
+                "default": "my-model",
+                "base_url": "https://b.example/v1",
+            },
+        )
+        # Before the fix the differing-base_url entry is rejected as a
+        # self-fallback and never reaches the chain.
+        assert any(
+            e.get("provider") == "custom"
+            and e.get("model") == "my-model"
+            and (e.get("base_url") or "").rstrip("/") == "https://b.example/v1"
+            for e in chain
+        ), f"expected the differing-base_url entry to be appended, got {chain!r}"
+
+    def test_fallback_add_rejects_same_model_same_base_url(self, config_home):
+        chain = self._run_add_with_pick(
+            primary_model_cfg={
+                "provider": "custom",
+                "default": "my-model",
+                "base_url": "https://a.example/v1",
+            },
+            picked_model_cfg={
+                "provider": "custom",
+                "default": "my-model",
+                "base_url": "https://a.example/v1",
+            },
+        )
+        # Identical endpoint → self-fallback guard still fires → nothing added.
+        assert chain == [], f"expected no fallback added for a self-loop, got {chain!r}"

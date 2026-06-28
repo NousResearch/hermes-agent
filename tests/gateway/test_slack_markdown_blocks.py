@@ -323,3 +323,315 @@ class TestMarkdownTableRoundTrip:
         blocks = adapter._build_markdown_blocks(self.TABLE)
         assert len(blocks) == 1
         assert blocks[0] == {"type": "markdown", "text": self.TABLE}
+
+
+# ---------------------------------------------------------------------------
+# Hardening tests — address tw0316 review on PR #53893 (items 1-4 + 6).
+# Each test is a vertical tracer bullet: one behavior, real code path, fails
+# today (RED), passes once the fix lands (GREEN).
+# ---------------------------------------------------------------------------
+
+
+class TestYamlConfigDisableBridgesToExtra:
+    """Item 1: documented config opt-out must actually disable the feature.
+
+    `gateway.slack.markdown_blocks: false` in config.yaml is the documented
+    user-facing switch, but `_apply_yaml_config()` returns None and never
+    bridges the key into `PlatformConfig.extra`. Result: the flag is silently
+    dropped, `_markdown_blocks_enabled()` still defaults to True, and the
+    documented opt-out doesn't disable anything.
+    """
+
+    def test_yaml_markdown_blocks_false_disables_feature(self, tmp_path, monkeypatch):
+        import os
+        from gateway.config import load_gateway_config
+
+        # Write a real config.yaml with the documented opt-out path.
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "slack:\n"
+            "  enabled: true\n"
+            "  markdown_blocks: false\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Clear any cached env so the fresh config takes effect.
+        for k in list(os.environ):
+            if k.startswith("SLACK_"):
+                monkeypatch.delenv(k, raising=False)
+
+        cfg = load_gateway_config()
+
+        # Find the Slack platform config (keyed by Platform enum in GatewayConfig).
+        slack_cfg = None
+        platforms = getattr(cfg, "platforms", None) or {}
+        for key, value in platforms.items():
+            if str(key).endswith("slack") or getattr(key, "value", None) == "slack":
+                slack_cfg = value
+                break
+        assert slack_cfg is not None, "Slack platform config not loaded"
+
+        # The documented user intent is: markdown_blocks is OFF.
+        # Today extra == {} (dropped), so _markdown_blocks_enabled() returns True.
+        # After the bridge fix, extra will carry the falsy value and the
+        # SlackAdapter will report disabled.
+        from plugins.platforms.slack.adapter import SlackAdapter
+        adapter = SlackAdapter(slack_cfg)
+        assert adapter._markdown_blocks_enabled() is False, (
+            "slack.markdown_blocks: false in config.yaml must disable the "
+            "feature — _apply_yaml_config must bridge it into extra"
+        )
+
+
+class TestCumulativeMarkdownBlockLimit:
+    """Item 2: per-payload cumulative markdown-block text must stay <= 12,000.
+
+    Slack's Block Kit spec: "The cumulative limit for all markdown blocks in
+    a single payload is 12,000 characters." The current code chunks only by
+    block count (max 50 blocks/msg), so a 12,001-char message produces one
+    `chat_postMessage` call with two blocks totaling >12k -> Slack rejects
+    with `markdown_text_too_long`. The fix: chunk by cumulative text length
+    across the whole payload (or one block per message).
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_over_12k_chars_emits_no_payload_over_limit(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "123.000"}
+        )
+
+        # 12,001 chars — one char over the cumulative payload limit.
+        big = "a" * 12_001
+        await adapter.send("C123", big)
+
+        # Inspect every call: no single chat_postMessage payload may carry
+        # more than 12,000 chars of cumulative markdown-block text.
+        for call in adapter._app.client.chat_postMessage.call_args_list:
+            kwargs = call.kwargs
+            blocks = kwargs.get("blocks") or []
+            cumulative = sum(len(b.get("text", "")) for b in blocks if b.get("type") == "markdown")
+            assert cumulative <= SlackAdapter._MARKDOWN_BLOCK_CHAR_LIMIT, (
+                f"chat_postMessage payload carries {cumulative} chars of "
+                f"markdown-block text; Slack rejects payloads over "
+                f"{SlackAdapter._MARKDOWN_BLOCK_CHAR_LIMIT}. "
+                f"send() must split across multiple messages, not one."
+            )
+
+    @pytest.mark.asyncio
+    async def test_send_over_12k_chars_produces_multiple_postmessage_calls(self, adapter):
+        # Belt-and-suspenders: 12,001 chars must produce >1 API call, proving
+        # we did NOT pile multiple sub-12k blocks into one over-limit payload.
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "123.000"}
+        )
+
+        await adapter.send("C123", "a" * 12_001)
+
+        assert adapter._app.client.chat_postMessage.await_count >= 2, (
+            "12,001-char content must be split across multiple "
+            "chat_postMessage calls, not one cumulative-over-limit payload"
+        )
+
+
+class TestLiveFallbackOnSlackRejection:
+    """Item 3: when Slack rejects markdown blocks, retry with legacy mrkdwn.
+
+    Today send() catches any exception from chat_postMessage and returns
+    SendResult(success=False) with no retry. Slack errors like
+    `invalid_blocks`, `markdown_text_too_long`, `msg_too_long` are
+    recoverable by retrying the legacy `text=` + `mrkdwn=true` path. The
+    fix: a helper that recognizes markdown-block rejection errors and
+    retries once with legacy formatting.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_retries_legacy_when_slack_rejects_blocks(self, adapter):
+        # First call: Slack rejects the markdown-block payload with
+        # `invalid_blocks` (a real Slack error for malformed blocks).
+        # Second call: legacy retry succeeds.
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[
+                SlackRejectedBlocks("invalid_blocks"),
+                {"ts": "123.000"},
+            ]
+        )
+
+        result = await adapter.send("C123", "# Hi\n\nbody")
+
+        assert result.success, "send must retry legacy on Slack block rejection"
+        assert adapter._app.client.chat_postMessage.await_count == 2, (
+            "expected exactly two chat_postMessage calls: the rejected "
+            "blocks call, then the legacy retry"
+        )
+        # The retry call must use the legacy mrkdwn path, not blocks.
+        retry_kwargs = adapter._app.client.chat_postMessage.call_args_list[1].kwargs
+        assert "blocks" not in retry_kwargs, (
+            "retry must fall back to plain text, not re-send blocks"
+        )
+        assert retry_kwargs.get("mrkdwn") is True, (
+            "retry must re-enable Slack mrkdwn rendering on the text-only payload"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_retry_on_unrelated_errors(self, adapter):
+        # A non-markdown-block error (e.g. network failure, auth error)
+        # must NOT trigger the legacy fallback — only Slack's block-rejection
+        # family of errors should. Other errors surface as SendResult(success=False).
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=ConnectionError("network down")
+        )
+
+        result = await adapter.send("C123", "hi")
+
+        assert not result.success
+        assert adapter._app.client.chat_postMessage.await_count == 1, (
+            "non-block errors must not trigger a legacy retry"
+        )
+
+    @pytest.mark.asyncio
+    async def test_edit_message_retries_legacy_and_clears_stale_blocks(self, adapter):
+        # edit_message has an extra concern: when falling back from blocks
+        # to plain text on chat.update, Slack can retain the old blocks
+        # unless we explicitly pass blocks=[] to clear them.
+        adapter._app.client.chat_update = AsyncMock(
+            side_effect=[
+                SlackRejectedBlocks("invalid_blocks"),
+                {"ok": True},
+            ]
+        )
+
+        await adapter.edit_message("C123", "123.000", "# Hi\n\nbody")
+
+        assert adapter._app.client.chat_update.await_count == 2
+        retry_kwargs = adapter._app.client.chat_update.call_args_list[1].kwargs
+        assert retry_kwargs.get("blocks") == [], (
+            "edit retry must pass blocks=[] to clear stale blocks when "
+            "falling back to plain text (Slack otherwise retains old blocks)"
+        )
+        assert retry_kwargs.get("mrkdwn") is True
+
+
+class TestEntityMentionSafety:
+    """Item 4: Slack entity syntax in assistant output must not ping users.
+
+    Assistant output can contain literal strings like `<@U123>`, `<!channel>`,
+    `<#C123>`. If those reach Slack as active entity syntax (in either the
+    markdown block text or the top-level `text` fallback), the bot will
+    actually ping users, channels, or special groups. Slack parses these in
+    mrkdwn-enabled `text` fields AND in markdown-block content. The fix:
+    neutralize entity patterns without breaking CommonMark link syntax like
+    `[label](https://...)`.
+    """
+
+    @pytest.mark.parametrize("entity", ["<@U123>", "<@U123|name>", "<!channel>", "<!here>", "<#C123>", "<#C123|general>"])
+    def test_neutralize_entity_in_markdown_block(self, adapter, entity):
+        blocks = adapter._build_markdown_blocks(f"hey {entity} look")
+        # Slack entity syntax is `<@...>`, `<!...>`, `<#...>`. Each must NOT
+        # appear verbatim in the emitted markdown-block text, because Slack
+        # will parse it as an active mention even inside a markdown block.
+        for b in blocks:
+            txt = b.get("text", "")
+            assert "<@" not in txt and "<!" not in txt and "<#" not in txt, (
+                f"active entity syntax {entity!r} must not reach Slack — "
+                f"neutralize before emitting markdown block"
+            )
+
+    @pytest.mark.parametrize("entity", ["<@U123>", "<!channel>", "<#C123>"])
+    def test_neutralize_entity_in_fallback_text(self, entity):
+        # `text=` is consumed by Slack for notifications and on clients that
+        # don't render blocks; mrkdwn is enabled there by default, so the same
+        # entity syntax pings. Must be neutralized too.
+        out = SlackAdapter._strip_markdown_for_fallback(f"hey {entity} look")
+        assert "<@" not in out and "<!" not in out and "<#" not in out, (
+            f"fallback text must not preserve active entity syntax {entity!r}"
+        )
+
+    def test_commonmark_links_preserved_in_markdown_block(self, adapter):
+        # Critical: entity neutralization must NOT mangle normal CommonMark
+        # link syntax — Slack's markdown block IS CommonMark, so
+        # `[label](https://example.com)` must round-trip verbatim.
+        md = "see [the docs](https://example.com/docs) for more"
+        blocks = adapter._build_markdown_blocks(md)
+        assert blocks[0]["text"] == md, (
+            "entity neutralization must not break CommonMark link syntax"
+        )
+
+
+class TestFallbackTextCapInvariant:
+    """Item 6: lock in the existing invariant — fallback text stays <= 3000 chars.
+
+    `_strip_markdown_for_fallback` already caps at 3000 chars (existing test
+    `test_bounded_to_3000_chars` only checks an extreme 50k input). This test
+    locks in the boundary case: a final response just under the 12k
+    markdown-block limit but over the fallback-text cap must preserve the
+    full markdown block while capping only the top-level `text` fallback.
+    The invariant protects `chat.update` from `msg_too_long` and keeps
+    notifications readable.
+    """
+
+    def test_content_over_3000_under_12000_caps_fallback_only(self, adapter):
+        # 6,000 chars: under the 12k markdown-block cap (full content visible
+        # in the markdown block) but over the 3,000-char fallback cap.
+        content = "word " * 1200  # 6,000 chars
+        assert 3000 < len(content) < 12000
+
+        # The markdown block carries the full content unchanged.
+        blocks = adapter._build_markdown_blocks(content)
+        block_total = sum(len(b["text"]) for b in blocks)
+        assert block_total >= len(content), (
+            "markdown block must carry full content; only the fallback text caps"
+        )
+
+        # The standalone fallback helper caps at 3000.
+        fallback = SlackAdapter._strip_markdown_for_fallback(content)
+        assert len(fallback) <= 3000, (
+            "top-level text fallback must stay <= 3000 chars to avoid msg_too_long "
+            "on chat.update and to keep notifications readable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_payload_invariants_hold_for_long_response(self, adapter):
+        # End-to-end: build the real `_send_payload` output for content between
+        # 3000 and 12000 chars. The blocks list carries the full content; the
+        # `text` fallback is independently capped.
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ts": "123.000"}
+        )
+
+        content = "word " * 1200  # 6,000 chars
+        await adapter.send("C123", content)
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        blocks = call_kwargs.get("blocks") or []
+        block_total = sum(len(b["text"]) for b in blocks if b.get("type") == "markdown")
+        assert block_total >= len(content), (
+            "visible markdown-block content must not be truncated by the "
+            "fallback-cap invariant"
+        )
+        assert len(call_kwargs.get("text", "")) <= 3000, (
+            "top-level text fallback must stay <= 3000 chars independently"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test helper — a Slack SDK-shaped error for "blocks rejected."
+# Slack's Python SDK raises SlackApiError with a `response` dict containing
+# an `error` string; we model the family of block-rejection error codes the
+# adapter should recognise when deciding to retry legacy.
+# ---------------------------------------------------------------------------
+
+
+class SlackRejectedBlocks(Exception):
+    """Simulates Slack rejecting a markdown-block payload.
+
+    SlackApiError carries a `.response` dict with an `error` field set to one
+    of `invalid_blocks`, `markdown_text_too_long`, or `msg_too_long`. For the
+    test, a thin subclass is enough — the adapter's recognition helper should
+    match on the error message/name string, not the exception class itself.
+    """
+
+    def __init__(self, error_code: str):
+        super().__init__(error_code)
+        self.error_code = error_code
+        # Mirror slack_sdk's SlackApiError.response['error'] shape so the
+        # adapter can introspect it the same way SlackApiError is introspected.
+        self.response = {"ok": False, "error": error_code}

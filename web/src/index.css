@@ -43,29 +43,49 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) lens applied   */
-/* statically. Mirrors nousnet-web/(hermes-agent)/layout.tsx so the    */
-/* canonical Hermes palette is the default — teal canvas + cream      */
-/* accent — without relying on leva/gsap at runtime.                  */
+/* Hermes Agent — luxury futuristic glassmorphic operating surface.    */
+/* Preserves the existing component tree and behavior while upgrading  */
+/* only the visual tokens, material treatment, depth, and lighting.    */
 /* ------------------------------------------------------------------ */
 
 :root {
-  /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
-     These are the defaults for the `default` (Hermes Teal) dashboard theme;
-     ThemeProvider rewrites them as inline styles when a user switches themes. */
-  --foreground: color-mix(in srgb, #ffffff 0%, transparent);
-  --foreground-base: #ffffff;
-  --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  /* Core luxury dark-plasma system. ThemeProvider can still rewrite these
+     inline for user-selected themes, but these defaults make the browser UI
+     feel like a precise graphite-violet control room. */
+  --foreground: color-mix(in srgb, #f7f5ff 100%, transparent);
+  --foreground-base: #f7f5ff;
+  --foreground-alpha: 1;
+  --midground: color-mix(in srgb, #d7ccff 100%, transparent);
+  --midground-base: #d7ccff;
   --midground-alpha: 1;
-  --background: color-mix(in srgb, #041c1c 100%, transparent);
-  --background-base: #041c1c;
+  --background: color-mix(in srgb, #090b18 100%, transparent);
+  --background-base: #090b18;
   --background-alpha: 1;
 
+  /* Futuristic UI optimizer tokens. */
+  --bg-base: #090b18;
+  --bg-panel: rgba(12, 10, 32, 0.62);
+  --bg-glass: rgba(93, 75, 150, 0.28);
+  --bg-glass-elevated: rgba(48, 42, 88, 0.58);
+  --border-glass: rgba(143, 134, 184, 0.2);
+  --border-metal: rgba(179, 169, 224, 0.34);
+  --text-primary: #f7f5ff;
+  --text-secondary: #b8b1d6;
+  --text-muted: #7f789e;
+  --accent-blue: #3f7cff;
+  --accent-purple: #9b5cff;
+  --accent-magenta: #d05cff;
+  --accent-orange: #f47a35;
+  --accent-green: #42d38b;
+  --accent-red: #ff4d5e;
+  --glow-blue: rgba(63, 124, 255, 0.34);
+  --glow-purple: rgba(155, 92, 255, 0.34);
+  --shadow-panel: 0 22px 70px rgba(0, 0, 0, 0.5), 0 0 44px rgba(63, 124, 255, 0.08);
+  --blur-glass: 24px;
+
   /* Consumed by <Backdrop />; also theme-switchable. */
-  --warm-glow: rgba(255, 189, 56, 0.35);
-  --noise-opacity-mul: 1;
+  --warm-glow: rgba(155, 92, 255, 0.32);
+  --noise-opacity-mul: 0.72;
 
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
      system stack so themes that don't override look native. */
@@ -267,3 +287,275 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Ultimate Futuristic UI Optimizer material pass.                     */
+/* ------------------------------------------------------------------ */
+
+@keyframes hermes-glass-pulse {
+  0%, 100% {
+    box-shadow: var(--shadow-panel), inset 0 1px 0 rgba(247, 245, 255, 0.08), inset -1px -1px 0 rgba(9, 11, 24, 0.5);
+  }
+  50% {
+    box-shadow: 0 24px 76px rgba(0, 0, 0, 0.54), 0 0 58px rgba(155, 92, 255, 0.12), inset 0 1px 0 rgba(247, 245, 255, 0.12), inset -1px -1px 0 rgba(9, 11, 24, 0.52);
+  }
+}
+
+@keyframes hermes-rim-shimmer {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+body {
+  color: var(--text-primary);
+  background:
+    radial-gradient(circle at 12% 8%, rgba(155, 92, 255, 0.18), transparent 28rem),
+    radial-gradient(circle at 86% 0%, rgba(63, 124, 255, 0.16), transparent 30rem),
+    radial-gradient(circle at 78% 82%, rgba(208, 92, 255, 0.12), transparent 34rem),
+    linear-gradient(135deg, #090b18 0%, #111033 44%, #0e1120 100%);
+}
+
+#root > [data-layout-variant] {
+  background:
+    linear-gradient(rgba(143, 134, 184, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(143, 134, 184, 0.03) 1px, transparent 1px),
+    radial-gradient(circle at 20% 0%, rgba(155, 92, 255, 0.18), transparent 32rem),
+    radial-gradient(circle at 88% 18%, rgba(63, 124, 255, 0.14), transparent 34rem),
+    linear-gradient(135deg, #090b18 0%, #111033 48%, #0e1120 100%) !important;
+  background-size: 42px 42px, 42px 42px, auto, auto, auto;
+}
+
+#app-sidebar,
+header,
+[data-radix-popper-content-wrapper] > *,
+[role="dialog"],
+[role="menu"],
+.bg-card,
+.bg-popover,
+.bg-secondary,
+.bg-muted,
+.bg-background\/50,
+.bg-background-base\/90,
+.bg-background-base\/95 {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(155, 92, 255, 0.2), transparent 22rem),
+    linear-gradient(135deg, rgba(93, 75, 150, 0.28), rgba(12, 10, 32, 0.68) 52%, rgba(48, 42, 88, 0.42)) !important;
+  border-color: var(--border-glass) !important;
+  box-shadow: var(--shadow-panel), inset 0 1px 0 rgba(247, 245, 255, 0.08), inset -1px -1px 0 rgba(9, 11, 24, 0.55);
+  backdrop-filter: blur(var(--blur-glass)) saturate(130%);
+  -webkit-backdrop-filter: blur(var(--blur-glass)) saturate(130%);
+}
+
+#app-sidebar {
+  border-right: 1px solid transparent !important;
+  border-image: linear-gradient(180deg, rgba(63, 124, 255, 0.42), rgba(143, 134, 184, 0.16), rgba(208, 92, 255, 0.32)) 1 !important;
+}
+
+#app-sidebar nav a,
+#app-sidebar button,
+button,
+[role="button"],
+input,
+select,
+textarea,
+.rounded-md,
+.rounded-lg,
+.rounded-xl {
+  border-color: rgba(143, 134, 184, 0.2);
+}
+
+#app-sidebar nav a[aria-current="page"],
+#app-sidebar button[aria-busy="true"],
+button[aria-pressed="true"],
+[data-state="active"],
+.bg-primary,
+.text-primary {
+  color: var(--text-primary) !important;
+  text-shadow: 0 0 22px rgba(63, 124, 255, 0.28);
+}
+
+#app-sidebar nav a[aria-current="page"]::before,
+#app-sidebar button[aria-busy="true"]::before {
+  content: "";
+  position: absolute;
+  inset: 0.25rem 0.375rem;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(63, 124, 255, 0.18), rgba(155, 92, 255, 0.12), transparent);
+  border: 1px solid rgba(63, 124, 255, 0.22);
+  box-shadow: 0 0 28px rgba(63, 124, 255, 0.16), inset 0 1px 0 rgba(247, 245, 255, 0.08);
+}
+
+main,
+section,
+article,
+.bg-card,
+.bg-popover,
+[class*="border-border"],
+[class*="border-current"] {
+  border-color: rgba(143, 134, 184, 0.18) !important;
+}
+
+.bg-card,
+.bg-popover,
+.bg-secondary,
+.bg-muted,
+[class*="shadow"],
+[role="dialog"] {
+  animation: hermes-glass-pulse 14s ease-in-out infinite;
+}
+
+button,
+a,
+input,
+select,
+textarea,
+[role="tab"],
+[role="switch"],
+[role="combobox"] {
+  transition-property: color, background-color, border-color, box-shadow, opacity, filter;
+  transition-duration: 180ms;
+  transition-timing-function: ease-out;
+}
+
+button:not(:disabled):hover,
+a:hover,
+[role="tab"]:hover,
+[role="combobox"]:hover {
+  border-color: rgba(63, 124, 255, 0.32) !important;
+  box-shadow: 0 0 26px rgba(63, 124, 255, 0.12), inset 0 1px 0 rgba(247, 245, 255, 0.08);
+}
+
+input,
+select,
+textarea,
+pre,
+code {
+  background-color: rgba(12, 10, 32, 0.56) !important;
+  border-color: rgba(143, 134, 184, 0.2) !important;
+  color: var(--text-primary) !important;
+}
+
+.text-muted-foreground,
+.text-text-secondary,
+.text-text-tertiary {
+  color: var(--text-secondary) !important;
+}
+
+.text-success,
+.bg-success {
+  color: var(--accent-green) !important;
+}
+
+.text-warning,
+.bg-warning {
+  color: var(--accent-orange) !important;
+}
+
+.text-destructive,
+.bg-destructive {
+  color: var(--accent-red) !important;
+}
+
+svg {
+  filter: drop-shadow(0 0 10px rgba(63, 124, 255, 0.1));
+}
+
+.recharts-cartesian-grid line,
+svg line[stroke],
+svg path[stroke="#e5e7eb"],
+svg path[stroke="currentColor"] {
+  stroke-opacity: 0.35;
+}
+
+@supports (background: paint(worklet)) or (background: linear-gradient(red, blue)) {
+  .bg-card,
+  .bg-popover,
+  [role="dialog"] {
+    position: relative;
+  }
+
+  .bg-card::after,
+  .bg-popover::after,
+  [role="dialog"]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(247, 245, 255, 0.18), rgba(63, 124, 255, 0.24), rgba(208, 92, 255, 0.16), rgba(244, 122, 53, 0.12));
+    background-size: 260% 260%;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    animation: hermes-rim-shimmer 18s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-card,
+  .bg-popover,
+  [role="dialog"] {
+    animation: none;
+  }
+
+  .bg-card::after,
+  .bg-popover::after,
+  [role="dialog"]::after {
+    animation: none;
+  }
+}
+
+
+/* System-page/card-specific luxury glass refinement. */
+.bg-background-base\/80,
+.bg-background-base\/90,
+.bg-background-base\/95,
+.border-midground\/15 {
+  border-radius: 16px !important;
+  background:
+    radial-gradient(circle at 8% 0%, rgba(208, 92, 255, 0.13), transparent 18rem),
+    radial-gradient(circle at 92% 10%, rgba(63, 124, 255, 0.1), transparent 20rem),
+    linear-gradient(135deg, rgba(93, 75, 150, 0.24), rgba(12, 10, 32, 0.66) 52%, rgba(34, 28, 79, 0.34)) !important;
+  border: 1px solid rgba(143, 134, 184, 0.2) !important;
+  box-shadow:
+    0 22px 70px rgba(0, 0, 0, 0.44),
+    0 0 38px rgba(63, 124, 255, 0.07),
+    inset 0 1px 0 rgba(247, 245, 255, 0.09),
+    inset -1px -1px 0 rgba(9, 11, 24, 0.52) !important;
+  backdrop-filter: blur(24px) saturate(130%);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+}
+
+main section > h2 {
+  color: #d8d0ff !important;
+  text-shadow: 0 0 20px rgba(155, 92, 255, 0.18);
+}
+
+main section > h2 + div {
+  overflow: hidden;
+}
+
+main section > h2 + div::before {
+  content: "";
+  display: block;
+  height: 1px;
+  margin: -1px 0 0;
+  background: linear-gradient(90deg, rgba(63, 124, 255, 0.3), rgba(208, 92, 255, 0.16), transparent);
+}
+
+.inline-flex,
+button,
+input,
+select,
+textarea {
+  border-radius: 10px !important;
+}
+
+button:not(:disabled),
+a[role="button"],
+.inline-flex {
+  background-image: linear-gradient(135deg, rgba(143, 134, 184, 0.08), rgba(63, 124, 255, 0.04)) !important;
+}

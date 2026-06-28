@@ -91,9 +91,6 @@ class OAuthNonInteractiveError(RuntimeError):
 # Module-level state
 # ---------------------------------------------------------------------------
 
-# Port used by the most recent build_oauth_auth() call.  Exposed so that
-# tests can verify the callback server and the redirect_uri share a port.
-_oauth_port: int | None = None
 # Interactivity gate for OAuth stdin prompts. A ContextVar (NOT threading.local)
 # is required: background MCP discovery sets this on the discovery thread, but
 # the actual connect+OAuth runs on the dedicated `mcp-event-loop` thread via
@@ -592,7 +589,7 @@ async def _redirect_handler(authorization_url: str, port: int | None = None) -> 
     # opened.  Two ways out: paste the redirect URL back (default fallback,
     # offered by _wait_for_callback on interactive TTYs), or set up an SSH
     # port forward so the redirect tunnels through.
-    actual_port = port or _oauth_port
+    actual_port = port
     if actual_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
         print(
             f"  Remote session detected. After you authorize, the provider redirects to\n"
@@ -605,7 +602,7 @@ async def _redirect_handler(authorization_url: str, port: int | None = None) -> 
             f"       enough to complete the flow.\n"
             f"\n"
             f"    2. Or forward the port first in a separate terminal:\n"
-            f"         ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
+            f"         ssh -N -L {actual_port}:127.0.0.1:{actual_port} <user>@<this-host>\n"
             f"       then open the URL above and let it redirect normally.\n"
             f"\n"
             f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
@@ -628,16 +625,13 @@ async def _redirect_handler(authorization_url: str, port: int | None = None) -> 
 async def _wait_for_callback(server: "OAuthCallbackServer | None" = None) -> tuple[str, str | None]:
     """Wait for the OAuth callback to arrive.
 
-    If *server* is provided (from ``_configure_callback_port`` via
-    ``functools.partial``), polls the already-bound server for the result.
-    The paste fallback writes directly to ``server._result`` so it races
-    naturally with the HTTP listener — whichever finishes first wins.
+    Polls the already-bound *server* for the result.  The paste fallback
+    writes directly to ``server._result`` so it races naturally with the
+    HTTP listener — whichever finishes first wins.
 
-    Falls back to the legacy module-level ``_oauth_port`` path when
-    *server* is None (backward compat for callers that haven't been
-    migrated to ``functools.partial`` yet).
-    """
-    # New path: server bound ahead of time, just poll
+    *server* must be provided via ``functools.partial`` from the caller
+    (``build_oauth_auth`` or ``_build_provider``)."""
+    # Poll pre-bound server
     if server is not None:
         # Paste fallback: race a stdin reader against the HTTP listener.
         # Both write to `server._result`, so whichever finishes first wins.
@@ -656,154 +650,99 @@ async def _wait_for_callback(server: "OAuthCallbackServer | None" = None) -> tup
             raise OAuthNonInteractiveError("user_skipped")
         return result
 
-    # Legacy path — remove after all callers migrated to functools.partial
-    if _oauth_port is None:
-        raise RuntimeError(
-            "OAuth callback port not set — build_oauth_auth must be called "
-            "before _wait_for_oauth_callback"
-        )
-
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
-    handler_cls, result = _make_callback_handler()
-
-    # Start a temporary server on the known port
-    try:
-        legacy_server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
-        )
-
-    server_thread = threading.Thread(target=legacy_server.handle_request, daemon=True)
-    server_thread.start()
-
-    # Optional paste-fallback thread: only on interactive TTYs. Reads one
-    # line from stdin and writes the parsed code/state into the shared
-    # result dict. The HTTP listener and this thread race for the result;
-    # whichever fills it first wins.
-    paste_thread: threading.Thread | None = None
-    if _is_interactive():
-        print(
-            "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
-            "portion) and press Enter. Type ``skip`` + Enter to continue "
-            "without this server:",
-            file=sys.stderr,
-            flush=True,
-        )
-        paste_thread = threading.Thread(
-            target=_paste_callback_reader, args=(result,), daemon=True
-        )
-        paste_thread.start()
-
-    timeout = 300.0
-    poll_interval = 0.5
-    elapsed = 0.0
-    try:
-        while elapsed < timeout:
-            if result["auth_code"] is not None or result["error"] is not None:
-                break
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
-    finally:
-        legacy_server.server_close()
-
-    if result["error"] == _USER_SKIPPED_SENTINEL:
-        raise OAuthNonInteractiveError("user_skipped")
-    if result["error"]:
-        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
-    if result["auth_code"] is None:
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — no authorization code received. "
-            "Ensure you completed the browser authorization flow."
-        )
-
-    return result["auth_code"], result["state"]
+    raise RuntimeError(
+        "OAuth callback server not provided — "
+        "caller must pass server via functools.partial"
+    )
 
 
 def _paste_callback_reader(result: dict) -> None:
-    """Read one line from stdin, parse it as an OAuth redirect, write to result.
+    """Read lines from stdin, parse as OAuth redirect, write to result.
 
     Accepts any of:
       - Full redirect URL: ``http://127.0.0.1:37949/callback?code=...&state=...``
       - The provider's own callback URL: ``https://mcp.example.com/callback?code=...&state=...``
       - Just the query string: ``?code=...&state=...`` or ``code=...&state=...``
       - A skip token (``skip``, ``cancel``, ``s``, ``n``, ``no``, ``q``, ``quit``)
-        — exits the OAuth flow cleanly without auth. Caller raises
-        :class:`OAuthNonInteractiveError` so MCP connection setup treats this
-        as a non-fatal "user opted out" and continues without that server.
+        — exits the OAuth flow cleanly without auth.
 
-    Failures to parse, EOF, or interrupts are swallowed — this is best-effort
-    fallback alongside the HTTP listener, which remains the primary path.
+    Invalid pastes (typos, wrong URL, missing code) print a hint and let
+    the user retry.  The loop exits on success, skip, HTTP listener win,
+    or after 5 consecutive parse failures.
+
+    Caller raises :class:`OAuthNonInteractiveError` on skip sentinel so
+    MCP connection setup treats this as a non-fatal "user opted out" and
+    continues without that server.
     """
-    try:
-        line = sys.stdin.readline()
-    except (KeyboardInterrupt, OSError, ValueError):
-        return
-    if not line:
-        return  # EOF
-    line = line.strip()
-    if not line:
-        return
-
-    # Skip if HTTP listener already won.
-    if result.get("auth_code") is not None or result.get("error") is not None:
-        return
-
-    # Skip token: user explicitly opted out of authorization. Mark the
-    # result with a sentinel error string that _wait_for_callback maps
-    # to OAuthNonInteractiveError (already handled by mcp_tool.py as a
-    # non-fatal "skip this server and continue startup" path).
-    if line.lower() in _SKIP_TOKENS:
+    _MAX_RETRIES = 5
+    failures = 0
+    while failures < _MAX_RETRIES:
+        # HTTP listener already won — stop polling stdin.
         if result.get("auth_code") is not None or result.get("error") is not None:
             return
-        result["error"] = _USER_SKIPPED_SENTINEL
-        print(
-            "  OAuth skipped. Run `hermes mcp login <server>` later to "
-            "authenticate, or set ``enabled: false`` on that server in "
-            "config.yaml to disable persistently.",
-            file=sys.stderr,
-        )
+
+        try:
+            line = sys.stdin.readline()
+        except (KeyboardInterrupt, OSError, ValueError):
+            return
+        if not line:
+            return  # EOF
+        line = line.strip()
+        if not line:
+            continue
+
+        # Skip token: user explicitly opted out.
+        if line.lower() in _SKIP_TOKENS:
+            if result.get("auth_code") is not None or result.get("error") is not None:
+                return
+            result["error"] = _USER_SKIPPED_SENTINEL
+            print(
+                "  OAuth skipped. Run `hermes mcp login <server>` later to "
+                "authenticate, or set ``enabled: false`` on that server in "
+                "config.yaml to disable persistently.",
+                file=sys.stderr,
+            )
+            return
+
+        # Strip a leading "?" if user pasted just a query string.
+        query = line
+        if "?" in line:
+            query = line.split("?", 1)[1]
+        if query.startswith("?"):
+            query = query[1:]
+
+        try:
+            params = parse_qs(query)
+        except (ValueError, TypeError):
+            print(
+                "  Could not parse pasted input as an OAuth redirect — try again.",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+
+        code = params.get("code", [None])[0]
+        state = params.get("state", [None])[0]
+        error = params.get("error", [None])[0]
+
+        if not code and not error:
+            print(
+                "  Pasted input did not contain ``code=`` or ``error=`` — try again.",
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+
+        # One more race-check before writing.
+        if result.get("auth_code") is not None or result.get("error") is not None:
+            return
+
+        result["auth_code"] = code
+        result["state"] = state
+        result["error"] = error
+        if code:
+            print("  Got authorization code from paste — completing flow.", file=sys.stderr)
         return
-
-    # Strip a leading "?" if user pasted just a query string.
-    query = line
-    if "?" in line:
-        # Either a full URL or "?code=...". Take everything after the first "?".
-        query = line.split("?", 1)[1]
-    if query.startswith("?"):
-        query = query[1:]
-
-    try:
-        params = parse_qs(query)
-    except (ValueError, TypeError):
-        print(
-            "  Could not parse pasted input as an OAuth redirect — ignoring.",
-            file=sys.stderr,
-        )
-        return
-
-    code = params.get("code", [None])[0]
-    state = params.get("state", [None])[0]
-    error = params.get("error", [None])[0]
-
-    if not code and not error:
-        print(
-            "  Pasted input did not contain ``code=`` or ``error=`` — ignoring.",
-            file=sys.stderr,
-        )
-        return
-
-    # One more race-check before writing.
-    if result.get("auth_code") is not None or result.get("error") is not None:
-        return
-
-    result["auth_code"] = code
-    result["state"] = state
-    result["error"] = error
     if code:
         print("  Got authorization code from paste — completing flow.", file=sys.stderr)
 
@@ -849,7 +788,6 @@ def _configure_callback_port(cfg: dict) -> "OAuthCallbackServer":
     server.start()
     cfg["_resolved_port"] = server.port
     cfg["_callback_server"] = server
-    _oauth_port = server.port  # legacy: _wait_for_callback + _redirect_handler compat
     return server
 
 

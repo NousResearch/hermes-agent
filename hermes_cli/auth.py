@@ -416,7 +416,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Ollama Cloud",
         auth_type="api_key",
         inference_base_url=DEFAULT_OLLAMA_CLOUD_BASE_URL,
-        api_key_env_vars=("OLLAMA_API_KEY",),
+        # OLLAMA_API_KEY is the primary; OLLAMA_API_KEY_BACKUP is the
+        # failover key the credential pool rotates to on 429/402.  Declared
+        # here so _seed_from_env() (in agent/credential_pool.py) seeds
+        # both as separate pool entries — otherwise the second key in
+        # ~/.hermes/.env is silently ignored and the pool has no backup to
+        # rotate to.  See kpi_test_ollama_failover.py KPI-1/KPI-2.
+        api_key_env_vars=("OLLAMA_API_KEY", "OLLAMA_API_KEY_BACKUP"),
         base_url_env_var="OLLAMA_BASE_URL",
     ),
     "bedrock": ProviderConfig(

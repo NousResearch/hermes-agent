@@ -233,6 +233,62 @@ log_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+# Deprecated CouchDB replica hosts: replicate.npmjs.com and skimdb.npmjs.com.
+NPM_PUBLIC_REGISTRY="https://registry.npmjs.org/"
+NPM_DEAD_REGISTRY_HINT_RE='(replicate\.npmjs\.com|skimdb\.npmjs\.com)'
+
+npm_registry_host() {
+    local registry="${1:-}"
+    local host="$registry"
+    host="${host#*://}"
+    host="${host%%/*}"
+    host="${host##*@}"
+    host="${host%%:*}"
+    printf '%s' "$host" | tr '[:upper:]' '[:lower:]'
+}
+
+is_dead_npm_registry() {
+    local host
+    host="$(npm_registry_host "${1:-}")"
+    case "$host" in
+        replicate.npmjs.com|skimdb.npmjs.com) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# npm rewrites package-lock tarball URLs to the user's configured registry. The
+# deprecated CouchDB replica hosts no longer serve tarballs, so a stale .npmrc
+# makes Hermes bootstrap npm installs fail with opaque 404s. Only override those
+# known-dead hosts; private mirrors and normal npm config remain untouched.
+npm_registry_args() {
+    local npm_cmd="${1:-npm}"
+    local registry=""
+    registry="$("$npm_cmd" config get registry 2>/dev/null | head -n 1 || true)"
+    if is_dead_npm_registry "$registry"; then
+        log_warn "npm registry points at a deprecated mirror: $registry" >&2
+        log_info "Using $NPM_PUBLIC_REGISTRY for Hermes bootstrap npm installs only." >&2
+        log_info "To fix npm permanently: npm config set registry $NPM_PUBLIC_REGISTRY" >&2
+        printf '%s\n' "--registry=$NPM_PUBLIC_REGISTRY"
+    fi
+}
+
+show_npm_registry_hint() {
+    local npm_output="${1:-}"
+    if [ -z "$npm_output" ]; then
+        return 1
+    fi
+    if printf '%s' "$npm_output" | grep -Eiq "$NPM_DEAD_REGISTRY_HINT_RE" && \
+       printf '%s' "$npm_output" | grep -Eiq 'E404|404 Not Found|requested resource'; then
+        log_warn "npm is fetching packages from a deprecated registry mirror."
+        log_info "Those replica hosts no longer serve npm tarballs, so package downloads 404."
+        log_info "Fix your user npm config and retry:"
+        log_info "  npm config set registry $NPM_PUBLIC_REGISTRY"
+        log_info "  npm cache clean --force"
+        return 0
+    fi
+    return 1
+}
+
 json_escape() {
     # Enough for short installer status strings; avoids requiring jq during
     # pre-install bootstrap.
@@ -1937,7 +1993,12 @@ install_node_deps() {
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
-        npm install --silent 2>/dev/null || {
+        local npm_registry_args=()
+        local npm_registry_arg
+        while IFS= read -r npm_registry_arg; do
+            [ -n "$npm_registry_arg" ] && npm_registry_args+=("$npm_registry_arg")
+        done < <(npm_registry_args npm)
+        npm install "${npm_registry_args[@]}" --silent 2>/dev/null || {
             log_warn "npm install failed (browser tools may not work)"
         }
         log_success "Node.js dependencies installed"
@@ -2038,7 +2099,12 @@ install_node_deps() {
     if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
         log_info "Installing TUI dependencies..."
         cd "$INSTALL_DIR/ui-tui"
-        npm install --silent 2>/dev/null || {
+        local npm_registry_args=()
+        local npm_registry_arg
+        while IFS= read -r npm_registry_arg; do
+            [ -n "$npm_registry_arg" ] && npm_registry_args+=("$npm_registry_arg")
+        done < <(npm_registry_args npm)
+        npm install "${npm_registry_args[@]}" --silent 2>/dev/null || {
             log_warn "TUI npm install failed (hermes --tui may not work)"
         }
         log_success "TUI dependencies installed"
@@ -2281,11 +2347,19 @@ ensure_browser() {
     log_info "Installing agent-browser..."
     local log_file
     log_file="$(mktemp)"
-    if ! "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
+    local npm_registry_args=()
+    local npm_registry_arg
+    while IFS= read -r npm_registry_arg; do
+        [ -n "$npm_registry_arg" ] && npm_registry_args+=("$npm_registry_arg")
+    done < <(npm_registry_args "$npm_bin")
+    if ! "$npm_bin" install "${npm_registry_args[@]}" -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
         "agent-browser@^0.26.0" \
         "@askjo/camofox-browser@^1.5.2" \
         >"$log_file" 2>&1; then
         log_error "npm install failed:"
+        local npm_output=""
+        npm_output="$(cat "$log_file" 2>/dev/null || true)"
+        show_npm_registry_hint "$npm_output" || true
         cat "$log_file" >&2
         rm -f "$log_file"
         return 1
@@ -2568,25 +2642,39 @@ install_desktop() {
     #    `tsc -b` failing with no obvious cause. Fall back to `npm install`
     #    only if `npm ci` is unavailable or the lockfile is out of sync.
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
-    if ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ); then
-        log_success "Desktop workspace dependencies installed"
-    elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
-        log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
-        _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
-    else
-        log_error "Desktop workspace npm install failed"
-        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
-        # ~/.npm, so this non-root install can't write the shared cache. npm hides
-        # it behind a confusing EEXIST / "File exists" message while the real errno
-        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
-        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
-        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
-        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
-        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
-        log_info "Then re-run this installer, or build manually:"
-        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
+    local npm_registry_args=()
+    local npm_registry_arg
+    while IFS= read -r npm_registry_arg; do
+        [ -n "$npm_registry_arg" ] && npm_registry_args+=("$npm_registry_arg")
+    done < <(npm_registry_args npm)
+    local npm_log
+    npm_log="$(mktemp)"
+    ( cd "$INSTALL_DIR" && { npm ci "${npm_registry_args[@]}" 2>&1 | tee "$npm_log"; exit ${PIPESTATUS[0]}; } ) || \
+    ( cd "$INSTALL_DIR" && { npm install "${npm_registry_args[@]}" 2>&1 | tee -a "$npm_log"; exit ${PIPESTATUS[0]}; } ) || {
+        if _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
+            log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
+            _restore_electron_dist_with_fallback "$INSTALL_DIR" || true
+        else
+            log_error "Desktop workspace npm install failed"
+            # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
+            # ~/.npm, so this non-root install can't write the shared cache. npm hides
+            # it behind a confusing EEXIST / "File exists" message while the real errno
+            # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
+            log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
+            log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
+            log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
+            log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+            log_info "Then re-run this installer, or build manually:"
+            log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
+        fi
+        local npm_output=""
+        npm_output="$(cat "$npm_log" 2>/dev/null || true)"
+        show_npm_registry_hint "$npm_output" || true
+        rm -f "$npm_log"
         return 1
-    fi
+    }
+    rm -f "$npm_log"
+    log_success "Desktop workspace dependencies installed"
 
     # 2. Build, with up to three escalating attempts so a transient/blocked
     #    Electron download self-heals instead of failing the whole install:

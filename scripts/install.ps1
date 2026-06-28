@@ -234,6 +234,76 @@ function Write-Err {
     Write-Host "[X] $Message" -ForegroundColor Red
 }
 
+$NpmPublicRegistry = "https://registry.npmjs.org/"
+$NpmDeadRegistryHosts = @("replicate.npmjs.com", "skimdb.npmjs.com")
+$NpmDeadRegistryPattern = "(?i)(replicate\.npmjs\.com|skimdb\.npmjs\.com)"
+
+function Get-NpmRegistryHost {
+    param([string]$Registry)
+    if ([string]::IsNullOrWhiteSpace($Registry)) { return "" }
+    $value = $Registry.Trim()
+    try {
+        $uri = [System.Uri]$value
+        if ($uri.Host) { return $uri.Host.ToLowerInvariant() }
+    } catch {
+        # npm should return a URL, but keep a conservative fallback for odd config.
+    }
+    $value = $value -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''
+    $authority = ($value -split '/')[0]
+    $authority = ($authority -split '@')[-1]
+    $registryHost = ($authority -split ':')[0]
+    return $registryHost.ToLowerInvariant()
+}
+
+function Test-NpmDeadRegistry {
+    param([string]$Registry)
+    $registryHost = Get-NpmRegistryHost $Registry
+    return $NpmDeadRegistryHosts -contains $registryHost
+}
+
+# npm rewrites package-lock tarball URLs to the user's configured registry.
+# The old CouchDB replica hosts replicate.npmjs.com / skimdb.npmjs.com no
+# longer serve tarballs, so a stale user .npmrc makes Hermes' desktop stage
+# fail with opaque E404s. Keep this scoped to those known-dead hosts: legitimate
+# private registries still flow through untouched, and the user's config is not
+# modified by the installer.
+function Get-NpmRegistryArgs {
+    param([string]$NpmPath)
+    if (-not $NpmPath) { return @() }
+    $registry = ""
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $registry = (& $NpmPath config get registry 2>$null | Select-Object -First 1)
+    } catch {
+        $registry = ""
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($registry -and (Test-NpmDeadRegistry $registry)) {
+        Write-Warn "npm registry points at a deprecated mirror: $registry"
+        Write-Info "  Using $NpmPublicRegistry for Hermes bootstrap npm installs only."
+        Write-Info "  To fix npm permanently: npm config set registry $NpmPublicRegistry"
+        return @("--registry=$NpmPublicRegistry")
+    }
+    return @()
+}
+
+function Show-NpmRegistryHint {
+    param([string]$NpmOutput)
+    if (-not $NpmOutput) { return $false }
+    $isDeadRegistry404 = ($NpmOutput -match $NpmDeadRegistryPattern) -and (
+        $NpmOutput -match "(?i)E404|404 Not Found|requested resource"
+    )
+    if (-not $isDeadRegistry404) { return $false }
+    Write-Warn "npm is fetching packages from a deprecated registry mirror."
+    Write-Info "  Those replica hosts no longer serve npm tarballs, so package downloads 404."
+    Write-Info "  Fix your user npm config and retry:"
+    Write-Info "    npm config set registry $NpmPublicRegistry"
+    Write-Info "    npm cache clean --force"
+    return $true
+}
+
 function Invoke-NativeWithRelaxedErrorAction {
     param([scriptblock]$Script)
 
@@ -366,15 +436,17 @@ function Install-AgentBrowser {
         New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
     }
     $npmLog = [System.IO.Path]::GetTempFileName()
+    $npmRegistryArgs = Get-NpmRegistryArgs $npm
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    & $npm install @npmRegistryArgs -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
     $npmExit = $LASTEXITCODE
     $ErrorActionPreference = $prevEAP
     if ($npmExit -ne 0) {
         $npmDetail = Get-Content $npmLog -Raw -ErrorAction SilentlyContinue
         Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
         Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
+        Show-NpmRegistryHint $npmDetail | Out-Null
         Show-NpmCertHint $npmDetail | Out-Null
         throw "npm install failed"
     }
@@ -2148,6 +2220,7 @@ function Install-NodeDeps {
         # Capture EAP outside the try block so the catch's restore call always
         # has a meaningful value (see Install-Uv for the full rationale).
         $prevEAP = $ErrorActionPreference
+        $npmRegistryArgs = Get-NpmRegistryArgs $npmPath
         try {
             # Stream npm's output to BOTH the console and the log file via
             # Tee-Object.  Previously this called ``& npm install --silent
@@ -2173,7 +2246,7 @@ function Install-NodeDeps {
             # for uv's stderr-emitting installer.  Check success via
             # $LASTEXITCODE, which is reliable regardless of stderr noise.
             $ErrorActionPreference = "Continue"
-            & $npmPath install --silent 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath
+            & $npmPath install @npmRegistryArgs --silent 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath
             $code = $LASTEXITCODE
             $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
@@ -2191,6 +2264,7 @@ function Install-NodeDeps {
                         Write-Host "    $line" -ForegroundColor DarkGray
                     }
                     Write-Info "  Full log: $logPath"
+                    Show-NpmRegistryHint $errText | Out-Null
                     Show-NpmCertHint $errText | Out-Null
                 }
             }
@@ -2485,6 +2559,8 @@ function Install-Desktop {
         if (Test-Path $sibling) { $npmExe = $sibling }
     }
 
+    $npmRegistryArgs = Get-NpmRegistryArgs $npmExe
+
     # 1. Workspace-level install so apps/desktop's deps (Electron, Vite,
     # node-pty prebuilds, etc.) actually land in node_modules. This is
     # the SAME `npm install` Install-NodeDeps does for browser tools,
@@ -2517,19 +2593,19 @@ function Install-Desktop {
         # fails (lockfile out of sync / very old npm without ci).
         #
         # Tee the merged output into $npmOut while still emitting every line
-        # live. We don't need a side log file (the bootstrap streaming sink
-        # is the artifact), but on failure we scan $npmOut for the TLS-trust
-        # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
-        # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+        # live. The bootstrap streaming sink remains the support artifact, but
+        # on failure we also scan the captured text for stale npm registry 404s
+        # and TLS-trust signatures.
+        & $npmExe ci @npmRegistryArgs 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+            & $npmExe install @npmRegistryArgs 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
             $code = $LASTEXITCODE
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
+            Show-NpmRegistryHint ($npmOut -join "`n") | Out-Null
             if (Test-ElectronPkgStagedMissingDist -InstallDir $InstallDir) {
                 Write-Warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
                 Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null

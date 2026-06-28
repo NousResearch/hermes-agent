@@ -221,6 +221,7 @@ class TestCronjobFormattingHelpers:
             "chat_id": "-100123",
             "chat_name": "Ops",
             "thread_id": "42",
+            "user_id": None,
         }
 
     def test_origin_from_env_without_session_context(self, monkeypatch):

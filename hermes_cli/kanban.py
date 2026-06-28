@@ -387,6 +387,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
     p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
+    p_swarm.add_argument("--max-runtime", default=None,
+                         help="Default runtime cap for all cards (e.g. 10m, 1h). "
+                              "Per-worker spec wins; default 10m.")
     p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- list ---
@@ -1377,6 +1380,11 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     if not workers:
         print("kanban swarm: at least one --worker is required", file=sys.stderr)
         return 2
+    try:
+        max_runtime = _parse_duration(getattr(args, "max_runtime", None))
+    except ValueError as exc:
+        print(f"kanban swarm: --max-runtime: {exc}", file=sys.stderr)
+        return 2
     with kb.connect_closing() as conn:
         created = ks.create_swarm(
             conn,
@@ -1388,6 +1396,7 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
+            max_runtime_seconds=max_runtime,
         )
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))

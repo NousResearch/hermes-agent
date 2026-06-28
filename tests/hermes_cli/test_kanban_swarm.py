@@ -115,3 +115,83 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert kb.get_task(conn, created.synthesizer_id).status == "ready"
     finally:
         conn.close()
+
+
+def test_swarm_cards_default_runtime_cap(tmp_path):
+    """#54086: Swarm cards default to 600s runtime cap."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Build a report.",
+            workers=[
+                SwarmWorkerSpec(profile="w1", title="Worker A", body="A"),
+                SwarmWorkerSpec(profile="w2", title="Worker B", body="B"),
+            ],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+        )
+
+        root = kb.get_task(conn, created.root_id)
+        workers = [kb.get_task(conn, tid) for tid in created.worker_ids]
+        verifier = kb.get_task(conn, created.verifier_id)
+        synthesizer = kb.get_task(conn, created.synthesizer_id)
+
+        assert root.max_runtime_seconds == 600
+        assert all(w.max_runtime_seconds == 600 for w in workers)
+        assert verifier.max_runtime_seconds == 600
+        assert synthesizer.max_runtime_seconds == 600
+    finally:
+        conn.close()
+
+
+def test_swarm_per_worker_runtime_override(tmp_path):
+    """#54086: Per-worker max_runtime_seconds overrides swarm default."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Build a report.",
+            workers=[
+                SwarmWorkerSpec(profile="w1", title="Fast worker", body="A",
+                                max_runtime_seconds=120),
+                SwarmWorkerSpec(profile="w2", title="Normal worker", body="B"),
+            ],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            max_runtime_seconds=600,
+        )
+
+        workers = [kb.get_task(conn, tid) for tid in created.worker_ids]
+        # Per-worker override wins
+        assert workers[0].max_runtime_seconds == 120
+        # Fallback to swarm default
+        assert workers[1].max_runtime_seconds == 600
+    finally:
+        conn.close()
+
+
+def test_swarm_custom_max_runtime(tmp_path):
+    """#54086: --max-runtime propagates to all cards."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Quick task.",
+            workers=[SwarmWorkerSpec(profile="w1", title="Worker", body="W")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            max_runtime_seconds=300,
+        )
+
+        root = kb.get_task(conn, created.root_id)
+        worker = kb.get_task(conn, created.worker_ids[0])
+        verifier = kb.get_task(conn, created.verifier_id)
+        synthesizer = kb.get_task(conn, created.synthesizer_id)
+
+        assert root.max_runtime_seconds == 300
+        assert worker.max_runtime_seconds == 300
+        assert verifier.max_runtime_seconds == 300
+        assert synthesizer.max_runtime_seconds == 300
+    finally:
+        conn.close()

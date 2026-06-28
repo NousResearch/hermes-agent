@@ -647,6 +647,24 @@ class TestMessageStorage:
         session = db.get_session("s1")
         assert session["message_count"] == 2
 
+    def test_append_message_repairs_null_counters(self, db):
+        db.create_session(session_id="s1", source="api_server")
+        db._conn.execute(
+            "UPDATE sessions SET message_count = NULL, tool_call_count = NULL WHERE id = ?",
+            ("s1",),
+        )
+        db._conn.commit()
+
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
+            {"id": "call_2", "function": {"name": "shell", "arguments": "{}"}},
+        ]
+        db.append_message("s1", role="assistant", content="", tool_calls=tool_calls)
+
+        session = db.get_session("s1")
+        assert session["message_count"] == 1
+        assert session["tool_call_count"] == 2
+
     def test_observed_flag_round_trips_for_gateway_replay(self, db):
         db.create_session(session_id="s1", source="telegram:-100")
         db.append_message(
@@ -4629,3 +4647,24 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+def test_schema_migration_backfills_null_message_counts(tmp_path):
+    db_path = tmp_path / "migration_state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session(session_id="s1", source="tui")
+    db.append_message("s1", role="user", content="hello")
+    db.append_message("s1", role="assistant", content="world")
+    db._conn.execute(
+        "UPDATE sessions SET message_count = NULL, tool_call_count = NULL WHERE id = ?",
+        ("s1",),
+    )
+    db._conn.execute("UPDATE schema_version SET version = 16")
+    db._conn.commit()
+    db.close()
+
+    reopened = SessionDB(db_path=db_path)
+    session = reopened.get_session("s1")
+    assert session["message_count"] == 2
+    assert session["tool_call_count"] == 0
+    reopened.close()

@@ -121,7 +121,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -1418,6 +1418,23 @@ class SessionDB:
                         "            WHERE m.session_id = sessions.id AND m.role = 'tool') "
                         "AND NOT EXISTS (SELECT 1 FROM sessions ch "
                         "                WHERE ch.parent_session_id = sessions.id)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < 17:
+                # v17: heal legacy rows whose message counters were left NULL.
+                # Those rows never recover under `message_count = message_count + 1`
+                # because SQLite preserves NULL through arithmetic.
+                try:
+                    cursor.execute(
+                        "UPDATE sessions "
+                        "SET message_count = ("
+                        "    SELECT COUNT(*) FROM messages WHERE messages.session_id = sessions.id"
+                        ") "
+                        "WHERE message_count IS NULL"
+                    )
+                    cursor.execute(
+                        "UPDATE sessions SET tool_call_count = 0 WHERE tool_call_count IS NULL"
                     )
                 except sqlite3.OperationalError:
                     pass
@@ -2839,13 +2856,15 @@ class SessionDB:
             # Update counters
             if num_tool_calls > 0:
                 conn.execute(
-                    """UPDATE sessions SET message_count = message_count + 1,
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
+                    """UPDATE sessions
+                       SET message_count = COALESCE(message_count, 0) + 1,
+                           tool_call_count = COALESCE(tool_call_count, 0) + ?
+                       WHERE id = ?""",
                     (num_tool_calls, session_id),
                 )
             else:
                 conn.execute(
-                    "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+                    "UPDATE sessions SET message_count = COALESCE(message_count, 0) + 1 WHERE id = ?",
                     (session_id,),
                 )
             return msg_id

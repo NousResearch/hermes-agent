@@ -436,6 +436,40 @@ class TestDeleteSkill:
             result = _delete_skill("my-skill")
         assert result["success"] is True
 
+    def test_delete_refuses_ambiguous_basename(self, tmp_path):
+        # Two skills in different categories share the directory basename
+        # "report". Deletion is irreversible (rmtree, no archive), so the
+        # ambiguous request must be refused rather than destroying an
+        # arbitrary copy chosen by rglob ordering. The collision is laid down
+        # on disk directly because _create_skill's duplicate-name guard would
+        # otherwise prevent the second copy from being created.
+        for category in ("data", "ml"):
+            skill_dir = tmp_path / category / "report"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _delete_skill("report")
+        assert result["success"] is False
+        assert "share that directory name" in result["error"]
+        # Both locations are named so the caller can disambiguate.
+        assert "data/report" in result["error"]
+        assert "ml/report" in result["error"]
+        # Neither copy may be removed on the refusal.
+        assert (tmp_path / "data" / "report" / "SKILL.md").exists()
+        assert (tmp_path / "ml" / "report" / "SKILL.md").exists()
+
+    def test_delete_unique_basename_unaffected_by_other_categories(self, tmp_path):
+        # A uniquely-named skill still deletes cleanly even when sibling
+        # skills live under other categories — the guard only trips on a
+        # genuine basename collision.
+        with _skill_dir(tmp_path):
+            _create_skill("alpha", VALID_SKILL_CONTENT, category="data")
+            _create_skill("beta", VALID_SKILL_CONTENT, category="ml")
+            result = _delete_skill("alpha")
+        assert result["success"] is True
+        assert not (tmp_path / "data" / "alpha").exists()
+        assert (tmp_path / "ml" / "beta" / "SKILL.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # write_file / remove_file

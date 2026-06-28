@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
@@ -513,6 +513,52 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _find_all_skills(name: str) -> List[Dict[str, Any]]:
+    """Return every skill directory whose basename is ``name``.
+
+    ``_find_skill`` returns only the first match, which is fine for read or
+    patch operations. Deletion is different: it ``shutil.rmtree``s the directory
+    permanently, with no archive fallback. When two skills share a directory
+    basename — a category-nested ``data/foo`` and ``ml/foo``, or a local ``foo``
+    and one supplied by an external dir — the non-deterministic ``rglob``
+    ordering would otherwise decide which copy is destroyed. Destructive callers
+    enumerate the full match set so they can refuse on ambiguity instead.
+
+    Each entry is ``{"path": Path, "label": str}`` where ``label`` is the
+    skill's path relative to the skills root that contains it (e.g. ``ml/foo``),
+    suitable for showing the caller which copies collide.
+    """
+    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+
+    matches: List[Dict[str, Any]] = []
+    seen: Set[Path] = set()
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.exists():
+            continue
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            if skill_md.parent.name != name:
+                continue
+            skill_dir = skill_md.parent
+            try:
+                resolved = skill_dir.resolve()
+            except OSError:
+                resolved = skill_dir
+            # The same physical directory can surface twice when skills dirs
+            # overlap (e.g. an external dir aliasing the local root); dedupe by
+            # resolved path so that isn't mistaken for a genuine collision.
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                label = str(skill_dir.relative_to(skills_dir))
+            except ValueError:
+                label = skill_dir.name
+            matches.append({"path": skill_dir, "label": label})
+    return matches
+
+
 def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     """Look for ``name`` under SKILL.md across OTHER Hermes profiles.
 
@@ -930,8 +976,8 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         target must exist on disk. Validated here so the model can't claim an
         umbrella that doesn't exist.
     """
-    existing = _find_skill(name)
-    if not existing:
+    matches = _find_all_skills(name)
+    if not matches:
         return {"success": False, "error": _skill_not_found_error(name)}
     guard = _background_review_write_guard(name, existing["path"], "delete")
     if guard:
@@ -943,6 +989,23 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     fail_closed = _curator_consolidation_delete_guard(name, absorbed_into)
     if fail_closed:
         return fail_closed
+
+    # Deletion is irreversible (rmtree, no archive). If more than one skill
+    # shares this directory basename, refuse rather than let rglob ordering
+    # pick the victim — otherwise the caller can destroy the wrong copy, and
+    # the pinned-guard (keyed on the name) would be checking a different skill
+    # than the one removed.
+    if len(matches) > 1:
+        locations = ", ".join(sorted(m["label"] for m in matches))
+        return {
+            "success": False,
+            "error": (
+                f"Refusing to delete '{name}': {len(matches)} skills share that "
+                f"directory name ({locations}). Deletion is irreversible, so the "
+                f"intended target can't be guessed. Remove the unwanted copy "
+                f"directly, or rename one so the names are unique, then retry."
+            ),
+        }
 
     pinned_err = _pinned_guard(name)
     if pinned_err:
@@ -972,7 +1035,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
                 ),
             }
 
-    skill_dir = existing["path"]
+    skill_dir = matches[0]["path"]
     skills_root = _containing_skills_root(skill_dir)
 
     # Defense-in-depth before the recursive delete (port of Kilo Code #11240).

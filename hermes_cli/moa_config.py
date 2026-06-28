@@ -42,7 +42,7 @@ def _coerce_int(value: Any, default: int) -> int:
             return default
 
 
-def _clean_slot(slot: Any) -> dict[str, str] | None:
+def _clean_slot(slot: Any, *, preserve_role_prompt: bool = False) -> dict[str, str] | None:
     if not isinstance(slot, dict):
         return None
     provider = str(slot.get("provider") or "").strip()
@@ -56,7 +56,12 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     # an invalid slot is dropped, falling back to the preset's defaults.
     if provider.lower() == "moa":
         return None
-    return {"provider": provider, "model": model}
+    clean = {"provider": provider, "model": model}
+    if preserve_role_prompt:
+        role_prompt = str(slot.get("role_prompt") or "").strip()
+        if role_prompt:
+            clean["role_prompt"] = role_prompt
+    return clean
 
 
 def _default_preset() -> dict[str, Any]:
@@ -80,7 +85,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # defaults instead of crashing the iteration, mirroring the tolerance
         # for the scalar fields below (reference_temperature / max_tokens).
         raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
-    refs = [_clean_slot(item) for item in raw_refs]
+    refs = [_clean_slot(item, preserve_role_prompt=True) for item in raw_refs]
     refs = [item for item in refs if item is not None]
     if not refs:
         refs = deepcopy(DEFAULT_MOA_REFERENCE_MODELS)

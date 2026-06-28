@@ -467,6 +467,40 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_moa_models_preserves_reference_role_prompts(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {
+                            "provider": "openrouter",
+                            "model": "x-ai/grok-4.3",
+                            "role_prompt": "Find real-world edge cases.",
+                        }
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "openai/gpt-5.5",
+                        "role_prompt": "ignored on aggregators",
+                    },
+                }
+            },
+            "default_preset": "review",
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["presets"]["review"]["reference_models"][0]["role_prompt"] == "Find real-world edge cases."
+        roundtrip = self.client.get("/api/model/moa").json()
+        resp2 = self.client.put("/api/model/moa", json=roundtrip)
+        assert resp2.status_code == 200
+        cfg = load_config()
+        preset = cfg["moa"]["presets"]["review"]
+        assert preset["reference_models"][0]["role_prompt"] == "Find real-world edge cases."
+        assert "role_prompt" not in preset["aggregator"]
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

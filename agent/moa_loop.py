@@ -59,6 +59,17 @@ def _slot_label(slot: dict[str, str]) -> str:
     return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
 
 
+def _reference_system_prompt(slot: dict[str, str]) -> str:
+    role_prompt = str(slot.get("role_prompt") or "").strip()
+    if not role_prompt:
+        return _REFERENCE_SYSTEM_PROMPT
+    return (
+        f"{_REFERENCE_SYSTEM_PROMPT}\n\n"
+        "Reference-specific role instruction for this model:\n"
+        f"{role_prompt}"
+    )
+
+
 def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     """Resolve a reference/aggregator slot to real runtime call kwargs.
 
@@ -132,7 +143,7 @@ def _run_reference(
         # it is analyzing state for an aggregator, not acting on the task. The
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
-        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        messages = [{"role": "system", "content": _reference_system_prompt(slot)}, *ref_messages]
         response = call_llm(
             task="moa_reference",
             messages=messages,
@@ -402,7 +413,14 @@ class MoAChatCompletions:
                 f"{m.get('role')}:{m.get('content')}" for m in ref_messages
             ).encode("utf-8", "replace")
         ).hexdigest()
-        _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
+        _cache_key = (
+            self.preset_name,
+            _sig,
+            tuple(
+                (_slot_label(s), str(s.get("role_prompt") or "").strip())
+                for s in reference_models
+            ),
+        )
         _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
 
         if _refs_from_cache:

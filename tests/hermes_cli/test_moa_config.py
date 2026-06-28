@@ -42,6 +42,55 @@ def test_normalize_moa_config_preserves_named_presets():
     assert cfg["reference_models"] == [{"provider": "openai-codex", "model": "gpt-5.5"}]
 
 
+def test_normalize_moa_config_preserves_reference_role_prompt():
+    """Reference slots may carry per-model role guidance for advisory calls."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {
+                            "provider": "openrouter",
+                            "model": "x-ai/grok-4.3",
+                            "role_prompt": "Find real-world edge cases.",
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["review"]["reference_models"] == [
+        {
+            "provider": "openrouter",
+            "model": "x-ai/grok-4.3",
+            "role_prompt": "Find real-world edge cases.",
+        }
+    ]
+
+
+def test_normalize_moa_config_drops_aggregator_role_prompt():
+    """role_prompt is reference-only; aggregator slots remain provider/model pairs."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "openai/gpt-5.5",
+                        "role_prompt": "ignored",
+                    }
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["review"]["aggregator"] == {
+        "provider": "openrouter",
+        "model": "openai/gpt-5.5",
+    }
+
+
 def test_legacy_flat_config_becomes_default_preset():
     cfg = normalize_moa_config(
         {

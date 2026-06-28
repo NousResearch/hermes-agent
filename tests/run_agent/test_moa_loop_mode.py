@@ -311,6 +311,34 @@ def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
     assert msgs[-1]["role"] == "user"
 
 
+def test_run_reference_appends_slot_role_prompt_to_system_prompt(monkeypatch):
+    """A reference slot's role_prompt reaches that reference, not just aggregator."""
+    from agent.moa_loop import _REFERENCE_SYSTEM_PROMPT, _run_reference
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("edge-case advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    label, text = _run_reference(
+        {
+            "provider": "openrouter",
+            "model": "x-ai/grok-4.3",
+            "role_prompt": "Focus on real-world minority knockout requirements.",
+        },
+        [{"role": "user", "content": "evaluate this plan"}],
+    )
+
+    assert text == "edge-case advice"
+    system = captured["messages"][0]
+    assert system["role"] == "system"
+    assert _REFERENCE_SYSTEM_PROMPT in system["content"]
+    assert "real-world minority knockout requirements" in system["content"]
+
+
 def test_moa_facade_references_get_trimmed_messages(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -362,6 +390,99 @@ moa:
     # Aggregator still receives the original messages + tool schema.
     agg_call = next(c for c in calls if c["task"] == "moa_aggregator")
     assert agg_call["tools"] is not None
+
+
+def test_moa_facade_applies_distinct_reference_role_prompts(monkeypatch, tmp_path):
+    """YAML role_prompt values reach the matching reference calls via facade."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: x-ai/grok-4.3
+          role_prompt: Edge {case} critic.
+        - provider: openrouter
+          model: z-ai/glm-5.2
+          role_prompt: Design presentation critic.
+      aggregator:
+        provider: openrouter
+        model: openai/gpt-5.5
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    reference_system_prompts = {}
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            reference_system_prompts[kwargs["model"]] = kwargs["messages"][0]["content"]
+            return _response(f"advice from {kwargs['model']}")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "q"}], tools=[])
+
+    assert "Edge {case} critic." in reference_system_prompts["x-ai/grok-4.3"]
+    assert "Design presentation critic." in reference_system_prompts["z-ai/glm-5.2"]
+    assert "Design presentation critic." not in reference_system_prompts["x-ai/grok-4.3"]
+
+
+def test_moa_reference_cache_key_includes_role_prompt(monkeypatch, tmp_path):
+    """Changing only role_prompt must invalidate the per-turn reference cache."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config_path = home / "config.yaml"
+
+    def write_config(role_prompt: str) -> None:
+        config_path.write_text(
+            f"""
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openrouter
+          model: x-ai/grok-4.3
+          role_prompt: {role_prompt}
+      aggregator:
+        provider: openrouter
+        model: openai/gpt-5.5
+""".strip(),
+            encoding="utf-8",
+        )
+
+    write_config("first critic")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    ref_prompts = []
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            ref_prompts.append(kwargs["messages"][0]["content"])
+            return _response("advice")
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAChatCompletions
+
+    facade = MoAChatCompletions("review")
+    messages = [{"role": "user", "content": "same turn"}]
+    facade.create(messages=messages, tools=[])
+    write_config("second critic")
+    facade.create(messages=messages, tools=[])
+
+    assert len(ref_prompts) == 2
+    assert "first critic" in ref_prompts[0]
+    assert "second critic" in ref_prompts[1]
 
 
 def test_moa_disabled_preset_skips_references(monkeypatch, tmp_path):

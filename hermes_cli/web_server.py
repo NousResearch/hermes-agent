@@ -867,6 +867,10 @@ class ModelAssignment(BaseModel):
 class MoaModelSlot(BaseModel):
     provider: str = ""
     model: str = ""
+    # Optional per-reference guidance. Aggregator slots accept the field in the
+    # API payload for round-trip compatibility, but normalize_moa_config drops
+    # it for aggregators because only reference calls consume role prompts.
+    role_prompt: str = ""
 
 
 class MoaPresetPayload(BaseModel):

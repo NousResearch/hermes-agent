@@ -57,7 +57,14 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     current_model = (current or {}).get("model", "")
     model_default = models.index(current_model) if current_model in models else 0
     model = models[_prompt_choice(f"Select model for {provider.get('slug')}", models, model_default)]
-    return {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    slot = {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    # The interactive picker edits only provider/model today. Preserve an
+    # existing per-reference role prompt so a quick model re-save does not erase
+    # richer config.yaml/dashboard-authored MoA roles.
+    role_prompt = str((current or {}).get("role_prompt") or "").strip()
+    if role_prompt:
+        slot["role_prompt"] = role_prompt
+    return slot
 
 
 def _print_config(config: dict[str, Any]) -> None:
@@ -72,6 +79,9 @@ def _print_config(config: dict[str, Any]) -> None:
         print("  Reference models:")
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {slot['provider']}:{slot['model']}")
+            role_prompt = str(slot.get("role_prompt") or "").strip()
+            if role_prompt:
+                print(f"       role: {role_prompt}")
         agg = preset["aggregator"]
         print(f"  Aggregator: {agg['provider']}:{agg['model']}")
 

@@ -80,8 +80,14 @@ moa:
       reference_models:
         - provider: openai-codex
           model: gpt-5.5
+          role_prompt: >-
+            Check the plan as a rigorous implementation critic. Surface hidden
+            assumptions, missed tests, and tool-use risks.
         - provider: openrouter
           model: deepseek/deepseek-v4-pro
+          role_prompt: >-
+            Check feasibility, edge cases, and whether the extra perspective is
+            worth its cost.
       aggregator:
         provider: openrouter
         model: anthropic/claude-opus-4.8
@@ -96,6 +102,13 @@ Default preset:
 - reference: `openai-codex:gpt-5.5`
 - reference: `openrouter:deepseek/deepseek-v4-pro`
 - aggregator / acting model: `openrouter:anthropic/claude-opus-4.8`
+
+`role_prompt` is optional and reference-only. When present, Hermes appends it
+to that reference model's private advisory system prompt, so each reference can
+specialize (for example: logic critic, real-world edge-case critic, design
+critic, or implementation verifier). It is trusted operator configuration:
+don't fill it from untrusted user content, and keep it short because it is sent
+on every reference call.
 
 ## Terminal preset management
 

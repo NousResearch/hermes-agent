@@ -2542,6 +2542,26 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
 
+    def test_phase_forwarded_through_live_dispatch_helper(self):
+        """The live model path must not drop phase routing metadata."""
+        import run_agent
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task") as mock_delegate:
+            mock_delegate.return_value = json.dumps({"status": "dispatched"})
+
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "route me",
+                    "phase": "sdd-explore",
+                    "toolsets": [],
+                },
+            )
+
+            _, kwargs = mock_delegate.call_args
+            self.assertEqual(kwargs["phase"], "sdd-explore")
+
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_acp_args_forwarded(self, mock_creds, mock_cfg):

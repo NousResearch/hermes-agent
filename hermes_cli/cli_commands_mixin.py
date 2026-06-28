@@ -1506,6 +1506,30 @@ class CLICommandsMixin:
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
+    def _handle_findout_command(self, cmd: str):
+        """Handle /findout — run the evidence-prediction verification pipeline.
+
+        Builds a bulletproof instruction that tells the agent to import and
+        execute SelfVerifyPipeline via execute_code, then queue it onto the
+        input queue. The agent processes it as a normal turn — no skill-loading
+        ambiguity, no advisory context that can be ignored.
+        """
+        from agent.findout_prompt import build_findout_prompt
+
+        parts = cmd.strip().split(None, 1)
+        query = parts[1].strip() if len(parts) > 1 else ""
+        msg = build_findout_prompt(query)
+
+        if query:
+            print("\n🔬 Running verification pipeline...")
+        else:
+            print("\n🔬 Running verification pipeline...")
+            print("  (no query — the agent will ask for one)")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /findout needs an active chat session to run.")
+
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand

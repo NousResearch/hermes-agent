@@ -8623,6 +8623,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 return "Could not start /learn — please try again."
 
+        if canonical == "findout":
+            from agent.findout_prompt import build_findout_prompt
+
+            _findout_req = event.get_command_args().strip()
+            _ack = (
+                "🔬 Running verification pipeline…"
+                if _findout_req
+                else "🔬 Running verification pipeline (no query)…"
+            )
+            try:
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    _ack_meta = self._thread_metadata_for_source(source)
+                    await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+            except Exception:
+                logger.debug("findout ack send failed", exc_info=True)
+            try:
+                event.text = build_findout_prompt(_findout_req)
+                # fall through to agent processing
+            except Exception:
+                return "Could not start /findout — please try again."
+
         if canonical == "fast":
             return await self._handle_fast_command(event)
 

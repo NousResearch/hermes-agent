@@ -119,7 +119,39 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+class _DynamicDefaultDbPath:
+    @property
+    def _path(self) -> Path:
+        return get_hermes_home() / "state.db"
+
+    def __fspath__(self) -> str:
+        return str(self._path)
+
+    def __str__(self) -> str:
+        return str(self._path)
+
+    def __repr__(self) -> str:
+        return repr(self._path)
+
+    def __truediv__(self, other) -> Path:
+        return self._path / other
+
+    def __rtruediv__(self, other) -> Path:
+        return other / self._path
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._path, name)
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, _DynamicDefaultDbPath):
+            return self._path == other._path
+        return self._path == other
+
+    def __hash__(self) -> int:
+        return hash(self._path)
+
+
+DEFAULT_DB_PATH = _DynamicDefaultDbPath()
 
 SCHEMA_VERSION = 16
 

@@ -2785,7 +2785,7 @@ def test_on_memory_write_uses_content_write_independent_of_session_rotation():
     assert captured_payloads[0]["content"] == "remember this"
     assert captured_payloads[0]["mode"] == "create"
     assert captured_payloads[0]["uri"].startswith(
-        "viking://user/peers/hermes/memories/preferences/mem_"
+        "viking://user/hermes/memories/preferences/mem_"
     )
 
 

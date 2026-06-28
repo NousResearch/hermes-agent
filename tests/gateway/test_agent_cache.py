@@ -677,13 +677,13 @@ class TestAgentCacheBoundedGrowth:
         """_sweep_idle_cached_agents removes agents idle past the TTL."""
         from gateway import run as gw_run
 
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.05)
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 1000.0)
         runner = self._bounded_runner()
         runner._cleanup_agent_resources = MagicMock()
 
         import time as _t
         fresh = self._fake_agent(last_activity=_t.time())
-        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+        stale = self._fake_agent(last_activity=_t.time() - 2000.0)
         runner._agent_cache["fresh"] = (fresh, "s1")
         runner._agent_cache["stale"] = (stale, "s2")
 

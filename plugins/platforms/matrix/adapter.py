@@ -1933,7 +1933,7 @@ class MatrixAdapter(BasePlatformAdapter):
             "`!approve always` to approve permanently, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
             "✅ = approve\n"
-            "❎ = deny"
+            "❌ = deny"
         )
 
         result = await self.send(chat_id, text, metadata=metadata)

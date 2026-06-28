@@ -4629,3 +4629,30 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestDynamicDbPath:
+    def test_dynamic_db_path_resolution(self, monkeypatch, tmp_path):
+        import hermes_state
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        # Test initial path points to get_hermes_home() / "state.db"
+        initial_home = hermes_state.get_hermes_home()
+        assert str(hermes_state.DEFAULT_DB_PATH) == str(initial_home / "state.db")
+
+        # Test path updates dynamically with home override
+        temp_home = tmp_path / "temp_home"
+        token = set_hermes_home_override(temp_home)
+        try:
+            assert str(hermes_state.DEFAULT_DB_PATH) == str(temp_home / "state.db")
+            # Test path behaves like a Path object for division
+            child_path = hermes_state.DEFAULT_DB_PATH.parent / "other.db"
+            assert str(child_path) == str(temp_home / "other.db")
+            # Test fspath
+            import os
+            assert os.fspath(hermes_state.DEFAULT_DB_PATH) == str(temp_home / "state.db")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert str(hermes_state.DEFAULT_DB_PATH) == str(initial_home / "state.db")
+

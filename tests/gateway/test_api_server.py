@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -48,6 +49,34 @@ class TestCheckRequirements:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_api_server_requirements() is False
+
+
+# ---------------------------------------------------------------------------
+# _redact_api_error_text — guards every outward error site (envelopes, SSE
+# error events, cron-endpoint 500 bodies) that routes raw exception text to
+# authenticated HTTP clients. #37733
+# ---------------------------------------------------------------------------
+
+
+class TestRedactApiErrorText:
+    def test_masks_secret_value_but_preserves_structure(self):
+        secret = "sk-api-server-leak-1234567890"
+        out = _redact_api_error_text(Exception(f"auth failed OPENAI_API_KEY={secret}"))
+        assert secret not in out
+        assert "OPENAI_API_KEY=" in out
+
+    def test_redacts_regardless_of_global_redaction_setting(self):
+        # force=True must mask even when global redaction is disabled.
+        secret = "sk-forced-redaction-0987654321"
+        with patch("agent.redact._REDACT_ENABLED", False):
+            out = _redact_api_error_text(Exception(f"boom AWS_SECRET_ACCESS_KEY={secret}"))
+        assert secret not in out
+
+    def test_limit_truncates_after_redaction(self):
+        assert len(_redact_api_error_text("x" * 500, limit=50)) == 50
+
+    def test_clean_text_passes_through_unchanged(self):
+        assert _redact_api_error_text("Job not found") == "Job not found"
 
 
 # ---------------------------------------------------------------------------

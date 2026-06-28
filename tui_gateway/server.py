@@ -11620,19 +11620,22 @@ def _list_repo_files(root: str) -> list[str]:
 
     files: list[str] = []
     try:
-        # _subprocess_compat.run hides the console window: this git probe runs
-        # from the windowless desktop gateway (pythonw.exe), where capturing
-        # output does NOT prevent a new console from being allocated. See #52310.
-        top_result = _subprocess_compat.run(
+        # This git probe runs from the windowless desktop gateway (pythonw.exe),
+        # where capturing output does NOT stop a new console from being
+        # allocated (and flashing). windows_hide_flags() = CREATE_NO_WINDOW on
+        # win32, 0 on POSIX. (#53810's chokepoint was reverted in #53853, so we
+        # use the surviving helper directly.) See #52310.
+        top_result = subprocess.run(
             ["git", "-C", root, "rev-parse", "--show-toplevel"],
             capture_output=True,
             timeout=2.0,
             check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=_subprocess_compat.windows_hide_flags(),
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
-            list_result = _subprocess_compat.run(
+            list_result = subprocess.run(
                 [
                     "git",
                     "-C",
@@ -11647,6 +11650,7 @@ def _list_repo_files(root: str) -> list[str]:
                 timeout=2.0,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                creationflags=_subprocess_compat.windows_hide_flags(),
             )
             if list_result.returncode == 0:
                 for p in list_result.stdout.decode("utf-8", "replace").split("\0"):

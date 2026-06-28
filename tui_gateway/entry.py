@@ -169,11 +169,11 @@ def _log_signal(signum: int, frame) -> None:
 # ``hermes --tui``) imports cleanly there.  SIGBREAK (Windows' Ctrl+Break)
 # is installed when available as a weaker equivalent of SIGHUP.
 if hasattr(signal, "SIGPIPE"):
-    signal.signal(signal.SIGPIPE, signal.SIG_IGN)  # windows-footgun: ok  (hasattr-guarded above)
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 if hasattr(signal, "SIGTERM"):
     signal.signal(signal.SIGTERM, _log_signal)
 if hasattr(signal, "SIGHUP"):
-    signal.signal(signal.SIGHUP, _log_signal)  # windows-footgun: ok  (hasattr-guarded above)
+    signal.signal(signal.SIGHUP, _log_signal)
 elif hasattr(signal, "SIGBREAK"):
     # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
     # Route it through the same handler so kills are diagnosable.

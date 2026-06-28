@@ -137,17 +137,19 @@ def _try_gh_cli_token() -> Optional[str]:
         if hostname:
             cmd += ["--hostname", hostname]
         try:
-            # Route through the _subprocess_compat chokepoint so the gh probe
-            # doesn't flash a console window when spawned from the windowless
-            # desktop gateway (pythonw.exe). The footgun checker can't catch
-            # this site itself — the program (cmd) is a variable, not a literal
-            # argv, so its console-spawn rule can't see it's `gh`. See #52310.
-            result = _subprocess_compat.run(
+            # gh runs from the windowless desktop gateway (pythonw.exe), where a
+            # captured console child still allocates — and flashes — a console
+            # window. windows_hide_flags() is CREATE_NO_WINDOW on win32, 0 on
+            # POSIX. (The #53810 `_subprocess_compat.run` chokepoint was rolled
+            # back in the #53853 revert, so this uses the surviving helper
+            # directly.) See #52310.
+            result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=5,
                 env=clean_env,
+                creationflags=_subprocess_compat.windows_hide_flags(),
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)

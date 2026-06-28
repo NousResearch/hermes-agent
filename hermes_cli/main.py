@@ -7027,10 +7027,10 @@ def _recover_from_interrupted_install() -> None:
                                 "  Restart Hermes from a different terminal, "
                                 "then run the manual recovery command below:"
                             )
-                            print(f"    cd {PROJECT_ROOT}")
+                            print(f'    cd /d "{PROJECT_ROOT}"')
                             print(
-                                f"    {sys.executable} -m pip install "
-                                "-e '.[all]'"
+                                f'    "{sys.executable}" -m pip install '
+                                '-e ".[all]"'
                             )
                             _clear_update_incomplete_marker()
                             try:

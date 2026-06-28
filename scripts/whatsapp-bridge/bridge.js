@@ -83,6 +83,19 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 
+// --- Send queue: serialise all sock.sendMessage() calls across concurrent
+//     HTTP handlers so a single Baileys socket never has overlapping sends.
+//     Overlapping sends are the root cause of cross-chat contamination
+//     (#33360) — the WhatsApp protocol-level routing can misdeliver when
+//     two sendMessage() Promises race on the same socket. ---
+let _sendQueue = Promise.resolve();
+
+function enqueueSend(fn) {
+  const task = _sendQueue.then(() => fn(), () => fn());
+  _sendQueue = task.catch(() => {});
+  return task;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -95,8 +108,10 @@ function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
       timeoutMs,
     );
   });
-  return Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
-    .finally(() => clearTimeout(timer));
+  return enqueueSend(() =>
+    Promise.race([sock.sendMessage(chatId, payload), timeoutPromise])
+      .finally(() => clearTimeout(timer))
+  );
 }
 
 function formatOutgoingMessage(message) {

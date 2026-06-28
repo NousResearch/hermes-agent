@@ -1482,19 +1482,39 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     metadata = {"thread_id": thread_id} if thread_id else None
 
     # --- Try the live gateway adapter first (persistent E2EE session) ---
+    # Reusing the running gateway's already-connected adapter is the whole
+    # point of #46310: it avoids a per-send login + olm/megolm re-init + OTK
+    # claim that, under burst sends, exhausts recipient one-time keys and
+    # silently drops messages. The import is guarded narrowly (gateway code may
+    # be absent in some standalone contexts); a runner that *exists* but whose
+    # adapter lookup fails is logged rather than silently swallowed, because a
+    # silent fall-through here would re-introduce the exact reconnect storm
+    # this fix prevents.
     live_adapter = None
+    runner = None
     try:
-        from gateway.config import Platform
         from gateway.run import _gateway_runner_ref
-
         runner = _gateway_runner_ref()
-        if runner is not None:
-            live_adapter = runner.adapters.get(Platform.MATRIX)
     except Exception:
-        live_adapter = None
+        runner = None
+    if runner is not None:
+        try:
+            from gateway.config import Platform
+            live_adapter = runner.adapters.get(Platform.MATRIX)
+        except Exception:
+            logger.warning(
+                "Matrix: live gateway adapter lookup failed; falling back to an "
+                "ephemeral connect (may re-init E2EE per send, see #46310)",
+                exc_info=True,
+            )
+            live_adapter = None
 
     if live_adapter is not None:
-        return await _send_via_matrix_adapter(
+        # NOTE: the live adapter is owned by the gateway — we must NOT
+        # disconnect it. Correctness here depends on this branch returning
+        # before the ephemeral ``adapter`` is constructed below, so the
+        # ephemeral ``finally`` disconnect never touches the live session.
+        return await _matrix_send_core(
             live_adapter, chat_id, message, media_files, metadata
         )
 
@@ -1509,7 +1529,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         connected = await adapter.connect()
         if not connected:
             return _error("Matrix connect failed")
-        return await _send_via_matrix_adapter(
+        return await _matrix_send_core(
             adapter, chat_id, message, media_files, metadata
         )
     except Exception as e:
@@ -1521,7 +1541,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             pass
 
 
-async def _send_via_matrix_adapter(adapter, chat_id, message, media_files, metadata):
+async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
     """Core send logic shared by live and ephemeral Matrix adapters."""
     last_result = None
 

@@ -809,6 +809,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._sync_task: Optional[asyncio.Task] = None
+        self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
         self._startup_ts: float = 0.0
         # Clock-skew detection: count grace-check drops that happen well
@@ -1447,7 +1448,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     await self._dispatch_sync(sync_data)
                 except Exception as exc:
                     logger.warning("Matrix: initial sync event dispatch error: %s", exc)
-                await self._join_pending_invites(sync_data)
+                self._schedule_pending_invite_joins(sync_data)
             else:
                 logger.warning(
                     "Matrix: initial sync returned unexpected type %s",
@@ -1478,6 +1479,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        invite_join_tasks = list(self._invite_join_tasks.values())
+        for task in invite_join_tasks:
+            if not task.done():
+                task.cancel()
+        if invite_join_tasks:
+            await asyncio.gather(*invite_join_tasks, return_exceptions=True)
+        self._invite_join_tasks.clear()
 
         redaction_tasks = list(self._reaction_redaction_tasks)
         for task in redaction_tasks:
@@ -2217,7 +2226,10 @@ class MatrixAdapter(BasePlatformAdapter):
                         await self._dispatch_sync(sync_data)
                     except Exception as exc:
                         logger.warning("Matrix: sync event dispatch error: %s", exc)
-                    await self._join_pending_invites(sync_data)
+                    self._schedule_pending_invite_joins(sync_data)
+                    # Let freshly scheduled invite joins start before the next
+                    # sync iteration without waiting for slow or stuck joins.
+                    await asyncio.sleep(0)
 
             except asyncio.CancelledError:
                 return
@@ -2881,7 +2893,7 @@ class MatrixAdapter(BasePlatformAdapter):
             "Matrix: invited to %s — joining",
             room_id,
         )
-        await self._join_room_by_id(room_id)
+        self._schedule_invite_join(room_id)
 
     async def _join_room_by_id(self, room_id: str) -> bool:
         """Join a room by ID and refresh local caches on success."""
@@ -2901,7 +2913,25 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
             return False
 
-    async def _join_pending_invites(self, sync_data: Dict[str, Any]) -> None:
+    def _schedule_invite_join(self, room_id: str) -> None:
+        """Schedule an invite join without blocking sync or gateway readiness."""
+        if not room_id or room_id in self._joined_rooms:
+            return
+        existing = self._invite_join_tasks.get(room_id)
+        if existing and not existing.done():
+            return
+
+        async def _join_invite() -> None:
+            try:
+                await asyncio.wait_for(self._join_room_by_id(room_id), timeout=45.0)
+            except asyncio.TimeoutError:
+                logger.warning("Matrix: timed out joining invite %s", room_id)
+            finally:
+                self._invite_join_tasks.pop(room_id, None)
+
+        self._invite_join_tasks[room_id] = asyncio.create_task(_join_invite())
+
+    def _schedule_pending_invite_joins(self, sync_data: Dict[str, Any]) -> None:
         """Join rooms still present in rooms.invite after sync processing."""
         rooms = sync_data.get("rooms", {}) if isinstance(sync_data, dict) else {}
         invites = rooms.get("invite", {})
@@ -2911,7 +2941,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if room_id in self._joined_rooms:
                 continue
             logger.info("Matrix: reconciling pending invite for %s", room_id)
-            await self._join_room_by_id(str(room_id))
+            self._schedule_invite_join(str(room_id))
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)

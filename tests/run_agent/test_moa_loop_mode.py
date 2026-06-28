@@ -236,10 +236,79 @@ def test_reference_messages_strips_system_and_tool_history():
     # System prompt, tool-call-only assistant turn, and tool result are gone.
     assert all(m["role"] in ("user", "assistant") for m in trimmed)
     assert all("tool_calls" not in m for m in trimmed)
+    # The advisory view must end on a user turn — a trailing assistant turn is
+    # treated by Anthropic as an assistant prefill (400 on no-prefill models).
+    # The only kept user turn here is the prompt, so the trailing assistant
+    # answer is stripped.
     assert trimmed == [
         {"role": "user", "content": "do the thing"},
-        {"role": "assistant", "content": "here is my answer"},
     ]
+
+
+def test_reference_messages_ends_with_user_not_assistant_prefill():
+    """Advisory reference views must never end on an assistant turn.
+
+    Mid-tool-loop, the last assistant turn carries interleaved reasoning text
+    plus tool calls; its text survives the trim while the following tool result
+    is dropped, leaving a trailing assistant turn. Anthropic (and
+    OpenRouter→Anthropic) treat that as an assistant prefill the model should
+    continue, and no-prefill models (e.g. Claude Opus 4.8) reject it with
+    ``400 ... must end with a user message``. The trim must drop trailing
+    assistant turns while preserving intervening ones.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2 current"},
+        {
+            "role": "assistant",
+            "content": "let me reason then call a tool",
+            "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "tool result"},
+    ]
+
+    trimmed = _reference_messages(messages)
+
+    assert trimmed, "advisory view should not be empty"
+    assert trimmed[-1]["role"] == "user"
+    # Intervening assistant context is preserved; only the trailing one drops.
+    assert trimmed == [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2 current"},
+    ]
+
+
+def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
+    """Each reference call gets the advisory-role system prompt first.
+
+    Without it the reference assumes it is the acting agent and refuses ("I
+    can't access repositories/URLs from here") or tries to call tools it
+    doesn't have. The system prompt reframes it as an analyst advising the
+    aggregator, and the advisory transcript still ends on a user turn.
+    """
+    from agent.moa_loop import _REFERENCE_SYSTEM_PROMPT, _run_reference
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    label, text = _run_reference(
+        {"provider": "openai-codex", "model": "gpt-5.5"},
+        [{"role": "user", "content": "review this PR"}],
+    )
+
+    assert text == "advice"
+    msgs = captured["messages"]
+    assert msgs[0] == {"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}
+    assert msgs[-1]["role"] == "user"
 
 
 def test_moa_facade_references_get_trimmed_messages(monkeypatch, tmp_path):
@@ -282,8 +351,13 @@ moa:
     )
 
     ref_call = next(c for c in calls if c["task"] == "moa_reference")
-    # Reference never sees system prompt or tool-role messages.
-    assert all(m["role"] == "user" for m in ref_call["messages"])
+    # Reference gets the advisory-role system prompt first, then user turns
+    # only — never the agent's own system prompt or tool-role messages.
+    ref_msgs = ref_call["messages"]
+    assert ref_msgs[0]["role"] == "system"
+    assert "reference advisor" in ref_msgs[0]["content"].lower()
+    assert "huge hermes system prompt" not in ref_msgs[0]["content"]
+    assert all(m["role"] == "user" for m in ref_msgs[1:])
     assert ref_call.get("tools") in (None, [])
     # Aggregator still receives the original messages + tool schema.
     agg_call = next(c for c in calls if c["task"] == "moa_aggregator")

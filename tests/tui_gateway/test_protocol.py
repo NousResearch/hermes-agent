@@ -1736,3 +1736,37 @@ def test_dispatch_unknown_long_method_still_goes_inline(server):
     resp = server.dispatch({"id": "r4", "method": "some.method", "params": {}})
 
     assert resp["result"] == {"ok": True}
+
+
+@pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
+def test_completion_handlers_are_pool_routed(completion_method, server):
+    """complete.path/complete.slash must run on the pool, never the reader thread.
+
+    Regression for #21123: completion ran inline, so a slow git ls-files /
+    skill-scan blocked prompt.submit and froze the TUI for the 120s RPC timeout.
+    """
+    assert completion_method in server._LONG_HANDLERS
+
+
+@pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
+def test_slow_completion_does_not_block_fast_handler(completion_method, server):
+    """A slow completion RPC must not block a concurrent fast handler (#21123)."""
+    released = threading.Event()
+
+    def slow_completion(rid, params):
+        released.wait(timeout=5)
+        return server._ok(rid, {"items": []})
+
+    server._methods[completion_method] = slow_completion
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": completion_method, "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
+
+    released.set()

@@ -178,6 +178,16 @@ _LONG_HANDLERS = frozenset(
         "billing.step_up",
         "browser.manage",
         "cli.exec",
+        # Completion RPCs run inline on the reader thread by default, but both
+        # can block it for seconds: complete.path spawns `git ls-files` and
+        # fuzzy-ranks the whole repo (slow on large repos / WSL2 mounts), and
+        # complete.slash does first-call prompt_toolkit imports + a skill-dir
+        # scan. While either runs inline, prompt.submit / session.interrupt sit
+        # unread in the stdin pipe — the TUI appears frozen until the 120s RPC
+        # timeout fires (#21123). Routing them to the pool keeps the fast path
+        # responsive; completion is read-only and write_json is lock-guarded.
+        "complete.path",
+        "complete.slash",
         "llm.oneshot",
         # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
         # per-frame PNG decode/encode (pet.cells): inline they serialize on the

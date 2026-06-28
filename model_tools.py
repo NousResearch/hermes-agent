@@ -1223,6 +1223,12 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
+        # Auto-log to tool failure journal so patterns can be reviewed later
+        try:
+            from tools._failure_log_store import auto_log
+            auto_log(function_name, str(e), function_args, session_id or "")
+        except Exception:
+            pass  # never let failure logging break the agent loop
         return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
 
 

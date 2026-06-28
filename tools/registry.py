@@ -452,6 +452,13 @@ class ToolRegistry:
         """
         entry = self.get_entry(name)
         if not entry:
+            # Auto-log unknown-tool errors
+            try:
+                from tools._failure_log_store import auto_log
+                auto_log(name, f"Unknown tool: {name}", args,
+                         kwargs.get("session_id", ""))
+            except Exception:
+                pass
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
             if entry.is_async:
@@ -460,6 +467,13 @@ class ToolRegistry:
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
+            # Auto-log execution errors
+            try:
+                from tools._failure_log_store import auto_log
+                auto_log(name, f"{type(e).__name__}: {e}", args,
+                         kwargs.get("session_id", ""))
+            except Exception:
+                pass
             # Route through the sanitizer so framing tokens / CDATA / fences
             # in exception strings don't reach the model as structural noise.
             # See model_tools._sanitize_tool_error for rationale.

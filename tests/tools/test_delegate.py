@@ -1445,6 +1445,116 @@ class TestTaskDelegationRouting(unittest.TestCase):
             logs.output,
         )
 
+    def test_non_mapping_phase_assignments_warns_and_falls_back(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-model",
+            "provider": "",
+            "base_url": "https://global.example.com/v1",
+            "api_key": "global-key",
+            "phase_assignments": ["not", "a", "mapping"],
+        }
+
+        with self.assertLogs("tools.delegate_tool", level="WARNING") as logs:
+            routing = _resolve_task_delegation_routing(cfg, "sdd-spec", parent)
+
+        self.assertEqual(routing["base_url"], "https://global.example.com/v1")
+        self.assertEqual(routing["api_key"], "global-key")
+        self.assertTrue(
+            any("Ignoring delegation.phase_assignments for phase" in line for line in logs.output),
+            logs.output,
+        )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_global_base_url_does_not_override_phase_provider(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "model": "phase-provider-model",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "or-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-direct-model",
+            "provider": "",
+            "base_url": "https://global-direct.example.com/v1",
+            "api_key": "global-direct-key",
+            "api_mode": "anthropic_messages",
+            "acp_command": "global-acp",
+            "acp_args": ["--global"],
+            "phase_assignments": {
+                "sdd-spec": {
+                    "model": "phase-provider-model",
+                    "provider": "openrouter",
+                }
+            },
+        }
+
+        routing = _resolve_task_delegation_routing(cfg, "sdd-spec", parent)
+
+        mock_resolve.assert_called_once_with(
+            requested="openrouter", target_model="phase-provider-model"
+        )
+        self.assertEqual(routing["provider"], "openrouter")
+        self.assertEqual(routing["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(routing["api_key"], "or-key")
+        self.assertEqual(routing["api_mode"], "chat_completions")
+        self.assertIsNone(routing.get("command"))
+        self.assertEqual(routing.get("args"), [])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_global_provider_with_phase_base_url_routes_direct_custom(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-provider-model",
+            "provider": "openrouter",
+            "phase_assignments": {
+                "sdd-design": {
+                    "model": "phase-direct-model",
+                    "base_url": "https://phase-direct.example.com/v1",
+                    "api_key": "phase-direct-key",
+                }
+            },
+        }
+
+        routing = _resolve_task_delegation_routing(cfg, "sdd-design", parent)
+
+        mock_resolve.assert_not_called()
+        self.assertEqual(routing["provider"], "custom")
+        self.assertEqual(routing["model"], "phase-direct-model")
+        self.assertEqual(routing["base_url"], "https://phase-direct.example.com/v1")
+        self.assertEqual(routing["api_key"], "phase-direct-key")
+        self.assertEqual(routing["api_mode"], "chat_completions")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_phase_provider_with_explicit_phase_base_url_routes_direct_custom(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "global-direct-model",
+            "provider": "",
+            "base_url": "https://global-direct.example.com/v1",
+            "api_key": "global-direct-key",
+            "phase_assignments": {
+                "sdd-apply": {
+                    "model": "phase-direct-model",
+                    "provider": "openrouter",
+                    "base_url": "https://phase-direct.example.com/v1",
+                    "api_key": "phase-direct-key",
+                    "api_mode": "anthropic_messages",
+                }
+            },
+        }
+
+        routing = _resolve_task_delegation_routing(cfg, "sdd-apply", parent)
+
+        mock_resolve.assert_not_called()
+        self.assertEqual(routing["provider"], "custom")
+        self.assertEqual(routing["model"], "phase-direct-model")
+        self.assertEqual(routing["base_url"], "https://phase-direct.example.com/v1")
+        self.assertEqual(routing["api_key"], "phase-direct-key")
+        self.assertEqual(routing["api_mode"], "anthropic_messages")
+
     def test_invalid_phase_reasoning_falls_back_to_global_reasoning(self):
         parent = _make_mock_parent(depth=0)
         cfg = {

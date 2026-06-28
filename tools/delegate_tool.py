@@ -3156,6 +3156,19 @@ def _merge_phase_assignment(cfg: dict, phase_assignment: Optional[dict]) -> dict
     merged.pop("phase_assignments", None)
     if not phase_assignment:
         return merged
+
+    phase_provider = phase_assignment.get("provider")
+    phase_provider_configured = (
+        isinstance(phase_provider, str) and bool(phase_provider.strip())
+    ) or (phase_provider is not None and not isinstance(phase_provider, str))
+    if phase_provider_configured:
+        # A phase-level provider is a routing override.  Do not let global
+        # direct-endpoint fields keep _resolve_delegation_credentials() on its
+        # base_url-first custom path; only phase-explicit direct endpoint fields
+        # may take precedence over the phase provider.
+        for key in ("base_url", "api_key", "api_mode", "acp_command", "acp_args"):
+            merged.pop(key, None)
+
     for key in (
         "model",
         "provider",

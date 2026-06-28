@@ -2173,7 +2173,20 @@ def _load_gateway_config() -> dict:
         raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
     except Exception:
         pass
-    return raw if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    # Canonicalize model-id aliases (model.name / model.model → model.default)
+    # and migrate stale root-level provider/base_url into the model section.
+    # The gateway bypasses load_config() (it reads raw YAML for speed), so the
+    # normalization that load_config() applies must be replayed here or the
+    # gateway would resolve an empty model for ``model: {name: <id>}`` configs
+    # while the CLI resolves it correctly. See issue #34500. Fail-open.
+    try:
+        from hermes_cli.config import _normalize_root_model_keys
+        raw = _normalize_root_model_keys(raw)
+    except Exception:
+        pass
+    return raw
 
 
 def _load_gateway_runtime_config() -> dict:

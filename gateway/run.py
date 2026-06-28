@@ -331,6 +331,49 @@ def _gateway_provider_error_reply(text: str) -> str:
     )
 
 
+# Mirror the DM-ish set used by gateway/slash_access.py and gateway/authz_mixin.py.
+# Anything that is not a DM/private/direct message and is not part of an active
+# thread is treated as a public/channel-like surface for lifecycle pings.
+_DM_CHAT_TYPES: frozenset[str] = frozenset({"dm", "direct", "private", ""})
+
+
+def _is_bare_channel(
+    chat_type: Optional[str],
+    thread_id: Optional[str],
+    *,
+    unknown_is_bare: bool = False,
+) -> bool:
+    """Return True for a non-DM chat that is not an active thread.
+
+    When ``chat_type`` is unknown (None), the result is controlled by
+    ``unknown_is_bare``. Home channels default to treating unknown chat
+    types as bare (legacy homes lack a stored chat_type), while active
+    sessions default to not suppressing when the origin is missing.
+    """
+    if chat_type is None:
+        return unknown_is_bare and not thread_id
+    return chat_type.lower() not in _DM_CHAT_TYPES and not thread_id
+
+
+def _lifecycle_suppression_reason(
+    platform_cfg: Optional[Any],
+    chat_type: Optional[str],
+    thread_id: Optional[str],
+    *,
+    unknown_is_bare: bool = False,
+) -> Optional[str]:
+    """Return a short reason if a gateway lifecycle notification should be suppressed."""
+    if platform_cfg is None:
+        return None
+    if not platform_cfg.gateway_restart_notification:
+        return "gateway_restart_notification=false"
+    if not platform_cfg.gateway_restart_notification_channels and _is_bare_channel(
+        chat_type, thread_id, unknown_is_bare=unknown_is_bare
+    ):
+        return f"gateway_restart_notification_channels=false and chat_type={chat_type} (no thread)"
+    return None
+
+
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     r"api\s+(?:call\s+)?failed"
@@ -4764,15 +4807,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_str = source.platform.value
                 chat_id = str(source.chat_id)
                 thread_id = source.thread_id
+                chat_type = source.chat_type
             else:
                 # Fall back to parsing the session key when no persisted
-                # origin is available (legacy sessions/tests).
+                # origin is available (legacy sessions/tests).  We cannot
+                # reliably tell whether a group/forum session key carries a
+                # thread_id (see _parse_session_key), so we only apply the
+                # global opt-out and preserve pre-feature behavior otherwise.
                 _parsed = _parse_session_key(session_key)
                 if not _parsed:
                     continue
                 platform_str = _parsed["platform"]
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
+                chat_type = None
 
             # Deduplicate only identical delivery targets. Thread/topic-aware
             # platforms can share a parent chat while still routing to distinct
@@ -4787,11 +4835,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not adapter:
                     continue
 
-                platform_cfg = self.config.platforms.get(platform)
-                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                reason = _lifecycle_suppression_reason(
+                    self.config.platforms.get(platform),
+                    chat_type,
+                    thread_id,
+                )
+                if reason:
                     logger.info(
-                        "Shutdown notification suppressed for active session: %s has gateway_restart_notification=false",
+                        "Shutdown notification suppressed for active session: %s has %s",
                         platform_str,
+                        reason,
                     )
                     continue
 
@@ -4850,11 +4903,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not home or not home.chat_id:
                 continue
 
-            platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            reason = _lifecycle_suppression_reason(
+                self.config.platforms.get(platform),
+                getattr(home, "chat_type", None),
+                home.thread_id,
+                unknown_is_bare=True,
+            )
+            if reason:
                 logger.info(
-                    "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
+                    "Shutdown notification suppressed for home channel: %s has %s",
                     platform.value,
+                    reason,
                 )
                 continue
 
@@ -12901,11 +12960,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
-            platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            reason = _lifecycle_suppression_reason(
+                self.config.platforms.get(platform),
+                chat_type,
+                thread_id,
+            )
+            if reason:
                 logger.info(
-                    "Restart notification suppressed: %s has gateway_restart_notification=false",
+                    "Restart notification suppressed: %s has %s",
                     platform_str,
+                    reason,
                 )
                 return None
 
@@ -12967,11 +13031,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not home or not home.chat_id:
                 continue
 
-            platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+            reason = _lifecycle_suppression_reason(
+                self.config.platforms.get(platform),
+                getattr(home, "chat_type", None),
+                home.thread_id,
+                unknown_is_bare=True,
+            )
+            if reason:
                 logger.info(
-                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
+                    "Home-channel startup notification suppressed: %s has %s",
                     platform.value,
+                    reason,
                 )
                 continue
 

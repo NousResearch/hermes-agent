@@ -38,10 +38,17 @@ class CLIAgentSetupMixin:
         _primary_exc = None
         runtime = None
         try:
+            # Pass the active model so the resolver can derive the correct
+            # api_mode / base_url for it (e.g. opencode-go needs to pick
+            # ``chat_completions`` for non-MiniMax models even when the config
+            # default is a MiniMax model that would imply ``anthropic_messages``
+            # and strip ``/v1`` from the endpoint).
+            _target_model = getattr(self, "model", None) or None
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider,
                 explicit_api_key=self._explicit_api_key,
                 explicit_base_url=self._explicit_base_url,
+                target_model=_target_model,
             )
         except Exception as exc:
             _primary_exc = exc

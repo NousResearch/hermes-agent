@@ -79,6 +79,55 @@ def test_moa_runtime_provider_uses_virtual_endpoint():
     assert runtime["api_key"] == "moa-virtual-provider"
 
 
+def test_moa_actor_collapses_midstream_system_messages(monkeypatch, tmp_path):
+    """MoA aggregator/acting model must not receive system messages mid-list."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models: []
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        return _response("aggregator acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+
+    from agent.moa_loop import MoAClient
+
+    client = MoAClient("review")
+    response = getattr(client.chat, "completions").create(
+        messages=[
+            {"role": "system", "content": "base system"},
+            {"role": "system", "content": "compression summary"},
+            {"role": "user", "content": "say hello"},
+            {"role": "assistant", "content": "prior answer"},
+            {"role": "system", "content": "late repair note"},
+            {"role": "user", "content": "again"},
+        ]
+    )
+
+    assert response.choices[0].message.content == "aggregator acted"
+    roles = [m["role"] for m in captured["messages"]]
+    assert roles.count("system") == 1
+    assert roles[0] == "system"
+    assert "base system" in captured["messages"][0]["content"]
+    assert "compression summary" in captured["messages"][0]["content"]
+    assert "late repair note" in captured["messages"][0]["content"]
+
+
 def test_moa_does_not_cap_output_tokens(monkeypatch, tmp_path):
     """MoA must not inject an output cap on reference or aggregator calls.
 

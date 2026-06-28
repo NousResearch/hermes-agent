@@ -2,6 +2,7 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -686,6 +687,17 @@ _READ_DEDUP_STATUS_MESSAGE = (
 )
 
 
+def _hash_file_for_dedup(path: str) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
 def _cap_read_tracker_data(task_data: dict) -> None:
     """Enforce size caps on the per-task read-tracker sub-containers.
 
@@ -1065,44 +1077,54 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
-            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            cached_entry = task_data.get("dedup", {}).get(dedup_key)
+            if isinstance(cached_entry, tuple):
+                cached_mtime, cached_hash = cached_entry
+            else:
+                cached_mtime, cached_hash = cached_entry, None
 
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
-                    # Count repeated stub returns so weak tool-followers that
-                    # ignore the "refer to earlier result" hint don't burn
-                    # their iteration budget in an infinite read loop.  After
-                    # 2 stubs for the same key we escalate to a hard block
-                    # mirroring the count>=4 path on real reads.
-                    with _read_tracker_lock:
-                        hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
-                        task_data["dedup_hits"][dedup_key] = hits
-                        _cap_read_tracker_data(task_data)
+                    hash_matches = True
+                    if cached_hash is not None:
+                        current_hash = _hash_file_for_dedup(resolved_str)
+                        if current_hash is not None and current_hash != cached_hash:
+                            hash_matches = False
+                    if hash_matches:
+                        # Count repeated stub returns so weak tool-followers that
+                        # ignore the "refer to earlier result" hint don't burn
+                        # their iteration budget in an infinite read loop.  After
+                        # 2 stubs for the same key we escalate to a hard block
+                        # mirroring the count>=4 path on real reads.
+                        with _read_tracker_lock:
+                            hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
+                            task_data["dedup_hits"][dedup_key] = hits
+                            _cap_read_tracker_data(task_data)
 
-                    if hits >= 2:
+                        if hits >= 2:
+                            return json.dumps({
+                                "error": (
+                                    f"BLOCKED: You have called read_file on this "
+                                    f"exact region {hits + 1} times and the file "
+                                    "has NOT changed. STOP calling read_file for "
+                                    "this path — the content from your earlier "
+                                    "read_file result in this conversation is "
+                                    "still current. Proceed with your task using "
+                                    "the information you already have."
+                                ),
+                                "path": path,
+                                "already_read": hits + 1,
+                            }, ensure_ascii=False)
+
                         return json.dumps({
-                            "error": (
-                                f"BLOCKED: You have called read_file on this "
-                                f"exact region {hits + 1} times and the file "
-                                "has NOT changed. STOP calling read_file for "
-                                "this path — the content from your earlier "
-                                "read_file result in this conversation is "
-                                "still current. Proceed with your task using "
-                                "the information you already have."
-                            ),
+                            "status": "unchanged",
+                            "message": _READ_DEDUP_STATUS_MESSAGE,
                             "path": path,
-                            "already_read": hits + 1,
+                            "dedup": True,
+                            "content_returned": False,
                         }, ensure_ascii=False)
-
-                    return json.dumps({
-                        "status": "unchanged",
-                        "message": _READ_DEDUP_STATUS_MESSAGE,
-                        "path": path,
-                        "dedup": True,
-                        "content_returned": False,
-                    }, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
 
@@ -1178,7 +1200,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             #    the agent last read it (external edit, concurrent agent, etc.).
             try:
                 _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
+                task_data["dedup"][dedup_key] = (
+                    _mtime_now,
+                    _hash_file_for_dedup(resolved_str),
+                )
                 task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
             except OSError:
                 pass  # Can't stat — skip tracking for this entry

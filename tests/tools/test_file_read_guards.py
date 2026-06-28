@@ -378,6 +378,32 @@ class TestFileDedup(unittest.TestCase):
         self.assertNotEqual(r2.get("dedup"), True, "Modified file should not dedup")
 
     @patch("tools.file_tools._get_file_ops")
+    def test_mtime_preserving_edit_not_deduped(self, mock_ops):
+        """A same-mtime content edit must not return a stale dedup stub."""
+        original = "line one\nline two\n"
+        changed = "changed\ncontent\n"
+        contents = [original, changed]
+
+        fake = MagicMock()
+
+        def read_next(path, offset=1, limit=500):
+            content = contents.pop(0)
+            return _FakeReadResult(content=content, total_lines=2, file_size=len(content))
+
+        fake.read_file = read_next
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, task_id="mtime")
+        mtime = os.path.getmtime(self._tmpfile)
+        with open(self._tmpfile, "w", encoding="utf-8") as handle:
+            handle.write(changed)
+        os.utime(self._tmpfile, (mtime, mtime))
+
+        r2 = json.loads(read_file_tool(self._tmpfile, task_id="mtime"))
+        self.assertNotEqual(r2.get("dedup"), True, "Same-mtime content edit should not dedup")
+        self.assertEqual(r2.get("content"), changed)
+
+    @patch("tools.file_tools._get_file_ops")
     def test_different_range_not_deduped(self, mock_ops):
         """Same file but different offset/limit should not dedup."""
         mock_ops.return_value = _make_fake_ops(

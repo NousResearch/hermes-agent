@@ -245,7 +245,8 @@ def _routermint_headers() -> dict:
 
 
 def _pool_may_recover_from_rate_limit(
-    pool, *, provider: str | None = None, base_url: str | None = None
+    pool, *, provider: str | None = None, base_url: str | None = None,
+    error_context: dict | None = None,
 ) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
@@ -276,6 +277,20 @@ def _pool_may_recover_from_rate_limit(
     # the same throttle window, so rotation can't recover.  Prefer fallback.
     if str(base_url or "").startswith("cloudcode-pa://"):
         return False
+    # ChatGPT/Codex subscription usage-limit errors are account/window quota
+    # exhaustion (the body includes `usage_limit_reached` / reset timing), not
+    # a recoverable short per-request throttle.  If the main loop has fallback
+    # providers configured, do not let a multi-entry pool defer fallback.
+    if (provider or "").strip().lower() == "openai-codex" and error_context:
+        context_reason = str(error_context.get("reason") or "").lower()
+        context_message = str(error_context.get("message") or "").lower()
+        if (
+            "usage_limit_reached" in context_reason
+            or "gousagelimit" in context_reason
+            or "usage limit reached" in context_message
+            or "usage limit has been reached" in context_message
+        ):
+            return False
     return len(pool.entries()) > 1
 
 

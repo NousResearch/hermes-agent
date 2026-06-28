@@ -133,6 +133,26 @@ class TestEagerFallbackWithPool:
 
         agent._try_activate_fallback.assert_called_once()
 
+    def test_openai_codex_usage_limit_pool_does_not_defer_eager_fallback(self):
+        """Even a multi-entry Codex pool must not block fallback on usage_limit_reached."""
+        from run_agent import _pool_may_recover_from_rate_limit
+
+        pool = MagicMock()
+        pool.has_available.return_value = True
+        pool.entries.return_value = [object(), object()]
+
+        may_recover = _pool_may_recover_from_rate_limit(
+            pool,
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            error_context={
+                "reason": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+            },
+        )
+
+        assert may_recover is False
+
 
 # ---------------------------------------------------------------------------
 # 5. Full 429 rotation cycle via _recover_with_credential_pool
@@ -218,6 +238,35 @@ class TestPoolRotationCycle:
         assert recovered is True
         assert has_retried is False
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+
+    def test_openai_codex_usage_limit_skips_pool_rotation_for_fallback(self):
+        """ChatGPT/Codex subscription quota exhaustion should not burn pool retries.
+
+        The `usage_limit_reached` 429 is account/subscription quota, not a short
+        transport hiccup.  If fallback providers are configured, the main loop
+        needs pool recovery to decline immediately so eager fallback can switch
+        to OpenRouter instead of rotating/retrying Codex until max_retries.
+        """
+        from agent.error_classifier import FailoverReason
+
+        agent, pool, _ = self._make_agent_with_pool(3)
+        agent.provider = "openai-codex"
+        pool.provider = "openai-codex"
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+            classified_reason=FailoverReason.rate_limit,
+            error_context={
+                "reason": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+            },
+        )
+
+        assert recovered is False
+        assert has_retried is True
+        pool.mark_exhausted_and_rotate.assert_not_called()
+        agent._swap_credential.assert_not_called()
 
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""

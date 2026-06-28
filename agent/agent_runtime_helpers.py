@@ -710,6 +710,14 @@ def recover_with_credential_pool(
                 or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
             )
+        if usage_limit_reached:
+            provider_lower = (getattr(agent, "provider", "") or "").strip().lower()
+            if provider_lower == "openai-codex":
+                _ra().logger.info(
+                    "OpenAI Codex usage_limit_reached 429 — skipping credential "
+                    "pool recovery so configured fallback providers can activate"
+                )
+                return False, True
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429

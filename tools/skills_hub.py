@@ -3494,10 +3494,15 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 
+def _content_hash_path_sort_key(rel_path: str) -> tuple[str, ...]:
+    """Sort relative skill paths the same way ``Path.rglob`` paths sort on disk."""
+    return PurePosixPath(rel_path).parts
+
+
 def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
-    for rel_path in sorted(bundle.files):
+    for rel_path in sorted(bundle.files, key=_content_hash_path_sort_key):
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).
         h.update(rel_path.encode("utf-8"))

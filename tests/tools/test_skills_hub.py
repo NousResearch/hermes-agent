@@ -1231,6 +1231,29 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_matches_on_disk_with_sibling_file_and_dir(self, tmp_path):
+        """Hash order must match Path.rglob when a file and directory share a prefix."""
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "# Demo Skill\n",
+                "references/styles.md": "index\n",
+                "references/styles/blueprint.md": "blueprint\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        (skill_dir / "references" / "styles").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Demo Skill\n")
+        (skill_dir / "references" / "styles.md").write_text("index\n")
+        (skill_dir / "references" / "styles" / "blueprint.md").write_text("blueprint\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

@@ -1078,6 +1078,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1107,6 +1109,30 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+
+        clean_model_override = str(model_override or "").strip()
+        clean_provider_override = str(provider_override or "").strip()
+        if clean_model_override or clean_provider_override:
+            from hermes_cli.runtime_provider import format_runtime_provider_error, resolve_runtime_provider
+
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=clean_provider_override or None,
+                    target_model=clean_model_override or None,
+                )
+            except Exception as exc:
+                raise RuntimeError(format_runtime_provider_error(exc)) from exc
+            runtime_kwargs.update({
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "provider": runtime.get("provider"),
+                "api_mode": runtime.get("api_mode"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
+                "credential_pool": runtime.get("credential_pool"),
+            })
+            if clean_model_override:
+                model = clean_model_override
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1934,6 +1960,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
+        model_override = str(model_name or "").strip() if "model" in body else ""
+        provider_override = str(body.get("provider") or body.get("model_provider") or "").strip()
+        if model_override in {"", "default", self._model_name}:
+            model_override = ""
         created = int(time.time())
 
         if stream:
@@ -2018,6 +2048,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override or None,
+                provider_override=provider_override or None,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2037,6 +2069,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override or None,
+                provider_override=provider_override or None,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -3763,6 +3797,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3794,6 +3830,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
+                    model_override=model_override,
+                    provider_override=provider_override,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -3971,6 +4009,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+        model_override = str(body.get("model") or "").strip()
+        provider_override = str(body.get("provider") or body.get("model_provider") or "").strip()
+        if model_override in {"", "default", self._model_name}:
+            model_override = ""
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
@@ -4013,6 +4055,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    model_override=model_override or None,
+                    provider_override=provider_override or None,
                 )
                 self._active_run_agents[run_id] = agent
 

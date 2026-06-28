@@ -921,8 +921,14 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     chat_id = ""
     try:
         from gateway.session_context import get_session_env
-        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
-        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        platform = (
+            get_session_env("HERMES_SESSION_PLATFORM", "")
+            or os.environ.get("HERMES_SESSION_PLATFORM", "")
+        )
+        chat_id = (
+            get_session_env("HERMES_SESSION_CHAT_ID", "")
+            or os.environ.get("HERMES_SESSION_CHAT_ID", "")
+        )
         if not platform or not chat_id:
             # TUI / desktop fallback: platform/chat_id ContextVars are
             # cleared for TUI sessions, but the parent process exports
@@ -945,8 +951,16 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                 return False  # CLI / cron / test — no persistent channel
             platform = "tui"
             chat_id = session_key
-        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
-        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        thread_id = (
+            get_session_env("HERMES_SESSION_THREAD_ID", "")
+            or os.environ.get("HERMES_SESSION_THREAD_ID", "")
+            or None
+        )
+        user_id = (
+            get_session_env("HERMES_SESSION_USER_ID", "")
+            or os.environ.get("HERMES_SESSION_USER_ID", "")
+            or None
+        )
         notifier_profile = os.environ.get("HERMES_PROFILE")
 
         # Lazy-import to keep the module-level dependency light

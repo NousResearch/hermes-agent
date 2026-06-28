@@ -196,6 +196,15 @@ def test_validate_workdir_allows_windows_unc_paths():
     assert terminal_tool._validate_workdir(r"\\server\share\project") is None
 
 
+def test_validate_workdir_allows_unicode_filesystem_paths():
+    assert terminal_tool._validate_workdir(
+        "/Users/alice/Documents/Obs_Hermes_Data/项目-projects/客户拜访"
+    ) is None
+    assert terminal_tool._validate_workdir(
+        "/Users/alice/Documents/附件-attachments/微信视频号下载"
+    ) is None
+
+
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
@@ -299,3 +308,16 @@ def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypat
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+def test_terminal_schema_stays_compact_but_preserves_operational_guidance():
+    import json
+
+    schema_text = json.dumps(terminal_tool.TERMINAL_SCHEMA, ensure_ascii=False)
+
+    assert len(schema_text) < 3_600
+    desc = terminal_tool.TERMINAL_TOOL_DESCRIPTION
+    assert "exported environment variables persist between calls" in desc
+    assert "read_file" in desc
+    assert "search_files" in desc
+    assert "notify_on_complete=true" in schema_text
+    assert "watch_patterns" in terminal_tool.TERMINAL_SCHEMA["parameters"]["properties"]

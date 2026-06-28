@@ -9311,7 +9311,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         if not view.logged_in:
             print()
-            _cprint(f"  💳 {_d('Not logged into Nous Portal.')}")
+            if getattr(self, "_app", None):
+                _cprint(f"  💳 {_d('Not logged into Nous Portal.')}")
+            else:
+                print("  💳 Not logged into Nous Portal.")
             print("  Run `hermes portal` to log in, then /credits.")
             return
 

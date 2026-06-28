@@ -117,9 +117,12 @@ def _session_is_messaging_surface() -> bool:
 
         platform = (
             os.getenv("HERMES_PLATFORM")
+            or os.getenv("HERMES_SESSION_PLATFORM")
             or get_session_env("HERMES_SESSION_PLATFORM", "")
         )
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
+        source = os.getenv("HERMES_SESSION_SOURCE") or get_session_env(
+            "HERMES_SESSION_SOURCE", ""
+        )
     except Exception:
         platform = os.getenv("HERMES_PLATFORM", "") or os.environ.get(
             "HERMES_SESSION_PLATFORM", ""

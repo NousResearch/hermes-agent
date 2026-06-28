@@ -192,11 +192,16 @@ def _get_effective_configurable_toolsets():
 
 
 def _get_plugin_toolset_keys() -> set:
-    """Return the set of toolset keys provided by plugins."""
+    """Return the set of toolset keys provided by plugins.
+
+    This is used on hot startup paths, so prefer manifest metadata over full
+    plugin discovery. Full discovery imports every bundled backend/platform
+    module and is reserved for interactive plugin/tool management surfaces.
+    """
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
-        return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+        from hermes_cli.plugins import get_plugin_toolset_keys_from_manifests
+
+        return set(get_plugin_toolset_keys_from_manifests())
     except Exception:
         return set()
 

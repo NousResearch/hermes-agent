@@ -1107,7 +1107,24 @@ def check_image_generation_requirements() -> bool:
     except ImportError:
         pass
 
-    # Probe plugin providers. Discovery is idempotent and cheap.
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        configured_provider = section.get("provider") if isinstance(section, dict) else None
+        if isinstance(configured_provider, str) and configured_provider.strip():
+            # An explicit provider selection should keep the tool visible. The
+            # dispatch path imports the selected backend lazily and can return
+            # the precise provider-specific credential/setup error if needed;
+            # startup availability checks must not import every image backend.
+            return True
+    except Exception:
+        pass
+
+    # Probe plugin providers only after the cheap legacy path and explicit
+    # provider selection fail. Discovery is intentionally last because it
+    # imports optional backend SDKs.
     try:
         from agent.image_gen_registry import list_providers
         from hermes_cli.plugins import _ensure_plugins_discovered
@@ -1581,6 +1598,32 @@ def _active_image_capabilities() -> Dict[str, Any]:
 
     configured_provider = _read_configured_image_provider()
     if configured_provider and configured_provider != "fal":
+        static_caps = {
+            "openai": {
+                "provider": "OpenAI",
+                "modalities": ["text", "image"],
+                "max_reference_images": 16,
+            },
+            "openai-codex": {
+                "provider": "OpenAI (Codex auth)",
+                "modalities": ["text"],
+                "max_reference_images": 0,
+            },
+            "krea": {
+                "provider": "Krea",
+                "modalities": ["text", "image"],
+                "max_reference_images": 10,
+            },
+            "xai": {
+                "provider": "xAI",
+                "modalities": ["text", "image"],
+                "max_reference_images": 1,
+            },
+        }.get(configured_provider)
+        if static_caps:
+            info.update(static_caps)
+            info["model"] = _read_configured_image_model() or ""
+            return info
         try:
             from agent.image_gen_registry import get_provider
             from hermes_cli.plugins import _ensure_plugins_discovered

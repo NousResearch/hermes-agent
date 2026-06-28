@@ -12044,9 +12044,18 @@ def _prepare_agent_startup(args) -> None:
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.config import load_config
 
-        discover_plugins()
+        plugins_cfg = (load_config() or {}).get("plugins") or {}
+        enabled_plugins = plugins_cfg.get("enabled") if isinstance(plugins_cfg, dict) else []
+        should_discover_plugins = (
+            isinstance(enabled_plugins, list)
+            and len(enabled_plugins) > 0
+        ) or os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS") == "1"
+        if should_discover_plugins:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
     except Exception:
         logger.warning(
             "plugin discovery failed at CLI startup",

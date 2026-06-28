@@ -5290,6 +5290,17 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     if not isinstance(task_config, dict):
         task_config = {}
 
+    # Built-in auxiliary tasks are fully described by DEFAULT_CONFIG/load_config;
+    # do not import/discover plugins just to resolve their config on hot paths
+    # such as vision/browser tool availability checks during startup.
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG
+        default_aux = DEFAULT_CONFIG.get("auxiliary", {}) if isinstance(DEFAULT_CONFIG, dict) else {}
+        if isinstance(default_aux, dict) and task in default_aux:
+            return task_config
+    except Exception:
+        pass
+
     # Layer plugin-declared defaults underneath user config so
     # ctx.register_auxiliary_task(defaults={...}) takes effect without
     # forcing the user to write config.yaml entries.

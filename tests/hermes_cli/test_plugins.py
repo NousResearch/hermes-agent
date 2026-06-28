@@ -17,6 +17,7 @@ from hermes_cli.plugins import (
     PluginManifest,
     get_plugin_command_handler,
     get_plugin_commands,
+    get_plugin_toolset_keys_from_manifests,
     get_pre_tool_call_block_message,
     has_middleware,
     resolve_plugin_command_result,
@@ -90,6 +91,21 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
+
+    def test_manifest_toolset_keys_do_not_require_plugin_import(self, tmp_path, monkeypatch):
+        """Hot startup paths can classify plugin toolsets from manifests only."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "fast_tools",
+            register_body="raise RuntimeError('module should not be imported')",
+            manifest_extra={"provides_tools": ["fast_one", "fast_two"]},
+            auto_enable=True,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert "fast_tools" in get_plugin_toolset_keys_from_manifests()
 
     def test_discover_user_plugins(self, tmp_path, monkeypatch):
         """Plugins in ~/.hermes/plugins/ are discovered."""

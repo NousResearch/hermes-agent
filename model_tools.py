@@ -196,12 +196,11 @@ discover_builtin_tools()
 #   - tui_gateway/server.py     -> inline on startup (no event loop)
 #   - acp_adapter/server.py     -> asyncio.to_thread on session init
 
-# Plugin tool discovery (user/project/pip plugins)
-try:
-    from hermes_cli.plugins import discover_plugins
-    discover_plugins()
-except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
+# Plugin tool discovery is intentionally lazy. Importing every bundled
+# backend/platform plugin here made plain startup import heavyweight SDKs
+# (Feishu/Lark, Teams, Discord, browser backends, etc.) before the user could
+# type. get_tool_definitions() now triggers full plugin discovery only when the
+# requested toolset surface includes a plugin-provided toolset.
 
 
 # =============================================================================
@@ -255,6 +254,30 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_plugins_discovered_for_tool_definitions = False
+
+
+def _ensure_plugin_tools_discovered(enabled_toolsets: Optional[List[str]]) -> None:
+    """Import plugin modules only when plugin toolsets are requested."""
+    global _plugins_discovered_for_tool_definitions
+    if _plugins_discovered_for_tool_definitions:
+        return
+    try:
+        from hermes_cli.plugins import (
+            discover_plugins,
+            get_plugin_toolset_keys_from_manifests,
+        )
+
+        plugin_toolsets = get_plugin_toolset_keys_from_manifests()
+        if not plugin_toolsets:
+            return
+        requested = set(enabled_toolsets) if enabled_toolsets is not None else plugin_toolsets
+        if requested.isdisjoint(plugin_toolsets):
+            return
+        discover_plugins()
+        _plugins_discovered_for_tool_definitions = True
+    except Exception as e:
+        logger.debug("Plugin discovery failed: %s", e)
 
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway
 # process sees many distinct toolset/config fingerprints over its lifetime
@@ -329,6 +352,8 @@ def get_tool_definitions(
             # Return a shallow copy of the list but share the dict references —
             # schemas are treated as read-only by all known callers.
             return list(cached)
+
+    _ensure_plugin_tools_discovered(enabled_toolsets)
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                        skip_tool_search_assembly=skip_tool_search_assembly)

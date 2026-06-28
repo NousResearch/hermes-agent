@@ -2123,6 +2123,75 @@ def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
 
+def get_plugin_toolset_keys_from_manifests() -> Set[str]:
+    """Return plugin-provided toolset keys without importing plugin modules.
+
+    Startup paths such as ``_get_platform_tools()`` only need to know which
+    names are plugin toolsets so config entries can be classified correctly.
+    Historically they called :func:`discover_plugins`, which imports every
+    bundled backend/platform plugin just to answer that metadata question. On a
+    typical macOS install that costs several seconds before the user can type.
+
+    Directory plugins already declare tool exposure in ``plugin.yaml`` via
+    ``provides_tools``. Use those manifests as the cheap source of truth here
+    and leave full module import/registry inspection to interactive management
+    paths such as ``hermes plugins list`` and ``hermes tools``.
+    """
+    yaml_mod = yaml
+    if yaml_mod is None:
+        return set()
+
+    keys: Set[str] = set()
+    disabled = _get_disabled_plugins()
+    enabled = _get_enabled_plugins()
+    scan_roots: List[tuple[Path, str]] = [
+        (get_bundled_plugins_dir(), "bundled"),
+        (get_bundled_plugins_dir() / "platforms", "bundled"),
+        (get_hermes_home() / "plugins", "user"),
+    ]
+    if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+        scan_roots.append((Path.cwd() / ".hermes" / "plugins", "project"))
+
+    def _scan(root: Path, source: str, prefix: str = "", depth: int = 0) -> None:
+        if not root.is_dir():
+            return
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+            manifest_file = child / "plugin.yaml"
+            if not manifest_file.exists():
+                manifest_file = child / "plugin.yml"
+            if manifest_file.exists():
+                try:
+                    data = yaml_mod.safe_load(
+                        manifest_file.read_text(encoding="utf-8")
+                    ) or {}
+                except Exception:
+                    continue
+                provides_tools = data.get("provides_tools") or []
+                if not isinstance(provides_tools, list) or not provides_tools:
+                    continue
+                name = str(data.get("name") or child.name)
+                key = f"{prefix}/{child.name}" if prefix else name
+                raw_kind = data.get("kind", "standalone")
+                kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else "standalone"
+                if key in disabled or name in disabled:
+                    continue
+                if source == "bundled" and kind in {"backend", "platform"}:
+                    keys.add(key)
+                    continue
+                if enabled is not None and (key in enabled or name in enabled):
+                    keys.add(key)
+                continue
+            if depth < 1:
+                sub_prefix = f"{prefix}/{child.name}" if prefix else child.name
+                _scan(child, source, sub_prefix, depth + 1)
+
+    for root, source in scan_roots:
+        _scan(root, source)
+    return keys
+
+
 def get_plugin_toolsets() -> List[tuple]:
     """Return plugin toolsets as ``(key, label, description)`` tuples.
 

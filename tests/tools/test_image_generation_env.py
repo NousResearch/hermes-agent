@@ -73,6 +73,41 @@ def test_no_backend_message_mentions_managed_gateway_when_enabled(monkeypatch):
     assert "Nous account" in msg or "hermes setup" in msg
 
 
+def test_explicit_image_provider_keeps_tool_visible_without_plugin_discovery(monkeypatch):
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(image_generation_tool, "check_fal_api_key", lambda: False)
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"image_gen": {"provider": "openai-codex"}})
+
+    def fail_discovery():
+        raise AssertionError("plugin discovery should stay lazy for explicit provider")
+
+    import hermes_cli.plugins as plugins
+
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", fail_discovery)
+    assert image_generation_tool.check_image_generation_requirements() is True
+
+
+def test_dynamic_image_schema_uses_static_known_provider_caps(monkeypatch):
+    from tools import image_generation_tool
+
+    monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "openai-codex")
+    monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-2-medium")
+
+    def fail_discovery():
+        raise AssertionError("plugin discovery should stay lazy for known provider capabilities")
+
+    import hermes_cli.plugins as plugins
+
+    monkeypatch.setattr(plugins, "_ensure_plugins_discovered", fail_discovery)
+    info = image_generation_tool._active_image_capabilities()
+    assert info["provider"] == "OpenAI (Codex auth)"
+    assert info["model"] == "gpt-image-2-medium"
+    assert info["modalities"] == ["text"]
+
+
 def test_image_generate_tool_returns_actionable_error_when_no_backend(monkeypatch):
     """End-to-end: handler must surface the actionable message, not a bare string."""
     import json

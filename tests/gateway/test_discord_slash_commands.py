@@ -1023,23 +1023,12 @@ def test_natural_language_classifier_registers_regular_discord_messages():
         "どんなスキルがあるかを箇条書きで出して"
     )
     assert DiscordAdapter._looks_like_natural_task_request("この説明の意味わかりますか？")
+    assert DiscordAdapter._looks_like_natural_task_request("直して")
     assert not DiscordAdapter._looks_like_natural_task_request("/status")
 
 
-def test_natural_language_reply_deferral_classifier():
-    assert DiscordAdapter._should_defer_natural_task_reply(
-        "テストで新規タスクを登録したい。まずはどんなスキルがあるかを箇条書きで出して"
-    )
-    assert DiscordAdapter._should_defer_natural_task_reply(
-        "どんなスキルがあるかを箇条書きで出して"
-    )
-    assert DiscordAdapter._should_defer_natural_task_reply("ダッシュボードの状態を確認して")
-    assert not DiscordAdapter._should_defer_natural_task_reply("この説明の意味わかりますか？")
-    assert not DiscordAdapter._should_defer_natural_task_reply("/status")
-
-
 @pytest.mark.asyncio
-async def test_natural_language_question_registers_and_still_answers(adapter, monkeypatch):
+async def test_natural_language_question_registers_and_defers_immediate_reply(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
@@ -1073,12 +1062,7 @@ async def test_natural_language_question_registers_and_still_answers(adapter, mo
     monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
     monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", fake_add_notify_sub)
 
-    captured_events = []
-
-    async def capture_handle(event):
-        captured_events.append(event)
-
-    adapter.handle_message = capture_handle
+    adapter.handle_message = AsyncMock()
     adapter.send = AsyncMock()
 
     msg = _fake_message(_FakeTextChannel(), content="この説明の意味わかりますか？")
@@ -1086,8 +1070,7 @@ async def test_natural_language_question_registers_and_still_answers(adapter, mo
     await adapter._handle_message(msg)
 
     adapter.send.assert_not_awaited()
-    assert len(captured_events) == 1
-    assert captured_events[0].text == "この説明の意味わかりますか？"
+    adapter.handle_message.assert_not_awaited()
     assert created["board"] == "ai-company-2-0"
     assert created["kwargs"]["title"] == "この説明の意味わかりますか？"
     fake_add_notify_sub.assert_called_once()
@@ -1098,6 +1081,7 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     """When DISCORD_AUTO_THREAD=true, a new thread is created and the event routes there."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "false")
 
     thread = SimpleNamespace(id=999, name="Hello")
     adapter._auto_create_thread = AsyncMock(return_value=thread)
@@ -1126,6 +1110,7 @@ async def test_auto_thread_enabled_by_default_slash_commands(adapter, monkeypatc
     """Without DISCORD_AUTO_THREAD env var, auto-threading is enabled (default: true)."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "false")
 
     fake_thread = _FakeThreadChannel(channel_id=999, name="auto-thread")
     adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
@@ -1152,6 +1137,7 @@ async def test_auto_thread_can_be_disabled(adapter, monkeypatch):
     """Setting DISCORD_AUTO_THREAD=false keeps messages in the channel."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "false")
 
     adapter._auto_create_thread = AsyncMock()
 
@@ -1176,6 +1162,7 @@ async def test_auto_thread_skips_threads_and_dms(adapter, monkeypatch):
     """Auto-thread should not create threads inside existing threads."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "false")
 
     adapter._auto_create_thread = AsyncMock()
 

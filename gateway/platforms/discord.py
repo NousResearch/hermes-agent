@@ -32,14 +32,6 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
-_NATURAL_TASK_DEFER_REPLY_RE = re.compile(
-    r"(直して|なおして|修正して|実装して|作って|作成して|追加して|更新して|反映して|"
-    r"確認して|調べて|調査して|見て|進めて|対応して|テストして|チェックして|"
-    r"整理して|まとめて|一覧|箇条書き|リスト|列挙|棚卸|スキル|skill|"
-    r"状態|状況|原因|なぜ|どうして|ログ|ダッシュボード|dashboard|カンバン|kanban|"
-    r"github|vps|openai|メール|権限|警告|本当に|直った|なおった)",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -3131,16 +3123,9 @@ class DiscordAdapter(BasePlatformAdapter):
         normalized = re.sub(r"\s+", " ", (prompt or "").strip())
         if not normalized or normalized.startswith("/"):
             return False
-        if len(normalized) < 4:
+        if len(normalized) < 2:
             return False
         return True
-
-    @staticmethod
-    def _should_defer_natural_task_reply(prompt: str) -> bool:
-        normalized = re.sub(r"\s+", " ", (prompt or "").strip())
-        if not DiscordAdapter._looks_like_natural_task_request(normalized):
-            return False
-        return bool(_NATURAL_TASK_DEFER_REPLY_RE.search(normalized))
 
     def _build_task_payload(
         self,
@@ -3351,9 +3336,8 @@ class DiscordAdapter(BasePlatformAdapter):
         """Register regular Discord messages and report intake outcome.
 
         Discord is treated as the owner's work intake, not a casual chat
-        surface. Registration and natural replies are separate. Callers decide
-        whether the natural reply can run immediately or should wait for the
-        kanban worker's final notification.
+        surface. When registration succeeds, callers must stop the immediate
+        chat path and let the kanban worker's final notification answer.
         """
         if not self._natural_task_requests_enabled():
             return NaturalTaskIntakeResult()
@@ -5036,10 +5020,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     if not natural_task_intake:
                         return
-                    if (
-                        natural_task_intake.created
-                        and self._should_defer_natural_task_reply(normalized_content)
-                    ):
+                    if natural_task_intake.created:
                         logger.info(
                             "[%s] Deferred Discord reply to kanban worker for task %s",
                             self.name,
@@ -5262,10 +5243,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 thread_id=thread_id,
                 has_attachments=bool(all_attachments),
             )
-        if (
-            natural_task_intake.created
-            and self._should_defer_natural_task_reply(event_text)
-        ):
+        if natural_task_intake.created:
             logger.info(
                 "[%s] Deferred Discord reply to kanban worker for task %s",
                 self.name,

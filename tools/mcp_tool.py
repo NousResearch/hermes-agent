@@ -853,6 +853,42 @@ def _safe_numeric(value, default, coerce=int, minimum=1):
         return default
 
 
+def _normalize_headers(value: Any) -> dict:
+    """Normalize MCP server ``headers`` config to a ``dict``.
+
+    Handles three YAML shapes:
+
+    1. Proper mapping → returned as-is (fast path).
+    2. Single-quoted JSON string (common for Cloudflare/GitHub MCP servers
+       where the user copies a JSON blob into ``config.yaml``) → parsed via
+       ``json.loads``.
+    3. ``None`` / absent → empty dict.
+
+    Without this, ``dict(config.get("headers") or {})`` crashes with
+    ``ValueError: dictionary update sequence element #0 has length 1; 2 is
+    required`` when ``headers`` is a JSON string, because ``dict(str)`` iterates
+    per-character (#53915).
+    """
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        logger.warning(
+            "MCP headers config is a string but not valid JSON — ignoring. "
+            "Use a YAML mapping or a single-quoted JSON string."
+        )
+        return {}
+    logger.warning("MCP headers config has unexpected type %s — ignoring.", type(value).__name__)
+    return {}
+
+
 class SamplingHandler:
     """Handles sampling/createMessage requests for a single MCP server.
 
@@ -1984,7 +2020,7 @@ class MCPServerTask:
         if client_cert is not None:
             client_kwargs["cert"] = client_cert
 
-        probe_headers = dict(headers) if headers else {}
+        probe_headers = _normalize_headers(headers) if headers else {}
         try:
             async with _httpx.AsyncClient(**client_kwargs) as client:
                 # HEAD is cheapest; fall back to GET if the server doesn't
@@ -2025,7 +2061,7 @@ class MCPServerTask:
             )
 
         url = config["url"]
-        headers = dict(config.get("headers") or {})
+        headers = _normalize_headers(config.get("headers"))
         # Some MCP servers require MCP-Protocol-Version on the initial
         # initialize request and reject session-less POSTs otherwise.
         # Seed it as a client-level default, but treat user overrides as
@@ -2314,7 +2350,7 @@ class MCPServerTask:
             # round-trip against a known-good server on every reconnect.
             if config.get("transport") != "sse" and not self._ready.is_set():
                 try:
-                    _probe_headers = dict(config.get("headers") or {})
+                    _probe_headers = _normalize_headers(config.get("headers"))
                     await self._preflight_content_type(
                         config["url"],
                         headers=_probe_headers,

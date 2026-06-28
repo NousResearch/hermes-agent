@@ -67,6 +67,7 @@ AUTHOR_MAP = {
     "8180647+herbalizer404@users.noreply.github.com": "herbalizer404",  # PR #49076 + #51835 salvage (auxiliary compression fallback: 403/session-usage payment errors + honor fallback chain when aux provider auth unavailable)
     "pyxl-dev@users.noreply.github.com": "pyxl-dev",  # PR #52230 salvage (include rate-limit in auxiliary capacity-error fallback gate; #52228)
     "yashiel@skyner.co.za": "yashiels",  # PR #53284 salvage (discord markdown table-to-bullet conversion; #21168)
+    "46495124+yungchentang@users.noreply.github.com": "yungchentang",  # PR #53622 salvage (drain Telegram general send pool on pool timeout before retry; #53524)
     "15205536+595650661@users.noreply.github.com": "595650661",  # PR #37851 salvage (classify MiniMax new_sensitive content filter → content_policy_blocked; #32421)
     "benbenwyb@gmail.com": "benbenlijie",  # PR #47205 salvage (named custom-provider extra_body + Z.AI Coding overload adaptive backoff; #50663)
     "dana@added-value.co.il": "Danamove",  # PR #46726 salvage (kill venv-resident pythonw gateway before recreating venv on Windows; #47036/#47557/#47910)
@@ -167,6 +168,8 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "121278003+Cossackx@users.noreply.github.com": "Cossackx",  # PR #52528 salvage (Windows hermes-shim resolution + prefer --update on recovery; #52378)
+    "97326386+Icather@users.noreply.github.com": "Icather",  # PR #45554 salvage (self-lock guard breaks Windows update-recovery infinite loop; #52378 / #45542)
     "--email": "andryypaez@gmail.com",
     "mucio@mucio.net": "francescomucio",
     "291572938+thestral123@users.noreply.github.com": "thestral123",

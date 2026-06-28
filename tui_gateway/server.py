@@ -2357,7 +2357,7 @@ def _load_memory_notifications() -> str:
 
 def _load_tool_progress_mode() -> str:
     env = os.environ.get("HERMES_TUI_TOOL_PROGRESS", "").strip().lower()
-    if env in {"off", "generic", "new", "all", "verbose"}:
+    if env in {"off", "new", "all", "verbose"}:
         return env
     raw = (_load_cfg().get("display") or {}).get("tool_progress", "all")
     if raw is False:
@@ -2365,7 +2365,7 @@ def _load_tool_progress_mode() -> str:
     if raw is True:
         return "all"
     mode = str(raw or "all").strip().lower()
-    return mode if mode in {"off", "generic", "new", "all", "verbose"} else "all"
+    return mode if mode in {"off", "new", "all", "verbose"} else "all"
 
 
 def _load_enabled_toolsets() -> list[str] | None:
@@ -9774,7 +9774,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": raw})
 
     if key == "verbose":
-        cycle = ["off", "generic", "new", "all", "verbose"]
+        cycle = ["off", "new", "all", "verbose"]
         cur = (
             session.get("tool_progress_mode", _load_tool_progress_mode())
             if session

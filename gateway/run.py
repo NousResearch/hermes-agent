@@ -15356,6 +15356,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             *,
             default: bool = False,
             require_platform_override_for: set[Any] | None = None,
+            allow_generic: bool = False,
         ) -> str:
             """Return off|raw|generic for a gateway visibility surface."""
             if require_platform_override_for:
@@ -15371,7 +15372,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return "off"
             value = resolve_display_setting(user_config, platform_key, setting, default)
             if isinstance(value, str) and value.strip().lower() == "generic":
-                return "generic"
+                return "generic" if allow_generic else "off"
             return "raw" if bool(value) else "off"
 
         def _generic_status_phrase(kind: str, *, tool_name: str | None = None, preview: str | None = None, args: Any = None) -> str:
@@ -15391,7 +15392,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
-        tool_progress_generic = progress_mode == "generic"
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -15533,10 +15533,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not _thinking_enabled:
                     return
                 thinking_text = preview if tool_name == "_thinking" else tool_name
-                if _thinking_mode == "generic":
-                    msg = _generic_status_phrase("thinking", preview=str(thinking_text or ""))
-                else:
-                    msg = f"💬 {thinking_text}" if thinking_text else None
+                msg = f"💬 {thinking_text}" if thinking_text else None
                 if msg:
                     progress_queue.put(msg)
                 return
@@ -15571,17 +15568,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             last_tool[0] = tool_name
 
-            if tool_progress_generic:
-                progress_queue.put(
-                    _generic_status_phrase(
-                        "tool",
-                        tool_name=str(tool_name or ""),
-                        preview=str(preview or ""),
-                        args=args,
-                    )
-                )
-                return
-            
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -16301,11 +16287,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
-                display_text = (
-                    _generic_status_phrase("interim", preview=str(text or ""))
-                    if interim_assistant_messages_mode == "generic"
-                    else text
-                )
+                display_text = text
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
@@ -17363,6 +17345,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _long_running_mode = _display_surface_mode(
             "long_running_notifications",
             default=True,
+            allow_generic=True,
         )
         if _long_running_mode == "off":
             _NOTIFY_INTERVAL = None

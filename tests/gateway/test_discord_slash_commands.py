@@ -962,6 +962,67 @@ async def test_natural_language_task_request_bypasses_mention_requirement(adapte
 
 
 @pytest.mark.asyncio
+async def test_natural_language_explicit_task_registration_with_question_creates_task(
+    adapter, monkeypatch
+):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+    created = {}
+
+    def fake_connect(*, board=None):
+        created["board"] = board
+        return fake_conn
+
+    def fake_create_task(conn, **kwargs):
+        created["conn"] = conn
+        created["kwargs"] = kwargs
+        return "t_register123"
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="テストで新規タスクを登録したい。まずはどんなスキルがあるかを箇条書きで出して",
+            assignee="operations-orchestrator",
+            status="ready",
+        )
+
+    fake_add_notify_sub = MagicMock()
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", fake_connect)
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", fake_add_notify_sub)
+
+    adapter._active_profile_name = MagicMock(return_value="rino")
+    adapter.handle_message = AsyncMock()
+    adapter.send = AsyncMock()
+
+    prompt = "テストで新規タスクを登録したい。まずはどんなスキルがあるかを箇条書きで出して"
+    msg = _fake_message(_FakeTextChannel(), content=prompt)
+
+    await adapter._handle_message(msg)
+
+    adapter.handle_message.assert_awaited_once()
+    adapter.send.assert_not_awaited()
+    assert created["board"] == "ai-company-2-0"
+    assert created["kwargs"]["title"] == prompt
+    assert created["kwargs"]["idempotency_key"] == "discord-natural-task:12345"
+    assert created["kwargs"]["initial_status"] == "ready"
+    fake_add_notify_sub.assert_called_once()
+
+
+def test_natural_language_classifier_keeps_plain_skill_question_as_chat():
+    assert not DiscordAdapter._looks_like_natural_task_request(
+        "どんなスキルがあるかを箇条書きで出して"
+    )
+
+
+@pytest.mark.asyncio
 async def test_natural_language_question_stays_regular_chat(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")

@@ -36,6 +36,10 @@ _NATURAL_TASK_REQUEST_RE = re.compile(
     r"確認して|調べて|見て|進めて|対応して|テストして|登録して|整理して|"
     r"まとめて|やって|お願いします|お願い)"
 )
+_NATURAL_TASK_EXPLICIT_REGISTRATION_RE = re.compile(
+    r"(?:新規)?タスク(?:を|として)?[^。！？!?]{0,40}"
+    r"(?:登録したい|登録して|作成したい|作成して|追加したい|追加して)"
+)
 _NATURAL_TASK_QUESTION_ONLY_RE = re.compile(
     r"(意味わかりますか|意味分かりますか|どう思|できますか|できる[？?]|可能ですか|"
     r"教えて|説明して|なぜ|なに|何[？?]|どこ|いつ)"
@@ -3123,6 +3127,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         if len(normalized) < 4:
             return False
+        if _NATURAL_TASK_EXPLICIT_REGISTRATION_RE.search(normalized):
+            return True
         if _NATURAL_TASK_QUESTION_ONLY_RE.search(normalized):
             return False
         return bool(_NATURAL_TASK_REQUEST_RE.search(normalized))

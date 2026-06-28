@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -88,6 +89,8 @@ def generate_title(
             main_runtime=main_runtime,
         )
         title = (response.choices[0].message.content or "").strip()
+        # Strip <think>...</think> blocks from reasoning-model outputs
+        title = re.sub(r'<think>.*?</think>\s*', '', title, flags=re.DOTALL).strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):

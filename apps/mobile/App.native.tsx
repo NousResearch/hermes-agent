@@ -329,8 +329,8 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#05060a' },
-  webview: { flex: 1, backgroundColor: '#05060a' },
+  root: { flex: 1, backgroundColor: '#f7f8fb' },
+  webview: { flex: 1, backgroundColor: '#f7f8fb' },
   debugOverlay: {
     backgroundColor: 'rgba(0,0,0,0.76)',
     borderRadius: 12,

@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <script>
+      // injectedJavaScriptBeforeContentLoaded is unreliable for inline-HTML
+      // WebView sources on iOS, so set the standalone marker from inside the
+      // document. ReactNativeWebView is only defined inside the RN WebView.
+      if (typeof window !== 'undefined' && window.ReactNativeWebView) {
+        try { document.documentElement.classList.add('hermes-mobile-standalone'); } catch (_) {}
+        window.__HERMES_MOBILE_STANDALONE__ = true;
+      }
+    </script>
+    <script>
       // Expose the iOS soft-keyboard height as --keyboard-inset so the composer
       // and thread bottom-clearance can react. visualViewport shrinks when the
       // keyboard opens; layoutViewport (innerHeight) does not.
@@ -427,7 +436,64 @@
     </script>
   </head>
   <body>
+    <!--
+      Pre-React boot splash: shown from the moment WebView paints the HTML
+      until React mounts and the real GatewayConnectingOverlay covers it.
+      Matches the renderer overlay's bg + CONNECTING wordmark + decode
+      animation so the transition is visually continuous (no white flash).
+      React's first render writes into #root and visually replaces this.
+    -->
+    <div id="boot-splash" aria-hidden="true" style="position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;background:#f7f8fb;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#0053fd;font-size:0.64rem;font-weight:600;letter-spacing:0.4em;text-transform:uppercase;font-variant-numeric:tabular-nums;">
+      <span style="padding-left:0.4em">CONN<span id="boot-splash-tail">ECTING</span></span>
+    </div>
     <div id="root"></div>
+    <script>
+      (function () {
+        var tail = document.getElementById('boot-splash-tail');
+        var splash = document.getElementById('boot-splash');
+        var root = document.getElementById('root');
+        if (!tail || !splash || !root) return;
+        var FINAL = 'ECTING';
+        var GLYPHS = '/\\\\|-_=+<>~:*';
+        var resolved = 0;
+        var hold = 0;
+        var loop = setInterval(function () {
+          if (resolved >= FINAL.length) {
+            hold += 1;
+            if (hold > 16) { resolved = 0; hold = 0; }
+            tail.textContent = FINAL;
+            return;
+          }
+          resolved += 0.5;
+          var n = Math.floor(resolved);
+          var out = '';
+          for (var i = 0; i < FINAL.length; i++) {
+            out += i < n ? FINAL.charAt(i) : GLYPHS.charAt((Math.random() * GLYPHS.length) | 0);
+          }
+          tail.textContent = out;
+        }, 45);
+        function hide() {
+          clearInterval(loop);
+          splash.style.transition = 'opacity 280ms ease-out';
+          splash.style.opacity = '0';
+          setTimeout(function () { splash.remove(); }, 320);
+        }
+        // Hide once React renders into #root.
+        if ('MutationObserver' in window) {
+          var observer = new MutationObserver(function () {
+            if (root.childNodes.length > 0) {
+              observer.disconnect();
+              hide();
+            }
+          });
+          observer.observe(root, { childList: true });
+          // Safety: if root already has content (HMR / cache), hide now.
+          if (root.childNodes.length > 0) { observer.disconnect(); hide(); }
+        }
+        // Hard timeout so a stuck mount never traps the user on the splash.
+        setTimeout(function () { if (document.getElementById('boot-splash')) hide(); }, 15000);
+      })();
+    </script>
     <script>
       (function () {
         const conn = window.__HERMES_MOBILE_CONNECTION__.readConnection();

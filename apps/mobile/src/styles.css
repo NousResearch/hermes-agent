@@ -1531,15 +1531,14 @@ html.hermes-mobile-standalone [data-slot='aui_intro'] > div {
    no status strip below it, and enough hit-target for thumb use. */
 html.hermes-mobile-standalone [data-slot='composer-root']:not([data-popped-out]) {
   position: fixed !important;
-  left: 50dvw !important;
-  right: auto !important;
+  left: 0 !important;
+  right: 0 !important;
   bottom: max(0.7rem, env(safe-area-inset-bottom)) !important;
   width: min(28rem, calc(100dvw - 1.25rem)) !important;
   max-width: calc(100dvw - 1.25rem) !important;
-  margin-inline: 0 !important;
+  margin-inline: auto !important;
   padding: 0 !important;
   border-radius: 2rem !important;
-  transform: translateX(-50%) !important;
 }
 
 html.hermes-mobile-standalone [data-slot='composer-drag-region'],

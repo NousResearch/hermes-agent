@@ -2437,9 +2437,6 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
-        if user_id is not None:
-            where_clauses.append("s.user_id = ?")
-            params.append(user_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

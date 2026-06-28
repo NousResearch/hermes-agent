@@ -752,6 +752,7 @@ def build_anthropic_client(
     normalize_proxy_env_vars()
 
     from httpx import Timeout
+    from agent.process_bootstrap import build_keepalive_http_client
 
     normalized_base_url = _normalize_base_url_text(base_url)
     if normalized_base_url:
@@ -767,6 +768,9 @@ def build_anthropic_client(
         # refill for minutes. (#26293)
         "max_retries": 0,
     }
+    _http_client = build_keepalive_http_client(normalized_base_url or "")
+    if _http_client is not None:
+        kwargs["http_client"] = _http_client
     if normalized_base_url:
         # Azure Anthropic endpoints require an ``api-version`` query parameter.
         # Pass it via default_query so the SDK appends it to every request URL

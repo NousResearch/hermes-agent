@@ -932,9 +932,38 @@ class GatewayStreamConsumer:
             else len
         )
         safe_limit = max(500, raw_limit - 100)
-        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
 
         stale_message_id = self._message_id  # partial message to clean up
+
+        # Edit-in-place: replace the stale partial with the complete final text.
+        # This avoids both sending a new message and deleting the old one — the
+        # message keeps its position and timestamp in the chat.  Only attempted
+        # when the full text fits in a single message; multi-chunk responses fall
+        # through to the send path below.
+        if (
+            stale_message_id
+            and stale_message_id != "__no_edit__"
+            and not self._fallback_preserve_partial_messages
+            and _len_fn(final_text) <= raw_limit
+        ):
+            try:
+                edit_result = await self._edit_message(
+                    message_id=stale_message_id,
+                    content=final_text,
+                )
+                if getattr(edit_result, "success", False):
+                    self._message_id = stale_message_id
+                    self._last_sent_text = final_text
+                    self._already_sent = True
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                    self._fallback_prefix = ""
+                    self._fallback_preserve_partial_messages = False
+                    return
+            except Exception:
+                pass  # edit failed (flood control, etc.) — fall through to send path
+
+        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False

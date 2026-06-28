@@ -407,17 +407,20 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
+    configured = _configured_terminal_cwd()
+    if configured:
+        return configured
     # When the terminal env was cleaned up mid-conversation, the live cwd is
     # gone but the directory the agent navigated to is still recorded in the
-    # durable _last_known_cwd registry. Prefer it over the config/process
-    # fallback so a relative-path write resolved BEFORE the env is rebuilt
-    # still lands in the user's directory (root cause of #26211: write happens
-    # via _resolve_path_for_task -> here, which runs before _get_file_ops
-    # rebuilds the env). Keyed by the resolved container id, same as the save.
+    # durable _last_known_cwd registry. Use it only after explicit per-session
+    # and TERMINAL_CWD anchors: those describe the current request, while a
+    # preserved default anchor may be stale in long-lived test/process state.
+    # It still protects the #26211 path where no live/configured anchor exists
+    # and _resolve_path_for_task runs before _get_file_ops rebuilds the env.
     preserved = _last_known_cwd_for(task_id)
     if preserved:
         return preserved
-    return _configured_terminal_cwd()
+    return None
 
 
 def _resolve_base_dir(task_id: str = "default") -> Path:

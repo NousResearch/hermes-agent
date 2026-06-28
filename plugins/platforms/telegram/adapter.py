@@ -1572,6 +1572,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            # start_polling() succeeding IS the recovery signal: the long-poll
+            # connection is live again, so clear the degraded flag immediately
+            # rather than blocking all outbound sends for the full
+            # HEARTBEAT_PROBE_DELAY window. The deferred probe below is a
+            # defensive re-check — if it later detects a silent wedge (PTB
+            # running=True but consumer task dead) it re-enters the ladder,
+            # which re-sets _send_path_degraded. Without this clear here, a
+            # clean reconnect leaves the flag stuck True until the 60s probe
+            # (or forever, if the probe is never scheduled), blocking the send
+            # path even though the bot has fully recovered. See #35205.
+            self._send_path_degraded = False
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx

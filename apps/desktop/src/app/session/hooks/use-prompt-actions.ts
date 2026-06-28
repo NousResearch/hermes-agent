@@ -52,6 +52,7 @@ import {
   $messages,
   $sessions,
   $yoloActive,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setMessages,
@@ -434,6 +435,64 @@ export function usePromptActions({
   const { t } = useI18n()
   const copy = t.desktop
 
+  const recoverLiveSessionId = useCallback(async (): Promise<string | null> => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+
+    if (!storedSessionId) {
+      return null
+    }
+
+    const resumed = await requestGateway<{ session_id?: string }>('session.resume', {
+      session_id: storedSessionId
+    })
+
+    const recoveredId = resumed?.session_id ?? null
+
+    if (!recoveredId) {
+      return null
+    }
+
+    activeSessionIdRef.current = recoveredId
+    setActiveSessionId(recoveredId)
+    updateSessionState(
+      recoveredId,
+      state => ({
+        ...state,
+        messages: state.messages.length ? state.messages : $messages.get()
+      }),
+      storedSessionId
+    )
+
+    return recoveredId
+  }, [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef, updateSessionState])
+
+  const withSessionNotFoundRecovery = useCallback(
+    async <T,>(sessionId: string, call: (sessionId: string) => Promise<T>): Promise<{ result: T; sessionId: string }> => {
+      try {
+        return { result: await call(sessionId), sessionId }
+      } catch (err) {
+        if (!isSessionNotFoundError(err) || !selectedStoredSessionIdRef.current) {
+          throw err
+        }
+
+        let recoveredId: string | null = null
+
+        try {
+          recoveredId = await recoverLiveSessionId()
+        } catch {
+          throw err
+        }
+
+        if (!recoveredId || recoveredId === sessionId) {
+          throw err
+        }
+
+        return { result: await call(recoveredId), sessionId: recoveredId }
+      }
+    },
+    [recoverLiveSessionId, selectedStoredSessionIdRef]
+  )
+
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
       // Strip ANSI: slash-command output from the backend worker carries SGR
@@ -768,36 +827,15 @@ export function usePromptActions({
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
 
-        // On sleep/wake the gateway's in-memory session may have been cleared
-        // while the desktop app still holds the old session ID. Detect this,
-        // resume the stored session to re-register it, and retry once.
-        let submitErr: unknown = null
+        // On sleep/wake or backend reaping, the gateway's in-memory runtime id
+        // may disappear while Desktop still has the durable stored id selected.
+        // Rebind once and retry so the stale runtime never surfaces as a user
+        // facing "session not found".
+        const submitted = await withSessionNotFoundRecovery(sessionId, sid =>
+          withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sid, text }))
+        )
 
-        try {
-          await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
-        } catch (firstErr) {
-          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
-            // Re-register the session in the gateway and get a fresh live ID.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current
-            })
-
-            const recoveredId = resumed?.session_id
-
-            if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
-              await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
-            } else {
-              submitErr = firstErr
-            }
-          } else {
-            submitErr = firstErr
-          }
-        }
-
-        if (submitErr !== null) {
-          throw submitErr
-        }
+        sessionId = submitted.sessionId
 
         if (usingComposerAttachments) {
           clearComposerAttachments()
@@ -851,14 +889,14 @@ export function usePromptActions({
     },
     [
       activeSessionId,
-      activeSessionIdRef,
       busyRef,
       copy,
       createBackendSessionForSend,
       requestGateway,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
-      updateSessionState
+      updateSessionState,
+      withSessionNotFoundRecovery
     ]
   )
 
@@ -963,7 +1001,11 @@ export function usePromptActions({
         }
 
         const render = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
+          appendSessionTextMessage(
+            activeSessionIdRef.current || sessionId,
+            'system',
+            ctx.recordInput ? slashStatusText(ctx.command, text) : text
+          )
 
         return { render, sessionId }
       }
@@ -1044,10 +1086,12 @@ export function usePromptActions({
         }
 
         try {
-          const result = await requestGateway<unknown>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
+          const { result } = await withSessionNotFoundRecovery(sessionId, sid =>
+            requestGateway<unknown>('slash.exec', {
+              session_id: sid,
+              command: command.replace(/^\/+/, '')
+            })
+          )
 
           const dispatch = parseCommandDispatch(result)
 
@@ -1068,7 +1112,11 @@ export function usePromptActions({
 
         try {
           const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+            (
+              await withSessionNotFoundRecovery(sessionId, sid =>
+                requestGateway<unknown>('command.dispatch', { session_id: sid, name, arg })
+              )
+            ).result
           )
 
           if (!dispatch) {
@@ -1213,10 +1261,12 @@ export function usePromptActions({
           const { arg } = ctx
 
           try {
-            const result = await requestGateway<SessionTitleResponse>('session.title', {
-              session_id: sessionId,
-              title: arg
-            })
+            const { result } = await withSessionNotFoundRecovery(sessionId, sid =>
+              requestGateway<SessionTitleResponse>('session.title', {
+                session_id: sid,
+                title: arg
+              })
+            )
 
             const finalTitle = (result?.title || arg).trim()
             const queued = result?.pending === true
@@ -1242,7 +1292,9 @@ export function usePromptActions({
           const { render: renderSlashOutput, sessionId } = resolved
 
           try {
-            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
+            const { result: catalog } = await withSessionNotFoundRecovery(sessionId, sid =>
+              requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sid })
+            )
 
             renderSlashOutput(renderCommandsCatalog(catalog, copy))
           } catch (err) {
@@ -1330,11 +1382,13 @@ export function usePromptActions({
           }
 
           try {
-            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
-              action: cmdAction,
-              session_id: sessionId,
-              ...(url && { url })
-            })
+            const { result } = await withSessionNotFoundRecovery(sessionId, sid =>
+              requestGateway<BrowserManageResponse>('browser.manage', {
+                action: cmdAction,
+                session_id: sid,
+                ...(url && { url })
+              })
+            )
 
             // Without a streamed session subscription, the gateway bundles its
             // progress lines into `messages` — flush them inline.
@@ -1469,7 +1523,8 @@ export function usePromptActions({
       requestGateway,
       resumeStoredSession,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      withSessionNotFoundRecovery
     ]
   )
 
@@ -1553,33 +1608,11 @@ export function usePromptActions({
     clearClarifyRequest(undefined, sessionId)
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      await withSessionNotFoundRecovery(sessionId, sid => requestGateway('session.interrupt', { session_id: sid }))
       releaseBusy()
     } catch (err) {
-      let stopError = err
-
-      if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
-        try {
-          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: selectedStoredSessionIdRef.current
-          })
-
-          const recoveredId = resumed?.session_id
-
-          if (recoveredId) {
-            activeSessionIdRef.current = recoveredId
-            await requestGateway('session.interrupt', { session_id: recoveredId })
-            releaseBusy()
-
-            return
-          }
-        } catch (resumeErr) {
-          stopError = resumeErr
-        }
-      }
-
       releaseBusy()
-      notifyError(stopError, copy.stopFailed)
+      notifyError(err, copy.stopFailed)
     }
   }, [
     activeSessionId,
@@ -1587,8 +1620,8 @@ export function usePromptActions({
     busyRef,
     copy.stopFailed,
     requestGateway,
-    selectedStoredSessionIdRef,
-    updateSessionState
+    updateSessionState,
+    withSessionNotFoundRecovery
   ])
 
   // Steer = nudge the live turn without interrupting: the gateway appends the
@@ -1605,7 +1638,9 @@ export function usePromptActions({
       }
 
       try {
-        const result = await requestGateway<SessionSteerResponse>('session.steer', { session_id: sessionId, text })
+        const { result } = await withSessionNotFoundRecovery(sessionId, sid =>
+          requestGateway<SessionSteerResponse>('session.steer', { session_id: sid, text })
+        )
 
         if (result?.status === 'queued') {
           triggerHaptic('submit')
@@ -1622,7 +1657,7 @@ export function usePromptActions({
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway, withSessionNotFoundRecovery]
   )
 
   const reloadFromMessage = useCallback(
@@ -1684,11 +1719,13 @@ export function usePromptActions({
       })
 
       try {
-        await requestGateway('prompt.submit', {
-          session_id: activeSessionId,
-          text: userText,
-          truncate_before_user_ordinal: truncateBeforeUserOrdinal
-        })
+        await withSessionNotFoundRecovery(activeSessionId, sid =>
+          requestGateway('prompt.submit', {
+            session_id: sid,
+            text: userText,
+            truncate_before_user_ordinal: truncateBeforeUserOrdinal
+          })
+        )
       } catch (err) {
         updateSessionState(activeSessionId, state => ({
           ...state,
@@ -1698,7 +1735,7 @@ export function usePromptActions({
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
+    [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState, withSessionNotFoundRecovery]
   )
 
   // Cursor-style "restore checkpoint": rewind the conversation to a past user
@@ -1712,20 +1749,31 @@ export function usePromptActions({
   // response interrupts + retries through the shared busy gate.
   const submitRewindPrompt = useCallback(
     async (sessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) => {
+      let liveSessionId = sessionId
+
       const interrupt = async () => {
         try {
-          await requestGateway('session.interrupt', { session_id: sessionId })
+          const interrupted = await withSessionNotFoundRecovery(liveSessionId, sid =>
+            requestGateway('session.interrupt', { session_id: sid })
+          )
+
+          liveSessionId = interrupted.sessionId
         } catch {
           // Best-effort. The submit path still gates on the gateway state.
         }
       }
 
-      const submit = () =>
-        requestGateway('prompt.submit', {
-          session_id: sessionId,
-          text,
-          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
-        })
+      const submit = async () => {
+        const submitted = await withSessionNotFoundRecovery(liveSessionId, sid =>
+          requestGateway('prompt.submit', {
+            session_id: sid,
+            text,
+            ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+          })
+        )
+
+        liveSessionId = submitted.sessionId
+      }
 
       if (interruptFirst) {
         await interrupt()
@@ -1742,7 +1790,7 @@ export function usePromptActions({
         await withSessionBusyRetry(submit)
       }
     },
-    [requestGateway]
+    [requestGateway, withSessionNotFoundRecovery]
   )
 
   const restoreToMessage = useCallback(

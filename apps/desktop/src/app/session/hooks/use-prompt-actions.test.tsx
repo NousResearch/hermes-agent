@@ -543,6 +543,46 @@ describe('usePromptActions steerPrompt', () => {
     expect(await handle!.steerPrompt('boom')).toBe(false)
   })
 
+  it('recovers a stale runtime id before retrying session.steer', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let steerAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'session.steer') {
+        steerAttempts += 1
+
+        if (steerAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return { status: 'queued' } as never
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'rt-recovered-steer' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId="stored-steer"
+      />
+    )
+
+    expect(await handle!.steerPrompt('nudge')).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['session.steer', 'session.resume', 'session.steer'])
+    expect(calls[1]?.params).toEqual({ session_id: 'stored-steer' })
+    expect(calls[2]?.params).toEqual({ session_id: 'rt-recovered-steer', text: 'nudge' })
+  })
+
   it('skips the RPC entirely for empty text', async () => {
     const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
 
@@ -703,6 +743,50 @@ describe('usePromptActions restoreToMessage', () => {
       truncate_before_user_ordinal: 0
     })
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
+  })
+
+  it('recovers a stale runtime id before resubmitting a restored message', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let submitAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: 'rt-recovered-restore' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={$messages.get()}
+        storedSessionId="stored-restore"
+      />
+    )
+
+    await handle!.restoreToMessage('u1')
+
+    expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'prompt.submit', 'session.resume', 'prompt.submit'])
+    expect(calls[2]?.params).toEqual({ session_id: 'stored-restore' })
+    expect(calls[3]?.params).toEqual({
+      session_id: 'rt-recovered-restore',
+      text: 'first prompt',
+      truncate_before_user_ordinal: 0
+    })
   })
 })
 

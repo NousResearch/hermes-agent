@@ -646,7 +646,8 @@ def _get_or_create_env(task_id: str):
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        from tools.file_tools import _last_known_cwd_for
+        cwd = overrides.get("cwd") or _last_known_cwd_for(effective_task_id) or config["cwd"]
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona"}:

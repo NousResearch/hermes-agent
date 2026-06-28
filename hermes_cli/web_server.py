@@ -6132,7 +6132,11 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
         try:
             return status_fn()
         except Exception as e:
-            return {"logged_in": False, "error": str(e)}
+            try:
+                from agent.redact import redact_sensitive_text
+                return {"logged_in": False, "error": redact_sensitive_text(str(e), force=True)}
+            except Exception:
+                return {"logged_in": False, "error": str(e)}
     try:
         from hermes_cli import auth as hauth
         if provider_id == "nous":
@@ -6216,7 +6220,11 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
             }
     except Exception as e:
-        return {"logged_in": False, "error": str(e)}
+        try:
+            from agent.redact import redact_sensitive_text
+            return {"logged_in": False, "error": redact_sensitive_text(str(e), force=True)}
+        except Exception:
+            return {"logged_in": False, "error": str(e)}
     return {"logged_in": False}
 
 
@@ -6415,7 +6423,13 @@ async def disconnect_oauth_provider(
             return {"ok": bool(cleared), "provider": provider_id}
         except Exception as e:
             _log.exception("disconnect %s failed", provider_id)
-            raise HTTPException(status_code=500, detail=str(e))
+            try:
+                from agent.redact import redact_sensitive_text
+                raise HTTPException(status_code=500, detail=redact_sensitive_text(str(e), force=True))
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -7170,7 +7184,11 @@ def _nous_poller(session_id: str) -> None:
         _log.warning("nous device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = str(e)
+            try:
+                from agent.redact import redact_sensitive_text
+                sess["error_message"] = redact_sensitive_text(str(e), force=True)
+            except Exception:
+                sess["error_message"] = str(e)
 
 
 def _minimax_poller(session_id: str) -> None:
@@ -7254,7 +7272,11 @@ def _minimax_poller(session_id: str) -> None:
         _log.warning("minimax device-code poll failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = str(e)
+            try:
+                from agent.redact import redact_sensitive_text
+                sess["error_message"] = redact_sensitive_text(str(e), force=True)
+            except Exception:
+                sess["error_message"] = str(e)
 
 
 def _codex_full_login_worker(session_id: str) -> None:
@@ -7373,7 +7395,11 @@ def _codex_full_login_worker(session_id: str) -> None:
             s = _oauth_sessions.get(session_id)
             if s:
                 s["status"] = "error"
-                s["error_message"] = str(e)
+                try:
+                    from agent.redact import redact_sensitive_text
+                    s["error_message"] = redact_sensitive_text(str(e), force=True)
+                except Exception:
+                    s["error_message"] = str(e)
 
 
 @app.post("/api/providers/oauth/{provider_id}/start")
@@ -7414,7 +7440,13 @@ async def start_oauth_login(
         raise
     except Exception as e:
         _log.exception("oauth/start %s failed", provider_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        try:
+            from agent.redact import redact_sensitive_text
+            raise HTTPException(status_code=500, detail=redact_sensitive_text(str(e), force=True))
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=500, detail=str(e))
     raise HTTPException(status_code=400, detail="Unsupported flow")
 
 

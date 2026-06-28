@@ -1584,6 +1584,35 @@ class TestCJKSearchFallback:
         assert len(results) == 1
         assert results[0]["source"] == "telegram"
 
+    def test_mixed_latin_cjk_no_whitespace(self, db):
+        """Latin tokens adjacent to CJK without spaces are found (#54242).
+
+        Content like "修改youer服务端" should match a search for "youer".
+        The unicode61 tokenizer treats the whole string as one token, so
+        we rely on the trigram fallback.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="修改youer服务端的计划")
+
+        # Pure-Latin query against mixed content
+        results = db.search_messages("youer")
+        assert len(results) >= 1, "Latin token in mixed CJK-Latin text not found"
+        assert results[0]["session_id"] == "s1"
+
+    def test_mixed_latin_cjk_multi_token(self, db):
+        """Multi-token mixed Latin-CJK query matches correctly (#54242)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="user", content="修改youer服务端的计划"
+        )
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s2", role="user", content="unrelated message")
+
+        results = db.search_messages("youer 服务端")
+        session_ids = {r["session_id"] for r in results}
+        assert "s1" in session_ids, "mixed Latin-CJK multi-token query not matched"
+        assert "s2" not in session_ids
+
 
 # =========================================================================
 # Session search and listing

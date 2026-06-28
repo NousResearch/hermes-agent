@@ -3846,29 +3846,18 @@ class SessionDB:
         # "大 AND 别 AND 山 AND 项 AND 目" — producing false positives and
         # missing exact phrase matches.
         #
-        # For queries with 3+ CJK characters, we use the trigram FTS5 table
-        # (indexed substring matching with ranking and snippets).  For shorter
-        # CJK queries (1-2 chars), trigram can't match (it needs ≥9 UTF-8
-        # bytes = 3 CJK chars), so we fall back to LIKE.
+        # We try the trigram FTS5 table first (indexed substring matching with
+        # ranking and snippets).  If trigram returns no results (e.g. for very
+        # short CJK queries where each token < 3 chars), we fall back to LIKE.
+        # This also handles mixed Latin-CJK queries like "修改youer服务端" where
+        # trigram matches Latin substrings embedded in CJK text (#54242).
         is_cjk = self._contains_cjk(query)
         if is_cjk:
             raw_query = query.strip('"').strip()
             cjk_count = self._count_cjk(raw_query)
 
-            # Per-token CJK length check (#20494): trigram needs >=3 CJK chars
-            # per token. A query like "广西 OR 桂林 OR 漓江" has cjk_count=6
-            # (>=3) but each individual token is only 2 chars — trigram returns 0.
-            # Route to LIKE when any non-operator CJK token is <3 CJK chars.
-            _tokens_for_check = [
-                t for t in raw_query.split()
-                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
-            ]
-            _any_short_cjk = any(
-                self._count_cjk(t) < 3 for t in _tokens_for_check
-            )
-
             _trigram_succeeded = False
-            if cjk_count >= 3 and not _any_short_cjk and self._trigram_available:
+            if cjk_count >= 3 and self._trigram_available:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -3920,8 +3909,10 @@ class SessionDB:
                         # Trigram query failed at runtime — fall through to LIKE.
                         pass
                     else:
-                        matches = [dict(row) for row in tri_cursor.fetchall()]
-                        _trigram_succeeded = True
+                        _rows = [dict(row) for row in tri_cursor.fetchall()]
+                        if _rows:
+                            matches = _rows
+                            _trigram_succeeded = True
             if not _trigram_succeeded:
                 # Short / mixed CJK query, trigram unavailable, or trigram
                 # <3 CJK chars. Fall back to LIKE substring search.
@@ -3978,6 +3969,57 @@ class SessionDB:
                     return []
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
+
+            # Trigram fallback for non-CJK queries: when unicode61 FTS5 returns
+            # no results, try the trigram table.  This handles Latin tokens that
+            # appear adjacent to CJK characters without whitespace (e.g. searching
+            # for "youer" in content "修改youer服务端") — unicode61 tokenises the
+            # mixed string as a single token, but trigram substring matching works.
+            if not matches and self._trigram_available:
+                raw_query = query.strip('"').strip()
+                non_op = [
+                    t for t in raw_query.split()
+                    if t.upper() not in {"AND", "OR", "NOT"}
+                ] or [raw_query]
+                parts = []
+                for tok in non_op:
+                    parts.append('"' + tok.replace('"', '""') + '"')
+                tri_q = " ".join(parts)
+                tri_w = ["messages_fts_trigram MATCH ?"]
+                tri_p: list = [tri_q]
+                if not include_inactive:
+                    tri_w.append("(m.active = 1 OR m.compacted = 1)")
+                if source_filter is not None:
+                    tri_w.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+                    tri_p.extend(source_filter)
+                if exclude_sources is not None:
+                    tri_w.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+                    tri_p.extend(exclude_sources)
+                if role_filter:
+                    tri_w.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+                    tri_p.extend(role_filter)
+                _tri_sql = f"""
+                    SELECT m.id, m.session_id, m.role,
+                           snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
+                           m.content, m.timestamp, m.tool_name,
+                           s.source, s.model, s.started_at AS session_started
+                    FROM messages_fts_trigram
+                    JOIN messages m ON m.id = messages_fts_trigram.rowid
+                    JOIN sessions s ON s.id = m.session_id
+                    WHERE {' AND '.join(tri_w)}
+                    {order_by_sql}
+                    LIMIT ? OFFSET ?
+                """
+                tri_p.extend([limit, offset])
+                with self._lock:
+                    try:
+                        _tc = self._conn.execute(_tri_sql, tri_p)
+                    except sqlite3.OperationalError:
+                        pass
+                    else:
+                        _rows = [dict(row) for row in _tc.fetchall()]
+                        if _rows:
+                            matches = _rows
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

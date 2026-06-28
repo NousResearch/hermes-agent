@@ -40,6 +40,37 @@ describe('parseMultipleKeypresses bracketed paste recovery', () => {
   })
 })
 
+describe('parseMultipleKeypresses text control splitting', () => {
+  it('keeps an IME backspace plus composed character in the same read', () => {
+    const [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x7fô')
+
+    expect(keys).toEqual([
+      expect.objectContaining({ name: 'backspace', raw: '\x7f' }),
+      expect.objectContaining({ name: '', raw: 'ô' })
+    ])
+    expect(state.mode).toBe('NORMAL')
+  })
+
+  it('keeps trailing IME text after a backspace in the same read', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x7fôi')
+
+    expect(keys).toEqual([
+      expect.objectContaining({ name: 'backspace', raw: '\x7f' }),
+      expect.objectContaining({ name: '', raw: 'ôi' })
+    ])
+  })
+
+  it('splits embedded backspace control bytes without splitting surrounding text', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'ab\bç')
+
+    expect(keys).toEqual([
+      expect.objectContaining({ name: '', raw: 'ab' }),
+      expect.objectContaining({ name: 'backspace', raw: '\b' }),
+      expect.objectContaining({ name: '', raw: 'ç' })
+    ])
+  })
+})
+
 describe('mouse wheel modifier decoding', () => {
   // SGR mouse format: ESC [ < button ; col ; row M
   // Wheel up = 64 (0x40), wheel down = 65 (0x41).

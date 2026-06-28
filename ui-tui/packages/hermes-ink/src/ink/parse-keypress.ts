@@ -184,6 +184,32 @@ function splitNumericParams(params: string): number[] {
   return params.split(';').map(p => parseInt(p, 10))
 }
 
+function parseTextKeypresses(text: string): ParsedKey[] {
+  const keys: ParsedKey[] = []
+  let textStart = 0
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+
+    if (ch !== '\x7f' && ch !== '\b') {
+      continue
+    }
+
+    if (i > textStart) {
+      keys.push(parseKeypress(text.slice(textStart, i)))
+    }
+
+    keys.push(parseKeypress(ch))
+    textStart = i + 1
+  }
+
+  if (textStart < text.length) {
+    keys.push(parseKeypress(text.slice(textStart)))
+  }
+
+  return keys
+}
+
 export type KeyParseState = {
   mode: 'NORMAL' | 'IN_PASTE'
   incomplete: string
@@ -278,7 +304,7 @@ export function parseMultipleKeypresses(
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(parseKeypress(token.value))
+        keys.push(...parseTextKeypresses(token.value))
       }
     }
   }

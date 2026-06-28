@@ -244,6 +244,15 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
+    # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
+    # is more authoritative than the shared last-known anchor: it is keyed by
+    # the raw session id, so when two worktree sessions share the single
+    # "default" terminal env, a NON-owning session must resolve against its OWN
+    # registered worktree — never the other session's leftover cwd. (Checked
+    # before _last_known_cwd, which is keyed by the shared container id.)
+    registered = _registered_task_cwd_override(task_id)
+    if registered:
+        return registered
     # When the terminal env was cleaned up mid-conversation, the live cwd is
     # gone but the directory the agent navigated to is still recorded in the
     # durable _last_known_cwd registry. Prefer it over the config/process
@@ -254,9 +263,6 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     preserved = _last_known_cwd_for(task_id)
     if preserved:
         return preserved
-    registered = _registered_task_cwd_override(task_id)
-    if registered:
-        return registered
     return _configured_terminal_cwd()
 
 

@@ -1,0 +1,22 @@
+{
+  "sessions": [
+    {
+      "id": "synthetic-cache-friendly-long-work-session",
+      "source_session_id_redacted": "[REDACTED_SESSION_ID]",
+      "description": "Sanitized aggregate-only fixture modeled on a high-token phone/engineer session. No transcript, prompts, tool output, file paths, or user content are included.",
+      "profile": "engineer",
+      "agent_name": "phone",
+      "model": "gpt-5.5",
+      "api_calls": 320,
+      "agent_turns": 28,
+      "max_api_prompt_tokens": 233572,
+      "max_request_message_count": 579,
+      "api_input_tokens": 40300611,
+      "api_output_tokens": 29453,
+      "api_cache_read_tokens": 38537216,
+      "assumed_context_length_tokens": 512000,
+      "compression_threshold_ratio": 0.5,
+      "diagnosis": "Long legitimate work with repeated largely unchanged context. Provider prompt-cache reads covered most input tokens; the largest single request stayed below a 50% threshold of a 512K context window, so cumulative session tokens alone must not trigger compression."
+    }
+  ]
+}

@@ -731,6 +731,37 @@ def _looks_like_absolute_file_path(value: str) -> bool:
     return len(value) >= 3 and value[1] == ":" and value[2] in {"/", "\\"}
 
 
+# Extension → MIME type map for local-file-to-data-URI conversion.
+_EXT_TO_MIME: Dict[str, str] = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif",
+    ".webp": "image/webp", ".bmp": "image/bmp",
+    ".tiff": "image/tiff", ".tif": "image/tiff",
+    ".svg": "image/svg+xml",
+}
+
+
+def _local_path_to_data_uri(path: str) -> str:
+    """Convert an absolute local file path to a ``data:`` URI.
+
+    FAL servers cannot access files on the caller's machine, so local paths
+    must be base64-encoded before submission.  Raises ``FileNotFoundError``
+    or ``ValueError`` on invalid input so the caller can surface a clear
+    error to the user.
+    """
+    import base64
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Image file not found: {path}")
+    ext = p.suffix.lower()
+    mime = _EXT_TO_MIME.get(ext, "application/octet-stream")
+    data = p.read_bytes()
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
 def _active_terminal_env(task_id: str | None):
     try:
         from tools.terminal_tool import get_active_env
@@ -871,6 +902,12 @@ def image_generate_tool(
         for ref in reference_image_urls:
             if isinstance(ref, str) and ref.strip():
                 source_images.append(ref.strip())
+
+    # FAL servers cannot access local files on the caller's machine.
+    # Convert local file paths to base64 data URIs before submission.
+    for i, img in enumerate(source_images):
+        if _looks_like_absolute_file_path(img):
+            source_images[i] = _local_path_to_data_uri(img)
 
     edit_endpoint = meta.get("edit_endpoint")
     use_edit = bool(source_images) and bool(edit_endpoint)

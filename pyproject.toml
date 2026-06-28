@@ -199,6 +199,7 @@ nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.4"]
 sms = ["aiohttp==3.13.4"]
 teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"]
+whatsapp = ["aiohttp==3.13.4"]
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk

@@ -426,6 +426,31 @@ class SlackAdapter(BasePlatformAdapter):
     # the prefix that works everywhere — instruction text must show it.
     typed_command_prefix = "!"
 
+    # When markdown blocks are enabled, the stream consumer must finalize a
+    # streamed reply by sending a *fresh* Block Kit message and best-effort
+    # deleting the raw legacy-mrkdwn preview, rather than final-editing the
+    # preview (which can silently fail on rich Slack finals and leave the raw
+    # preview as the visible "final" content). The adapter opts in via two
+    # cooperating hooks (see gateway/platforms/base.py):
+    #   * ``REQUIRES_EDIT_FINALIZE`` forces the consumer to route a finalize
+    #     tick through ``_send_or_edit`` even when the streamed preview text
+    #     matches the final answer — without this, the "skip if same" gate
+    #     short-circuits and the fresh-final path never runs (#53893 item 5).
+    #   * ``prefers_fresh_final_streaming(content)`` returns True when blocks
+    #     are enabled, sending the finalize through ``_try_fresh_final``.
+    # Both are gated on ``_markdown_blocks_enabled()`` so users who disable
+    # blocks get the legacy edit-in-place path with no behavior change.
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N815
+        return self._markdown_blocks_enabled()
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        return self._markdown_blocks_enabled()
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
         self._app: Optional[Any] = None

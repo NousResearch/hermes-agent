@@ -3137,10 +3137,20 @@ class GatewaySlashCommandsMixin:
         ):
             name = name[1:-1].strip()
 
+        # Resolve the current session ID once so _list_titled_sessions can
+        # exclude it — the /sessions display filters the current session via
+        # query_session_listing(), but /resume's numeric resolution did not,
+        # causing an off-by-one shift (#54326).
+        _current_entry = self.session_store._entries.get(session_key)
+        _current_session_id = _current_entry.session_id if _current_entry else None
+
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
             sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
-            return [s for s in sessions if s.get("title")][:10]
+            return [
+                s for s in sessions
+                if s.get("title") and s.get("id") != _current_session_id
+            ][:10]
 
         if not name:
             # List recent titled sessions for this user/platform

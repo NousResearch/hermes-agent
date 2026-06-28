@@ -20,6 +20,63 @@ const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+const HTML_TAG_RE = /<\/?([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[^<>]*?)?\/?>/g
+
+const SAFE_HTML_TAG_NAMES = new Set([
+  'a',
+  'abbr',
+  'b',
+  'blockquote',
+  'br',
+  'cite',
+  'code',
+  'data',
+  'del',
+  'details',
+  'div',
+  'em',
+  'figcaption',
+  'figure',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'i',
+  'img',
+  'ins',
+  'kbd',
+  'li',
+  'mark',
+  'ol',
+  'p',
+  'pre',
+  'q',
+  'rp',
+  'rt',
+  'ruby',
+  's',
+  'samp',
+  'small',
+  'span',
+  'strong',
+  'sub',
+  'summary',
+  'sup',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'u',
+  'ul',
+  'var',
+  'wbr'
+])
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -138,6 +195,16 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+function escapeUnknownHtmlLikeTags(text: string): string {
+  return text.replace(HTML_TAG_RE, (tag: string, name: string) => {
+    if (SAFE_HTML_TAG_NAMES.has(name.toLowerCase())) {
+      return tag
+    }
+
+    return tag.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  })
+}
+
 function normalizeVisibleProse(text: string): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
@@ -145,7 +212,9 @@ function normalizeVisibleProse(text: string): string {
       part.startsWith('`')
         ? part
         : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            escapeUnknownHtmlLikeTags(
+              part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            )
           )
     )
     .join('')

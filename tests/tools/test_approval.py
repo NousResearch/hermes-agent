@@ -15,6 +15,7 @@ from tools.approval import (
     _normalize_approval_mode,
     _smart_approve,
     approve_session,
+    check_all_command_guards,
     detect_dangerous_command,
     is_approved,
     load_permanent,
@@ -66,6 +67,136 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
         assert mock_call.call_args.kwargs["max_tokens"] == 16
+
+    def test_smart_denial_escalates_to_human_prompt_not_final_block(self, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.clear_session("default")
+
+        prompt_calls = []
+
+        def approve_once(command, description, *, allow_permanent=True):
+            prompt_calls.append((command, description, allow_permanent))
+            return "once"
+
+        with mock_patch("tools.approval._get_approval_mode", return_value="smart"), \
+             mock_patch("tools.approval._smart_approve", return_value="deny"):
+            result = check_all_command_guards(
+                "hermes gateway restart", "local", approval_callback=approve_once,
+            )
+
+        assert result["approved"] is True
+        assert result.get("user_approved") is True
+        assert prompt_calls == [("hermes gateway restart", "stop/restart hermes gateway (kills running agents)", True)]
+
+
+class TestPolicyApproval:
+    def test_policy_mode_allow_rule_auto_approves_flagged_command_in_scoped_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.clear_session("default")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        config = {
+            "approval_policy": {
+                "allow": [{
+                    "id": "scoped-python-analysis",
+                    "commands": [r"^python - <<"],
+                    "scope": {"cwd_under": [str(workspace)]},
+                }]
+            }
+        }
+
+        with mock_patch("tools.approval._get_approval_mode", return_value="policy"), \
+             mock_patch("tools.approval._get_approval_config", return_value={}), \
+             mock_patch("hermes_cli.config.load_config", return_value=config):
+            result = check_all_command_guards(
+                "python - <<'PY'\nprint('safe analysis')\nPY",
+                "local",
+                cwd=str(workspace),
+                approval_callback=lambda *args, **kwargs: "deny",
+            )
+
+        assert result["approved"] is True
+        assert result.get("policy_approved") is True
+        assert result.get("policy_rule") == "scoped-python-analysis"
+
+    def test_policy_mode_ask_rule_prompts_for_unflagged_boundary_crossing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.clear_session("default")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        prompt_calls = []
+
+        def approve_once(command, description, *, allow_permanent=True):
+            prompt_calls.append((command, description, allow_permanent))
+            return "once"
+
+        config = {
+            "approval_policy": {
+                "ask": [{
+                    "id": "push-boundary",
+                    "commands": [r"^git push\b"],
+                    "description": "pushing code requires approval",
+                    "scope": {"cwd_under": [str(workspace)]},
+                }]
+            }
+        }
+
+        with mock_patch("tools.approval._get_approval_mode", return_value="policy"), \
+             mock_patch("tools.approval._get_approval_config", return_value={}), \
+             mock_patch("hermes_cli.config.load_config", return_value=config):
+            result = check_all_command_guards(
+                "git push origin feature", "local", cwd=str(workspace), approval_callback=approve_once,
+            )
+
+        assert result["approved"] is True
+        assert result.get("user_approved") is True
+        assert prompt_calls == [("git push origin feature", "pushing code requires approval", True)]
+
+    def test_policy_mode_block_rule_blocks_unflagged_command_without_prompt(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        approval_module.clear_session("default")
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        config = {
+            "approval_policy": {
+                "block": [{
+                    "id": "no-public-exposure",
+                    "commands": [r"--host\s+0\.0\.0\.0"],
+                    "description": "public network exposure requires explicit approval outside the agent",
+                    "scope": {"cwd_under": [str(workspace)]},
+                }]
+            }
+        }
+
+        with mock_patch("tools.approval._get_approval_mode", return_value="policy"), \
+             mock_patch("tools.approval._get_approval_config", return_value={}), \
+             mock_patch("hermes_cli.config.load_config", return_value=config):
+            result = check_all_command_guards(
+                "python server.py --host 0.0.0.0 --port 8000",
+                "local",
+                cwd=str(workspace),
+                approval_callback=lambda *args, **kwargs: "once",
+            )
+
+        assert result["approved"] is False
+        assert result.get("policy_blocked") is True
+        assert result.get("policy_rule") == "no-public-exposure"
+        assert "public network exposure" in result["message"]
 
 
 class TestDetectDangerousRm:
@@ -1718,9 +1849,13 @@ class TestApprovalTimeoutIsNotConsent:
 
         self._saved_env = {
             k: os.environ.get(k)
-            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
-                      "HERMES_YOLO_MODE",
-                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+            for k in (
+                "HERMES_GATEWAY_SESSION",
+                "HERMES_CRON_SESSION",
+                "HERMES_YOLO_MODE",
+                "HERMES_SESSION_KEY",
+                "HERMES_INTERACTIVE",
+            )
         }
         os.environ.pop("HERMES_YOLO_MODE", None)
         os.environ.pop("HERMES_INTERACTIVE", None)

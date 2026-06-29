@@ -1684,6 +1684,23 @@ from gateway.restart import (
 )
 
 
+def _is_running_under_service_manager() -> bool:
+    """Return True when the gateway should restart via its supervisor.
+
+    Systemd advertises itself with INVOCATION_ID, but macOS launchd does not
+    inject a comparable environment variable. A launchd-managed user service
+    runs with launchd as its parent (PID 1), so a gateway /restart on macOS
+    must use the service-manager exit-code path instead of the detached helper.
+    Otherwise the gateway can exit cleanly, launchd will not relaunch it
+    (KeepAlive.SuccessfulExit=false), and the service may be left unloaded.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if sys.platform == "darwin" and os.getppid() == 1:
+        return True
+    return False
+
+
 from gateway.whatsapp_identity import (
     canonical_whatsapp_identifier as _canonical_whatsapp_identifier,  # noqa: F401
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
@@ -5231,8 +5248,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         if executor_task is not None and executor_task.done():
             return False
-        if session_key and self._running_agents.get(session_key) is not agent:
-            return False
+        if session_key:
+            running_agent = self._running_agents.get(session_key)
+            if running_agent is _AGENT_PENDING_SENTINEL:
+                return True
+            if running_agent is not agent:
+                return False
         return True
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
@@ -7821,9 +7842,391 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return None
 
+    def _adapter_enforces_own_access_policy(self, platform: Optional[Platform]) -> bool:
+        """Return whether the live adapter already enforced its own access policy."""
+        if not platform:
+            return False
+        adapters = getattr(self, "adapters", None)
+        if not adapters:
+            return False
+        adapter = adapters.get(platform)
+        if adapter is None:
+            return False
+        return bool(getattr(adapter, "enforces_own_access_policy", False))
 
+    def _adapter_dm_policy(self, platform: Optional[Platform]) -> str:
+        """Best-effort read of an own-policy adapter's effective DM policy.
 
+        Returns the lowercased ``dm_policy`` (``"open"`` / ``"allowlist"`` /
+        ``"disabled"`` / ``"pairing"``) for *platform*, or ``""`` when unknown.
+        Prefers the live adapter's resolved ``_dm_policy`` — which already folds
+        in both ``config.extra`` and the ``<PLATFORM>_DM_POLICY`` env var (the
+        env var is not always bridged back into ``config.extra``) — and falls
+        back to ``config.extra`` for bare runners built without a live adapter.
 
+        Used by ``_is_user_authorized`` to carve ``dm_policy: pairing`` out of
+        the adapter-trust shortcut: in pairing mode the adapter forwards the DM
+        so the gateway can run its pairing handshake, so "reached the gateway"
+        must not be read as "authorized".
+        """
+        if not platform:
+            return ""
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        policy = getattr(adapter, "_dm_policy", None) if adapter is not None else None
+        if policy is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                policy = extra.get("dm_policy")
+        return str(policy or "").strip().lower()
+
+    def _is_user_authorized(self, source: SessionSource) -> bool:
+        """
+        Check if a user is authorized to use the bot.
+
+        Checks in order:
+        1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
+        3. DM pairing approved list
+        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
+        5. Default: deny
+        """
+        # Home Assistant events are system-generated (state changes), not
+        # user-initiated messages.  The HASS_TOKEN already authenticates the
+        # connection, so HA events are always authorized.
+        # Webhook events are authenticated via HMAC signature validation in
+        # the adapter itself — no user allowlist applies.
+        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+            return True
+
+        user_id = source.user_id
+
+        # Telegram (and similar) authorize entire group/forum/channel chats
+        # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
+        # That allowlist is chat-scoped, so it must work even when
+        # source.user_id is None — Telegram emits anonymous-admin posts,
+        # sender_chat traffic, and channel broadcasts with no `from_user`,
+        # and an operator who explicitly listed the chat expects those to
+        # be honored. Run this check before the no-user-id guard below so
+        # documented behavior matches reality
+        # (website/docs/reference/environment-variables.md,
+        # website/docs/user-guide/messaging/telegram.md).
+        if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
+            chat_allowlist_env = {
+                Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+                Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            }.get(source.platform, "")
+            if chat_allowlist_env:
+                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                if raw_chat_allowlist:
+                    allowed_group_ids = {
+                        cid.strip()
+                        for cid in raw_chat_allowlist.split(",")
+                        if cid.strip()
+                    }
+                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                        return True
+
+        if not user_id:
+            return False
+
+        platform_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+            Platform.SMS: "SMS_ALLOWED_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+            Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+        }
+        platform_group_user_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+        }
+        platform_group_chat_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+            Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+        }
+        platform_allow_all_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+            Platform.SMS: "SMS_ALLOW_ALL_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
+            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
+            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+        }
+        # Legacy Discord bot-to-bot admission has been decommissioned.  Keep
+        # Feishu's bot bypass, but never let DISCORD_ALLOW_BOTS resurrect a
+        # Discord bot-authored message as an authorized gateway command.
+        if source.platform == Platform.DISCORD and getattr(source, "is_bot", False):
+            return False
+
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        platform_allow_bots_map = {
+            Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+        }
+
+        # Plugin platforms: check the registry for auth env var names
+        if source.platform not in platform_env_map:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(source.platform.value)
+                if entry:
+                    if entry.allowed_users_env:
+                        platform_env_map[source.platform] = entry.allowed_users_env
+                    if entry.allow_all_env:
+                        platform_allow_all_map[source.platform] = entry.allow_all_env
+            except Exception:
+                pass
+
+        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
+        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+            return True
+
+        if getattr(source, "is_bot", False):
+            allow_bots_var = platform_allow_bots_map.get(source.platform)
+            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+                return True
+
+        # Check pairing store (always checked, regardless of allowlists)
+        platform_name = source.platform.value if source.platform else ""
+        if self.pairing_store.is_approved(platform_name, user_id):
+            return True
+
+        # Check platform-specific and global allowlists
+        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        group_user_allowlist = ""
+        group_chat_allowlist = ""
+        if source.chat_type in {"group", "forum"}:
+            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
+            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+
+        if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
+            # No env allowlists configured. Adapters that own their own
+            # config-driven access policy (dm_policy / group_policy /
+            # allow_from / group_allow_from) already gated this message at
+            # intake — it would not have reached the gateway otherwise — so
+            # honor that decision instead of falling through to the
+            # env-only default-deny below, which would silently break
+            # `dm_policy: open` and config-only allowlists. (#34515)
+            if self._adapter_enforces_own_access_policy(source.platform):
+                # Exception: `dm_policy: pairing` does NOT authorize at intake.
+                # The adapter forwards the DM precisely so the gateway can run
+                # its pairing handshake (issue a code, consult the pairing
+                # store). The pairing-store approval check above already ran and
+                # returned False for this sender, so blanket-trusting the
+                # adapter here would silently turn pairing mode into open
+                # access. Fall through to default-deny so the unpaired sender is
+                # offered a pairing code instead. (Pairing is DM-only; group
+                # traffic keeps the adapter-trust path.)
+                if not (
+                    source.chat_type == "dm"
+                    and self._adapter_dm_policy(source.platform) == "pairing"
+                ):
+                    return True
+            # No allowlists configured -- check global allow-all flag
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
+        # Telegram can optionally authorize group traffic by chat ID.
+        # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
+        # the sender user ID for group/forum messages.
+        if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
+            allowed_group_ids = {
+                chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
+            }
+            if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                return True
+
+        # Backward-compat shim for #15027: prior to PR #17686,
+        # TELEGRAM_GROUP_ALLOWED_USERS was (mis)used as a chat-ID allowlist.
+        # Values starting with "-" are Telegram chat IDs, not user IDs, so if
+        # users still have those in TELEGRAM_GROUP_ALLOWED_USERS we honor them
+        # as chat IDs and warn once. The correct var is now
+        # TELEGRAM_GROUP_ALLOWED_CHATS.
+        if (
+            source.platform == Platform.TELEGRAM
+            and group_user_allowlist
+            and source.chat_type in {"group", "forum"}
+            and source.chat_id
+        ):
+            legacy_chat_ids = {
+                v.strip()
+                for v in group_user_allowlist.split(",")
+                if v.strip().startswith("-")
+            }
+            if legacy_chat_ids:
+                if not getattr(self, "_warned_telegram_group_users_legacy", False):
+                    logger.warning(
+                        "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
+                        "(%s). Treating them as chat IDs for backward compatibility. "
+                        "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
+                        "is now for sender user IDs.",
+                        ",".join(sorted(legacy_chat_ids)),
+                    )
+                    self._warned_telegram_group_users_legacy = True
+                if source.chat_id in legacy_chat_ids:
+                    return True
+
+        # Check if user is in any allowlist. In group/forum chats,
+        # TELEGRAM_GROUP_ALLOWED_USERS is the scoped allowlist and should not
+        # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
+        # allowlist and still works everywhere for backward compatibility.
+        allowed_ids = set()
+        if platform_allowlist:
+            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+        if group_user_allowlist:
+            allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
+        # "*" in any allowlist means allow everyone (consistent with
+        # SIGNAL_GROUP_ALLOWED_USERS precedent)
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+
+        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
+        if source.platform == Platform.WHATSAPP:
+            normalized_allowed_ids = set()
+            for allowed_id in allowed_ids:
+                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
+            if normalized_allowed_ids:
+                allowed_ids = normalized_allowed_ids
+
+            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
+            normalized_user_id = _normalize_whatsapp_identifier(user_id)
+            if normalized_user_id:
+                check_ids.add(normalized_user_id)
+
+        # SimpleX: SIMPLEX_ALLOWED_USERS accepts either the numeric contactId
+        # or the contact's display name. The adapter sets user_id=contactId for
+        # stability across renames, but the SimpleX UI never surfaces the
+        # numeric id — operators only see display names, so that's what they
+        # naturally put in the env var. Match both so the allowlist works
+        # regardless of which form was chosen.
+        # Plugin platform: compare by value since Platform.SIMPLEX is not a
+        # hardcoded enum member (it's a dynamic plugin platform).
+        if (
+            source.platform is not None
+            and source.platform.value == "simplex"
+            and source.user_name
+        ):
+            check_ids.add(source.user_name)
+
+        return bool(check_ids & allowed_ids)
+
+    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+        """Return how unauthorized DMs should be handled for a platform.
+
+        Resolution order:
+        1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
+        2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
+        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+           ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
+           or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
+           the allowlist signals that the owner has deliberately restricted
+           access; spamming unknown contacts with pairing codes is both noisy
+           and a potential info-leak. (#9337)
+        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        """
+        config = getattr(self, "config", None)
+
+        # Check for an explicit per-platform override first.
+        if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:
+            platform_cfg = config.platforms.get(platform) if hasattr(config, "platforms") else None
+            if platform_cfg and "unauthorized_dm_behavior" in getattr(platform_cfg, "extra", {}):
+                # Operator explicitly configured behavior for this platform — respect it.
+                return config.get_unauthorized_dm_behavior(platform)
+
+        # Check for an explicit global config override.
+        if config and hasattr(config, "unauthorized_dm_behavior"):
+            if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
+                return config.unauthorized_dm_behavior
+
+        # Config-driven dm_policy (WeCom / Weixin / Yuanbao / QQBot). An
+        # allowlist or disabled DM policy means the operator restricted access,
+        # so unauthorized DMs should be dropped silently rather than answered
+        # with a pairing code. An explicit pairing policy opts back into codes.
+        if platform and config and hasattr(config, "platforms"):
+            platform_cfg = config.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                dm_policy = str(extra.get("dm_policy") or "").strip().lower()
+                if dm_policy == "pairing":
+                    return "pair"
+                if dm_policy in {"allowlist", "disabled"}:
+                    return "ignore"
+
+        # No explicit override.  Fall back to allowlist-aware default:
+        # if any allowlist is configured for this platform, silently drop
+        # unauthorized messages instead of sending pairing codes.
+        if platform:
+            platform_env_map = {
+                Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+                Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
+                Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+                Platform.SLACK:    "SLACK_ALLOWED_USERS",
+                Platform.SIGNAL:   "SIGNAL_ALLOWED_USERS",
+                Platform.EMAIL:    "EMAIL_ALLOWED_USERS",
+                Platform.SMS:      "SMS_ALLOWED_USERS",
+                Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+                Platform.MATRIX:   "MATRIX_ALLOWED_USERS",
+                Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+                Platform.FEISHU:   "FEISHU_ALLOWED_USERS",
+                Platform.WECOM:    "WECOM_ALLOWED_USERS",
+                Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+                Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
+                Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+                Platform.QQBOT:    "QQ_ALLOWED_USERS",
+            }
+            platform_group_env_map = {
+                Platform.TELEGRAM: (
+                    "TELEGRAM_GROUP_ALLOWED_USERS",
+                    "TELEGRAM_GROUP_ALLOWED_CHATS",
+                ),
+                Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
+            }
+            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+                return "ignore"
+            for env_key in platform_group_env_map.get(platform, ()):
+                if os.getenv(env_key, "").strip():
+                    return "ignore"
+
+        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+            return "ignore"
+
+        return "pair"
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
@@ -13964,6 +14367,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
 
+    @staticmethod
+    def _load_background_status_min_elapsed_seconds() -> float:
+        """Minimum runtime before sending a user-visible running status bubble."""
+        raw = os.getenv("HERMES_BACKGROUND_STATUS_MIN_ELAPSED_SECONDS", "")
+        if not raw:
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    raw = cfg_get(cfg, "display", "background_process_status_min_elapsed_seconds")
+            except Exception:
+                raw = ""
+        try:
+            return max(0.0, float(raw)) if raw not in {None, ""} else 30.0
+        except (TypeError, ValueError):
+            return 30.0
+
+    @staticmethod
+    def _background_duration(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes, secs = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}m {secs}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m"
+
+    @staticmethod
+    def _clean_background_output(text: str, *, limit: int) -> str:
+        """Strip terminal controls before watcher text reaches chat."""
+        if not text:
+            return ""
+        from tools.ansi_strip import strip_ansi
+
+        tail = text[-limit:]
+        clean = strip_ansi(tail)
+        # Preserve newline/tab, remove other C0 controls and DEL. ANSI strip
+        # covers escape sequences; this catches raw control bytes.
+        clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", clean)
+        return clean.strip()
+
+    def _background_status_text(self, session_id: str, session: Any, *, started_at: float) -> str:
+        elapsed = self._background_duration(time.monotonic() - started_at)
+        output_len = len(getattr(session, "output_buffer", "") or "")
+        return (
+            f"⏳ Still running background process {session_id} — elapsed {elapsed}. "
+            f"Output received: {output_len:,} chars."
+        )
+
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
 
@@ -14034,16 +14489,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
-        Periodically check a background process and push updates to the user.
+        Periodically check a background process and notify the user.
 
-        Runs as an asyncio task. Stays silent when nothing changed.
-        Auto-removes when the process exits or is killed.
-
-        Notification mode (from ``display.background_process_notifications``):
-          - ``all``    — running-output updates + final message
-          - ``result`` — final completion message only
-          - ``error``  — final message only when exit code != 0
-          - ``off``    — no messages at all
+        Modes are re-read on each watcher tick, so changing
+        ``display.background_process_notifications`` takes effect without a
+        gateway restart for already-running processes.
         """
         from tools.process_registry import process_registry
 
@@ -14057,23 +14507,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_name = watcher.get("user_name", "")
         message_id = str(watcher.get("message_id") or "").strip() or None
         agent_notify = watcher.get("notify_on_complete", False)
-        notify_mode = self._load_background_notifications_mode()
+        started_at = time.monotonic()
+        min_status_elapsed = self._load_background_status_min_elapsed_seconds()
+        status_message_id: Optional[str] = None
+        status_text_last: Optional[str] = None
+        status_disabled = False
 
-        logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
-                      session_id, interval, notify_mode, agent_notify)
+        logger.debug(
+            "Process watcher started: %s (every %ss, agent_notify=%s)",
+            session_id,
+            interval,
+            agent_notify,
+        )
 
-        if notify_mode == "off" and not agent_notify:
-            # Still wait for the process to exit so we can log it, but don't
-            # push any messages to the user.
-            while True:
-                await asyncio.sleep(interval)
-                session = process_registry.get(session_id)
-                if session is None or session.exited:
-                    break
-            logger.debug("Process watcher ended (silent): %s", session_id)
-            return
+        def _adapter_for_platform() -> Any:
+            for p, a in self.adapters.items():
+                if getattr(p, "value", p) == platform_name:
+                    return a
+            return None
 
+        send_meta = {"thread_id": thread_id} if thread_id else None
+        discord_editable = platform_name == "discord"
         last_output_len = 0
+
+        async def _edit_status(adapter: Any, text: str) -> None:
+            nonlocal status_disabled, status_text_last
+            if not status_message_id or status_disabled:
+                return
+            if text == status_text_last:
+                return
+            try:
+                result = await adapter.edit_message(
+                    chat_id,
+                    status_message_id,
+                    text,
+                    metadata=send_meta,
+                )
+            except Exception as exc:
+                logger.warning("Watcher status edit error for %s: %s", session_id, exc)
+                status_disabled = True
+                return
+            if getattr(result, "success", False):
+                status_text_last = text
+                return
+            if not getattr(result, "retryable", False):
+                status_disabled = True
+                logger.info(
+                    "Disabling background status edits for %s after permanent edit failure: %s",
+                    session_id,
+                    getattr(result, "error", None),
+                )
+
         while True:
             await asyncio.sleep(interval)
 
@@ -14081,9 +14565,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if session is None:
                 break
 
-            current_output_len = len(session.output_buffer)
+            notify_mode = self._load_background_notifications_mode()
+            current_output_len = len(getattr(session, "output_buffer", "") or "")
             has_new_output = current_output_len > last_output_len
             last_output_len = current_output_len
+            adapter = _adapter_for_platform()
 
             if session.exited:
                 # --- Agent-triggered completion: inject synthetic message ---
@@ -14092,20 +14578,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (#10156) — a status check must not suppress this delivery turn.
                 from tools.process_registry import format_process_notification, process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from tools.ansi_strip import strip_ansi
-                    _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
-                    _LIMIT = 2000
-                    if len(_raw) > _LIMIT:
-                        _tail = _raw[-_LIMIT:]
-                        _nl = _tail.find("\n")
-                        _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-                        _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
-                    else:
-                        _out = _raw
+                    _out = self._clean_background_output(
+                        getattr(session, "output_buffer", "") or "",
+                        limit=2000,
+                    )
                     synth_text = format_process_notification({
                         "type": "completion",
                         "session_id": session_id,
@@ -14133,12 +14609,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         break
 
-                    adapter = None
+                    agent_adapter = None
                     for p, a in self.adapters.items():
                         if p == source.platform:
-                            adapter = a
+                            agent_adapter = a
                             break
-                    if adapter and source.chat_id:
+                    if agent_adapter and source.chat_id:
                         try:
                             synth_event = MessageEvent(
                                 text=synth_text,
@@ -14154,73 +14630,90 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 source.chat_id,
                                 source.thread_id,
                             )
-                            await adapter.handle_message(synth_event)
+                            await agent_adapter.handle_message(synth_event)
                         except Exception as e:
                             logger.error("Agent notify injection error: %s", e)
                     break
 
-                # --- Normal text-only notification ---
-                # Decide whether to notify based on mode
                 should_notify = (
                     notify_mode in {"all", "result"}
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
-                if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                    if new_output:
-                        from agent.redact import redact_terminal_output
-                        new_output = redact_terminal_output(
-                            new_output, getattr(session, "command", "") or ""
-                        )
+                if adapter and chat_id and discord_editable and status_message_id and not status_disabled:
+                    terminal_status = (
+                        f"✅ Background process {session_id} finished with exit code {session.exit_code}; "
+                        f"final message sent."
+                        if should_notify
+                        else f"✅ Background process {session_id} finished with exit code {session.exit_code}."
+                    )
+                    await _edit_status(adapter, terminal_status)
+
+                if should_notify and adapter and chat_id:
+                    final_output = self._clean_background_output(
+                        getattr(session, "output_buffer", "") or "",
+                        limit=1000,
+                    )
                     message_text = (
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                        f"Here's the final output:\n{new_output}]"
+                        f"Here's the final output:\n{final_output}]"
                     )
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p.value == platform_name:
-                            adapter = a
-                            break
-                    if adapter and chat_id:
-                        try:
-                            send_meta = {"thread_id": thread_id} if thread_id else None
-                            await adapter.send(
-                                chat_id,
-                                message_text,
-                                metadata=_non_conversational_metadata(send_meta, platform=platform_name),
-                            )
-                        except Exception as e:
-                            logger.error("Watcher delivery error: %s", e)
-                break
-
-            elif has_new_output and notify_mode == "all" and not agent_notify:
-                # New output available -- deliver status update (only in "all" mode)
-                # Skip periodic updates for agent_notify watchers (they only care about completion)
-                new_output = session.output_buffer[-500:] if session.output_buffer else ""
-                if new_output:
-                    from agent.redact import redact_terminal_output
-                    new_output = redact_terminal_output(
-                        new_output, getattr(session, "command", "") or ""
-                    )
-                message_text = (
-                    f"[Background process {session_id} is still running~ "
-                    f"New output:\n{new_output}]"
-                )
-                adapter = None
-                for p, a in self.adapters.items():
-                    if p.value == platform_name:
-                        adapter = a
-                        break
-                if adapter and chat_id:
                     try:
-                        send_meta = {"thread_id": thread_id} if thread_id else None
-                        await adapter.send(
-                            chat_id,
-                            message_text,
-                            metadata=_non_conversational_metadata(send_meta, platform=platform_name),
-                        )
+                        await adapter.send(chat_id, message_text, metadata=send_meta)
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
+                break
+
+            if agent_notify or not has_new_output:
+                continue
+
+            if notify_mode == "off":
+                if adapter and chat_id and discord_editable and status_message_id and not status_disabled:
+                    await _edit_status(
+                        adapter,
+                        f"⏹ Background process {session_id} is still running; progress updates disabled.",
+                    )
+                continue
+
+            if notify_mode != "all":
+                continue
+
+            if not adapter or not chat_id:
+                continue
+
+            if discord_editable:
+                if status_disabled:
+                    continue
+                if time.monotonic() - started_at < min_status_elapsed:
+                    continue
+                status_text = self._background_status_text(session_id, session, started_at=started_at)
+                if status_message_id:
+                    await _edit_status(adapter, status_text)
+                else:
+                    try:
+                        result = await adapter.send(chat_id, status_text, metadata=send_meta)
+                    except Exception as e:
+                        logger.error("Watcher status delivery error: %s", e)
+                        status_disabled = True
+                    else:
+                        if getattr(result, "success", False) and getattr(result, "message_id", None):
+                            status_message_id = str(result.message_id)
+                            status_text_last = status_text
+                        elif not getattr(result, "retryable", False):
+                            status_disabled = True
+                continue
+
+            # Non-Discord fallback preserves existing semantics: in all mode,
+            # send running updates as separate messages. Sanitized, but still
+            # includes the recent output because other platforms may lack edit.
+            new_output = self._clean_background_output(getattr(session, "output_buffer", "") or "", limit=500)
+            message_text = (
+                f"[Background process {session_id} is still running~ "
+                f"New output:\n{new_output}]"
+            )
+            try:
+                await adapter.send(chat_id, message_text, metadata=send_meta)
+            except Exception as e:
+                logger.error("Watcher delivery error: %s", e)
 
         logger.debug("Process watcher ended: %s", session_id)
 
@@ -15292,6 +15785,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        if session_key and session_key not in self._running_agents:
+            # Direct _run_agent callers (tests, internal helpers) may bypass
+            # the outer inbound-message preclaim. Install the same pending
+            # sentinel here so heartbeat/interrupt ownership checks do not
+            # falsely conclude the run is stale before track_agent promotes
+            # the real agent.
+            self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+            self._running_agents_ts[session_key] = time.time()
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -17389,7 +17891,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                _heartbeat_text = f"⏳ Still working — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:

@@ -2354,6 +2354,11 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # Programmatic callers can pass ``-q -`` to keep long/private prompts out of
+    # process listings. Read stdin before invoking the interactive CLI layer.
+    if getattr(args, "query", None) == "-" and not sys.stdin.isatty():
+        args.query = sys.stdin.read()
+
     _pin_kanban_board_env()
 
     if use_tui:
@@ -4987,13 +4992,42 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
         h.update(b"\0")
 
 
-    from pathspec import PathSpec
-
     gitignore = project_root / ".gitignore"
     lines: list[str] = []
     if gitignore.is_file():
         lines = gitignore.read_text(encoding="utf-8").splitlines()
-    spec = PathSpec.from_lines("gitignore", lines)
+    try:
+        from importlib import import_module
+
+        PathSpec = import_module("pathspec").PathSpec
+        spec = PathSpec.from_lines("gitignore", lines)
+    except ImportError:
+        import fnmatch
+
+        class _BasicGitignoreSpec:
+            """Small fallback for desktop hashing before dependency repair runs."""
+
+            def __init__(self, patterns: list[str]) -> None:
+                self.patterns = [
+                    p.strip()
+                    for p in patterns
+                    if p.strip() and not p.lstrip().startswith("#")
+                ]
+
+            def match_file(self, rel: str) -> bool:
+                rel = rel.replace(os.sep, "/")
+                basename = os.path.basename(rel)
+                for pattern in self.patterns:
+                    pattern = pattern.rstrip("/")
+                    if not pattern:
+                        continue
+                    if "/" not in pattern and fnmatch.fnmatch(basename, pattern):
+                        return True
+                    if fnmatch.fnmatch(rel, pattern.lstrip("/")):
+                        return True
+                return False
+
+        spec = _BasicGitignoreSpec(lines)
 
     # Root workspace config
     for name in ("package.json", "package-lock.json"):
@@ -11922,7 +11956,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "serve", "debug", "doctor",
+        "config", "control", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
@@ -12581,6 +12615,12 @@ def main():
     build_gateway_parser(
         subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
     )
+
+    # =========================================================================
+    # control command
+    # =========================================================================
+    from hermes_cli.control import register_subparser as _control_register
+    _control_register(subparsers)
 
     # =========================================================================
     # lsp command

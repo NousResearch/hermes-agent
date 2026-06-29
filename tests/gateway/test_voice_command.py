@@ -1931,9 +1931,17 @@ class TestVoiceTimeoutCleansRunnerState:
         assert adapter._on_voice_disconnect is None
 
     @pytest.mark.asyncio
-    async def test_timeout_calls_disconnect_callback(self, adapter):
-        """_voice_timeout_handler calls _on_voice_disconnect with chat_id."""
+    async def test_default_timeout_disabled_does_not_schedule_disconnect(self, adapter):
+        """Default live voice channel joins persist until explicit leave."""
+        adapter._voice_timeout_seconds = None
+        adapter._reset_voice_timeout(111)
+        assert 111 not in adapter._voice_timeout_tasks
+
+    @pytest.mark.asyncio
+    async def test_enabled_timeout_calls_disconnect_callback(self, adapter):
+        """Configured _voice_timeout_handler calls _on_voice_disconnect with chat_id."""
         callback_calls = []
+        adapter._voice_timeout_seconds = 300
         adapter._on_voice_disconnect = lambda chat_id: callback_calls.append(chat_id)
 
         # Set up state as if we're in a voice channel
@@ -1951,7 +1959,7 @@ class TestVoiceTimeoutCleansRunnerState:
             await adapter._voice_timeout_handler(111)
 
         assert "999" in callback_calls, \
-            "_on_voice_disconnect must be called with chat_id on timeout"
+            "_on_voice_disconnect must be called with chat_id when timeout is enabled"
 
     @pytest.mark.asyncio
     async def test_runner_cleanup_method_removes_voice_mode(self, tmp_path):
@@ -1966,7 +1974,8 @@ class TestVoiceTimeoutCleansRunnerState:
 
     @pytest.mark.asyncio
     async def test_timeout_without_callback_does_not_crash(self, adapter):
-        """Timeout works even without _on_voice_disconnect set."""
+        """Enabled timeout works even without _on_voice_disconnect set."""
+        adapter._voice_timeout_seconds = 300
         adapter._on_voice_disconnect = None
 
         mock_vc = MagicMock()
@@ -2008,6 +2017,7 @@ class TestVoiceTimeoutCleansRunnerState:
     async def test_timeout_still_disconnects_when_voice_mode_active(self, adapter):
         """A non-off mode still auto-disconnects on genuine inactivity."""
         disconnect_calls = []
+        adapter._voice_timeout_seconds = 300
         adapter._on_voice_disconnect = lambda chat_id: disconnect_calls.append(chat_id)
         adapter._voice_mode_getter = lambda chat_id: "all"
 

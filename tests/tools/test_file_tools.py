@@ -6,6 +6,8 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -77,7 +79,7 @@ class TestWriteFileHandler:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        mock_ops.write_file.assert_called_once_with(os.path.realpath("/tmp/out.txt"), "hello world!\n")
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -182,7 +184,7 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(os.path.realpath("/tmp/f.py"), "foo", "bar", False)
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_replace_all_flag(self, mock_get):
@@ -195,7 +197,7 @@ class TestPatchHandler:
         from tools.file_tools import patch_tool
         patch_tool(mode="replace", path="/tmp/f.py",
                    old_string="x", new_string="y", replace_all=True)
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "x", "y", True)
+        mock_ops.patch_replace.assert_called_once_with(os.path.realpath("/tmp/f.py"), "x", "y", True)
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_path_errors(self, mock_get):
@@ -434,7 +436,7 @@ class TestSensitivePathCheck:
 
     def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config.resolve()))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
@@ -444,7 +446,7 @@ class TestSensitivePathCheck:
 
     def test_hermes_config_blocked_via_tilde_path(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config.resolve()))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
@@ -455,7 +457,7 @@ class TestSensitivePathCheck:
     def test_hermes_config_blocked_for_patch(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
         fake_config.write_text("approvals:\n  mode: manual\n")
-        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools._hermes_config_resolved", str(fake_config.resolve()))
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved_loaded", True)
 
         from tools.file_tools import patch_tool
@@ -558,7 +560,7 @@ class TestLastKnownCwd:
         # Verify the env was created with the saved CWD, not the default
         create_call = mock_create_env.call_args
         assert create_call is not None, "_create_environment was not called"
-        
+
         # Find cwd in the kwargs
         kwargs = create_call.kwargs if create_call.kwargs else {}
         # cwd is passed as positional or keyword
@@ -569,13 +571,13 @@ class TestLastKnownCwd:
             # Position: (env_type, image, cwd, timeout, ...)
             if len(args) >= 3:
                 cwd_passed = args[2]
-        
+
         assert cwd_passed == "/Users/user/project", \
             f"Expected cwd='/Users/user/project', got {cwd_passed!r}"
-        
+
         # Cleanup
         _last_known_cwd.pop(task_id, None)
-        
+
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     @patch("tools.file_tools._file_ops_cache", new_callable=dict)
     @patch("tools.terminal_tool._get_env_config")
@@ -596,22 +598,22 @@ class TestLastKnownCwd:
 
         # _get_file_ops resolves to "default"
         task_id = "default"
-        
+
         # Ensure _last_known_cwd is empty for this task
         _last_known_cwd.pop(task_id, None)
 
         result = _get_file_ops(task_id)
-        
+
         create_call = mock_create_env.call_args
         assert create_call is not None, "_create_environment was not called"
-        
+
         kwargs = create_call.kwargs if create_call.kwargs else {}
         cwd_passed = kwargs.get("cwd", None)
         if cwd_passed is None:
             args = create_call.args if create_call.args else []
             if len(args) >= 3:
                 cwd_passed = args[2]
-        
+
         # Should fall back to config default
         assert cwd_passed == "/config/default/path", \
             f"Expected cwd='/config/default/path', got {cwd_passed!r}"

@@ -766,6 +766,11 @@ def _handle_create(args: dict, **kw) -> str:
             "assignee is required — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
+    if str(assignee).strip() == "ftd-control-plane":
+        return tool_error(
+            "ftd-control-plane is a reserved nonspawnable FTD control lane. "
+            "kanban_create child tasks must be assigned to a real worker profile."
+        )
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -923,6 +928,12 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         from gateway.session_context import get_session_env
         platform = get_session_env("HERMES_SESSION_PLATFORM", "")
         chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if (not platform or not chat_id) and os.environ.get("HERMES_SESSION_PLATFORM") and os.environ.get("HERMES_SESSION_CHAT_ID"):
+            # Tool subprocesses and legacy/test paths may carry only the
+            # environment form.  Prefer contextvars when present, but preserve
+            # the env fallback when both routing coordinates are available.
+            platform = os.environ.get("HERMES_SESSION_PLATFORM", "")
+            chat_id = os.environ.get("HERMES_SESSION_CHAT_ID", "")
         if not platform or not chat_id:
             # TUI / desktop fallback: platform/chat_id ContextVars are
             # cleared for TUI sessions, but the parent process exports
@@ -945,8 +956,8 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                 return False  # CLI / cron / test — no persistent channel
             platform = "tui"
             chat_id = session_key
-        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
-        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or os.environ.get("HERMES_SESSION_THREAD_ID") or None
+        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or os.environ.get("HERMES_SESSION_USER_ID") or None
         notifier_profile = os.environ.get("HERMES_PROFILE")
 
         # Lazy-import to keep the module-level dependency light
@@ -1327,7 +1338,9 @@ KANBAN_CREATE_SCHEMA = {
                     "Profile name that should execute this task "
                     "(e.g. 'researcher-a', 'reviewer', 'writer'). "
                     "Required — tasks without an assignee are never "
-                    "dispatched."
+                    "dispatched. Do not use 'ftd-control-plane'; it is "
+                    "reserved for nonspawnable FTD root/sprint control "
+                    "cards created by FTD internals."
                 ),
             },
             "body": {

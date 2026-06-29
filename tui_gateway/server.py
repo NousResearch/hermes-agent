@@ -12984,9 +12984,9 @@ def _normalize_cdp_url(parsed) -> str:
 
 
 def _failure_messages(url: str, port: int, system: str) -> list[str]:
-    from hermes_cli.browser_connect import manual_chrome_debug_command
+    from hermes_cli.browser_connect import get_chrome_debug_candidates, manual_chrome_debug_command
 
-    command = manual_chrome_debug_command(port, system)
+    command = manual_chrome_debug_command(port, system) if get_chrome_debug_candidates(system) else None
     hint = (
         ["Start a Chromium-family browser with remote debugging, then retry /browser connect:", command]
         if command

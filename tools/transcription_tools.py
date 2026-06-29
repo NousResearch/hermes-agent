@@ -80,6 +80,31 @@ _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 
+
+def _ensure_faster_whisper_available() -> bool:
+    """Make the local STT backend available via Hermes lazy deps.
+
+    ``faster-whisper`` is intentionally not a base dependency: it pulls large,
+    wheel-only transitive packages. Voice-channel STT is an opt-in runtime path,
+    so use the same lazy-dependency mechanism as TTS providers instead of making
+    explicit ``stt.provider: local`` silently unusable.
+    """
+    global _HAS_FASTER_WHISPER
+
+    if _HAS_FASTER_WHISPER:
+        return True
+
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("stt.faster_whisper", prompt=False)
+    except Exception as exc:
+        logger.warning("Unable to lazy-install faster-whisper for local STT: %s", exc)
+        _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+        return _HAS_FASTER_WHISPER
+
+    _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+    return _HAS_FASTER_WHISPER
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -764,14 +789,10 @@ def _get_provider(stt_config: dict) -> str:
                 return "local"
             if _has_local_command():
                 return "local_command"
-            # Try lazy-install before giving up
-            if _try_lazy_install_stt():
-                return "local"
-            logger.warning(
-                "STT provider 'local' configured but unavailable "
-                "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)"
-            )
-            return "none"
+            # Explicit local STT is still a valid provider even before the
+            # heavyweight faster-whisper extra is installed.  The first
+            # transcription call lazy-installs it via _transcribe_local().
+            return "local"
 
         if provider == "local_command":
             if _has_local_command():
@@ -1117,9 +1138,8 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
 
-    if not _HAS_FASTER_WHISPER:
-        if not _try_lazy_install_stt():
-            return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
+    if not _ensure_faster_whisper_available():
+        return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
@@ -1237,7 +1257,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             else:
                 subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            
+
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

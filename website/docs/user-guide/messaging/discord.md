@@ -281,7 +281,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_APPROVAL_NOTIFY_MENTIONS` | No | — | Raw human/operator mention tokens (for example `<@123>`) prepended to dangerous-command approval prompts. Discord bot-authored approval traffic is ignored; use buttons or human text approval commands. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -299,10 +299,14 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
 
-:::warning Bot-to-bot conversation is not supported
-`DISCORD_ALLOW_BOTS` exists to accept input from a specific trusted bot (e.g. a relay or webhook bot), not to let two Hermes profiles talk to each other. The default, `"none"`, ignores all other bots and is the safe setting.
+## Bot-to-bot approvals
 
-Wiring multiple Hermes profiles to reply to one another in a shared channel — by setting `"mentions"` or `"all"` across several profiles — is an unsupported topology. Discord auto-`@mentions` the replied-to author on every reply, so under `"mentions"` two bots will satisfy each other's mention gate indefinitely and ack-loop. There is no circuit breaker for this because the supported configuration is simply to leave `DISCORD_ALLOW_BOTS` at `"none"`. If you must accept a particular bot, scope the acceptance narrowly and never to another auto-replying agent.
+Discord bot-to-bot approval routing has been decommissioned. The gateway ignores Discord messages authored by bots regardless of legacy environment variables, and the `send_bot_message` / `send_bot_approval_decision` model tools are no longer registered.
+
+Dangerous-command approvals are human/operator mediated: use Discord buttons, gateway text approval commands, or `DISCORD_APPROVAL_NOTIFY_MENTIONS` to ping human operators. Raw bot mentions are ordinary message content, not control-plane authority.
+
+:::warning Bot-to-bot conversation is not supported
+`DISCORD_ALLOW_BOTS` is legacy/decommissioned for Hermes-to-Hermes routing; leave bot-authored messages ignored. Do not wire multiple Hermes profiles to reply to one another in a shared channel. Discord auto-`@mentions` the replied-to author on every reply, so mention-gated bot admission can ack-loop indefinitely. Use human/operator mediated approvals and local control-plane primitives instead.
 :::
 
 ### Config File (`config.yaml`)

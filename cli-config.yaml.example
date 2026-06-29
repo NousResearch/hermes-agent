@@ -761,6 +761,14 @@ platform_toolsets:
 #         priority_mode: prepend
 #         priority:
 #           - my_plugin_command
+#   feishu:
+#     extra:
+#       # Outbound markdown-table rendering. "auto" (default) downgrades tables
+#       # to plain text because Feishu's `md` element does not reliably render
+#       # them; "card" routes tables through the post pipeline (with automatic
+#       # plain-text fallback if Feishu rejects the payload). `renderMode` also
+#       # accepted for OpenClaw-style config compatibility.
+#       render_mode: auto  # auto | card
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

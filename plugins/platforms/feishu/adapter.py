@@ -396,6 +396,11 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # Outbound table rendering. "auto" (default) keeps the safe behaviour of
+    # downgrading markdown-table content to plain text. "card" opts in to routing
+    # tables through the native post/`md` pipeline (with the same automatic
+    # plain-text fallback if Feishu rejects the payload).
+    render_mode: str = "auto"  # "auto" | "card"
 
 
 @dataclass
@@ -1525,6 +1530,18 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             allow_bots = "none"
 
+        # Outbound table rendering mode. Accept the OpenClaw-style camelCase
+        # `renderMode` key as well as the repo-conventional snake_case.
+        render_mode = str(
+            extra.get("render_mode") or extra.get("renderMode") or "auto"
+        ).strip().lower()
+        if render_mode not in {"auto", "card"}:
+            logger.warning(
+                "[Feishu] Unknown render_mode=%r, falling back to 'auto'. Valid: auto, card.",
+                render_mode,
+            )
+            render_mode = "auto"
+
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
@@ -1587,6 +1604,7 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            render_mode=render_mode,
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1619,6 +1637,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._render_mode = settings.render_mode
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -4442,12 +4461,18 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not reliably render markdown tables;
+        # by default we force plain text for anything that looks like a table so
+        # the message never arrives blank. When render_mode is "card" the operator
+        # opts in to routing tables through the post pipeline anyway — the send
+        # path already falls back to plain text if Feishu rejects the payload.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            if self._render_mode != "card":
+                text_payload = {"text": content}
+                return "text", json.dumps(text_payload, ensure_ascii=False)
+            # Card mode: route the table (which _MARKDOWN_HINT_RE may not match on
+            # its own) through the post pipeline.
+            return "post", _build_markdown_post_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

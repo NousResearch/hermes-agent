@@ -17347,6 +17347,11 @@ class GatewayRunner:
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
+        # T005: register session_spawn tool for Discord @mention turns
+        if platform_key == "discord":
+            from session_orchestration import spawn_tool as _so_spawn_tool  # noqa: F401 — triggers registry.register
+            enabled_toolsets = list(enabled_toolsets) + ["session_spawn"]
+
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
             display_config = {}

@@ -303,6 +303,7 @@ const AssistantMessage: FC<{
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
   const { t } = useI18n()
+  const copy = t.assistant.thread
 
   // PERF: this component must NOT subscribe to the streaming text. Every
   // selector here returns a value that stays referentially stable across
@@ -379,7 +380,10 @@ const AssistantMessage: FC<{
         </MessagePrimitive.Error>
       </div>
       {hasVisibleText && (
-        <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
+        <div className="mt-1 flex items-center justify-end gap-2 pr-(--message-text-indent) pl-(--message-text-indent)">
+          <MessageTimestamp />
+          <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
+        </div>
       )}
     </MessagePrimitive.Root>
   )
@@ -784,7 +788,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
             </TooltipIconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" onCloseAutoFocus={e => e.preventDefault()} sideOffset={6}>
-            <MessageTimestamp />
+            <MessageTimestamp variant="menu" />
             <DropdownMenuItem onSelect={() => onBranchInNewChat?.(messageId)}>
               <GitBranchIcon />
               {copy.branchNewChat}
@@ -838,7 +842,14 @@ const ReadAloudItem: FC<{ getText: () => string; messageId: string }> = ({ getTe
   )
 }
 
-const MessageTimestamp: FC = () => {
+interface MessageTimestampProps {
+  /** 'inline' = compact pill that sits above/beside the message (the default
+   *  for the new "show time on every message" feature).
+   *  'menu' = the dropdown-menu header used inside the message overflow menu. */
+  variant?: 'inline' | 'menu'
+}
+
+const MessageTimestamp: FC<MessageTimestampProps> = ({ variant = 'inline' }) => {
   const { t } = useI18n()
   const createdAt = useAuiState(s => s.message.createdAt)
   const label = formatMessageTimestamp(createdAt, t.assistant.thread)
@@ -847,7 +858,22 @@ const MessageTimestamp: FC = () => {
     return null
   }
 
-  return <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{label}</DropdownMenuLabel>
+  if (variant === 'menu') {
+    return <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">{label}</DropdownMenuLabel>
+  }
+
+  const dateValue = createdAt instanceof Date ? createdAt : new Date(createdAt)
+
+  return (
+    <time
+      aria-label={t.assistant.thread.messageTimestampAria}
+      className="select-none text-[0.6875rem] leading-none tabular-nums text-(--ui-text-tertiary) opacity-80"
+      dateTime={Number.isNaN(dateValue.getTime()) ? undefined : dateValue.toISOString()}
+      title={label}
+    >
+      {label}
+    </time>
+  )
 }
 
 const AssistantFooter: FC<MessageActionProps> = props => (
@@ -1113,6 +1139,9 @@ const UserMessage: FC<{
       >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
+            <div className="flex items-center justify-end gap-2 pb-1 pr-1 text-right">
+              <MessageTimestamp />
+            </div>
             <div className="relative w-full">
               {/* Always editable — clicking opens the edit composer even while a
                   turn streams; sending the edit reverts (interrupt + rewind). */}

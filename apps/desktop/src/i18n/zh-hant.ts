@@ -2047,6 +2047,7 @@ export const zhHant = defineLocale({
       thinking: '思考中',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
+      messageTimestampAria: '訊息發送於',
       copy: '複製',
       refresh: '重新整理',
       moreActions: '更多動作',

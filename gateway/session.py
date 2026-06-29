@@ -364,7 +364,7 @@ def build_session_context_prompt(
         room_name = src.chat_name or src.chat_id
         room_id = _hash_chat_id(src.chat_id) if redact_pii else src.chat_id
         lines.append("")
-        lines.append(f"**Matrix Room:** {room_name}")
+        lines.append(f"**Matrix Room:** {_format_untrusted_prompt_value(room_name)}")
         lines.append(f"**Matrix Room ID:** {room_id}")
         if src.thread_id:
             thread_id = _hash_chat_id(src.thread_id) if redact_pii else src.thread_id

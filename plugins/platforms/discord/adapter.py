@@ -4449,6 +4449,28 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_allowed_channels(self) -> set[str]:
+        """Return Discord channel IDs where this profile may respond.
+
+        This is the worker blast-radius boundary: when configured, *all*
+        server-channel messages outside the whitelist are ignored, including
+        explicit @mentions. Thread messages match either the thread ID or the
+        parent channel ID so a worker can be restricted to an approved
+        workbench channel while still responding inside workbench threads.
+
+        Empty means unrestricted for backwards compatibility; worker profiles
+        that should be restricted must configure a non-empty whitelist.
+        """
+        raw = self.config.extra.get("allowed_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
     def _message_mentions_own_role(self, message: Any) -> list[Any]:
         """Return role mentions that belong to this bot's guild member.
 
@@ -6027,13 +6049,14 @@ class DiscordAdapter(BasePlatformAdapter):
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
-            # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
-                    return
+            # Check allowed channels - if set, only respond in these channels.
+            # This gate intentionally runs before mention handling: a direct
+            # @mention outside an approved worker context should not pierce a
+            # worker profile's channel whitelist.
+            allowed_channels = self._discord_allowed_channels()
+            if allowed_channels and "*" not in allowed_channels and not (channel_ids & allowed_channels):
+                logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
+                return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")

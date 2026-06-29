@@ -546,6 +546,49 @@ async def test_unconfigured_crew_word_does_not_wake_bot(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_allowed_channels_blocks_direct_mention_outside_worker_context(adapter, monkeypatch):
+    """Worker whitelists block explicit @mentions outside approved contexts."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=900, name="random"),
+        content=f"<@{bot_user.id}> Boba can you check this?",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_allowed_channels_permits_direct_mention_in_approved_thread(adapter, monkeypatch):
+    """A worker restricted to the workbench parent can still be summoned in its threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["allowed_channels"] = ["700"]
+
+    bot_user = adapter._client.user
+    parent = FakeTextChannel(channel_id=700, name="agent-workbench")
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> Quill please add source-truth notes",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
     """Channels not in the ignored list process normally."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -1039,6 +1082,25 @@ def test_config_bridges_allow_bots(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_ALLOW_BOTS") == "mentions"
+
+
+def test_config_bridges_allowed_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges worker channel whitelists to DISCORD_ALLOWED_CHANNELS."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "allowed_channels": ["700", "800"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_ALLOWED_CHANNELS") == "700,800"
 
 
 def test_config_bridges_crew_aliases(monkeypatch, tmp_path):

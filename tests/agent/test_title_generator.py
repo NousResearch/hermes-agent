@@ -176,15 +176,16 @@ class TestAutoTitleSession:
             gen.assert_not_called()
             db.set_session_title.assert_not_called()
 
-    def test_overwrites_when_no_placeholder(self):
-        """Without heuristic_placeholder, LLM always overwrites (legacy behavior)."""
+    def test_skips_when_no_placeholder_and_title_exists(self):
+        """Without heuristic_placeholder, skip if any title exists (legacy behavior)."""
         db = MagicMock()
-        db.get_session_title.return_value = "Any Title"
+        db.get_session_title.return_value = "User Custom Title"
 
-        with patch("agent.title_generator.generate_title", return_value="LLM Title"):
+        with patch("agent.title_generator.generate_title", return_value="LLM Title") as gen:
             auto_title_session(db, "sess-1", "hi", "hello",
                                heuristic_placeholder=None)
-            db.set_session_title.assert_called_once_with("sess-1", "LLM Title")
+            gen.assert_not_called()
+            db.set_session_title.assert_not_called()
 
     def test_overwrites_when_title_matches_placeholder(self):
         """LLM overwrites when current title still matches the placeholder."""

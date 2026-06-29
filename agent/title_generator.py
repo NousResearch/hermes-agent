@@ -129,32 +129,41 @@ def auto_title_session(
     """Generate and set a session title via LLM.
 
     Called in a background thread after the first exchange completes.
-    Overwrites the heuristic placeholder only if the current title still
-    matches it — protecting user-set titles that arrived in the interim.
+
+    When ``heuristic_placeholder`` is provided, the LLM title overwrites
+    it only if the current title still matches the placeholder —
+    protecting user-set titles that arrived in the interim.
+
+    When ``heuristic_placeholder`` is ``None``, the original behavior is
+    preserved: skip if any title already exists.
 
     Args:
         heuristic_placeholder: The title set by the heuristic in
-            ``maybe_auto_title``.  The LLM title only overwrites if the
-            current session title still matches this value (or is empty).
-            Pass ``None`` to unconditionally overwrite (legacy behavior).
+            ``maybe_auto_title``.  Pass ``None`` to preserve legacy
+            "skip if title exists" behavior.
     """
     if not session_db or not session_id:
         return
 
-    # Race-condition guard: if heuristic_placeholder is set, only overwrite
-    # if the current title still matches it.  This protects user-set titles
-    # that arrived between the heuristic set and the LLM thread running.
-    if heuristic_placeholder is not None:
-        try:
-            current = session_db.get_session_title(session_id)
-            if current and current != heuristic_placeholder:
-                logger.debug(
-                    "Title changed from heuristic placeholder (%r -> %r), skipping LLM overwrite",
-                    heuristic_placeholder, current,
-                )
+    try:
+        existing = session_db.get_session_title(session_id)
+        if existing:
+            if heuristic_placeholder is not None:
+                # Race-condition guard: only overwrite if the current title
+                # still matches the heuristic placeholder.  Protects user-set
+                # titles that arrived between the heuristic set and here.
+                if existing != heuristic_placeholder:
+                    logger.debug(
+                        "Title changed from heuristic placeholder (%r -> %r), skipping LLM overwrite",
+                        heuristic_placeholder, existing,
+                    )
+                    return
+                # Title matches placeholder — proceed to overwrite with LLM
+            else:
+                # Legacy path: any existing title means skip
                 return
-        except Exception:
-            return
+    except Exception:
+        return
 
     title = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime

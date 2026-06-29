@@ -2165,10 +2165,10 @@ DEFAULT_CONFIG = {
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # Gemini 32000, Edge 5000, Mistral 4000, NVIDIA 2000, NeuTTS/KittenTTS 2000).
     "tts": {
         # Set explicitly to pin a backend:
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "nvidia" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
@@ -2219,6 +2219,15 @@ DEFAULT_CONFIG = {
             "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
             "voice": "Jasper",
         },
+        "nvidia": {
+            "base_url": "https://877104f7-e885-42b9-8de8-f6e4c6303969.invocation.api.nvcf.nvidia.com",
+            "voice": "Magpie-Multilingual.EN-US.Aria",
+            "language": "en-US",
+            "sample_rate_hz": 44100,
+            "custom_dictionary": "",
+            "custom_configuration": "",
+            "customizations": {},
+        },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
@@ -2251,7 +2260,7 @@ DEFAULT_CONFIG = {
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        "provider": "local",  # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | "nvidia"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -2271,6 +2280,16 @@ DEFAULT_CONFIG = {
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
+        },
+        "nvidia": {
+            "model": "parakeet-tdt-0.6b-v2",
+            "tdt_base_url": "https://d3fe9151-442b-4204-a70d-5fcc597fd610.invocation.api.nvcf.nvidia.com",
+            "ctc_base_url": "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com",
+            "language": "en-US",
+            "boosted_words": [],
+            "boosted_words_score": None,
+            "custom_configuration": "",
+            "customizations": {},
         },
     },
 

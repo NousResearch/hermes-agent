@@ -207,6 +207,12 @@ DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 # Base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
+NVIDIA_MAGPIE_TTS_BASE_URL = (
+    "https://877104f7-e885-42b9-8de8-f6e4c6303969.invocation.api.nvcf.nvidia.com"
+)
+DEFAULT_NVIDIA_TTS_VOICE = "Magpie-Multilingual.EN-US.Aria"
+DEFAULT_NVIDIA_TTS_LANGUAGE = "en-US"
+DEFAULT_NVIDIA_TTS_SAMPLE_RATE = 44100
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -236,6 +242,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "nvidia": 2000,       # NVIDIA Speech NIM normalized-text limit
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -405,6 +412,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
     "deepinfra",
+    "nvidia",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1787,6 +1795,120 @@ def _compose_gemini_tts_prompt(
     return f"{preamble}\n\n{persona_prompt}\n\n#### TRANSCRIPT\n{transcript}".strip()
 
 
+def _generate_nvidia_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate a complete WAV response with NVIDIA Magpie over HTTP."""
+    api_key = str(get_env_value("NVIDIA_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError("NVIDIA_API_KEY not set. Get one at https://build.nvidia.com")
+
+    nvidia_config = tts_config.get("nvidia", {})
+    if not isinstance(nvidia_config, dict):
+        nvidia_config = {}
+    base_url = str(
+        nvidia_config.get("base_url")
+        or get_env_value("NVIDIA_TTS_BASE_URL")
+        or NVIDIA_MAGPIE_TTS_BASE_URL
+    ).strip().rstrip("/")
+    voice = str(
+        nvidia_config.get("voice") or DEFAULT_NVIDIA_TTS_VOICE
+    ).strip()
+    language = str(
+        nvidia_config.get("language") or DEFAULT_NVIDIA_TTS_LANGUAGE
+    ).strip()
+    sample_rate = int(
+        nvidia_config.get("sample_rate_hz") or DEFAULT_NVIDIA_TTS_SAMPLE_RATE
+    )
+
+    multipart_fields = [
+        ("text", (None, text)),
+        ("language", (None, language)),
+        ("voice", (None, voice)),
+        ("encoding", (None, "LINEAR_PCM")),
+        ("sample_rate_hz", (None, str(sample_rate))),
+    ]
+    custom_dictionary = nvidia_config.get("custom_dictionary")
+    if custom_dictionary:
+        dictionary_value = str(custom_dictionary)
+        dictionary_path = Path(dictionary_value).expanduser()
+        try:
+            if dictionary_path.is_file():
+                dictionary_value = dictionary_path.read_text(encoding="utf-8")
+        except OSError:
+            # Long inline dictionaries and other non-path values are sent as-is.
+            pass
+        multipart_fields.append(("custom_dictionary", (None, dictionary_value)))
+
+    custom_configuration = nvidia_config.get("custom_configuration")
+    if isinstance(custom_configuration, dict):
+        custom_configuration = ",".join(
+            f"{key}:{value}" for key, value in custom_configuration.items()
+        )
+    if custom_configuration:
+        multipart_fields.append(
+            ("custom_configuration", (None, str(custom_configuration)))
+        )
+
+    customizations = nvidia_config.get("customizations", {})
+    if isinstance(customizations, dict):
+        for key, value in customizations.items():
+            if value is not None:
+                normalized = str(value).lower() if isinstance(value, bool) else str(value)
+                multipart_fields.append((str(key), (None, normalized)))
+
+    import requests
+
+    response = requests.post(
+        f"{base_url}/v1/audio/synthesize",
+        headers={"Authorization": f"Bearer {api_key}"},
+        files=multipart_fields,
+        timeout=120,
+    )
+    if response.status_code != 200:
+        try:
+            detail = str(response.json())[:300]
+        except Exception:
+            detail = response.text[:300]
+        raise RuntimeError(
+            f"NVIDIA Magpie TTS API error (HTTP {response.status_code}): {detail}"
+        )
+
+    requested_path = Path(output_path)
+    wav_path = (
+        requested_path
+        if requested_path.suffix.lower() == ".wav"
+        else requested_path.with_name(f"{requested_path.stem}.nvidia.wav")
+    )
+    if not response.content:
+        raise RuntimeError("NVIDIA Magpie TTS returned empty audio")
+    wav_path.write_bytes(response.content)
+
+    if wav_path != requested_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            wav_path.unlink(missing_ok=True)
+            raise FileNotFoundError(
+                "ffmpeg is required to convert NVIDIA Magpie WAV output "
+                f"to {requested_path.suffix or 'the requested format'}"
+            )
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(wav_path),
+                "-loglevel",
+                "error",
+                str(requested_path),
+            ],
+            check=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
+        )
+        wav_path.unlink(missing_ok=True)
+    return str(requested_path)
+
+
 def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio using Google Gemini TTS.
 
@@ -2369,6 +2491,8 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
+        elif provider == "nvidia":
+            file_path = out_dir / f"tts_{timestamp}.wav"
         elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
@@ -2459,6 +2583,10 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "nvidia":
+            logger.info("Generating speech with NVIDIA Magpie TTS...")
+            _generate_nvidia_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -2561,7 +2689,7 @@ def text_to_speech_tool(
                 voice_compatible = file_str.endswith(".ogg")
         elif (
             want_opus
-            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
+            and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "nvidia"}
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
@@ -2661,6 +2789,8 @@ def check_tts_requirements() -> bool:
         except ImportError:
             return False
         return bool(get_env_value("MISTRAL_API_KEY"))
+    if provider == "nvidia":
+        return bool(get_env_value("NVIDIA_API_KEY"))
     if provider == "neutts":
         return _check_neutts_available()
     if provider == "kittentts":

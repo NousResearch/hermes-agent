@@ -2588,6 +2588,8 @@ class TestWebServerEndpoints:
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
+        assert "nvidia" in schema["tts.provider"]["options"]
+        assert "nvidia" in schema["stt.provider"]["options"]
 
     def _schema_provider_options(self, key):
         resp = self.client.get("/api/config/schema")

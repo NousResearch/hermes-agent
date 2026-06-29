@@ -1163,11 +1163,13 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (Groq)")
     elif stt_provider == "openai":
         details_parts.append("STT provider: OK (OpenAI)")
+    elif stt_provider == "nvidia":
+        details_parts.append("STT provider: OK (NVIDIA Parakeet)")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "
             "`pip install faster-whisper` also works if pip is on PATH, "
-            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
+            "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY / NVIDIA_API_KEY)"
         )
 
     for warning in env_check["warnings"]:

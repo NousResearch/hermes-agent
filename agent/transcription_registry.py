@@ -46,6 +46,7 @@ _BUILTIN_NAMES = frozenset({
     "xai",
     "elevenlabs",
     "deepinfra",
+    "nvidia",
 })
 
 

@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -12,6 +12,7 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+  - **nvidia** — NVIDIA Parakeet HTTP API, requires ``NVIDIA_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -100,6 +101,14 @@ OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
+NVIDIA_TDT_ASR_BASE_URL = (
+    "https://d3fe9151-442b-4204-a70d-5fcc597fd610.invocation.api.nvcf.nvidia.com"
+)
+NVIDIA_CTC_ASR_BASE_URL = (
+    "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com"
+)
+DEFAULT_NVIDIA_ASR_MODEL = "parakeet-tdt-0.6b-v2"
+FALLBACK_NVIDIA_ASR_MODEL = "parakeet-ctc-1.1b-asr"
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -245,6 +254,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "xai",
     "elevenlabs",
     "deepinfra",
+    "nvidia",
 })
 
 
@@ -839,6 +849,14 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "nvidia":
+            if get_env_value("NVIDIA_API_KEY"):
+                return "nvidia"
+            logger.warning(
+                "STT provider 'nvidia' configured but NVIDIA_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider):
@@ -882,6 +900,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and (get_env_value("DEEPINFRA_API_KEY") or "").strip():
         logger.info("No local STT available, using DeepInfra Whisper API")
         return "deepinfra"
+    if get_env_value("NVIDIA_API_KEY"):
+        logger.info("No local STT available, using NVIDIA Parakeet TDT ASR")
+        return "nvidia"
     return "none"
 
 
@@ -1703,6 +1724,167 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
         provider_label="deepinfra",
     )
 
+# ---------------------------------------------------------------------------
+# Provider: NVIDIA Nemotron Speech (Parakeet HTTP)
+# ---------------------------------------------------------------------------
+
+
+def _nvidia_asr_form_fields(nvidia_config: Dict[str, Any]) -> list[tuple[str, str]]:
+    fields = [
+        ("language", str(nvidia_config.get("language") or "en-US")),
+        ("response_format", "json"),
+    ]
+    boosted_words = nvidia_config.get("boosted_words", [])
+    if isinstance(boosted_words, str):
+        raw_words = boosted_words.strip()
+        if raw_words.startswith("["):
+            try:
+                boosted_words = json.loads(raw_words)
+            except (TypeError, ValueError):
+                boosted_words = raw_words.split(",")
+        else:
+            boosted_words = raw_words.split(",")
+    if isinstance(boosted_words, (list, tuple)):
+        for word in boosted_words:
+            normalized = str(word).strip()
+            if normalized:
+                fields.append(("boosted_lm_words", normalized))
+
+    boost_score = nvidia_config.get("boosted_words_score")
+    if boost_score is not None:
+        fields.append(("boosted_lm_score", str(boost_score)))
+
+    custom_configuration = nvidia_config.get("custom_configuration")
+    if isinstance(custom_configuration, dict):
+        custom_configuration = ",".join(
+            f"{key}:{value}" for key, value in custom_configuration.items()
+        )
+    if custom_configuration:
+        fields.append(("custom_configuration", str(custom_configuration)))
+
+    customizations = nvidia_config.get("customizations", {})
+    if isinstance(customizations, dict):
+        for key, value in customizations.items():
+            if value is not None:
+                fields.append((str(key), str(value).lower() if isinstance(value, bool) else str(value)))
+    return fields
+
+
+def _transcribe_nvidia(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe a complete audio file with NVIDIA Parakeet over HTTP."""
+    api_key = get_env_value("NVIDIA_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "NVIDIA_API_KEY not set"}
+
+    stt_config = _load_stt_config()
+    nvidia_config = stt_config.get("nvidia", {})
+    if not isinstance(nvidia_config, dict):
+        nvidia_config = {}
+
+    tdt_base_url = str(
+        nvidia_config.get("tdt_base_url")
+        or get_env_value("NVIDIA_TDT_ASR_BASE_URL")
+        or NVIDIA_TDT_ASR_BASE_URL
+    ).strip().rstrip("/")
+    ctc_base_url = str(
+        nvidia_config.get("ctc_base_url")
+        or get_env_value("NVIDIA_CTC_ASR_BASE_URL")
+        or NVIDIA_CTC_ASR_BASE_URL
+    ).strip().rstrip("/")
+    endpoints = (
+        [(ctc_base_url, FALLBACK_NVIDIA_ASR_MODEL)]
+        if "ctc" in model_name.lower()
+        else [
+            (tdt_base_url, DEFAULT_NVIDIA_ASR_MODEL),
+            (ctc_base_url, FALLBACK_NVIDIA_ASR_MODEL),
+        ]
+    )
+
+    upload_path = Path(file_path)
+    temporary_directory = None
+    try:
+        if upload_path.suffix.lower() not in {".wav", ".flac", ".ogg", ".opus"}:
+            ffmpeg = _find_ffmpeg_binary()
+            if not ffmpeg:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": f"Cannot transcribe {upload_path.suffix} with NVIDIA ASR without ffmpeg",
+                }
+            temporary_directory = tempfile.TemporaryDirectory(prefix="hermes-nvidia-asr-")
+            converted_path = Path(temporary_directory.name) / "audio.wav"
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(upload_path),
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    str(converted_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            upload_path = converted_path
+
+        import requests
+
+        fields = _nvidia_asr_form_fields(nvidia_config)
+        errors = []
+        for base_url, resolved_model in endpoints:
+            try:
+                with upload_path.open("rb") as audio_file:
+                    response = requests.post(
+                        f"{base_url}/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        files={"file": (upload_path.name, audio_file)},
+                        data=fields,
+                        timeout=120,
+                    )
+                if response.status_code != 200:
+                    try:
+                        detail = str(response.json())[:300]
+                    except Exception:
+                        detail = response.text[:300]
+                    errors.append(f"{resolved_model}: HTTP {response.status_code}: {detail}")
+                    continue
+
+                payload = response.json()
+                transcript = str(payload.get("text") or "").strip()
+                if not transcript:
+                    errors.append(f"{resolved_model}: empty transcript")
+                    continue
+                logger.info(
+                    "Transcribed %s via NVIDIA %s (%d chars)",
+                    Path(file_path).name,
+                    resolved_model,
+                    len(transcript),
+                )
+                return {
+                    "success": True,
+                    "transcript": transcript,
+                    "provider": "nvidia",
+                    "model": resolved_model,
+                }
+            except Exception as exc:
+                errors.append(f"{resolved_model}: {exc}")
+
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "NVIDIA ASR failed: " + "; ".join(errors),
+        }
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as exc:
+        logger.error("NVIDIA ASR transcription failed: %s", exc, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"NVIDIA ASR failed: {exc}"}
+    finally:
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -1788,6 +1970,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or di_config.get("model") or ""
         return _transcribe_deepinfra(file_path, model_name)
 
+    if provider == "nvidia":
+        nvidia_config = stt_config.get("nvidia", {})
+        if not isinstance(nvidia_config, dict):
+            nvidia_config = {}
+        model_name = model or nvidia_config.get("model", DEFAULT_NVIDIA_ASR_MODEL)
+        return _transcribe_nvidia(file_path, str(model_name))
+
     # User-declared command-type provider
     # (``stt.providers.<name>: type: command``). Fires after the built-in
     # elif chain — built-in names short-circuit upstream so a user's
@@ -1839,7 +2028,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
-            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
+            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, set NVIDIA_API_KEY for "
+            "NVIDIA Parakeet, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

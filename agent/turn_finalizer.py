@@ -201,6 +201,23 @@ def finalize_turn(
         )
     )
 
+    # Preflight can seed the display count before the provider receives the
+    # request. Roll that estimate back only when an interrupt wins the race
+    # before any successful provider response. Compaction state remains owned
+    # by the real-usage/post-compaction path, including its ``-1`` sentinel.
+    _preflight_snapshot = getattr(
+        agent, "_turn_preflight_display_snapshot", None
+    )
+    if (
+        interrupted
+        and _preflight_snapshot is not None
+        and not getattr(agent, "_turn_received_provider_response", False)
+        and getattr(agent, "context_compressor", None) is not None
+    ):
+        agent.context_compressor.rollback_interrupted_preflight_display_tokens(
+            _preflight_snapshot
+        )
+
     # Post-loop cleanup must never lose the response.  Trajectory save,
     # resource teardown, and session persistence all touch fallible
     # surfaces — file I/O / JSON serialization (_save_trajectory), remote
@@ -624,5 +641,8 @@ def finalize_turn(
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
+
+    agent._turn_preflight_display_snapshot = None
+    agent._turn_received_provider_response = False
 
     return result

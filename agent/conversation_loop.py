@@ -2065,6 +2065,8 @@ def run_conversation(
                             )
                     continue  # Retry the API call
 
+                agent._turn_received_provider_response = True
+
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)

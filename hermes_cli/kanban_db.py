@@ -3994,7 +3994,9 @@ def complete_task(
     ``summary`` and ``metadata`` are stored on the closing run (if any)
     and surfaced to downstream children via :func:`build_worker_context`.
     When ``summary`` is omitted we fall back to ``result`` so single-run
-    callers do not have to pass both. ``metadata`` is a free-form dict
+    callers do not have to pass both. When ``result`` is omitted we mirror
+    ``summary`` into ``tasks.result`` so dashboard/task-detail views do not
+    show a completed card as visually empty. ``metadata`` is a free-form dict
     (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
     are encouraged to use it for structured handoff facts.
 
@@ -4014,6 +4016,10 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    # Dashboard/task-detail views primarily read tasks.result, while worker
+    # completions are encouraged to pass summary. Mirror summary into result
+    # when result is omitted so completed cards are not visually empty.
+    stored_result = result if result is not None else summary
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4058,7 +4064,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
-                (result, now, task_id),
+                (stored_result, now, task_id),
             )
         else:
             cur = conn.execute(
@@ -4076,7 +4082,7 @@ def complete_task(
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
                 """,
-                (result, now, task_id, int(expected_run_id)),
+                (stored_result, now, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -4090,11 +4096,11 @@ def complete_task(
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
         # attempt history instead of silently lost.
-        if run_id is None and (summary or metadata or result):
+        if run_id is None and (summary or metadata or stored_result):
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
-                summary=summary if summary is not None else result,
+                summary=summary if summary is not None else stored_result,
                 metadata=metadata,
             )
         # Carry the handoff summary in the event payload so gateway
@@ -4104,7 +4110,7 @@ def complete_task(
         ev_summary = (summary if summary is not None else result) or ""
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
         completed_payload: dict = {
-            "result_len": len(result) if result else 0,
+            "result_len": len(stored_result) if stored_result else 0,
             "summary": ev_summary or None,
         }
         if verified_cards:

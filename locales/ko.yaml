@@ -344,6 +344,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   verbose:
     not_enabled:           "`/verbose` 명령은 메시징 플랫폼에서 활성화되어 있지 않습니다.\n\n`config.yaml`에서 활성화하세요:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ 도구 진행 상황: **OFF** — 도구 활동이 표시되지 않습니다."
+    mode_summary:          "📊 Tool progress: **SUMMARY** — one concise operational status bubble with stage, counters, and agents/profiles when detected."
     mode_new:              "⚙️ 도구 진행 상황: **NEW** — 도구가 변경될 때 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
     mode_all:              "⚙️ 도구 진행 상황: **ALL** — 모든 도구 호출이 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
     mode_verbose:          "⚙️ 도구 진행 상황: **VERBOSE** — 모든 도구 호출이 전체 인수와 함께 표시됩니다."

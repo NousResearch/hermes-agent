@@ -1468,6 +1468,24 @@ def test_run_summary_falls_back_to_result(kanban_home):
         conn.close()
 
 
+def test_task_result_falls_back_to_summary_for_visibility(kanban_home):
+    """Workers are encouraged to complete with summary; mirror it into
+    task.result so dashboard/card detail views do not look empty."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="x", assignee="worker")
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(conn, tid, summary="visible handoff")
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "done"
+        assert task.result == "visible handoff"
+        r = kb.latest_run(conn, tid)
+        assert r.summary == "visible handoff"
+    finally:
+        conn.close()
+
+
 def test_multiple_attempts_preserved_as_runs(kanban_home):
     """Crash / retry / complete flow produces one run per attempt, all
     visible in list_runs in chronological order."""
@@ -2124,7 +2142,9 @@ def test_complete_never_claimed_task_synthesizes_run(kanban_home):
         # Zero-duration synthetic run.
         assert r.started_at == r.ended_at
         # Task pointer still NULL (we never claimed, never opened a run).
-        assert kb.get_task(conn, tid).current_run_id is None
+        task = kb.get_task(conn, tid)
+        assert task.current_run_id is None
+        assert task.result == "did it manually"
 
         # Event carries the synthetic run_id.
         evts = [e for e in kb.list_events(conn, tid) if e.kind == "completed"]

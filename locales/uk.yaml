@@ -344,6 +344,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   verbose:
     not_enabled:           "Команду `/verbose` не ввімкнено для платформ обміну повідомленнями.\n\nУвімкніть у `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Прогрес інструментів: **OFF** — активність інструментів не показується."
+    mode_summary:          "📊 Tool progress: **SUMMARY** — one concise operational status bubble with stage, counters, and agents/profiles when detected."
     mode_new:              "⚙️ Прогрес інструментів: **NEW** — показується при зміні інструмента (довжина попереднього перегляду: `display.tool_preview_length`, за замовчуванням 40)."
     mode_all:              "⚙️ Прогрес інструментів: **ALL** — показується кожен виклик інструмента (довжина попереднього перегляду: `display.tool_preview_length`, за замовчуванням 40)."
     mode_verbose:          "⚙️ Прогрес інструментів: **VERBOSE** — кожен виклик інструмента з повними аргументами."

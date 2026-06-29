@@ -22,6 +22,29 @@ from rich.markup import escape as _escape
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    @staticmethod
+    def _compose_kanban_worker_callback(primary, secondary):
+        """Compose an existing UI callback with a best-effort Kanban activity callback."""
+        if secondary is None:
+            return primary
+        if primary is None:
+            def only_secondary(*args, **kwargs):
+                try:
+                    secondary(*args, **kwargs)
+                except Exception:
+                    pass
+            return only_secondary
+
+        def composed(*args, **kwargs):
+            try:
+                primary(*args, **kwargs)
+            finally:
+                try:
+                    secondary(*args, **kwargs)
+                except Exception:
+                    pass
+        return composed
+
     def _ensure_runtime_credentials(self) -> bool:
         """
         Ensure runtime credentials are resolved before agent use.
@@ -340,6 +363,27 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            kanban_activity = None
+            try:
+                from hermes_cli.kanban_worker_activity import KanbanWorkerActivityJournal
+                kanban_activity = KanbanWorkerActivityJournal.from_environment()
+                self._kanban_activity_journal = kanban_activity
+            except Exception:
+                kanban_activity = None
+                self._kanban_activity_journal = None
+
+            tool_progress_callback = self._on_tool_progress
+            tool_start_callback = self._on_tool_start if self._inline_diffs_enabled else None
+            tool_complete_callback = self._on_tool_complete if self._inline_diffs_enabled else None
+            stream_delta_callback = self._stream_delta if self.streaming_enabled else None
+            interim_assistant_callback = None
+            if kanban_activity is not None:
+                tool_progress_callback = self._compose_kanban_worker_callback(tool_progress_callback, kanban_activity.tool_progress)
+                tool_start_callback = self._compose_kanban_worker_callback(tool_start_callback, kanban_activity.tool_start)
+                tool_complete_callback = self._compose_kanban_worker_callback(tool_complete_callback, kanban_activity.tool_complete)
+                stream_delta_callback = self._compose_kanban_worker_callback(stream_delta_callback, kanban_activity.stream_delta)
+                interim_assistant_callback = kanban_activity.assistant_text
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -383,10 +427,11 @@ class CLIAgentSetupMixin:
                 pass_session_id=self.pass_session_id,
                 skip_context_files=self.ignore_rules,
                 skip_memory=self.ignore_rules,
-                tool_progress_callback=self._on_tool_progress,
-                tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
-                tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
-                stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
+                tool_progress_callback=tool_progress_callback,
+                tool_start_callback=tool_start_callback,
+                tool_complete_callback=tool_complete_callback,
+                stream_delta_callback=stream_delta_callback,
+                interim_assistant_callback=interim_assistant_callback,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
@@ -405,6 +450,22 @@ class CLIAgentSetupMixin:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Kanban dispatcher workers are plain CLI agents launched with
+            # HERMES_KANBAN_TASK in their environment. Compose a best-effort
+            # journal onto the existing callbacks so dashboards can show
+            # observable progress (tools + visible assistant text) without
+            # exposing private reasoning and without affecting ordinary CLI runs.
+            try:
+                from hermes_cli.kanban_worker_journal import install_on_agent
+
+                install_on_agent(self.agent)
+            except Exception:
+                logger.debug("kanban worker journal install failed", exc_info=True)
+            if kanban_activity is not None:
+                try:
+                    kanban_activity.start_steer_polling(self.agent)
+                except Exception:
+                    logger.debug("kanban worker activity steer polling failed", exc_info=True)
             # Hydrate credits notices at session OPEN (parity with the TUI), so a
             # depletion / usage-band warning shows before the first message. The
             # notice_callback is bound above → _on_notice renders the line. Idempotent

@@ -33,6 +33,7 @@ from gateway.stream_events import (
     ToolCallChunk,
     ToolCallFinished,
 )
+from gateway.progress_summary import ToolProgressSummary
 
 logger = logging.getLogger("gateway.stream_events")
 
@@ -55,8 +56,8 @@ class GatewayEventDispatcher:
         progress queue (the same queue ``send_progress_messages`` drains).  May
         be None when tool progress is disabled for this channel.
     tool_mode:
-        Resolved tool-progress mode for this channel ("all" / "new" / "verbose"
-        / "off").
+        Resolved tool-progress mode for this channel ("all" / "new" /
+        "summary" / "verbose" / "off").
     preview_max_len:
         Resolved ``tool_preview_length`` (0 = no cap in verbose mode).
     on_long_tool / on_notice:
@@ -84,6 +85,7 @@ class GatewayEventDispatcher:
         self._on_notice = on_notice
         # "new" mode dedup — only report when the tool changes.
         self._last_tool: Optional[str] = None
+        self._summary = ToolProgressSummary() if self.tool_mode == "summary" else None
 
     def dispatch(self, event: StreamEvent) -> None:
         """Route a single event.  Never raises into the agent's worker thread."""
@@ -101,6 +103,13 @@ class GatewayEventDispatcher:
         if isinstance(event, ToolCallChunk):
             if self.tool_mode == "off" or self._enqueue_tool_line is None:
                 return
+            if self._summary is not None:
+                rendered = self._summary.update(
+                    "tool.started", event.tool_name, event.preview, event.args
+                )
+                if rendered:
+                    self._enqueue_tool_line(("__replace__", rendered))
+                return
             # "new" mode: only emit when the tool changes.
             if self.tool_mode == "new" and event.tool_name == self._last_tool:
                 return
@@ -114,8 +123,20 @@ class GatewayEventDispatcher:
             return
 
         if isinstance(event, ToolCallFinished):
-            # Default: no chrome on completion (matches today — the gateway only
-            # rendered "started" events).  Completion drives onboarding hints.
+            if self._summary is not None and self._enqueue_tool_line is not None:
+                rendered = self._summary.update(
+                    "tool.completed",
+                    event.tool_name,
+                    None,
+                    None,
+                    duration=event.duration,
+                    is_error=not event.ok,
+                )
+                if rendered:
+                    self._enqueue_tool_line(("__replace__", rendered))
+            # Default non-summary path: no chrome on completion (matches today —
+            # the gateway only rendered "started" events). Completion also
+            # drives onboarding hints through LongToolHint.
             return
 
         if isinstance(event, LongToolHint):

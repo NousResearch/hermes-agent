@@ -15452,6 +15452,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # fenced code block — consecutive terminal calls then drop the
         # repeated "💻 terminal" header and render back-to-back blocks.
         last_was_terminal_block = [False]
+        summary_progress = None
+        if str(progress_mode or "").lower() == "summary":
+            try:
+                from gateway.progress_summary import ToolProgressSummary
+                summary_progress = ToolProgressSummary()
+            except Exception as _summary_err:
+                logger.debug("tool-progress summary renderer unavailable: %s", _summary_err)
+                summary_progress = None
 
         # ── Discord voice "verbal ack before tool calls" ────────────────
         # When the bot is in a voice channel with the continuous mixer
@@ -15521,6 +15529,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not progress_queue or not _run_still_current():
                 return
 
+            # "_thinking" is assistant scratch text between tool calls.  It
+            # is never ordinary tool progress: only relay it when the platform
+            # explicitly opted into thinking_progress.  Handle both legacy
+            # callback shapes: ("_thinking", text) and
+            # ("reasoning.available", "_thinking", text, ...).
+            if event_type == "_thinking" or tool_name == "_thinking":
+                if not _thinking_enabled:
+                    return
+                thinking_text = preview if tool_name == "_thinking" else tool_name
+                msg = f"💬 {thinking_text}" if thinking_text else None
+                if msg:
+                    progress_queue.put(msg)
+                return
+
+            # Summary mode is the mobile/chat-oriented alternative to raw tool
+            # chrome. It replaces the progress bubble with one operational
+            # snapshot (stage, safe action detail, counters, agent/profile
+            # status) instead of appending every half-visible tool call.
+            if summary_progress is not None:
+                try:
+                    rendered_summary = summary_progress.update(
+                        event_type, tool_name, preview, args, **kwargs
+                    )
+                except Exception as _summary_err:
+                    logger.debug("tool-progress summary update failed: %s", _summary_err)
+                    rendered_summary = None
+                if rendered_summary:
+                    progress_queue.put(("__replace__", rendered_summary))
+                return
+
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
             # (progress_mode == "all"), append a one-time hint suggesting
@@ -15548,20 +15586,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
-                return
-
-            # "_thinking" is assistant scratch text between tool calls.  It
-            # is never ordinary tool progress: only relay it when the platform
-            # explicitly opted into thinking_progress.  Handle both legacy
-            # callback shapes: ("_thinking", text) and
-            # ("reasoning.available", "_thinking", text, ...).
-            if event_type == "_thinking" or tool_name == "_thinking":
-                if not _thinking_enabled:
-                    return
-                thinking_text = preview if tool_name == "_thinking" else tool_name
-                msg = f"💬 {thinking_text}" if thinking_text else None
-                if msg:
-                    progress_queue.put(msg)
                 return
 
             # If tool_progress is off, only _thinking passes through (above).
@@ -15903,6 +15927,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__replace__":
+                        # Summary mode: replace the editable bubble content
+                        # with one fresh operational snapshot instead of
+                        # accumulating historical tool lines.
+                        msg = str(raw[1])
+                        progress_lines = [msg]
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -16025,6 +16055,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                     await _roll_progress_overflow_if_needed()
+                            elif isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__replace__":
+                                progress_lines = [str(raw[1])]
+                                await _roll_progress_overflow_if_needed()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh

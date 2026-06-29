@@ -12024,6 +12024,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+            if response:
+                try:
+                    from hermes_cli.kanban_worker_journal import record_final_assistant
+
+                    record_final_assistant(self.agent, response)
+                except Exception:
+                    logging.debug("kanban worker final assistant journal failed", exc_info=True)
+                try:
+                    _kanban_activity = getattr(self, "_kanban_activity_journal", None)
+                    if _kanban_activity is not None:
+                        _kanban_activity.flush_assistant_text()
+                        _kanban_activity.assistant_text(response)
+                except Exception:
+                    logging.debug("kanban worker activity final assistant journal failed", exc_info=True)
 
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
@@ -15592,6 +15606,13 @@ def main(
                         ):
                             cli.session_id = cli.agent.session_id
                         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                        if response:
+                            try:
+                                from hermes_cli.kanban_worker_journal import record_final_assistant
+
+                                record_final_assistant(cli.agent, response)
+                            except Exception:
+                                logger.debug("kanban worker final assistant journal failed", exc_info=True)
                         # Surface backend errors that produced no visible output
                         # (e.g. invalid model slug → provider 4xx). Mirrors the
                         # interactive CLI path. Write to stderr so piped stdout

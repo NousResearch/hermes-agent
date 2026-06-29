@@ -155,6 +155,12 @@ class TestYAMLNormalisation:
         config = {"display": {"platforms": {"whatsapp": {"tool_progress": "generic"}}}}
         assert resolve_display_setting(config, "whatsapp", "tool_progress") == "all"
 
+    def test_tool_progress_mode_strips_whitespace(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"tool_progress": " off\n"}}}}
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "off"
+
     def test_only_long_running_visibility_accepts_generic_mode(self):
         from gateway.display_config import resolve_display_setting
 

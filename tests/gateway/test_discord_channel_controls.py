@@ -327,6 +327,8 @@ async def test_council_mode_opens_huddle_invites_workers_closes_and_synthesizes(
     assert huddle.id in {8000, "8000"} or str(huddle.id) == "8000"
     assert len(huddle.added_users) == 3
     assert "<@111>" in huddle.sent_messages[0]
+    assert "no further input" in huddle.sent_messages[0]
+    assert "After `Huddle closed`, stop completely" in huddle.sent_messages[0]
     assert not huddle.sent_messages[0].startswith("Huddle closed")
     assert "@Crew is coordinator-led" in channel.sent_messages[0]
     assert "bounded crew huddle" in channel.sent_messages[0]

@@ -4673,8 +4673,9 @@ class DiscordAdapter(BasePlatformAdapter):
             "Worker rules:",
             "- Reply once, briefly, only for your assigned perspective.",
             "- Do not run tools unless the brief explicitly asks you to.",
-            "- Do not reply to acknowledgements, thanks, lol/ok, or the close marker.",
-            "- When the coordinator posts `Huddle closed`, stop unless this huddle is reopened or you are tagged directly.",
+            "- After you have given your assigned one-round reply, your only valid follow-up action is silence unless directly tagged by name after the close marker.",
+            "- Do not post acknowledgements such as 'standing by', 'no further input', 'already answered', 'ok', or similar.",
+            "- After `Huddle closed`, stop completely unless this huddle is explicitly reopened or you are directly tagged.",
             "",
             "Assignments:",
         ]

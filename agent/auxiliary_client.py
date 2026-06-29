@@ -4769,6 +4769,10 @@ def resolve_vision_provider_client(
     # while the OpenAI wire handles it correctly.
     if requested == "zai" and not resolved_base_url:
         zai_openai_urls = [
+            # Coding-plan endpoint first so Z.AI coding-plan subscribers consume
+            # subscription quota, not metered pay-as-you-go credit. Falls through
+            # to the metered endpoints below for non-subscription keys (#55112).
+            "https://api.z.ai/api/coding/paas/v4",
             "https://open.bigmodel.cn/api/paas/v4",
             "https://api.z.ai/api/paas/v4",
         ]

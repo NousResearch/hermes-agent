@@ -1872,3 +1872,32 @@ class TestDiscoverBedrockModelsNoCache:
         assert fake.list_foundation_models.call_count == 1, (
             "cached call must not re-invoke the AWS API"
         )
+
+
+class TestBedrockModelIdsOrNonePlumbsFilter:
+    """Regression guard: the call site must pass the *configured* filter into
+    discovery, so bedrock.discovery.provider_filter cannot silently go dead."""
+
+    def test_configured_filter_reaches_discover_call(self):
+        import agent.bedrock_adapter as ba
+        sentinel = ["anthropic"]
+        with patch.object(ba, "configured_bedrock_provider_filter",
+                          return_value=sentinel) as cfg, \
+             patch.object(ba, "discover_bedrock_models",
+                          return_value=[{"id": "anthropic.claude-opus-4"}]) as disc, \
+             patch.object(ba, "resolve_bedrock_region", return_value="us-east-1"):
+            ids = ba.bedrock_model_ids_or_none()
+        assert ids == ["anthropic.claude-opus-4"]
+        cfg.assert_called_once()
+        # The configured filter sentinel must be forwarded verbatim.
+        _, kwargs = disc.call_args
+        assert kwargs.get("provider_filter") == sentinel
+
+    def test_no_cache_flag_is_forwarded(self):
+        import agent.bedrock_adapter as ba
+        with patch.object(ba, "configured_bedrock_provider_filter", return_value=None), \
+             patch.object(ba, "discover_bedrock_models", return_value=[]) as disc, \
+             patch.object(ba, "resolve_bedrock_region", return_value="us-east-1"):
+            ba.bedrock_model_ids_or_none(no_cache=True)
+        _, kwargs = disc.call_args
+        assert kwargs.get("no_cache") is True

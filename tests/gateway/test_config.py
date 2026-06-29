@@ -71,6 +71,55 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    # ── home_channel_startup_notification (issue #27870) ────────────────
+
+    def test_home_channel_startup_notification_defaults_restart_only(self):
+        assert PlatformConfig().home_channel_startup_notification == "restart_only"
+        assert PlatformConfig.from_dict({}).home_channel_startup_notification == "restart_only"
+
+    def test_home_channel_startup_notification_roundtrip_always(self):
+        pc = PlatformConfig(enabled=True, home_channel_startup_notification="always")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.home_channel_startup_notification == "always"
+
+    def test_home_channel_startup_notification_roundtrip_off(self):
+        pc = PlatformConfig(enabled=True, home_channel_startup_notification="off")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.home_channel_startup_notification == "off"
+
+    def test_home_channel_startup_notification_case_insensitive(self):
+        restored = PlatformConfig.from_dict({"home_channel_startup_notification": "ALWAYS"})
+        assert restored.home_channel_startup_notification == "always"
+        restored = PlatformConfig.from_dict({"home_channel_startup_notification": "  Off  "})
+        assert restored.home_channel_startup_notification == "off"
+
+    def test_home_channel_startup_notification_unknown_value_falls_back_to_default(self):
+        # Unknown / typo values get clamped to the safe default rather than
+        # surfacing a runtime error during config load.
+        restored = PlatformConfig.from_dict({"home_channel_startup_notification": "yes"})
+        assert restored.home_channel_startup_notification == "restart_only"
+        restored = PlatformConfig.from_dict({"home_channel_startup_notification": ""})
+        assert restored.home_channel_startup_notification == "restart_only"
+
+    def test_home_channel_startup_notification_bridged_via_extra(self):
+        # Mirrors the gateway_restart_notification bridging: YAML can set it
+        # under `extra:` (e.g. via the shared-key loop in load_gateway_config)
+        # and from_dict picks it up.
+        restored = PlatformConfig.from_dict({"extra": {"home_channel_startup_notification": "always"}})
+        assert restored.home_channel_startup_notification == "always"
+
+    def test_home_channel_startup_notification_top_level_wins_over_extra(self):
+        restored = PlatformConfig.from_dict({
+            "home_channel_startup_notification": "off",
+            "extra": {"home_channel_startup_notification": "always"},
+        })
+        assert restored.home_channel_startup_notification == "off"
+
+    def test_home_channel_startup_notification_in_to_dict(self):
+        pc = PlatformConfig(home_channel_startup_notification="always")
+        d = pc.to_dict()
+        assert d["home_channel_startup_notification"] == "always"
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):

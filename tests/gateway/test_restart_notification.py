@@ -688,3 +688,155 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "462",
     }
+
+
+# ── home_channel_startup_notification gating (issue #27870) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_restart_only_fires_on_planned(tmp_path, monkeypatch):
+    """Default mode `restart_only` fires when the restart is planned."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    # restart_only is the default — explicit for clarity.
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "restart_only"
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications(is_planned_restart=True)
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_restart_only_skips_on_unplanned(tmp_path, monkeypatch):
+    """Default mode `restart_only` is silent on unplanned restarts (crash/OOM)."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "restart_only"
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications(is_planned_restart=False)
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_always_fires_on_planned(tmp_path, monkeypatch):
+    """`always` mode fires on every startup — including planned ones."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "always"
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications(is_planned_restart=True)
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_always_fires_on_unplanned(tmp_path, monkeypatch):
+    """`always` mode fires on unplanned restarts — the main use case from #27870."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "always"
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications(is_planned_restart=False)
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_off_skips_on_planned(tmp_path, monkeypatch):
+    """`off` mode never fires the startup ping — even for planned restarts."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "off"
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications(is_planned_restart=True)
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_off_skips_on_unplanned(tmp_path, monkeypatch):
+    """`off` is uniform: never fires, regardless of restart kind."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "off"
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications(is_planned_restart=False)
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_gateway_restart_notification_false_wins(tmp_path, monkeypatch):
+    """`gateway_restart_notification=False` suppresses the startup ping even when
+    `home_channel_startup_notification=always` would otherwise fire it.
+    Backward-compat: the existing umbrella flag still acts as the master kill switch."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+    runner.config.platforms[Platform.TELEGRAM].home_channel_startup_notification = "always"
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_home_channel_startup_notifications(is_planned_restart=False)
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_notification_default_param_is_planned_for_backward_compat(tmp_path, monkeypatch):
+    """Default `is_planned_restart=True` preserves prior behaviour: callers that
+    don't pass the new kwarg keep getting the planned-restart semantics."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="home-42", name="Ops",
+    )
+    # default mode is restart_only; default is_planned_restart=True → fires.
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications()  # no kwargs
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once()

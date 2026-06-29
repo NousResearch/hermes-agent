@@ -345,6 +345,22 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Controls WHEN the gateway sends "♻️ Gateway online" to the home channel
+    # on startup. Resolves issue #27870.
+    #   "restart_only" (default, preserves prior behavior) — only after a
+    #       chat /restart or other planned-restart path (terminal / SIGUSR1
+    #       / `hermes gateway restart` / `hermes update`).
+    #   "always" — every startup, including unplanned (crash recovery, OOM,
+    #       systemd `Restart=on-failure` auto-restart). Useful for
+    #       production deployments where the operator needs visibility on
+    #       any service bounce, not just intentional ones.
+    #   "off" — never send the startup ping on this platform. Equivalent in
+    #       effect to `gateway_restart_notification=False` for the startup
+    #       path, but lets you keep the shutdown ping on.
+    # Ignored entirely when `gateway_restart_notification=False` — that flag
+    # already suppresses ALL lifecycle pings (shutdown, startup, restart).
+    home_channel_startup_notification: str = "restart_only"
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -354,6 +370,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "home_channel_startup_notification": self.home_channel_startup_notification,
         }
         if self.token:
             result["token"] = self.token
@@ -377,6 +394,14 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        # home_channel_startup_notification — same bridging shape as above.
+        _hcsn = data.get("home_channel_startup_notification")
+        if _hcsn is None:
+            _hcsn = data.get("extra", {}).get("home_channel_startup_notification")
+        _hcsn_normalized = str(_hcsn).strip().lower() if _hcsn is not None else "restart_only"
+        if _hcsn_normalized not in ("restart_only", "always", "off"):
+            _hcsn_normalized = "restart_only"
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -384,6 +409,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            home_channel_startup_notification=_hcsn_normalized,
             extra=data.get("extra", {}),
         )
 
@@ -1032,6 +1058,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "home_channel_startup_notification" in platform_cfg:
+                    bridged["home_channel_startup_notification"] = platform_cfg["home_channel_startup_notification"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

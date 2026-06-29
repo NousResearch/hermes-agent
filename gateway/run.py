@@ -6419,17 +6419,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
+        # channels. Default behavior (preserves prior): only fire for non-chat
+        # planned restarts (terminal / SIGUSR1 / service-managed restart paths
+        # that wrote the planned-restart marker). Chat-originated /restart has
+        # its own precise reply target in .restart_notify.json so we don't
+        # double-notify the originating chat via the configured home channel.
+        #
+        # Per-platform opt-in `home_channel_startup_notification: always`
+        # extends this to fire on EVERY startup — including unplanned ones
+        # (crash recovery, OOM, systemd `Restart=on-failure`). Resolves
+        # issue #27870. The decision is per-platform inside the function so
+        # mixed configs (one platform always, another restart_only) work.
+        any_platform_always = any(
+            getattr(p_cfg, "home_channel_startup_notification", "restart_only") == "always"
+            for p_cfg in self.config.platforms.values()
+        )
+        if planned_restart_notification_pending or any_platform_always:
             try:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,
+                    is_planned_restart=planned_restart_notification_pending,
                 )
             finally:
-                _clear_planned_restart_notification()
+                if planned_restart_notification_pending:
+                    _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -13439,12 +13452,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         *,
         skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        is_planned_restart: bool = True,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify configured home channels that the gateway is back online.
 
         The notification is best-effort and sent once per connected platform
         home channel. ``skip_targets`` lets startup avoid duplicate messages
         when a more specific restart notification is queued for the same chat.
+
+        ``is_planned_restart`` distinguishes planned restarts (chat ``/restart``,
+        SIGUSR1, terminal restart) from unplanned ones (crash recovery, OOM,
+        systemd ``Restart=on-failure`` auto-restart). Combined with each
+        platform's ``home_channel_startup_notification`` config it determines
+        whether to send the startup ping on that platform:
+
+        * ``restart_only`` (default) — fire only when ``is_planned_restart=True``
+        * ``always`` — fire on every startup, planned or not (issue #27870)
+        * ``off`` — never fire the startup ping (shutdown ping still fires
+                    independently via ``_notify_active_sessions_of_shutdown``)
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
@@ -13459,6 +13484,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
+                    platform.value,
+                )
+                continue
+
+            # Per-platform startup-notification gate (issue #27870).
+            # Skip if the operator explicitly turned it off or asked for
+            # planned-only behavior and this isn't a planned restart.
+            mode = getattr(platform_cfg, "home_channel_startup_notification", "restart_only") if platform_cfg is not None else "restart_only"
+            if mode == "off":
+                logger.info(
+                    "Home-channel startup notification suppressed: %s has home_channel_startup_notification=off",
+                    platform.value,
+                )
+                continue
+            if mode == "restart_only" and not is_planned_restart:
+                logger.debug(
+                    "Home-channel startup notification skipped: %s has home_channel_startup_notification=restart_only and this is an unplanned restart",
                     platform.value,
                 )
                 continue

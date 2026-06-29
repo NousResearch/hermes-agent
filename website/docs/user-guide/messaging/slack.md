@@ -126,7 +126,7 @@ This step is critical — it controls what messages the bot can see.
 | Event | Required? | Purpose |
 |-------|-----------|---------|
 | `message.im` | **Yes** | Bot receives direct messages |
-| `message.mpim` | **Recommended** | Bot receives messages in **group DMs** (multi-person DMs) it's added to |
+| `message.mpim` | **Yes** | Bot receives messages in **group DMs** (multi-person DMs) it's added to |
 | `message.channels` | **Yes** | Bot receives messages in **public** channels it's added to |
 | `message.groups` | **Recommended** | Bot receives messages in **private** channels it's invited to |
 | `app_mention` | **Yes** | Prevents Bolt SDK errors when bot is @mentioned |

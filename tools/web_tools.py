@@ -41,6 +41,8 @@ import logging
 import os
 import re
 import asyncio
+import ipaddress
+from urllib.parse import urlparse
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
@@ -891,6 +893,38 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return tool_error(error_msg)
 
 
+def _validate_extract_url(url: str) -> tuple[bool, Optional[str]]:
+    """Validate a URL for web_extract before backend dispatch.
+
+    Returns (True, None) for valid URLs, (False, error_message) for rejected ones.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, "Malformed URL: could not parse"
+
+    if parsed.scheme not in ("http", "https"):
+        return False, f"Invalid scheme '{parsed.scheme}': only http and https are supported"
+
+    if not parsed.hostname:
+        return False, "Malformed URL: no hostname found"
+
+    # Catch known local hostnames before DNS resolution.
+    if parsed.hostname.lower() in ("localhost", "127.0.0.1", "::1"):
+        return False, "Blocked: URL targets a private or internal network address"
+
+    try:
+        addr = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        # Not a bare IP address — DNS resolution is handled by async_is_safe_url
+        return True, None
+
+    if addr.is_private or addr.is_loopback or addr.is_link_local:
+        return False, "Blocked: URL targets a private or internal network address"
+
+    return True, None
+
+
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
@@ -960,10 +994,19 @@ async def web_extract_tool(
     try:
         logger.info("Extracting content from %d URL(s)", len(normalized_urls))
 
-        # ── SSRF protection — filter out private/internal URLs before any backend ──
+        # ── URL validation + SSRF protection — filter out invalid/private URLs
+        # before any backend call. Per-URL: bad URLs are rejected locally without
+        # failing the whole batch.
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
         for url in normalized_urls:
+            valid, err = _validate_extract_url(url)
+            if not valid:
+                ssrf_blocked.append({
+                    "url": url, "title": "", "content": "",
+                    "error": err,
+                })
+                continue
             if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",

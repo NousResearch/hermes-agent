@@ -268,7 +268,7 @@ function UseAsMenu({
   }, [open]);
 
   return (
-    <div className="relative" data-use-as-menu>
+    <div className={cn("relative", open && "z-20")} data-use-as-menu>
       <Button
         size="sm"
         outlined
@@ -392,7 +392,7 @@ function ModelCard({
 
   return (
     <Card
-      className={`min-w-0 max-w-full overflow-hidden${isMain ? " ring-1 ring-primary/40" : ""}`}
+      className={cn("min-w-0 max-w-full", isMain && "ring-1 ring-primary/40")}
     >
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-2">

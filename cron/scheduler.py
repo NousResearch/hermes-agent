@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -297,6 +298,9 @@ _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
+_live_delivery_adapters = None
+_live_delivery_loop = None
+_live_delivery_config = None
 
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
@@ -373,6 +377,28 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
         )
         _parallel_pool_max_workers = max_workers
     return _parallel_pool
+
+
+def _resolve_max_parallel_workers() -> Optional[int]:
+    """Resolve the configured parallel-worker cap for cron jobs."""
+    max_workers: Optional[int] = None
+    try:
+        env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+        if env_par:
+            max_workers = int(env_par) or None
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
+    if max_workers is None:
+        try:
+            user_cfg = load_config() or {}
+            cfg_par = (
+                user_cfg.get("cron", {}) if isinstance(user_cfg, dict) else {}
+            ).get("max_parallel_jobs")
+            if cfg_par is not None:
+                max_workers = int(cfg_par) or None
+        except Exception:
+            pass
+    return max_workers
 
 
 def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
@@ -460,6 +486,68 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _try_lock_file(lock_fd) -> bool:
+    """Attempt a non-blocking exclusive lock on an already-open file."""
+    try:
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except (OSError, IOError):
+        return False
+
+
+def _unlock_file(lock_fd) -> None:
+    """Release a lock previously acquired with _try_lock_file()."""
+    if fcntl:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except (OSError, IOError):
+            pass
+    elif msvcrt:
+        try:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+        except (OSError, IOError):
+            pass
+
+
+def _get_job_run_lock_path(job_id: str) -> Path:
+    """Return the per-job cross-process run lock file path."""
+    lock_dir, _tick_lock = _get_lock_paths()
+    digest = hashlib.sha256(str(job_id).encode("utf-8")).hexdigest()
+    return lock_dir / f".job-run-{digest}.lock"
+
+
+def _claim_running_job(job_id: str):
+    """Claim a job for execution across both threads and processes."""
+    with _running_lock:
+        if job_id in _running_job_ids:
+            return None
+        lock_file = _get_job_run_lock_path(job_id)
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_file, "a+", encoding="utf-8")
+        try:
+            if not _try_lock_file(lock_fd):
+                lock_fd.close()
+                return None
+        except Exception:
+            lock_fd.close()
+            raise
+        _running_job_ids.add(job_id)
+        return lock_fd
+
+
+def _release_running_job(job_id: str, lock_fd) -> None:
+    """Release a prior _claim_running_job() claim."""
+    with _running_lock:
+        _running_job_ids.discard(job_id)
+    if lock_fd is None:
+        return
+    _unlock_file(lock_fd)
+    lock_fd.close()
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -3249,6 +3337,276 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _job_requires_sequential_pool(job: dict) -> bool:
+    """Run workdir jobs serially because they mutate process-global cwd/env state."""
+    return bool((job.get("workdir") or "").strip())
+
+
+def _restore_manual_run_schedule(job_id: str, schedule_snapshot: Optional[dict]) -> None:
+    """Restore the pre-manual-run scheduling fields after a skipped or failed dispatch."""
+    from cron.jobs import update_job
+
+    updates = {
+        "manual_run_schedule_snapshot": None,
+        "manual_run_gateway_only": None,
+    }
+    if schedule_snapshot:
+        updates.update(
+            {
+                "enabled": schedule_snapshot.get("enabled", True),
+                "state": schedule_snapshot.get("state"),
+                "paused_at": schedule_snapshot.get("paused_at"),
+                "paused_reason": schedule_snapshot.get("paused_reason"),
+                "next_run_at": schedule_snapshot.get("next_run_at"),
+            }
+        )
+
+    update_job(job_id, updates)
+
+
+def _queue_manual_run_for_tick(job_id: str, schedule_snapshot: Optional[dict]) -> None:
+    """Queue a manual run for the next gateway tick while preserving the schedule."""
+    from cron.jobs import update_job
+
+    update_job(
+        job_id,
+        {
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "next_run_at": _hermes_now().isoformat(),
+            "manual_run_schedule_snapshot": schedule_snapshot,
+            "manual_run_gateway_only": True,
+        },
+    )
+
+
+def _resolve_live_delivery_context():
+    """Return the best available live adapter context for cron delivery."""
+    global _live_delivery_adapters, _live_delivery_loop, _live_delivery_config
+
+    adapters = _live_delivery_adapters
+    loop = _live_delivery_loop
+    if adapters is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        return adapters, loop
+
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    if runner is not None:
+        runner_adapters = getattr(runner, "adapters", None)
+        runner_loop = getattr(runner, "_gateway_loop", None)
+        runner_config = getattr(runner, "config", None)
+        if runner_adapters is not None and runner_loop is not None and getattr(runner_loop, "is_running", lambda: False)():
+            _live_delivery_adapters = runner_adapters
+            _live_delivery_loop = runner_loop
+            if runner_config is not None:
+                _live_delivery_config = runner_config
+            return runner_adapters, runner_loop
+
+    return adapters, loop
+
+
+def _resolve_live_delivery_runtime_config():
+    """Return the best available gateway config for live-delivery checks."""
+    global _live_delivery_config
+    if _live_delivery_config is not None:
+        return _live_delivery_config
+
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    if runner is not None:
+        runner_config = getattr(runner, "config", None)
+        if runner_config is not None:
+            _live_delivery_config = runner_config
+            return runner_config
+
+    try:
+        from gateway.config import load_gateway_config
+
+        return load_gateway_config()
+    except Exception:
+        return None
+
+
+def _target_requires_live_delivery_context(target: dict, config=None, platform_registry=None) -> bool:
+    """Return True when one resolved delivery target requires a live adapter."""
+    platform_name = str((target or {}).get("platform") or "").strip().lower()
+    if not platform_name:
+        return False
+
+    try:
+        from gateway.config import Platform
+    except Exception:
+        return False
+
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        platform = None
+    pconfig = config.platforms.get(platform) if config is not None and platform is not None else None
+    if platform_name == "matrix" and bool(((getattr(pconfig, "extra", None) or {}).get("encryption"))):
+        return True
+    if platform_name not in _KNOWN_DELIVERY_PLATFORMS:
+        entry = platform_registry.get(platform_name) if platform_registry is not None else None
+        if entry is None or entry.standalone_sender_fn is None:
+            return True
+    return False
+
+
+def _adapter_for_delivery_platform(adapters, platform_name: str):
+    """Return the live adapter registered for one concrete delivery platform."""
+    if not adapters:
+        return None
+    try:
+        from gateway.config import Platform
+
+        return adapters.get(Platform(platform_name)) or adapters.get(platform_name)
+    except Exception:
+        return adapters.get(platform_name)
+
+
+def _job_requires_live_delivery_context(job: dict) -> bool:
+    """Return True when a job's delivery target cannot safely fall back standalone."""
+    targets = _resolve_delivery_targets(job)
+    if not targets:
+        return False
+
+    config = _resolve_live_delivery_runtime_config()
+    if config is None:
+        return False
+
+    try:
+        from gateway.platform_registry import platform_registry
+    except Exception:
+        platform_registry = None
+
+    return any(
+        _target_requires_live_delivery_context(target, config=config, platform_registry=platform_registry)
+        for target in targets
+    )
+
+
+def _job_has_required_live_delivery_context(job: dict, adapters=None, loop=None) -> bool:
+    """Return True when all live-delivery-only targets have an active adapter."""
+    targets = _resolve_delivery_targets(job)
+    if not targets:
+        return True
+
+    config = _resolve_live_delivery_runtime_config()
+    if config is None:
+        return False
+
+    try:
+        from gateway.platform_registry import platform_registry
+    except Exception:
+        platform_registry = None
+
+    live_targets = [
+        target
+        for target in targets
+        if _target_requires_live_delivery_context(target, config=config, platform_registry=platform_registry)
+    ]
+    if not live_targets:
+        return True
+
+    if adapters is None or loop is None:
+        adapters, loop = _resolve_live_delivery_context()
+    if adapters is None or loop is None or not getattr(loop, "is_running", lambda: False)():
+        return False
+
+    return all(
+        _adapter_for_delivery_platform(adapters, str(target.get("platform") or "").strip().lower()) is not None
+        for target in live_targets
+        if str(target.get("platform") or "").strip()
+    )
+
+
+def _sweep_mcp_orphans() -> None:
+    """Best-effort cleanup for orphaned MCP stdio subprocesses."""
+    try:
+        from tools.mcp_tool import _kill_orphaned_mcp_children
+
+        _kill_orphaned_mcp_children()
+    except Exception as exc:
+        logger.debug("Post-run MCP orphan cleanup failed: %s", exc)
+
+
+def run_job_immediate(job_id: str, schedule_snapshot: Optional[dict] = None) -> tuple[bool, Optional[str]]:
+    """Dispatch a job immediately, outside the scheduler tick loop."""
+    from cron.jobs import resolve_job_ref, save_job_output, advance_next_run
+
+    job = resolve_job_ref(job_id)
+    if not job:
+        return False, f"Job '{job_id}' not found"
+
+    run_lock = _claim_running_job(job["id"])
+    if run_lock is None:
+        _restore_manual_run_schedule(job["id"], schedule_snapshot)
+        return False, f"Job '{job_id}' is already running; this manual run was not queued"
+
+    try:
+        pool = (
+            _get_sequential_pool()
+            if _job_requires_sequential_pool(job)
+            else _get_parallel_pool(_resolve_max_parallel_workers())
+        )
+        ctx = contextvars.copy_context()
+        adapters, loop = _resolve_live_delivery_context()
+    except Exception:
+        _release_running_job(job["id"], run_lock)
+        _restore_manual_run_schedule(job["id"], schedule_snapshot)
+        raise
+
+    def _run_and_release(j=job, run_ctx=ctx, job_lock=run_lock):
+        try:
+            success, output, final_response, error = run_ctx.run(run_job, j)
+            if success and not schedule_snapshot:
+                advance_next_run(j["id"])
+            save_job_output(j["id"], output)
+            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(j, error)
+            should_deliver = bool(deliver_content.strip())
+            if should_deliver and success and _is_cron_silence_response(deliver_content):
+                should_deliver = False
+            delivery_error = None
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(j, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+            if success and not final_response.strip():
+                success = False
+                error = "Agent completed but produced empty response"
+            mark_job_run(j["id"], success, error, delivery_error=delivery_error)
+            if schedule_snapshot:
+                _restore_manual_run_schedule(j["id"], schedule_snapshot)
+        except Exception as exc:
+            logger.error("Immediate run of job %s failed: %s", j["id"], exc)
+            mark_job_run(j["id"], False, str(exc))
+            _restore_manual_run_schedule(j["id"], schedule_snapshot)
+        finally:
+            _release_running_job(j["id"], job_lock)
+            _sweep_mcp_orphans()
+
+    try:
+        pool.submit(_run_and_release)
+    except Exception:
+        _release_running_job(job["id"], run_lock)
+        _restore_manual_run_schedule(job["id"], schedule_snapshot)
+        raise
+    return True, None
+
+
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -3411,6 +3769,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
+    global _live_delivery_adapters, _live_delivery_loop
+    if adapters is not None and loop is not None:
+        _live_delivery_adapters = adapters
+        _live_delivery_loop = loop
+
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3418,10 +3781,8 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
     lock_fd = None
     try:
         lock_fd = open(lock_file, "w", encoding="utf-8")
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        elif msvcrt:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        if not _try_lock_file(lock_fd):
+            raise OSError("tick lock busy")
     except (OSError, IOError):
         logger.debug("Tick skipped — another instance holds the lock")
         if lock_fd is not None:
@@ -3448,23 +3809,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
-        _max_workers: Optional[int] = None
-        try:
-            _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
-            if _env_par:
-                _max_workers = int(_env_par) or None
-        except (ValueError, TypeError):
-            logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
-        if _max_workers is None:
-            try:
-                _ucfg = load_config() or {}
-                _cfg_par = (
-                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-                ).get("max_parallel_jobs")
-                if _cfg_par is not None:
-                    _max_workers = int(_cfg_par) or None
-            except Exception:
-                pass
+        _max_workers = _resolve_max_parallel_workers()
 
         if verbose:
             logger.info(
@@ -3480,14 +3825,12 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             body."""
             return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so
-        # they queue on the single-thread sequential pool to run one at a time.
-        # That alone only keeps workdir jobs from overlapping EACH OTHER;
-        # run_job's _terminal_cwd_lock is what additionally stops a concurrently
-        # firing workdir-less parallel-pool job from observing the override.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Workdir-triggered jobs mutate process-global cwd/env state, so they
+        # must stay on the serialized executor. run_job's _terminal_cwd_lock
+        # still matters: it prevents concurrently firing workdir-less jobs
+        # from observing another job's temporary TERMINAL_CWD override.
+        sequential_jobs = [j for j in due_jobs if _job_requires_sequential_pool(j)]
+        parallel_jobs = [j for j in due_jobs if not _job_requires_sequential_pool(j)]
 
         _results: list = []
         _all_futures: list = []
@@ -3511,19 +3854,17 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     job.get("name", job_id),
                 )
                 return None
-            with _running_lock:
-                if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
-                _running_job_ids.add(job_id)
+            job_lock = _claim_running_job(job_id)
+            if job_lock is None:
+                logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                return None
             _ctx = contextvars.copy_context()
 
-            def _run_and_release(j=job, ctx=_ctx):
+            def _run_and_release(j=job, ctx=_ctx, lock_fd=job_lock):
                 try:
                     return ctx.run(_process_job, j)
                 finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
+                    _release_running_job(j["id"], lock_fd)
 
             try:
                 return pool.submit(_run_and_release)
@@ -3531,13 +3872,14 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # Interpreter began finalizing between the guard above and the
                 # submit — release the in-flight claim we just took and skip.
                 if _interpreter_shutting_down(submit_err):
-                    with _running_lock:
-                        _running_job_ids.discard(job_id)
+                    _release_running_job(job_id, job_lock)
                     logger.warning(
                         "Job '%s' not dispatched — interpreter is shutting down",
                         job.get("name", job_id),
                     )
                     return None
+            except Exception:
+                _release_running_job(job_id, job_lock)
                 raise
 
         # Sequential pass for env-mutating (workdir) jobs.
@@ -3570,18 +3912,6 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 _all_futures.append(fut)
                 if not sync:
                     _results.append(True)  # optimistically counted
-
-        # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown.  Must run AFTER jobs finish so active sessions
-        # (including live user chats) are never touched — only PIDs explicitly
-        # detected as orphans in tools.mcp_tool._run_stdio's finally block are
-        # reaped.
-        def _sweep_mcp_orphans() -> None:
-            try:
-                from tools.mcp_tool import _kill_orphaned_mcp_children
-                _kill_orphaned_mcp_children()
-            except Exception as _e:
-                logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
 
         if sync:
             # Sync mode (tests / manual ticks): wait for all dispatched jobs,
@@ -3620,16 +3950,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         return sum(_results)
     finally:
-        if fcntl:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
+        _unlock_file(lock_fd)
         lock_fd.close()
 
 

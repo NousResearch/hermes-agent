@@ -3079,6 +3079,23 @@ class TestParallelTick:
         assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
         assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
 
+    def test_tick_skips_jobs_claimed_in_another_process(self):
+        """A per-job cross-process claim held by an immediate run must stop tick from dispatching it again."""
+        job = {"id": "claimed-job", "name": "claimed", "deliver": "local"}
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run") as advance_mock, \
+             patch("cron.scheduler._claim_running_job", return_value=None) as claim_mock, \
+             patch("cron.scheduler.run_job") as run_job_mock, \
+             patch("cron.scheduler._sweep_mcp_orphans"):
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 0
+        advance_mock.assert_called_once_with("claimed-job")
+        claim_mock.assert_called_once_with("claimed-job")
+        run_job_mock.assert_not_called()
+
     def test_max_parallel_env_var(self, monkeypatch):
         """HERMES_CRON_MAX_PARALLEL=1 should restore serial behaviour."""
         monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "1")

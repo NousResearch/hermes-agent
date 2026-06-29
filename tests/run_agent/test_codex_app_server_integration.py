@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import run_agent
+from hermes_state import SessionDB
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -190,6 +191,47 @@ class TestRunConversationCodexPath:
             if m.get("role") == "user" and m.get("content") == "ping unique 12345"
         )
         assert user_count == 1, f"user message appeared {user_count}× in {result['messages']}"
+
+    def test_final_text_without_projected_message_is_persisted_once(
+        self, monkeypatch, tmp_path
+    ):
+        """The app-server may return final_text without projecting a final
+        assistant message. Hermes must still persist that assistant response
+        and must not duplicate the crash-persisted user turn."""
+
+        def final_text_only_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="persisted final",
+                projected_messages=[],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="turn-final-only",
+                thread_id="thread-final-only",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", final_text_only_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-final-only"
+        )
+
+        agent = _make_codex_agent()
+        agent._session_db = SessionDB(db_path=tmp_path / "state.db")
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("persist me")
+
+        assert result["final_response"] == "persisted final"
+        assert result["messages"][-1] == {
+            "role": "assistant",
+            "content": "persisted final",
+        }
+
+        rows = agent._session_db.get_messages(agent.session_id)
+        transcript = [(row["role"], row["content"]) for row in rows]
+        assert transcript == [
+            ("user", "persist me"),
+            ("assistant", "persisted final"),
+        ]
 
     def test_background_review_NOT_invoked_below_threshold(self, fake_session):
         """A single turn shouldn't trigger background review — counters

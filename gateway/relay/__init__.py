@@ -21,6 +21,8 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+_PROVISION_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
 
 def relay_url() -> Optional[str]:
     """The connector relay endpoint URL, or None when relay is not configured.
@@ -418,11 +420,11 @@ def _post_provision(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_provision_json_response(resp)
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
-            detail = (json.loads(exc.read().decode()) or {}).get("error", "")
+            detail = (_read_provision_json_response(exc) or {}).get("error", "")
         except Exception:
             pass
         raise RuntimeError(
@@ -433,6 +435,21 @@ def _post_provision(
 
     if not isinstance(payload, dict) or not payload.get("secret"):
         raise RuntimeError("connector returned an unexpected response (no secret)")
+    return payload
+
+
+def _read_provision_json_response(resp) -> dict:
+    import json
+
+    raw = resp.read(_PROVISION_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _PROVISION_RESPONSE_BODY_MAX_BYTES:
+        raise RuntimeError(
+            "connector response exceeded "
+            f"{_PROVISION_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    payload = json.loads(raw.decode())
+    if not isinstance(payload, dict):
+        raise RuntimeError("connector returned an unexpected response")
     return payload
 
 

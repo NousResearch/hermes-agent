@@ -221,8 +221,9 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
-            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+        def read(self, size=-1):
+            data = json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+            return data if size < 0 else data[:size]
 
     def _fake_urlopen(req, timeout=None):  # noqa: ANN001
         sent["body"] = json.loads(req.data.decode())
@@ -254,6 +255,66 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         route_keys=[],
     )
     assert "instanceId" not in sent["body"]
+
+
+def test_post_provision_bounds_success_response(monkeypatch):
+    import json
+
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            captured["read_size"] = size
+            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ANN001
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    payload = relay._post_provision(
+        provision_url="https://c.example/relay/provision",
+        access_token="tok",
+        gateway_id="gw-1",
+        platform="discord",
+        bot_id="app",
+        gateway_endpoint=None,
+        route_keys=[],
+    )
+    assert payload["secret"] == "a" * 64
+    assert captured["read_size"] == relay._PROVISION_RESPONSE_BODY_MAX_BYTES + 1
+
+
+def test_post_provision_rejects_oversized_response(monkeypatch):
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            return b"x" * size
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _Resp())
+    monkeypatch.setattr(relay, "_PROVISION_RESPONSE_BODY_MAX_BYTES", 8)
+
+    with pytest.raises(RuntimeError, match="connector response exceeded"):
+        relay._post_provision(
+            provision_url="https://c.example/relay/provision",
+            access_token="tok",
+            gateway_id="gw-1",
+            platform="discord",
+            bot_id="app",
+            gateway_endpoint=None,
+            route_keys=[],
+        )
 
 
 # ─────────────────── wake-url forwarding (Phase 5 Unit C) ───────────────────
@@ -314,8 +375,9 @@ def test_post_provision_body_includes_wakeUrl_only_when_set(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
-            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+        def read(self, size=-1):
+            data = json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+            return data if size < 0 else data[:size]
 
     def _fake_urlopen(req, timeout=None):  # noqa: ANN001
         sent["body"] = json.loads(req.data.decode())

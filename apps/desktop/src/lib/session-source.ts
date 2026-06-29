@@ -38,7 +38,7 @@ const SOURCE_ALIASES: Record<string, string[]> = {
 // platform. A handoff *from* one of these isn't a platform origin worth a badge.
 // Exported so the recents fetch can keep these in the main list while the
 // messaging fetch excludes them.
-export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'local', 'tui']
+export const LOCAL_SESSION_SOURCE_IDS = ['api_server', 'cli', 'codex', 'desktop', 'gateway', 'local', 'tui']
 const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 
 // External messaging platforms that each get their own self-managed sidebar
@@ -57,7 +57,6 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'email',
   'sms',
   'webhook',
-  'api_server',
   'weixin',
   'wecom',
   'qqbot',

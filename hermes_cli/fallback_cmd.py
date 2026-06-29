@@ -28,7 +28,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return the normalized fallback chain as a list of dicts.
 
     Accepts both the new list format (``fallback_providers``) and the legacy
@@ -39,12 +39,17 @@ def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     return get_fallback_chain(config)
 
 
-def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
+def write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
     """Persist the chain to ``fallback_providers`` and clear legacy key."""
     config["fallback_providers"] = chain
     # Drop the legacy single-dict key on write so there's only one source of truth.
     if "fallback_model" in config:
         config.pop("fallback_model", None)
+
+
+# Backwards-compatible aliases for older internal callers.
+_read_chain = read_chain
+_write_chain = write_chain
 
 
 def _format_entry(entry: Dict[str, Any]) -> str:

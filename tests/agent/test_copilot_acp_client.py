@@ -348,8 +348,42 @@ def test_run_prompt_uses_local_process_cwd_but_sends_remote_acp_cwd(tmp_path):
         for line in proc.stdin.getvalue().splitlines()
         if line.strip()
     ]
+    initialize = next(payload for payload in sent if payload["method"] == "initialize")
+    assert "fs" not in initialize["params"]["clientCapabilities"]
     session_new = next(payload for payload in sent if payload["method"] == "session/new")
     assert session_new["params"]["cwd"] == remote_cwd
+
+
+def test_remote_acp_cwd_rejects_local_fs_callbacks(tmp_path):
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="ssh",
+        acp_args=["remote", "copilot", "--acp", "--stdio"],
+        acp_cwd="/srv/remote/repo",
+        process_cwd=str(tmp_path),
+    )
+    process = _FakeProcess()
+
+    handled = client._handle_server_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "fs/read_text_file",
+            "params": {"path": "/srv/remote/repo/README.md"},
+        },
+        process=process,
+        cwd="/srv/remote/repo",
+        text_parts=[],
+        reasoning_parts=[],
+        fs_enabled=False,
+    )
+
+    assert handled is True
+    response = json.loads(process.stdin.getvalue().strip())
+    assert response["id"] == 99
+    assert response["error"]["code"] == -32601
+    assert "non-local session cwd" in response["error"]["message"]
 
 
 def test_run_prompt_uses_acp_cwd_as_process_cwd_when_local(tmp_path):
@@ -393,6 +427,11 @@ def test_run_prompt_sends_resolved_session_cwd_for_relative_local_path(monkeypat
         for line in proc.stdin.getvalue().splitlines()
         if line.strip()
     ]
+    initialize = next(payload for payload in sent if payload["method"] == "initialize")
+    assert initialize["params"]["clientCapabilities"]["fs"] == {
+        "readTextFile": True,
+        "writeTextFile": True,
+    }
     session_new = next(payload for payload in sent if payload["method"] == "session/new")
     assert session_new["params"]["cwd"] == expected
 

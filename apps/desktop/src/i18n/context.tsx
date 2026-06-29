@@ -4,7 +4,8 @@ import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from
 
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
-import { setRuntimeI18nLocale } from './runtime'
+import { applyLocaleOverrides } from './overrides'
+import { setRuntimeI18nLocale, setRuntimeLocaleOverride } from './runtime'
 import type { Locale, Translations } from './types'
 
 export { LOCALE_META } from './languages'
@@ -12,6 +13,10 @@ export { LOCALE_META } from './languages'
 export interface I18nConfigClient {
   getConfig: () => Promise<HermesConfigRecord>
   saveConfig: (config: HermesConfigRecord) => Promise<{ ok: boolean }>
+  // Optional: user-authored locale overrides read from disk (outside the app
+  // bundle) so they survive updates. Absent/unsupported clients simply skip the
+  // override layer and use the bundled catalog.
+  getLocaleOverrides?: (locale: Locale) => Promise<unknown>
 }
 
 const defaultConfigClient: I18nConfigClient = {
@@ -28,6 +33,13 @@ const defaultConfigClient: I18nConfigClient = {
     }
 
     return saveHermesConfig(config)
+  },
+  getLocaleOverrides: locale => {
+    if (typeof window === 'undefined' || !window.hermesDesktop?.getLocaleOverrides) {
+      return Promise.resolve(null)
+    }
+
+    return window.hermesDesktop.getLocaleOverrides(locale)
   }
 }
 
@@ -87,12 +99,54 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
   const [saveError, setSaveError] = useState<Error | null>(null)
+  // The active catalog with user overrides merged in. Null until (and unless)
+  // an override file is found for the current locale; otherwise we use the
+  // bundled TRANSLATIONS[locale] directly.
+  const [overrideCatalog, setOverrideCatalog] = useState<{ locale: Locale; catalog: Translations } | null>(null)
   const localeRef = useRef(locale)
 
   useEffect(() => {
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
   }, [locale])
+
+  // Load user locale overrides for the active locale and merge them on top of
+  // the bundled catalog. Overrides live outside the bundle, so they survive
+  // updates. Failures are swallowed — the bundled catalog is always usable.
+  useEffect(() => {
+    if (!configClient?.getLocaleOverrides) {
+      return
+    }
+
+    let cancelled = false
+
+    configClient
+      .getLocaleOverrides(locale)
+      .then(data => {
+        if (cancelled) {
+          return
+        }
+
+        const merged = applyLocaleOverrides(TRANSLATIONS[locale], data)
+
+        if (merged === TRANSLATIONS[locale]) {
+          // No effective override — clear any stale merged catalog.
+          setOverrideCatalog(prev => (prev?.locale === locale ? null : prev))
+          setRuntimeLocaleOverride(locale, null)
+          return
+        }
+
+        setOverrideCatalog({ locale, catalog: merged })
+        setRuntimeLocaleOverride(locale, merged)
+      })
+      .catch(() => {
+        // Ignore — a missing or unreadable override just means no override.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [configClient, locale])
 
   useEffect(() => {
     if (!configClient) {
@@ -170,9 +224,9 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       locale,
       saveError,
       setLocale,
-      t: TRANSLATIONS[locale]
+      t: overrideCatalog?.locale === locale ? overrideCatalog.catalog : TRANSLATIONS[locale]
     }),
-    [configLoadError, isLoadingConfig, isSavingLocale, locale, saveError, setLocale]
+    [configLoadError, isLoadingConfig, isSavingLocale, locale, overrideCatalog, saveError, setLocale]
   )
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>

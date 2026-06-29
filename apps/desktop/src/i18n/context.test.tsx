@@ -41,6 +41,44 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('label').textContent).toBe('Language')
   })
 
+  it('merges user locale overrides on top of the bundled catalog', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'ja' } }),
+      saveConfig: vi.fn().mockResolvedValue({ ok: true }),
+      getLocaleOverrides: vi.fn().mockResolvedValue({ common: { save: '保存する（独自）' } })
+    }
+
+    render(
+      <I18nProvider configClient={configClient} initialLocale="ja">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // Override wins for the key it specifies...
+    await waitFor(() => expect(screen.getByTestId('save').textContent).toBe('保存する（独自）'))
+    // ...while untouched keys keep the bundled Japanese translation.
+    expect(screen.getByTestId('label').textContent).toBe('言語')
+    expect(configClient.getLocaleOverrides).toHaveBeenCalledWith('ja')
+  })
+
+  it('falls back to the bundled catalog when overrides are absent or fail', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'ja' } }),
+      saveConfig: vi.fn().mockResolvedValue({ ok: true }),
+      getLocaleOverrides: vi.fn().mockRejectedValue(new Error('no file'))
+    }
+
+    render(
+      <I18nProvider configClient={configClient} initialLocale="ja">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('label').textContent).toBe('言語'))
+    // Bundled Japanese 'save' string, not an override.
+    expect(screen.getByTestId('save').textContent).not.toBe('')
+  })
+
   it('normalizes an initial locale alias and switches translations', async () => {
     render(
       <I18nProvider configClient={null} initialLocale="zh-CN">

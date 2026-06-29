@@ -48,6 +48,12 @@ declare global {
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      // User-authored locale overrides for `lang`, read from
+      // <hermes-home>/locale-overrides/desktop/<lang>.json (outside the bundle,
+      // so they survive updates). Returns the parsed JSON object, or null when
+      // none is present or it can't be read. The renderer merges it on top of
+      // the bundled catalog.
+      getLocaleOverrides: (lang: string) => Promise<unknown>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>

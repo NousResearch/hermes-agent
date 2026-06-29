@@ -46,6 +46,7 @@ const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
 const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
+const { readLocaleOverridesForIpc } = require('./locale-overrides.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
   resolveUnpackedRelease,
@@ -6892,6 +6893,12 @@ function disposeTerminalSession(id) {
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
+
+// User-authored desktop locale overrides, read from <hermes-home> (outside the
+// app bundle) so they survive updates. Returns parsed JSON or null.
+ipcMain.handle('hermes:i18n:localeOverrides', async (_event, lang) =>
+  readLocaleOverridesForIpc(HERMES_HOME, lang)
+)
 
 // Reveal a path in the OS file manager (Finder / Explorer / Files).
 ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {

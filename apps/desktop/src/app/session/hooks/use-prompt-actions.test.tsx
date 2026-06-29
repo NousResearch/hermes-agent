@@ -22,6 +22,7 @@ vi.mock('@/hermes', () => ({
 // the stored sessions table and 404s on a runtime id. session.title accepts
 // the runtime id directly.
 const RUNTIME_SESSION_ID = 'rt-abc123'
+const PROMPT_SUBMIT_TIMEOUT_MS = 30 * 60_000
 
 function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -63,7 +64,7 @@ function Harness({
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
   storedSessionId?: null | string
@@ -219,11 +220,11 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   })
 
   it('submits /goal send directives returned directly by slash.exec instead of rendering no output', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: Record<string, unknown>; timeoutMs?: number }[] = []
     const states: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      calls.push({ method, params, timeoutMs })
 
       if (method === 'slash.exec') {
         return {
@@ -257,6 +258,7 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
       session_id: RUNTIME_SESSION_ID,
       text: 'write the implementation plan'
     })
+    expect(calls[1]?.timeoutMs).toBe(PROMPT_SUBMIT_TIMEOUT_MS)
 
     const renderedText = states
       .flatMap(state => {
@@ -365,10 +367,38 @@ describe('usePromptActions submit / queue drain semantics', () => {
     // every delta of this brand-new turn.
     expect(seeds.length).toBeGreaterThan(0)
     expect(seeds.every(s => s.interrupted === false)).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'hello after a stop'
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'hello after a stop'
+      },
+      PROMPT_SUBMIT_TIMEOUT_MS
+    )
+  })
+
+  it('uses a long prompt.submit timeout because turn completion arrives over the stream', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('run a deep reasoning turn')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'run a deep reasoning turn'
+      },
+      PROMPT_SUBMIT_TIMEOUT_MS
+    )
   })
 
   it('a fromQueue drain sends even when busyRef is still true on the settle edge', async () => {
@@ -390,10 +420,14 @@ describe('usePromptActions submit / queue drain semantics', () => {
     const accepted = await handle!.submitText('queued message', { fromQueue: true })
 
     expect(accepted).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'queued message'
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'queued message'
+      },
+      PROMPT_SUBMIT_TIMEOUT_MS
+    )
   })
 
   it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
@@ -430,10 +464,14 @@ describe('usePromptActions submit / queue drain semantics', () => {
 
     const second = await handle!.submitText('please send me', { fromQueue: true })
     expect(second).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'please send me'
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'please send me'
+      },
+      PROMPT_SUBMIT_TIMEOUT_MS
+    )
   })
 
   it('rides out a transient "session busy" so the user never sees it (retries, no error bubble)', async () => {
@@ -593,11 +631,15 @@ describe('usePromptActions restoreToMessage', () => {
 
     // Ordinal 0 = "truncate before the first visible user message": the gateway
     // drops that turn and everything after, then runs the same text again.
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'first prompt',
-      truncate_before_user_ordinal: 0
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first prompt',
+        truncate_before_user_ordinal: 0
+      },
+      PROMPT_SUBMIT_TIMEOUT_MS
+    )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
     expect(lastState.busy).toBe(true)
   })
@@ -656,11 +698,15 @@ describe('usePromptActions restoreToMessage', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
     expect(submitAttempts).toBe(2)
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'first prompt',
-      truncate_before_user_ordinal: 0
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first prompt',
+        truncate_before_user_ordinal: 0
+      },
+      PROMPT_SUBMIT_TIMEOUT_MS
+    )
   })
 
   it('rejects non-user targets and unknown ids without touching the gateway', async () => {
@@ -697,11 +743,15 @@ describe('usePromptActions restoreToMessage', () => {
       userOrdinal: 0
     })
 
-    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'first prompt',
-      truncate_before_user_ordinal: 0
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'first prompt',
+        truncate_before_user_ordinal: 0
+      },
+      PROMPT_SUBMIT_TIMEOUT_MS
+    )
     expect((lastState.messages as { id: string }[]).map(m => m.id)).toEqual(['u1'])
   })
 })
@@ -734,10 +784,10 @@ describe('usePromptActions file attachment sync', () => {
       value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
     })
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: Record<string, unknown>; timeoutMs?: number }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      calls.push({ method, params, timeoutMs })
 
       if (method === 'file.attach') {
         return {
@@ -770,6 +820,7 @@ describe('usePromptActions file attachment sync', () => {
       session_id: RUNTIME_SESSION_ID,
       text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
     })
+    expect(calls[1]?.timeoutMs).toBe(PROMPT_SUBMIT_TIMEOUT_MS)
   })
 
   it('passes a path-less @file: ref straight through (no path = nothing to upload)', async () => {
@@ -797,10 +848,10 @@ describe('usePromptActions file attachment sync', () => {
       refText: '@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`'
     }
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: Record<string, unknown>; timeoutMs?: number }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      calls.push({ method, params, timeoutMs })
 
       return {} as never
     })
@@ -817,15 +868,16 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit'])
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(calls[0]?.params?.text).toContain('@file:`/Users/mahmoud/Downloads/DEVIS_signed.pdf`')
+    expect(calls[0]?.timeoutMs).toBe(PROMPT_SUBMIT_TIMEOUT_MS)
   })
 
   it('passes the path directly via file.attach in local mode (no byte upload)', async () => {
     $connection.set({ mode: 'local' } as never)
 
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: Record<string, unknown>; timeoutMs?: number }[] = []
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      calls.push({ method, params, timeoutMs })
 
       if (method === 'file.attach') {
         return { attached: true, ref_text: '@file:data/report.txt', uploaded: false } as never
@@ -847,7 +899,8 @@ describe('usePromptActions file attachment sync', () => {
     expect(calls[0]?.params).not.toHaveProperty('data_url')
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
-      params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
+      params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' },
+      timeoutMs: PROMPT_SUBMIT_TIMEOUT_MS
     })
   })
 })
@@ -929,11 +982,11 @@ describe('usePromptActions sleep/wake session recovery', () => {
     // first prompt.submit with the stale runtime id fails. The hook resumes the
     // durable stored id (which survives gateway restarts), gets a fresh live id,
     // and retries the send transparently.
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const calls: { method: string; params?: Record<string, unknown>; timeoutMs?: number }[] = []
     let submitAttempts = 0
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+      calls.push({ method, params, timeoutMs })
 
       if (method === 'prompt.submit') {
         submitAttempts += 1
@@ -969,6 +1022,8 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+    expect(calls[0]?.timeoutMs).toBe(PROMPT_SUBMIT_TIMEOUT_MS)
+    expect(calls[2]?.timeoutMs).toBe(PROMPT_SUBMIT_TIMEOUT_MS)
   })
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {

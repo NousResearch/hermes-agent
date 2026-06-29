@@ -130,6 +130,7 @@ function isSessionNotFoundError(error: unknown): boolean {
 // submit racing the settle edge (or a rewind interrupting mid-turn) just waits
 // a beat for the turn to wind down, then lands. Bounded so a genuinely stuck
 // turn still surfaces eventually.
+const PROMPT_SUBMIT_TIMEOUT_MS = 30 * 60_000
 const SESSION_BUSY_RETRY_TIMEOUT_MS = 6_000
 const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
@@ -324,7 +325,7 @@ interface PromptActionsOptions {
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -774,7 +775,9 @@ export function usePromptActions({
         let submitErr: unknown = null
 
         try {
-          await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
+          await withSessionBusyRetry(() =>
+            requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_TIMEOUT_MS)
+          )
         } catch (firstErr) {
           if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
@@ -786,7 +789,9 @@ export function usePromptActions({
 
             if (recoveredId) {
               activeSessionIdRef.current = recoveredId
-              await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
+              await withSessionBusyRetry(() =>
+                requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_TIMEOUT_MS)
+              )
             } else {
               submitErr = firstErr
             }
@@ -1684,11 +1689,15 @@ export function usePromptActions({
       })
 
       try {
-        await requestGateway('prompt.submit', {
-          session_id: activeSessionId,
-          text: userText,
-          truncate_before_user_ordinal: truncateBeforeUserOrdinal
-        })
+        await requestGateway(
+          'prompt.submit',
+          {
+            session_id: activeSessionId,
+            text: userText,
+            truncate_before_user_ordinal: truncateBeforeUserOrdinal
+          },
+          PROMPT_SUBMIT_TIMEOUT_MS
+        )
       } catch (err) {
         updateSessionState(activeSessionId, state => ({
           ...state,
@@ -1721,11 +1730,15 @@ export function usePromptActions({
       }
 
       const submit = () =>
-        requestGateway('prompt.submit', {
-          session_id: sessionId,
-          text,
-          ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
-        })
+        requestGateway(
+          'prompt.submit',
+          {
+            session_id: sessionId,
+            text,
+            ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+          },
+          PROMPT_SUBMIT_TIMEOUT_MS
+        )
 
       if (interruptFirst) {
         await interrupt()

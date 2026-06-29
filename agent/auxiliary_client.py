@@ -5640,6 +5640,7 @@ def call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
@@ -5674,6 +5675,11 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    # An explicit api_mode from the caller (e.g. a MoA slot that already
+    # resolved its provider's wire protocol) overrides the auto-derived one, so
+    # an Anthropic-Messages endpoint is not called as OpenAI chat.completions.
+    if api_mode:
+        resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 

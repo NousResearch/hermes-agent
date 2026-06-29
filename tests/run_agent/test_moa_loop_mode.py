@@ -170,6 +170,37 @@ def test_moa_slots_routed_through_resolve_runtime_provider(monkeypatch):
     assert rt["model"] == "MiniMax-M2"
     assert rt["base_url"] == "https://minimax.example/v1"
     assert rt["api_key"] == "key-for-minimax"
+    assert rt["api_mode"] == "chat_completions"
+
+
+def test_moa_slot_runtime_forwards_anthropic_api_mode(monkeypatch):
+    """A slot resolving to an Anthropic-Messages endpoint must forward api_mode.
+
+    Regression for the aggregator 404: when a provider's endpoint speaks the
+    Anthropic Messages protocol but its host is not one the URL heuristic
+    recognizes, dropping api_mode makes call_llm build an OpenAI
+    chat.completions request against a /v1/messages-only endpoint, which 404s.
+    Forwarding the resolved api_mode keeps the slot on the correct wire format.
+    """
+    from agent import moa_loop
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": "custom",
+            "api_mode": "anthropic_messages",
+            "base_url": "https://anthropic-gateway.example",
+            "api_key": "key-anthropic",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "my-anthropic", "model": "claude-x"})
+
+    assert rt["api_mode"] == "anthropic_messages"
+    assert rt["base_url"] == "https://anthropic-gateway.example"
+    assert rt["api_key"] == "key-anthropic"
 
 
 def test_moa_codex_slot_preserves_provider_identity(monkeypatch):

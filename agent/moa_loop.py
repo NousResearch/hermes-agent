@@ -109,6 +109,14 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
             out["api_key"] = rt["api_key"]
+        # Forward the resolved api_mode so call_llm builds the request for the
+        # endpoint's actual wire protocol. Without this, an endpoint that speaks
+        # Anthropic Messages (api_mode="anthropic_messages") but whose host the
+        # URL heuristic doesn't recognize gets called as OpenAI chat.completions
+        # and returns 404. The reference path (_run_reference) and the
+        # aggregator both route through here, so both inherit correct transport.
+        if rt.get("api_mode"):
+            out["api_mode"] = rt["api_mode"]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
     return out

@@ -1,0 +1,11 @@
+module,skill,display-name,menu-code,description,action,args,phase,preceded-by,followed-by,required,output-location,outputs
+Test Architecture Enterprise,_meta,,,,,,,,,false,https://bmad-code-org.github.io/bmad-method-test-architecture-enterprise/llms.txt,
+Test Architecture Enterprise,bmad-teach-me-testing,Teach Me Testing,TMT,Teach testing fundamentals through 7 sessions (TEA Academy).,,,0-learning,,,false,test_artifacts,progress file|session notes|certificate
+Test Architecture Enterprise,bmad-testarch-test-design,Test Design,TD,Risk-based test planning.,,,3-solutioning,,bmad-testarch-framework,false,test_artifacts,test design document
+Test Architecture Enterprise,bmad-testarch-framework,Test Framework,TF,Initialize production-ready test framework.,,,3-solutioning,bmad-testarch-test-design,bmad-testarch-ci,false,test_artifacts,framework scaffold
+Test Architecture Enterprise,bmad-testarch-ci,CI Setup,CI,Configure CI/CD quality pipeline.,,,3-solutioning,bmad-testarch-framework,,false,test_artifacts,ci config
+Test Architecture Enterprise,bmad-testarch-atdd,ATDD,AT,Generate red-phase acceptance test scaffolds before implementation.,,,4-implementation,bmad-create-story:create,bmad-dev-story,false,test_artifacts,atdd-checklist|red-phase acceptance tests
+Test Architecture Enterprise,bmad-testarch-automate,Test Automation,TA,Expand test coverage.,,,4-implementation,bmad-testarch-atdd,,false,test_artifacts,test suite
+Test Architecture Enterprise,bmad-testarch-test-review,Test Review,RV,Quality audit (0-100 scoring).,,,4-implementation,bmad-testarch-automate,,false,test_artifacts,review report
+Test Architecture Enterprise,bmad-testarch-nfr,NFR Evidence Audit,NR,Audit non-functional requirement evidence.,,,4-implementation,bmad-testarch-automate,,false,test_artifacts,nfr report
+Test Architecture Enterprise,bmad-testarch-trace,Traceability,TR,Coverage traceability and gate.,,,4-implementation,bmad-testarch-test-review,,false,test_artifacts,traceability matrix|gate decision

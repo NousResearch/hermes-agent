@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
@@ -87,3 +89,40 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         assert server._sessions["plain"]["transport"] is server._detached_ws_transport
     finally:
         server._sessions.clear()
+
+
+def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
+    """A write that times out because the event loop is stalled (GIL-heavy
+    agent turn) must NOT latch the transport closed — the frame is already
+    scheduled and flushes when the loop recovers. Latching here permanently
+    silenced live watch windows after one slow write."""
+    monkeypatch.setattr(ws_mod, "_WS_WRITE_TIMEOUT_S", 0.05)
+    sent = []
+
+    class FakeWS:
+        async def send_text(self, line):
+            sent.append(line)
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        transport = ws_mod.WSTransport(FakeWS(), loop, peer="stall-test")
+        # Stall the loop well past the write timeout, then write from this
+        # (non-loop) thread: the wait times out but the send stays in flight.
+        loop.call_soon_threadsafe(time.sleep, 0.3)
+        assert transport.write({"a": 1}) is True
+        assert transport._closed is False
+
+        # Once the loop breathes again, both the stalled frame and new writes
+        # must reach the socket.
+        assert transport.write({"b": 2}) is True
+        deadline = time.time() + 2
+        while len(sent) < 2 and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(sent) == 2
+        assert transport._closed is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()

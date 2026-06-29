@@ -1,0 +1,4 @@
+module,skill,display-name,menu-code,description,action,args,phase,preceded-by,followed-by,required,output-location,outputs
+BMad Automator,_meta,,,,,,,,,false,,
+BMad Automator,bmad-story-automator,Story Automator,SA,Automate the BMAD story build cycle across create dev QA review and retrospective steps.,,,4-implementation,bmad-sprint-planning,,false,implementation_artifacts,story automation run
+BMad Automator,bmad-story-automator-review,Story Automator Review,SAR,Runs the autonomous code review flow used by story automator sessions including auto-fix handling and sprint-status sync.,,,4-implementation,bmad-dev-story,,false,implementation_artifacts,review report

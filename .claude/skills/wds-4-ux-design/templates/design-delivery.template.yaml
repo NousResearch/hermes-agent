@@ -1,0 +1,104 @@
+# WDS Design Delivery Template
+# Copy this template to: deliveries/DD-XXX-name.yaml
+
+delivery:
+  id: "DD-XXX" # Format: DD-001, DD-002, etc.
+  name: "Feature Name" # Human-readable name
+  type: "user_flow" # user_flow | feature | component
+  status: "ready" # ready | in_progress | blocked
+  priority: "high" # high | medium | low
+  created_by: "wds-ux-expert"
+  created_at: "YYYY-MM-DDTHH:MM:SSZ"
+  updated_at: "YYYY-MM-DDTHH:MM:SSZ"
+  version: "1.0"
+
+description: |
+  [Describe what this delivery contains and why it matters.
+   Include the complete user flow and key features.]
+
+user_value:
+  problem: "[What user problem does this solve?]"
+  solution: "[How does this feature solve it?]"
+  success_criteria:
+    - "[Measurable success criterion 1]"
+    - "[Measurable success criterion 2]"
+    - "[Measurable success criterion 3]"
+
+design_artifacts:
+  scenarios:
+    - id: "XX-scenario-name"
+      path: "C-UX-Scenarios/XX-scenario-name/"
+      screens: ["screen1", "screen2"]
+
+    - id: "XX-scenario-name"
+      path: "C-UX-Scenarios/XX-scenario-name/"
+      screens: ["screen1"]
+
+  user_flows:
+    - name: "Flow Name"
+      path: "C-UX-Scenarios/flows/flow-name.excalidraw"
+      entry: "entry-screen"
+      exit: "exit-screen"
+
+  design_system:
+    components:
+      - "Component Name (variants)"
+      - "Component Name (variants)"
+    path: "D-Design-System/"
+
+technical_requirements:
+  platform:
+    frontend: "framework-name" # From platform-requirements.yaml
+    backend: "framework-name" # From platform-requirements.yaml
+
+  integrations:
+    - name: "integration-name"
+      purpose: "[Why this integration is needed]"
+      required: true # true | false
+
+    - name: "integration-name"
+      purpose: "[Why this integration is needed]"
+      required: false
+
+  data_models:
+    - name: "ModelName"
+      fields: ["field1", "field2", "field3"]
+
+    - name: "ModelName"
+      fields: ["field1", "field2"]
+
+acceptance_criteria:
+  functional:
+    - "[Functional requirement 1]"
+    - "[Functional requirement 2]"
+    - "[Functional requirement 3]"
+
+  non_functional:
+    - "[Performance requirement]"
+    - "[Accessibility requirement]"
+    - "[Security requirement]"
+
+  edge_cases:
+    - "[Edge case 1] → [Expected behavior]"
+    - "[Edge case 2] → [Expected behavior]"
+    - "[Edge case 3] → [Expected behavior]"
+
+testing_guidance:
+  user_testing:
+    - "[User testing instruction 1]"
+    - "[User testing instruction 2]"
+
+  qa_testing:
+    - "[QA testing instruction 1]"
+    - "[QA testing instruction 2]"
+    - "[QA testing instruction 3]"
+
+estimated_complexity:
+  size: "medium" # small | medium | large
+  effort: "2-3 weeks" # Time estimate
+  risk: "low" # low | medium | high
+  dependencies: [] # List of DD-XXX IDs needed first
+
+notes: |
+  [Any special considerations, important context, or
+   critical details that the development team should know.]

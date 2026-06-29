@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
@@ -51,6 +52,9 @@ _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IG
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_TASK_LOGON_DELAY = "PT30S"
+_TASK_RESTART_INTERVAL = "PT1M"
+_TASK_RESTART_COUNT = 999
 
 
 def _schtasks_encoding() -> str:
@@ -358,12 +362,13 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports hermes_constants-based logic during startup.
-    venv_dir = str(Path(python_path).resolve().parent.parent)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
+    pythonpath_entries = [str(Path(__file__).resolve().parent.parent), *extra_pythonpath]
+    lines.append(f'set "PYTHONPATH={";".join([*pythonpath_entries, "%PYTHONPATH%"])}"')
 
-    pythonw_path = _derive_venv_pythonw(python_path)
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
@@ -376,6 +381,78 @@ def _build_gateway_cmd_script(
     # should be idempotent, not churn parent/child takeover loops.
     lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
     lines.append("exit /b 0")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _quote_vbs_string(value: str) -> str:
+    """Quote a value as a VBScript double-quoted string literal.
+
+    VBScript escapes an embedded double-quote by doubling it. A newline cannot
+    appear inside a literal, so refuse it (same guard as ``_quote_cmd_script_arg``).
+    """
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"refusing to quote VBScript value containing newline: {value!r}")
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _build_gateway_vbs_script(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    profile_arg: str,
+) -> str:
+    """Build a console-less ``gateway.vbs`` launcher (CRLF-terminated).
+
+    The Scheduled Task runs this through ``wscript.exe`` instead of ``cmd.exe``.
+
+    Why: issue #45599 root cause #1. Driving the gateway through ``cmd.exe``
+    allocates a console, and during logon Windows broadcasts ``CTRL_CLOSE_EVENT``
+    to console process groups — reaping cmd.exe and the half-initialized gateway
+    with ``STATUS_CONTROL_C_EXIT`` (``0xC000013A``). Task Scheduler treats that
+    code as a user cancel, so the ``RestartOnFailure`` policy never fires and the
+    gateway silently disappears on every reboot.
+
+    ``wscript.exe`` and ``pythonw.exe`` are both GUI-subsystem executables with
+    no console, so this launcher receives no console control events. It mirrors
+    ``_build_gateway_cmd_script`` (same env + argv via ``_resolve_detached_python``)
+    but sets the environment on the WScript.Shell process and ``Run``s pythonw
+    directly — no cmd.exe anywhere in the chain.
+    """
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+
+    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    if profile_arg:
+        prog_args.extend(profile_arg.split())
+    prog_args.extend(["gateway", "run"])
+    # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
+    command_line = subprocess.list2cmdline(prog_args)
+
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    static_pythonpath = os.pathsep.join([repo_root, *extra_pythonpath])
+
+    lines = [
+        f"' {_TASK_DESCRIPTION}",
+        "Option Explicit",
+        "Dim sh, env, existing_pp",
+        'Set sh = CreateObject("WScript.Shell")',
+        'Set env = sh.Environment("PROCESS")',
+        f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
+        f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
+        f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
+        f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(str(venv_dir))}",
+        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%``: chain onto
+        # whatever PYTHONPATH the task environment already carries, at runtime.
+        f"existing_pp = env.Item({_quote_vbs_string('PYTHONPATH')})",
+        "If Len(existing_pp) > 0 Then",
+        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath + os.pathsep)} & existing_pp",
+        "Else",
+        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
+        "End If",
+        f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
+        # Window style 0 = hidden; bWaitOnReturn False = detached/async. pythonw is
+        # GUI-subsystem so no console is ever created for the gateway either.
+        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+    ]
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -425,6 +502,15 @@ def _write_task_script() -> Path:
     tmp = script_path.with_suffix(".tmp")
     tmp.write_text(content, encoding="utf-8", newline="")
     tmp.replace(script_path)
+
+    # Also render the console-less .vbs launcher the Scheduled Task runs via
+    # wscript.exe (issue #45599 fix A). The .cmd above stays for the
+    # Startup-folder fallback and direct /Run paths.
+    vbs_content = _build_gateway_vbs_script(python_path, working_dir, hermes_home, profile_arg)
+    vbs_path = script_path.with_suffix(".vbs")
+    vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
+    vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
+    vbs_tmp.replace(vbs_path)
     return script_path
 
 
@@ -443,6 +529,74 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
+def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> str:
+    """Render a Task Scheduler XML definition with safe long-running defaults.
+
+    ``launcher_path`` is the console-less ``.vbs`` the task runs via
+    ``wscript.exe`` — not the ``.cmd`` (see ``_build_gateway_vbs_script`` /
+    issue #45599 root cause #1).
+    """
+    user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{escape(_TASK_DESCRIPTION)}</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>{_TASK_LOGON_DELAY}</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">{user_principal}
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>{_TASK_RESTART_INTERVAL}</Interval>
+      <Count>{_TASK_RESTART_COUNT}</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>wscript.exe</Command>
+      <Arguments>//B //Nologo "{escape(str(launcher_path))}"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _write_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> Path:
+    xml_path = launcher_path.with_suffix(".task.xml")
+    xml_path.write_text(
+        _build_scheduled_task_xml(task_name, launcher_path, user),
+        encoding="utf-16",
+        newline="",
+    )
+    return xml_path
+
+
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
 
@@ -451,8 +605,6 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     preserves those stale triggers and can make the gateway relaunch every
     minute. Delete+create gives us a clean ONLOGON task every install.
     """
-    quoted_script = _quote_schtasks_arg(str(script_path))
-
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
     delete_detail = (delete_err or delete_out or "").strip()
     if delete_code != 0 and delete_detail and "cannot find" not in delete_detail.lower():
@@ -460,32 +612,28 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
             return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
         # Non-fatal: /Create /F below may still replace it. Keep the detail in
         # the final error if creation also fails.
-    # password" variant; if that fails, retry without /RU /NP /IT.
-    base = [
-        "/Create",
-        "/F",
-        "/SC",
-        "ONLOGON",
-        "/RL",
-        "LIMITED",
-        "/TN",
-        task_name,
-        "/TR",
-        quoted_script,
-    ]
     user = _resolve_task_user()
-    variants = []
-    if user:
-        variants.append([*base, "/RU", user, "/NP", "/IT"])
+    # The Scheduled Task launches the console-less .vbs (issue #45599 fix A), not
+    # the .cmd. The .cmd stays for the Startup-folder fallback and direct /Run.
+    launcher_path = script_path.with_suffix(".vbs")
+    xml_path = _write_scheduled_task_xml(task_name, launcher_path, user)
+    base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
+    variants = [[*base, "/RU", user, "/NP", "/IT"]] if user else []
     variants.append(base)
 
     last_code = 1
     last_err = ""
-    for argv in variants:
-        code, out, err = _exec_schtasks(argv)
-        if code == 0:
-            return (True, f"Created Scheduled Task {task_name!r}")
-        last_code, last_err = code, (err or out or "")
+    try:
+        for argv in variants:
+            code, out, err = _exec_schtasks(argv)
+            if code == 0:
+                return (True, f"Created Scheduled Task {task_name!r}")
+            last_code, last_err = code, (err or out or "")
+    finally:
+        try:
+            xml_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     if delete_detail and "cannot find" not in delete_detail.lower():
         last_err = f"{last_err.strip()} (delete detail: {delete_detail})"
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
@@ -1302,10 +1450,54 @@ def stop() -> None:
         print("✗ No gateway was running")
 
 
+def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -> bool:
+    """Block until no gateway process is detectable, or the timeout elapses.
+
+    ``stop()`` can return while the previous gateway is still draining
+    in-flight agents (the drain runs up to the restart-drain timeout). Uses the
+    authoritative ``get_running_pid()`` (lock + liveness + start-time +
+    gateway-shape) plus the now-strict ``_gateway_pids()`` scan so a relaunch
+    never races a still-alive old process.
+    """
+    from gateway.status import get_running_pid
+
+    deadline = time.monotonic() + max(timeout_s, interval_s)
+    while time.monotonic() < deadline:
+        if get_running_pid() is None and not _gateway_pids():
+            return True
+        time.sleep(interval_s)
+    return get_running_pid() is None and not _gateway_pids()
+
+
 def restart() -> None:
-    """Stop the gateway then start it again."""
+    """Stop the gateway then start it again.
+
+    Waits for the old gateway to be authoritatively gone before relaunching --
+    otherwise ``start()``'s "already running" guard sees the still-draining old
+    process and no-ops, and when that process later exits nothing replaces it (a
+    silent outage). Fails loudly if the process can't be cleared or the relaunch
+    doesn't produce a running gateway.
+    """
     _assert_windows()
+    from hermes_cli.gateway import kill_gateway_processes
+
     stop()
+
+    if not _wait_for_gateway_absent(timeout_s=30.0):
+        print("⚠ Gateway still present after stop; forcing termination before restart...")
+        kill_gateway_processes(all_profiles=False, force=True)
+        if not _wait_for_gateway_absent(timeout_s=10.0):
+            raise RuntimeError(
+                "Gateway process still detected after force kill; refusing to "
+                "start a duplicate. Investigate stray PIDs before retrying."
+            )
+
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)
     start()
+
+    if not _wait_for_gateway_ready(timeout_s=15.0):
+        raise RuntimeError(
+            "Gateway restart did not produce a running gateway process. "
+            "Check logs/gateway.log and run `hermes gateway status`."
+        )

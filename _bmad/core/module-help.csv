@@ -1,0 +1,14 @@
+module,skill,display-name,menu-code,description,action,args,phase,preceded-by,followed-by,required,output-location,outputs
+Core,_meta,,,,,,,,,false,https://docs.bmad-method.org/llms.txt,
+Core,bmad-brainstorming,Brainstorming,BSP,Use early in ideation or when stuck generating ideas.,,,anytime,,,false,{output_folder}/brainstorming,brainstorming session
+Core,bmad-party-mode,Party Mode,PM,Orchestrate multi-agent discussions when you need multiple perspectives or want agents to collaborate.,,,anytime,,,false,,
+Core,bmad-help,BMad Help,BH,,,,anytime,,,false,,
+Core,bmad-index-docs,Index Docs,ID,Use when LLM needs to understand available docs without loading everything.,,,anytime,,,false,,
+Core,bmad-shard-doc,Shard Document,SD,Use when doc becomes too large (>500 lines) to manage effectively.,,[path],anytime,,,false,,
+Core,bmad-editorial-review-prose,Editorial Review - Prose,EP,Use after drafting to polish written content.,,[path],anytime,,,false,report located with target document,three-column markdown table with suggested fixes
+Core,bmad-editorial-review-structure,Editorial Review - Structure,ES,Use when doc produced from multiple subprocesses or needs structural improvement.,,[path],anytime,,,false,report located with target document,
+Core,bmad-review-adversarial-general,Adversarial Review,AR,"Use for quality assurance or before finalizing deliverables. Code Review in other modules runs this automatically, but also useful for document reviews.",,[path],anytime,,,false,,
+Core,bmad-review-edge-case-hunter,Edge Case Hunter Review,ECH,Use alongside adversarial review for orthogonal coverage — method-driven not attitude-driven.,,[path],anytime,,,false,,
+Core,bmad-spec,Spec,SP,"Use to distill any intent input (brief, PRD, transcript, brain dump, design folder, mixed multi-source) into a succinct, no-fluff SPEC.md contract + companions that downstream work derives from. Locks the WHAT before the HOW. Works for software, game design, research, editorial, policy, business, anything intent-bearing. Validation mode also available.",,[path],anytime,,,false,{output_folder}/specs/spec-{slug},SPEC.md + companion files
+Core,bmad-customize,BMad Customize,BC,"Use when you want to change how an agent or workflow behaves — add persistent facts, swap templates, insert activation hooks, or customize menus. Scans what's customizable, picks the right scope (agent vs workflow), writes the override to _bmad/custom/, and verifies the merge. No TOML hand-authoring required.",,,anytime,,,false,{project-root}/_bmad/custom,TOML override files
+Core,bmad-forge-idea,Forge Idea,FI,"Use to pressure-test and harden an idea — software, business, creative, research, or life — until it proves out, hardens into something buildable, or dies cheaply. Persona-driven interrogation; optional handoff to bmad-spec or bmad-quick-dev.",,,anytime,,,false,{output_folder}/forge,refined-idea brief (optional)

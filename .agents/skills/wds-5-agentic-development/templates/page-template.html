@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="se">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>[Page-Number] [Page Name] - [Project Name]</title>
+    
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Tailwind Config (Design Tokens) -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        '[project-name]': {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#2563eb',
+                            600: '#1d4ed8',
+                            700: '#1e40af',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Dev Mode Styles (feedback/testing tool) -->
+    <link rel="stylesheet" href="components/dev-mode.css">
+    
+    <!-- Custom Styles (minimal - only what Tailwind can't do) -->
+    <style>
+        /* Custom styles that can't be done with Tailwind */
+        /* Example: Complex animations, special overlays, etc. */
+    </style>
+</head>
+<body class="min-h-screen bg-gray-50 font-sans">
+    <!-- ========================================================================
+         DEV MODE TOGGLE (for easy feedback - copy Object IDs)
+         ======================================================================== -->
+    <button id="dev-mode-toggle" class="dev-mode-toggle" title="Toggle Dev Mode (Ctrl+E)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+        </svg>
+        <span>Dev Mode: OFF</span>
+    </button>
+    <div id="dev-mode-tooltip" class="dev-mode-tooltip" style="display: none;"></div>
+    <!-- ========================================================================
+         HEADER
+         ======================================================================== -->
+    <header class="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+        <!-- Back Button -->
+        <button 
+            id="[page]-header-back"
+            data-object-id="[page]-header-back"
+            onclick="history.back()"
+            class="text-gray-600 hover:text-gray-900 font-medium text-sm transition-colors"
+        >
+            ← [Back Text]
+        </button>
+        
+        <!-- Page Title -->
+        <h1 
+            id="[page]-header-title"
+            data-object-id="[page]-header-title"
+            class="text-lg font-semibold text-gray-900"
+        >
+            [Page Title]
+        </h1>
+        
+        <!-- Spacer (for alignment) -->
+        <div class="w-20"></div>
+        
+        <!-- Optional: Language Selector or Action Button -->
+        <!-- <button class="text-[project-name]-600">Action</button> -->
+    </header>
+
+    <!-- ========================================================================
+         MAIN CONTENT
+         ======================================================================== -->
+    <main class="max-w-md mx-auto p-4">
+        <form id="[page]Form" class="space-y-4" onsubmit="handleSubmit(event)">
+            
+            <!-- ============================================================
+                 SECTION 1: Example - Picture Upload
+                 ============================================================ -->
+            <div class="flex items-center gap-4 mb-6">
+                <button 
+                    type="button"
+                    id="[page]-picture-upload"
+                    data-object-id="[page]-picture-upload"
+                    onclick="handlePictureUpload()"
+                    class="w-24 h-24 rounded-full bg-gray-100 border-2 border-dashed border-gray-300 flex items-center justify-center hover:border-[project-name]-500 hover:bg-gray-50 transition-all cursor-pointer"
+                >
+                    <img id="picturePreview" class="hidden w-full h-full rounded-full object-cover" alt="Preview" />
+                    <svg class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+                    </svg>
+                </button>
+                <input type="file" id="pictureInput" accept="image/*" class="hidden">
+                
+                <div class="flex-1">
+                    <label class="text-sm text-gray-700 font-medium">
+                        [Upload Label]
+                    </label>
+                    <p class="text-xs text-red-600 hidden" id="pictureError"></p>
+                </div>
+            </div>
+
+            <!-- ============================================================
+                 SECTION 2: Example - Text Input
+                 ============================================================ -->
+            <div>
+                <input
+                    type="text"
+                    id="[page]-input-[field]"
+                    data-object-id="[page]-input-[field]"
+                    name="[fieldName]"
+                    placeholder="[Placeholder] *"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[project-name]-500 focus:border-transparent transition-all"
+                    required
+                />
+                <p class="text-sm text-red-600 hidden mt-1" id="[field]Error"></p>
+            </div>
+
+            <!-- ============================================================
+                 SECTION 3: Example - Split Button (Binary Choice)
+                 ============================================================ -->
+            <div 
+                id="[page]-split-[choice]" 
+                data-object-id="[page]-split-[choice]"
+                class="grid grid-cols-2 gap-0 border border-gray-300 rounded-lg overflow-hidden"
+            >
+                <button 
+                    type="button" 
+                    id="choice1" 
+                    onclick="selectChoice('option1')"
+                    class="py-2 text-center font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                    [Option 1]
+                </button>
+                <button 
+                    type="button" 
+                    id="choice2" 
+                    onclick="selectChoice('option2')"
+                    class="py-2 text-center font-medium text-gray-700 hover:bg-gray-50 transition-colors border-l border-gray-300"
+                >
+                    [Option 2]
+                </button>
+            </div>
+
+            <!-- ============================================================
+                 SECTION 4: Example - Textarea
+                 ============================================================ -->
+            <div>
+                <textarea
+                    id="[page]-textarea-[field]"
+                    data-object-id="[page]-textarea-[field]"
+                    name="[fieldName]"
+                    placeholder="[Placeholder]"
+                    maxlength="500"
+                    rows="3"
+                    oninput="updateCharCounter()"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[project-name]-500 focus:border-transparent resize-none"
+                ></textarea>
+                <p class="text-xs text-gray-500 text-right hidden" id="charCounter"></p>
+            </div>
+
+            <!-- ============================================================
+                 SUBMIT BUTTON
+                 ============================================================ -->
+            <button
+                type="submit"
+                id="[page]-button-submit"
+                data-object-id="[page]-button-submit"
+                class="w-full py-3 bg-[project-name]-600 text-white rounded-lg font-semibold hover:bg-[project-name]-700 focus:outline-none focus:ring-2 focus:ring-[project-name]-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+            >
+                <span id="submitButtonText">[Submit Text]</span>
+                <svg id="submitButtonSpinner" class="hidden animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+            </button>
+        </form>
+    </main>
+
+    <!-- ========================================================================
+         SUCCESS TOAST
+         ======================================================================== -->
+    <div id="successToast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 z-50 animate-slide-up">
+        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+        </svg>
+        <span id="toastMessage">[Success Message]</span>
+    </div>
+
+    <!-- ========================================================================
+         ERROR BANNER (optional)
+         ======================================================================== -->
+    <div id="errorBanner" class="hidden fixed top-20 left-1/2 -translate-x-1/2 max-w-md w-full mx-4 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3 z-50">
+        <svg class="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path>
+        </svg>
+        <div class="flex-1">
+            <p class="font-medium text-red-900">Error</p>
+            <p class="text-sm text-red-700" id="errorMessage">[Error message]</p>
+        </div>
+        <button onclick="hideErrorBanner()" class="text-red-600 hover:text-red-900">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+            </svg>
+        </button>
+    </div>
+
+    <!-- ========================================================================
+         MODALS (add as needed - example: image crop modal)
+         ======================================================================== -->
+    <!-- Image Crop Modal Template (uncomment if using image upload) -->
+    <!--
+    <div id="cropModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-lg max-w-md w-full overflow-hidden">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+                <button onclick="cancelCrop()" class="text-[project-name]-600 font-medium">Cancel</button>
+                <h2 class="font-semibold text-gray-900">Crop Image</h2>
+                <button onclick="replaceImage()" class="text-[project-name]-600 font-medium">Replace</button>
+            </div>
+            <div class="p-4">
+                <div class="relative bg-gray-100 rounded-lg overflow-hidden" style="height: 300px;">
+                    <img id="cropImage" src="" alt="Crop" class="w-full h-full object-contain">
+                </div>
+                <input type="range" id="zoomSlider" min="10" max="200" value="100" 
+                       class="w-full mt-4 accent-[project-name]-600">
+            </div>
+            <div class="p-4">
+                <button onclick="confirmCrop()" 
+                        class="w-full py-3 bg-[project-name]-600 text-white rounded-lg font-semibold hover:bg-[project-name]-700">
+                    Use Image
+                </button>
+            </div>
+        </div>
+    </div>
+    -->
+
+    <!-- ========================================================================
+         JAVASCRIPT - Shared Scripts
+         ======================================================================== -->
+    <script src="shared/prototype-api.js"></script>
+    <script src="shared/init.js"></script>
+    <script src="shared/utils.js"></script>
+    
+    <!-- ========================================================================
+         JAVASCRIPT - Dev Mode (feedback tool)
+         ======================================================================== -->
+    <script src="components/dev-mode.js"></script>
+    
+    <!-- ========================================================================
+         JAVASCRIPT - Component Scripts (load as needed)
+         ======================================================================== -->
+    <!-- <script src="components/image-crop.js"></script> -->
+    <!-- <script src="components/toast.js"></script> -->
+    <!-- <script src="components/modal.js"></script> -->
+    <!-- <script src="components/form-validation.js"></script> -->
+    
+    <!-- ========================================================================
+         JAVASCRIPT - Page-Specific Script (if complex logic)
+         ======================================================================== -->
+    <!-- Option 1: External file (if >150 lines) -->
+    <!-- <script src="pages/[page-number]-[page-name].js"></script> -->
+    
+    <!-- Option 2: Inline script (preferred for <150 lines) -->
+    <script>
+        /**
+         * Page: [Page Number] [Page Name]
+         * Purpose: [Brief description]
+         */
+
+        // ================================================================
+        // STATE MANAGEMENT
+        // ================================================================
+        let formData = {
+            // Initialize form state
+        };
+
+        // ================================================================
+        // INITIALIZATION
+        // ================================================================
+        window.initPage = function() {
+            console.log('📄 [Page Name] loaded');
+            
+            // Page-specific initialization
+            loadPageData();
+        };
+
+        async function loadPageData() {
+            try {
+                // Load any required data
+                const user = await window.PrototypeAPI.getUser();
+                console.log('👤 Current user:', user);
+                
+                // Pre-fill form if needed
+                
+            } catch (error) {
+                console.error('❌ Error loading data:', error);
+            }
+        }
+
+        // ================================================================
+        // FORM HANDLING
+        // ================================================================
+        async function handleSubmit(event) {
+            event.preventDefault();
+            
+            // Validate
+            if (!validateForm()) {
+                return;
+            }
+            
+            // Show loading
+            setLoadingState(true);
+            
+            try {
+                // Collect form data
+                const data = {
+                    // Extract form values
+                };
+                
+                // API call
+                console.log('📤 Submitting:', data);
+                const result = await window.PrototypeAPI.[method](data);
+                console.log('✅ Success:', result);
+                
+                // Show success
+                showToast('[Success message]', 'success');
+                
+                // Navigate (after delay)
+                setTimeout(() => {
+                    window.location.href = '[next-page].html';
+                }, 1500);
+                
+            } catch (error) {
+                console.error('❌ Error:', error);
+                showErrorBanner(error.message);
+            } finally {
+                setLoadingState(false);
+            }
+        }
+
+        function validateForm() {
+            let isValid = true;
+            
+            // Validate each field
+            // Example:
+            // const name = document.getElementById('[field]').value;
+            // if (!name) {
+            //     showFieldError('[field]', 'This field is required');
+            //     isValid = false;
+            // }
+            
+            return isValid;
+        }
+
+        // ================================================================
+        // UI INTERACTIONS
+        // ================================================================
+        function handlePictureUpload() {
+            document.getElementById('pictureInput').click();
+        }
+
+        function selectChoice(choice) {
+            // Handle choice selection
+            console.log('Choice selected:', choice);
+        }
+
+        function updateCharCounter() {
+            const textarea = document.getElementById('[page]-textarea-[field]');
+            const counter = document.getElementById('charCounter');
+            const current = textarea.value.length;
+            const max = textarea.maxLength;
+            
+            counter.textContent = `${current}/${max}`;
+            counter.classList.remove('hidden');
+        }
+
+        // ================================================================
+        // FEEDBACK
+        // ================================================================
+        function setLoadingState(isLoading) {
+            const btn = document.getElementById('[page]-button-submit');
+            const text = document.getElementById('submitButtonText');
+            const spinner = document.getElementById('submitButtonSpinner');
+            
+            btn.disabled = isLoading;
+            text.classList.toggle('hidden', isLoading);
+            spinner.classList.toggle('hidden', !isLoading);
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('successToast');
+            const messageEl = document.getElementById('toastMessage');
+            
+            messageEl.textContent = message;
+            toast.classList.remove('hidden');
+            
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        }
+
+        function showErrorBanner(message) {
+            const banner = document.getElementById('errorBanner');
+            const messageEl = document.getElementById('errorMessage');
+            
+            messageEl.textContent = message;
+            banner.classList.remove('hidden');
+            
+            setTimeout(() => {
+                banner.classList.add('hidden');
+            }, 5000);
+        }
+
+        function hideErrorBanner() {
+            document.getElementById('errorBanner').classList.add('hidden');
+        }
+
+        function showFieldError(fieldId, message) {
+            const errorEl = document.getElementById(`${fieldId}Error`);
+            const inputEl = document.getElementById(fieldId);
+            
+            if (errorEl) {
+                errorEl.textContent = message;
+                errorEl.classList.remove('hidden');
+            }
+            
+            if (inputEl) {
+                inputEl.classList.add('border-red-500');
+            }
+        }
+
+        function clearFieldError(fieldId) {
+            const errorEl = document.getElementById(`${fieldId}Error`);
+            const inputEl = document.getElementById(fieldId);
+            
+            if (errorEl) {
+                errorEl.classList.add('hidden');
+            }
+            
+            if (inputEl) {
+                inputEl.classList.remove('border-red-500');
+            }
+        }
+    </script>
+</body>
+</html>
+

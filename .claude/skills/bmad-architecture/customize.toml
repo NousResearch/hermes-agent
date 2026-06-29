@@ -1,0 +1,100 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-architecture.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-architecture.toml         (team)
+#   {project-root}/_bmad/custom/bmad-architecture.user.toml    (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays: append
+
+# Steps to run before the standard activation (config load, greet).
+# Use for pre-flight loads, approved-stack policy checks, etc.
+activation_steps_prepend = []
+
+# Steps to run after greet but before the workflow begins.
+# Use for context-heavy setup that should happen once the user has been acknowledged.
+activation_steps_append = []
+
+# Persistent facts the workflow keeps in mind for the whole run
+# (approved stacks, banned dependencies, platform constraints, compliance guardrails).
+# Each entry is either a literal sentence, a skill prefixed with `skill:`, or a `file:`-prefixed
+# path/glob whose contents are loaded as facts.
+#
+# Default loads project-context.md if bmad-generate-project-context produced one — giving the
+# architect persistent awareness of the project's tech, domain, and conventions (load-bearing
+# for brownfield). Common opt-ins (set in team/user override TOML):
+#   "Our org is AWS-only -- do not propose GCP or Azure."
+#   "file:{project-root}/docs/engineering-standards.md"
+persistent_facts = [
+  "file:{project-root}/**/project-context.md",
+]
+
+# Executed when the workflow completes (after the spine is final and the user has been told).
+# String scalar (single instruction) or array of instructions executed in order. Empty for none.
+on_complete = ""
+
+# The architecture spine template. Treated as expert prior knowledge, not a checklist — the LLM
+# adapts it to the project, altitude, and domain, and drops sections a project genuinely doesn't
+# need. Override the path in team/user TOML to enforce a different spine shape.
+spine_template = "assets/spine-template.md"
+
+# Run folder location. ARCHITECTURE-SPINE.md, its .memlog.md, and any fuller rendering the run
+# produces all land inside `{spine_output_path}/{run_folder_pattern}/`. Resume-check scans
+# `{spine_output_path}` for prior unfinished runs.
+#
+# The default pattern fits the common case (one spine per project, at the altitude above epics).
+# At EPIC altitude, override run_folder_pattern to carry the epic identity so per-epic runs don't
+# collide on the same day — e.g. set it (team/user TOML) to "architecture-epic-{epic_id}", binding
+# {epic_id} from the driving spec / the activating payload. Headless callers may instead pass an
+# explicit doc_workspace and bypass the pattern entirely.
+spine_output_path = "{planning_artifacts}/architecture"
+run_folder_pattern = "architecture-{project_name}-{date}"
+
+# Prose-editorial standards applied at finalize ONLY to a fuller prose document the run produces
+# (a discussion report, full architecture doc, or design addendum) — never to the spine or other
+# short, structured outputs, which are terse and carry decisions in AD-n blocks and diagrams by
+# design. Each entry is a `skill:`, `file:`, or plain-text directive applied before the user sees
+# the polished draft. Suggested order: structural passes first, prose mechanics last. Append-only.
+doc_standards = [
+  "skill:bmad-editorial-review-structure",
+  "skill:bmad-editorial-review-prose",
+]
+
+# External-source registry. Natural-language directives describing knowledge bases, MCP tools, or
+# internal systems the LLM may consult ON DEMAND during the run (not preemptively) — approved-stack
+# catalogs, internal platform docs, version registries. Each entry names the tool, the trigger
+# condition, and any fields it needs. If a named tool is unavailable at runtime, the LLM falls back
+# to standard behavior (e.g. web research) and notes the gap. Empty by default.
+#
+# Examples (set in team/user override TOML):
+#   "When choosing a datastore, consult corp:platform_catalog before recommending one."
+#   "For current library versions, query corp:artifact_registry before web search."
+external_sources = []
+
+# External-handoff routing applied at Finalize to push outputs beyond local files (Confluence,
+# Notion, ticket systems). Each entry names the MCP tool, the destination, and required fields.
+# Runs after polish; returned URLs/IDs are surfaced. Unavailable tools are skipped and flagged;
+# local files always exist. Empty by default.
+external_handoffs = []
+
+# --- Finalize reviewers ---
+# Extra review lenses spawned as parallel subagents at the validation gate (Finalize and the
+# Validate intent), on top of the skill's built-in good-spine checklist and the lint_spine.py
+# mechanical floor. The GATE is stakes-gated — a throwaway spine may run it quietly or skip it —
+# but whenever the gate runs, every entry here runs with it (the configured floor, never cherry-
+# picked); only ad-hoc lenses are optional, and headless never skips the gate.
+#
+# Entries follow the standard prefix convention:
+#   "skill:NAME"   invoke the named review skill as a subagent against ARCHITECTURE-SPINE.md
+#   "file:PATH"    load the file as a review prompt; spawn an adversarial subagent applying it
+#   plain text     use the text directly as the subagent's review prompt
+#
+# Resolved on-demand (not at activation). Override TOML may append.
+finalize_reviewers = [
+  "Verify every committed decision was web-researched or reality-checked rather than asserted from training data: current library/framework versions, that each named technology still exists and fits, and — greenfield — the live defaults of any starter it leans on. Flag anything that could be out of date and wasn't confirmed against the web, the existing project, or the current starter.",
+  "Attack the spine as an adversary: construct two units one level down that each obey every AD to the letter yet still build incompatibly — clashing shared-data shapes, two owners of one entity, conflicting state-mutation paths. Every pair you find is a hole to close with a new or tightened AD.",
+]

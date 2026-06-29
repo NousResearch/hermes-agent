@@ -111,6 +111,10 @@ def _find_session_id(
     candidates = []
 
     for _key, entry in data.items():
+        # Skip documentation/metadata sentinels (keys starting with "_", e.g.
+        # the gateway's "_README" note) — they are not session entries.
+        if str(_key).startswith("_") or not isinstance(entry, dict):
+            continue
         origin = entry.get("origin") or {}
         entry_platform = (origin.get("platform") or entry.get("platform", "")).lower()
 

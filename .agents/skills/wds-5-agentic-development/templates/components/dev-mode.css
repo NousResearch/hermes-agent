@@ -1,0 +1,164 @@
+/* ============================================================================
+   PROTOTYPE DEV MODE STYLES
+   
+   Styles for developer/feedback mode that allows copying Object IDs
+   
+   Usage: Include these styles in your prototype HTML or CSS file
+   ============================================================================ */
+
+/* Dev Mode Toggle Button */
+.dev-mode-toggle {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    background: #fff;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transition: all 0.2s;
+    font-size: 14px;
+    font-weight: 500;
+    color: #6b7280;
+}
+
+.dev-mode-toggle:hover {
+    background: #f9fafb;
+    border-color: #d1d5db;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.dev-mode-toggle.active {
+    background: #0066CC;
+    border-color: #0066CC;
+    color: #fff;
+    box-shadow: 0 4px 12px rgba(0, 102, 204, 0.3);
+}
+
+.dev-mode-toggle svg {
+    flex-shrink: 0;
+}
+
+/* Dev Mode Active State */
+body.dev-mode-active {
+    cursor: help !important; /* Show help cursor to indicate special mode */
+}
+
+/* Subtle element highlighting on hover (not Shift held) */
+body.dev-mode-active [id]:hover {
+    outline: 2px solid #6b7280 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.2) !important;
+}
+
+/* Active highlighting when Shift is held (ready to copy) */
+body.dev-mode-active.shift-held {
+    cursor: copy !important;
+}
+
+body.dev-mode-active.shift-held [id]:hover {
+    outline: 3px solid #10B981 !important;
+    outline-offset: 3px !important;
+    box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.4) !important;
+}
+
+/* Dev Mode Tooltip */
+.dev-mode-tooltip {
+    position: fixed;
+    background: #1F2937;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: 'Courier New', monospace;
+    z-index: 10000;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transition: background 0.2s;
+}
+
+.dev-mode-tooltip::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: 8px;
+    width: 8px;
+    height: 8px;
+    background: inherit;
+    transform: rotate(45deg);
+}
+
+/* Disable only certain interactions when Shift is held in dev mode */
+body.dev-mode-active.shift-held button:not(#dev-mode-toggle),
+body.dev-mode-active.shift-held input,
+body.dev-mode-active.shift-held select,
+body.dev-mode-active.shift-held textarea,
+body.dev-mode-active.shift-held a {
+    pointer-events: none !important;
+}
+
+/* But allow the toggle button to work */
+body.dev-mode-active #dev-mode-toggle,
+body.dev-mode-active #dev-mode-toggle * {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+}
+
+/* Feedback overlay (created dynamically) */
+@keyframes fadeInOut {
+    0% { 
+        opacity: 0; 
+        transform: translate(-50%, -50%) scale(0.9); 
+    }
+    20% { 
+        opacity: 1; 
+        transform: translate(-50%, -50%) scale(1); 
+    }
+    80% { 
+        opacity: 1; 
+        transform: translate(-50%, -50%) scale(1); 
+    }
+    100% { 
+        opacity: 0; 
+        transform: translate(-50%, -50%) scale(0.9); 
+    }
+}
+
+/* Responsive: Adjust toggle button on mobile */
+@media (max-width: 768px) {
+    .dev-mode-toggle {
+        top: 10px;
+        right: 10px;
+        padding: 8px 12px;
+        font-size: 12px;
+    }
+    
+    .dev-mode-toggle span {
+        display: none; /* Hide text on mobile, show only icon */
+    }
+    
+    .dev-mode-toggle.active span {
+        display: inline; /* Show "ON" status */
+        max-width: 60px;
+    }
+}
+
+/* Optional: Add visual indicator when Shift is held */
+body.dev-mode-active.shift-held .dev-mode-toggle::after {
+    content: '⬆️';
+    margin-left: 4px;
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(1.1); }
+}
+

@@ -1,0 +1,63 @@
+{
+  "user": {
+    "id": "demo-user-001",
+    "firstName": "[First Name]",
+    "lastName": "[Last Name]",
+    "email": "[email@example.com]",
+    "phoneNumber": "[+1234567890]",
+    "picture": "",
+    "role": "owner",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  },
+  "family": {
+    "id": "demo-family-001",
+    "name": "[Family Name]",
+    "description": "[Brief family description]",
+    "location": "[City, Country]",
+    "picture": "",
+    "ownerId": "demo-user-001",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  },
+  "members": [
+    {
+      "id": "demo-member-001",
+      "familyId": "demo-family-001",
+      "userId": "demo-user-001",
+      "firstName": "[Member 1 First Name]",
+      "lastName": "[Member 1 Last Name]",
+      "email": "[member1@example.com]",
+      "role": "owner",
+      "picture": "",
+      "createdAt": "2024-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "demo-member-002",
+      "familyId": "demo-family-001",
+      "userId": "demo-user-002",
+      "firstName": "[Member 2 First Name]",
+      "lastName": "[Member 2 Last Name]",
+      "email": "[member2@example.com]",
+      "role": "co-owner",
+      "picture": "",
+      "createdAt": "2024-01-02T00:00:00.000Z"
+    }
+  ],
+  "dogs": [
+    {
+      "id": "demo-dog-001",
+      "familyId": "demo-family-001",
+      "name": "[Dog Name]",
+      "breed": "[Dog Breed]",
+      "gender": "male",
+      "birthDate": "2020-05-15",
+      "color": "[Color]",
+      "specialNeeds": "[Any special needs or notes]",
+      "picture": "",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "comment": "This is demo data that loads automatically when prototype is opened for the first time. Edit this file to change the demo data. All fields with empty strings ('') are optional."
+}

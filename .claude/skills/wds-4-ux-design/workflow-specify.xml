@@ -1,0 +1,387 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<workflow id="wds-4-specify" name="WDS Phase 4 — Specify Page" version="1.0">
+  <description>
+    Create a complete, implementation-ready page specification: layout, components with Object IDs,
+    multilingual content, interactions, states, validation, spacing, and typography.
+    All 9 steps must be completed in sequence before the specification is considered done.
+    Validation runs at step 9 before the spec is written to disk.
+  </description>
+
+  <prerequisites>
+    <require file="{output_folder}/C-UX-Scenarios/{scenario-slug}/{scenario-slug}.md" label="Scenario outline"/>
+    <require file="{output_folder}/C-UX-Scenarios/{scenario-slug}/pages/{NN}.{step}-{page-slug}/" label="Page folder from Phase 3 or design activity"/>
+    <require file="{output_folder}/_progress/00-design-log.md" label="Design log"/>
+  </prerequisites>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- INITIALIZATION — runs before step 1                                -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <initialization>
+    <instruction>
+      Read the design log at {output_folder}/_progress/00-design-log.md before starting.
+      Check Current table for any in-progress work from a previous session.
+    </instruction>
+    <instruction>
+      Load page context from the existing page folder:
+      {output_folder}/C-UX-Scenarios/[NN-slug]/pages/[NN].[step]-[page-slug]/
+      The page boilerplate created in Phase 3 contains scenario, page number, platform,
+      page purpose, entry context, exit action, and on-page interactions.
+    </instruction>
+    <instruction>
+      Update the design log Current table: add this page with status "specifying".
+    </instruction>
+    <gate type="file-exists" path="{output_folder}/C-UX-Scenarios/{scenario-slug}/{scenario-slug}.md"
+          failure-message="Scenario outline must exist. Select a scenario from the design log before running Specify."/>
+    <gate type="folder-exists" path="{output_folder}/C-UX-Scenarios/{scenario-slug}/pages/{NN}.{step}-{page-slug}/"
+          failure-message="Page folder must exist. Run Phase 3 or a design activity (Suggest/Dream) to create the page structure before specifying."/>
+  </initialization>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 1 — Page Basics                                               -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="1-page-basics" name="Capture page metadata and entry/exit points" step-file="steps-p/step-01-page-basics.md">
+    <instruction>
+      Present the page basics form to the user and collect all required fields:
+      - Page name/title
+      - URL/route (if applicable)
+      - Main user goal (one sentence)
+      - Entry points (where users come from)
+      - Exit points (where users go next)
+
+      For public pages, also collect SEO data — check the project brief's SEO Strategy for target keywords:
+      - Primary keyword
+      - Secondary keywords
+      - URL slug (from keyword map)
+    </instruction>
+    <instruction>
+      Store all captured values as page_basics:
+      page_title, url_route, user_goal, entry_points, exit_points,
+      primary_keyword (public pages), secondary_keywords (public pages), url_slug (public pages).
+    </instruction>
+
+    <gate type="data-captured" required="page_title url_route user_goal entry_points exit_points"
+          failure-message="All basic page fields must be captured before proceeding. Do not skip any field."/>
+    <gate type="seo-data-captured" condition="page-is-public"
+          required="primary_keyword secondary_keywords url_slug"
+          failure-message="SEO data is mandatory for public pages. Check the project brief's SEO Strategy section."/>
+    <gate type="user-confirms" prompt="All page basics captured and confirmed by user?"/>
+
+    <output>page_basics stored — title, route, goal, entry/exit points, and SEO data (if public page).</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 2 — Layout Sections                                           -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="2-layout-sections" name="Define major page sections" step-file="steps-p/step-02-layout-sections.md">
+    <instruction>
+      Ask the user to describe the major areas of the page (header, hero, main content, sidebar,
+      footer, etc.). Do not define individual components yet — only high-level sections.
+    </instruction>
+    <instruction>
+      For each section described, store:
+      - section_name
+      - section_purpose
+      - section_priority (primary / secondary)
+    </instruction>
+    <instruction>
+      Confirm the section list with the user before proceeding.
+    </instruction>
+
+    <gate type="data-captured" required="layout_sections" minimum-count="1"
+          failure-message="At least one layout section must be defined. Do not proceed to components without a section structure."/>
+    <gate type="section-attributes-complete" required-per-section="name purpose priority"
+          failure-message="Each section must have a name, purpose, and priority before proceeding."/>
+    <gate type="user-confirms" prompt="Layout sections defined and confirmed?"/>
+
+    <output>layout_sections stored — section names, purposes, and priorities captured.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 3 — Components and Object IDs                                 -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="3-components-objects" name="Identify components and assign Object IDs" step-file="steps-p/step-03-components-objects.md">
+    <instruction>
+      Work through each section identified in step 2. For each section, go top-to-bottom,
+      left-to-right. Ask the user to describe the next object in the section.
+    </instruction>
+    <instruction>
+      For each object described, load and execute the object router:
+      data/object-types/object-router.md
+      The router will: ask for object type, load the correct object-type template, guide through
+      complete documentation, generate a specification with an Object ID, then return here.
+    </instruction>
+    <instruction>
+      After each component specification is complete, check project config:
+      if design system is enabled, run workflows/wds-7-design-system/design-system-router.md
+      to check for similar components and extract component-level info. Update page spec with
+      the reference. If design system is disabled, keep the full specification on the page.
+    </instruction>
+    <instruction>
+      Continue until the user confirms all objects in the section are documented.
+      Move to the next section. Continue until all sections are complete.
+      Present a summary: sections processed, total components, components by type, all Object IDs assigned.
+    </instruction>
+
+    <gate type="all-sections-processed" rule="every-layout-section-has-been-worked-through"
+          failure-message="All sections from step 2 must be processed. Do not skip any section."/>
+    <gate type="object-ids-assigned" rule="every-component-has-an-object-id"
+          failure-message="Every documented component must have an Object ID before proceeding to content. Missing IDs block downstream steps."/>
+    <gate type="object-router-used" rule="every-component-routed-through-object-router"
+          failure-message="Object-type routing must be used for every component. Do not document components without using the router."/>
+    <gate type="design-system-check-performed" condition="design-system-enabled"
+          failure-message="Design system check must be performed after every component when design system is enabled."/>
+    <gate type="user-confirms" prompt="All components documented with Object IDs, design system checks complete?"/>
+
+    <output>Component registry complete — all Object IDs assigned, design system references updated where applicable.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 4 — Content and Languages                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="4-content-languages" name="Specify all text content in all languages" step-file="steps-p/step-04-content-languages.md">
+    <instruction>
+      Ask the user what languages this page supports. Store as supported_languages array.
+    </instruction>
+    <instruction>
+      For every text element on the page (labels, buttons, headings, messages, placeholders,
+      error text — derived from the component list), ask the user to provide content in every
+      supported language. Primary language first, then each additional language.
+    </instruction>
+    <instruction>
+      Store multilingual_content keyed by element and language.
+      No text element may have content in only a subset of languages — full coverage is required.
+    </instruction>
+
+    <gate type="languages-defined" required="supported_languages-array-not-empty"
+          failure-message="Supported languages must be defined before collecting content. Ask the user for the language list first."/>
+    <gate type="multilingual-coverage" rule="every-text-element-has-content-in-every-language"
+          failure-message="Every text element must have content in ALL supported languages. Do not proceed with incomplete language coverage."/>
+    <gate type="user-confirms" prompt="All text content specified in all supported languages?"/>
+
+    <output>multilingual_content stored — all text elements captured in all supported languages.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 5 — Interactions                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="5-interactions" name="Define interaction behaviors per component" step-file="steps-p/step-05-interactions.md">
+    <instruction>
+      For each interactive component in the registry (from step 3), ask the user what happens
+      when the user interacts with it. Cover: on click / on input / on focus,
+      immediate response, state changes, navigation (if applicable), data sent/received.
+    </instruction>
+    <instruction>
+      Store interaction_behavior keyed by Object ID. Do not generate behaviors without
+      user input — ask for each component individually.
+    </instruction>
+    <instruction>
+      Do not define visual states in this step — that is step 6.
+    </instruction>
+
+    <gate type="all-interactive-components-covered" rule="every-interactive-object-id-has-interaction-behavior"
+          failure-message="Every interactive component must have defined behaviors. Do not skip any."/>
+    <gate type="interaction-types-covered" rule="click-input-focus-navigation-data-considered-per-component"
+          failure-message="Consider all relevant interaction types for each component before moving on."/>
+    <gate type="user-confirms" prompt="All interaction behaviors defined for every interactive component?"/>
+
+    <output>interaction_behavior stored per Object ID — all interactive components covered.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 6 — States                                                    -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="6-states" name="Define page-level and component-level states" step-file="steps-p/step-06-states.md">
+    <instruction>
+      Define page-level states first. Ask the user to describe each situation:
+      default/loaded, empty (no data), loading (fetching), error (something went wrong),
+      success (after action completes). For each: when it occurs, what user sees, available actions.
+    </instruction>
+    <instruction>
+      For each component with multiple possible appearances, ask the user to define applicable states:
+      default, hover, active/pressed, focus, disabled, loading, error, success.
+      Only specify states that actually apply to each component.
+    </instruction>
+    <instruction>
+      Store page_states and component_states.
+      Do not define validation rules in this step — that is step 7.
+    </instruction>
+
+    <gate type="page-states-defined" required="default-state-minimum"
+          failure-message="At minimum, the default page state must be defined."/>
+    <gate type="component-states-defined" rule="multi-state-components-have-all-applicable-states"
+          failure-message="Components with multiple appearances must have all applicable states documented. Do not skip multi-state components."/>
+    <gate type="user-confirms" prompt="All page-level and component-level states defined?"/>
+
+    <output>page_states and component_states stored — all state variations documented.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 7 — Validation                                                -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="7-validation" name="Define validation rules and error messages" step-file="steps-p/step-07-validation.md">
+    <instruction>
+      Identify all fields and inputs that require validation. For each, ask:
+      - What makes it valid / invalid?
+      - Required or optional?
+      - Format rules and length limits?
+      - Custom rules?
+      - Validation timing: on blur, on submit, or real-time?
+    </instruction>
+    <instruction>
+      For each validation rule, define error messages in ALL supported languages.
+      Assign an error code (e.g., ERR_EMAIL_INVALID) to every message.
+    </instruction>
+    <instruction>
+      Store validation_rules and error_messages per field, with codes and translations.
+      Do not generate the specification document yet — that is step 9.
+    </instruction>
+
+    <check-if condition="page-has-input-fields-or-forms">
+      <then>
+        Proceed with full validation definition. Every input field must have rules and error messages.
+      </then>
+      <else>
+        No validated fields on this page. Store an empty validation_rules object and note
+        "No form inputs on this page" before proceeding to step 8.
+      </else>
+    </check-if>
+
+    <gate type="validation-rules-complete" rule="every-input-field-has-rules"
+          condition="page-has-input-fields"
+          failure-message="Every input field must have validation rules defined. Do not skip any field."/>
+    <gate type="error-messages-translated" rule="every-error-code-has-message-in-every-language"
+          condition="page-has-input-fields"
+          failure-message="Error messages must be provided in ALL supported languages. Incomplete translations block step 9."/>
+    <gate type="error-codes-assigned" rule="every-error-message-has-a-code"
+          condition="page-has-input-fields"
+          failure-message="Every error message must have an error code (e.g., ERR_EMAIL_INVALID)."/>
+    <gate type="user-confirms" prompt="Validation rules and error messages complete?"/>
+
+    <output>validation_rules and error_messages stored — all fields covered, all languages translated, all codes assigned.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 8 — Spacing and Typography                                    -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="8-spacing-typography" name="Define spacing objects and typography tokens" step-file="steps-p/step-08-spacing-typography.md">
+    <instruction>
+      Walk through adjacent section pairs top-to-bottom. For each pair, ask the user which
+      spacing token applies. Present the full table of gaps at once for efficiency.
+
+      Available tokens: zero, sm, md, lg, xl, 2xl, 3xl.
+      Zero-spacing is an intentional design choice — document it, never skip it.
+
+      Store spacing objects using naming convention:
+      - {page-slug}-v-space-{size} for vertical spacing
+      - {page-slug}-v-separator-{size} for lines/dividers with spacing
+
+      Also capture grid gaps for sections with repeated items (card grids, lists).
+    </instruction>
+    <instruction>
+      For each heading in the content (from step 4), define typography tokens.
+      Collect from the user: semantic tag (h1/h2/h3) and visual size per breakpoint
+      (mobile / tablet / desktop).
+
+      Available heading tokens: heading-xxs (14px), heading-xs (16px), heading-sm (18px),
+      heading-md (20px), heading-lg (24px), heading-xl (30px), heading-2xl (36px),
+      heading-3xl (44px), heading-4xl (56px).
+
+      Rule: use token names only — never arbitrary pixel values.
+      Rule: step up one token size per breakpoint (mobile → tablet → desktop) as a guide.
+
+      Store typography_tokens with Object ID, tag, and visual size per breakpoint.
+    </instruction>
+    <instruction>
+      Present the complete invisible layer to the user — spacing objects and typography tokens.
+      Ask if anything needs adjusting before generating the specification.
+    </instruction>
+
+    <gate type="spacing-complete" rule="every-section-boundary-has-spacing-object"
+          failure-message="Every adjacent section pair must have a spacing object. Including zero-spacing decisions."/>
+    <gate type="no-pixel-values" rule="only-token-names-used-in-spacing-and-typography"
+          failure-message="Only token names are allowed (zero, sm, md, lg, xl, 2xl, 3xl for spacing; heading-xxs through heading-4xl for typography). No pixel values."/>
+    <gate type="typography-complete" rule="every-heading-has-tag-and-responsive-token"
+          failure-message="Every heading must have a semantic tag and visual token for all three breakpoints."/>
+    <gate type="grid-gaps-documented" condition="page-has-card-grids-or-repeated-items"
+          failure-message="Grid gaps must be documented for sections containing repeated items (card grids, lists)."/>
+    <gate type="user-confirms" prompt="Spacing objects and typography tokens reviewed and approved?"/>
+
+    <output>spacing_objects and typography_tokens stored — every section boundary and heading documented with tokens.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 9 — Generate Specification                                    -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="9-generate-spec" name="Compile and save the complete page specification" step-file="steps-p/step-09-generate-spec.md">
+    <instruction>
+      Verify all data from steps 1-8 is present before generating:
+      page_basics, layout_sections, component registry with Object IDs, multilingual_content,
+      interaction_behavior, page_states, component_states, validation_rules, error_messages,
+      spacing_objects, typography_tokens.
+      If any section is missing, return to the relevant step to complete it first.
+    </instruction>
+    <instruction>
+      Generate the complete specification document using the template at:
+      templates/page-specification.template.md
+
+      Fill ALL sections with data from steps 1-8. Do not invent new formats —
+      the template defines the structure.
+    </instruction>
+    <instruction>
+      Run the validation script before saving:
+      wds-validate.js --page {current-page-path}
+      Review any errors or warnings reported. Fix issues in the relevant data sections
+      and re-run until validation passes.
+    </instruction>
+    <instruction>
+      Save the complete specification to:
+      {output_folder}/C-UX-Scenarios/{scenario-slug}/pages/{NN}.{step}-{page-slug}/{NN}.{step}-{page-slug}.md
+
+      Present the summary to the user: sections, components, languages, interactions, states,
+      validation rules, spacing objects, typography tokens — with counts.
+    </instruction>
+    <instruction>
+      Update the design log: append a row to the Design Loop Status table with status "specified":
+      | [scenario-slug] | [NN.step] | [page-name] | specified | [YYYY-MM-DD] |
+
+      Remove this page from the Current table. Do NOT skip this — the design log drives the
+      adaptive dashboard across sessions.
+    </instruction>
+
+    <gate type="all-data-sections-present" required="page_basics layout_sections components multilingual_content interaction_behavior page_states validation_rules spacing_objects typography_tokens"
+          failure-message="All data sections from steps 1-8 must be present before generating the specification. Return to incomplete steps."/>
+    <gate type="script-run" script="src/scripts/wds-validate.js" args="--page {current-page-path}"
+          failure-message="Validation script must pass before saving the specification. Fix reported issues and re-run."/>
+    <gate type="file-saved" path="{output_folder}/C-UX-Scenarios/{scenario-slug}/pages/{NN}.{step}-{page-slug}/{NN}.{step}-{page-slug}.md"
+          failure-message="Specification file must be saved to the correct path before this step is complete."/>
+    <gate type="design-log-updated" rule="design-loop-status-row-appended-with-status-specified"
+          failure-message="Design log must be updated with 'specified' status before this step is complete. This is not optional."/>
+
+    <output>Complete page specification generated, validated, saved, and design log updated with 'specified' status.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- COMPLETION                                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <completion>
+    <require step="all" failure-message="All 9 steps must be completed. The specification is not valid until step 9 passes validation and saves the file."/>
+    <output-file>{output_folder}/C-UX-Scenarios/{scenario-slug}/pages/{NN}.{step}-{page-slug}/{NN}.{step}-{page-slug}.md</output-file>
+    <post-completion>
+      Return to the calling workflow's transition logic. If called from step-01-exploration.md (Discuss)
+      or workflow-suggest.md (Suggest), the calling step determines what comes next.
+      The design log status "specified" is the signal that this page is done.
+    </post-completion>
+  </completion>
+
+</workflow>

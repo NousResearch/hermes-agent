@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{PROJECT_NAME}} Design System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        .nav-sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 280px;
+            background: white;
+            border-right: 1px solid #e5e7eb;
+            overflow-y: auto;
+            z-index: 50;
+        }
+        
+        .nav-content {
+            padding: 2rem 1.5rem;
+        }
+        
+        .nav-logo {
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .nav-section {
+            margin-bottom: 1.5rem;
+        }
+        
+        .nav-section-title {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #6b7280;
+            margin-bottom: 0.5rem;
+        }
+        
+        .nav-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .nav-link {
+            display: block;
+            padding: 0.5rem 0.75rem;
+            color: #374151;
+            text-decoration: none;
+            border-radius: 0.375rem;
+            transition: all 0.15s;
+        }
+        
+        .nav-link:hover {
+            background: #f3f4f6;
+            color: #111827;
+        }
+        
+        .nav-link.active {
+            background: #eff6ff;
+            color: #2563eb;
+            font-weight: 500;
+        }
+        
+        .main-content {
+            margin-left: 280px;
+            padding: 3rem;
+            min-height: 100vh;
+            background: #f9fafb;
+        }
+        
+        .component-card {
+            background: white;
+            border-radius: 0.5rem;
+            border: 1px solid #e5e7eb;
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .component-preview {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.375rem;
+            padding: 2rem;
+            margin: 1rem 0;
+        }
+        
+        .code-block {
+            background: #1f2937;
+            color: #e5e7eb;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.875rem;
+            margin: 1rem 0;
+        }
+        
+        .variant-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        
+        .state-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        
+        .token-swatch {
+            height: 4rem;
+            border-radius: 0.375rem;
+            border: 1px solid #e5e7eb;
+        }
+        
+        .version-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: #eff6ff;
+            color: #2563eb;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        
+        .usage-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: #f0fdf4;
+            color: #16a34a;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    
+    <!-- Fixed Sidebar Navigation -->
+    <aside class="nav-sidebar">
+        <div class="nav-content">
+            <div class="nav-logo">
+                <div class="flex items-center space-x-2">
+                    <span class="text-2xl">{{PROJECT_ICON}}</span>
+                    <div>
+                        <div class="font-bold">{{PROJECT_NAME}}</div>
+                        <div class="text-xs text-gray-500">Design System</div>
+                    </div>
+                </div>
+                <div class="mt-2 text-xs text-gray-500">
+                    Last updated: {{LAST_UPDATED}}
+                </div>
+            </div>
+            
+            <nav>
+                <div class="nav-section">
+                    <h4 class="nav-section-title">Overview</h4>
+                    <ul class="nav-list">
+                        <li><a href="#introduction" class="nav-link">Introduction</a></li>
+                        <li><a href="#getting-started" class="nav-link">Getting Started</a></li>
+                    </ul>
+                </div>
+                
+                <div class="nav-section">
+                    <h4 class="nav-section-title">Foundation</h4>
+                    <ul class="nav-list">
+                        <li><a href="#design-tokens" class="nav-link">Design Tokens</a></li>
+                        <li><a href="#colors" class="nav-link">Colors</a></li>
+                        <li><a href="#typography" class="nav-link">Typography</a></li>
+                        <li><a href="#spacing" class="nav-link">Spacing</a></li>
+                    </ul>
+                </div>
+                
+                {{COMPONENT_NAVIGATION}}
+                
+                <div class="nav-section">
+                    <h4 class="nav-section-title">Resources</h4>
+                    <ul class="nav-list">
+                        <li><a href="#changelog" class="nav-link">Changelog</a></li>
+                        <li><a href="#figma" class="nav-link">Figma Files</a></li>
+                    </ul>
+                </div>
+            </nav>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="max-w-6xl mx-auto">
+            
+            <!-- Introduction -->
+            <section id="introduction" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h1 class="text-5xl font-extrabold text-gray-900 mb-4">{{PROJECT_NAME}} Design System</h1>
+                <p class="text-xl text-gray-600 mb-8">{{PROJECT_DESCRIPTION}}</p>
+                
+                <div class="component-card">
+                    <p class="text-gray-700 leading-relaxed mb-4">
+                        {{PROJECT_OVERVIEW}}
+                    </p>
+                    <div class="flex gap-2 flex-wrap">
+                        <span class="version-badge">Version {{VERSION}}</span>
+                        <span class="usage-badge">{{COMPONENT_COUNT}} Components</span>
+                        <span class="version-badge">Mode: {{DESIGN_SYSTEM_MODE}}</span>
+                    </div>
+                    <p class="text-sm text-gray-600 mt-4">
+                        <strong>Method:</strong> Whiteport Design Studio (WDS) • <strong>Created:</strong> {{CREATED_DATE}}
+                    </p>
+                </div>
+            </section>
+
+            <!-- Getting Started -->
+            <section id="getting-started" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h2 class="text-3xl font-bold text-gray-900 mb-6">Getting Started</h2>
+                
+                <div class="component-card">
+                    <h3 class="text-xl font-semibold mb-4">Installation</h3>
+                    <div class="code-block">
+                        <pre>{{INSTALLATION_INSTRUCTIONS}}</pre>
+                    </div>
+                </div>
+                
+                <div class="component-card">
+                    <h3 class="text-xl font-semibold mb-4">Usage</h3>
+                    <p class="text-gray-700 mb-4">
+                        Import components from the design system:
+                    </p>
+                    <div class="code-block">
+                        <pre>{{USAGE_EXAMPLE}}</pre>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Design Tokens -->
+            <section id="design-tokens" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h2 class="text-3xl font-bold text-gray-900 mb-6">Design Tokens</h2>
+                
+                <div class="component-card">
+                    <p class="text-gray-700 mb-4">
+                        Design tokens provide a consistent visual language across the application.
+                        All components use these tokens to ensure consistency and maintainability.
+                    </p>
+                </div>
+                
+                {{DESIGN_TOKENS_CONTENT}}
+            </section>
+
+            <!-- Colors -->
+            <section id="colors" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h2 class="text-3xl font-bold text-gray-900 mb-6">Colors</h2>
+                {{COLOR_TOKENS}}
+            </section>
+
+            <!-- Typography -->
+            <section id="typography" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h2 class="text-3xl font-bold text-gray-900 mb-6">Typography</h2>
+                {{TYPOGRAPHY_TOKENS}}
+            </section>
+
+            <!-- Spacing -->
+            <section id="spacing" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h2 class="text-3xl font-bold text-gray-900 mb-6">Spacing</h2>
+                {{SPACING_TOKENS}}
+            </section>
+
+            <!-- Components -->
+            {{COMPONENTS_CONTENT}}
+
+            <!-- Changelog -->
+            <section id="changelog" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h2 class="text-3xl font-bold text-gray-900 mb-6">Changelog</h2>
+                
+                <div class="component-card">
+                    <h3 class="text-lg font-semibold mb-4">Recent Updates</h3>
+                    {{CHANGELOG_CONTENT}}
+                </div>
+            </section>
+
+            <!-- Figma -->
+            <section id="figma" class="mb-16" style="scroll-margin-top: 2rem;">
+                <h2 class="text-3xl font-bold text-gray-900 mb-6">Figma Files</h2>
+                
+                <div class="component-card">
+                    {{FIGMA_LINKS}}
+                </div>
+            </section>
+
+        </div>
+    </div>
+
+    <script>
+        // Smooth scrolling for navigation links
+        document.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                const targetId = this.getAttribute('href').substring(1);
+                const targetElement = document.getElementById(targetId);
+                if (targetElement) {
+                    targetElement.scrollIntoView({ behavior: 'smooth' });
+                    
+                    // Update active state
+                    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                    this.classList.add('active');
+                }
+            });
+        });
+
+        // Update active nav link on scroll
+        const sections = document.querySelectorAll('section[id]');
+        const navLinks = document.querySelectorAll('.nav-link');
+
+        window.addEventListener('scroll', () => {
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                const sectionHeight = section.clientHeight;
+                if (window.pageYOffset >= sectionTop - 100) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            navLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === `#${current}`) {
+                    link.classList.add('active');
+                }
+            });
+        });
+
+        // Interactive component demos
+        function toggleState(button, componentId, state) {
+            const component = document.getElementById(componentId);
+            if (component) {
+                // Remove all state classes
+                component.className = component.className.replace(/state-\w+/g, '');
+                // Add new state class
+                component.classList.add(`state-${state}`);
+                
+                // Update button states
+                button.parentElement.querySelectorAll('button').forEach(btn => {
+                    btn.classList.remove('bg-blue-500', 'text-white');
+                    btn.classList.add('bg-gray-200', 'text-gray-700');
+                });
+                button.classList.remove('bg-gray-200', 'text-gray-700');
+                button.classList.add('bg-blue-500', 'text-white');
+            }
+        }
+    </script>
+
+</body>
+</html>

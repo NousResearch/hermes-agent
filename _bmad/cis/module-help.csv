@@ -1,0 +1,7 @@
+module,skill,display-name,menu-code,description,action,args,phase,preceded-by,followed-by,required,output-location,outputs
+Creative Intelligence Suite,_meta,,,,,,,,,false,https://cis-docs.bmad-method.org/llms.txt,
+Creative Intelligence Suite,bmad-cis-innovation-strategy,Innovation Strategy,IS,Identify disruption opportunities and architect business model innovation.,,,anytime,,,false,output_folder,innovation strategy
+Creative Intelligence Suite,bmad-cis-problem-solving,Problem Solving,PS,Apply systematic problem-solving methodologies to crack complex challenges.,,,anytime,,,false,output_folder,problem solution
+Creative Intelligence Suite,bmad-cis-design-thinking,Design Thinking,DT,Guide human-centered design processes using empathy-driven methodologies.,,,anytime,,,false,output_folder,design thinking
+Creative Intelligence Suite,bmad-brainstorming,Brainstorming,BS,Facilitate brainstorming sessions using one or more techniques.,,,anytime,,,false,output_folder,brainstorming session results
+Creative Intelligence Suite,bmad-cis-storytelling,Storytelling,ST,Craft compelling narratives using proven story frameworks and techniques.,,,anytime,,,false,output_folder,narrative/story

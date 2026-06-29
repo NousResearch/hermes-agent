@@ -44,25 +44,14 @@ name: uv.lock check
 # the same way.  Better to catch it here than after merge.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/uv-lockfile-check.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/workflows/uv-lockfile-check.yml'
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
   group: uv-lockfile-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -71,10 +60,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       # `uv lock --check` re-resolves the project from pyproject.toml and
       # compares the result to uv.lock, exiting non-zero if they disagree.

@@ -1,0 +1,59 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Customization surface for bmad-workflow-builder. This governs how the builder
+# builds: the org-wide context, standards, budgets, and gates applied to every
+# skill it produces. It is distinct from the per-built-skill customize.toml the
+# builder decides on during an individual build.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-workflow-builder.toml         (team)
+#   {project-root}/_bmad/custom/bmad-workflow-builder.user.toml    (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays: append
+
+# Steps to run before standard activation (config load, greet).
+# Use for org pre-flight loads or compliance checks.
+activation_steps_prepend = []
+
+# Steps to run after greet, before the build/analyze loop begins.
+# Use for context-heavy setup once the user has been acknowledged.
+activation_steps_append = []
+
+# Standards the builder keeps in mind for the whole session, loaded as context
+# into every build and analyze. Each entry is a literal sentence, a `skill:`
+# skill, or a `file:` path/glob whose contents load as facts. Use for house
+# conventions you want present but not hard-gated (for gates, see build_standards).
+#   "Name the output consumer in every skill's overview."
+#   "file:{project-root}/_bmad/standards/skill-house-style.md"
+persistent_facts = ["file:{project-root}/**/project-context.md"]
+
+# Executed when a build or analyze run completes, after the user has been told
+# the artifact is ready. String scalar (one instruction) or array (in order).
+on_complete = ""
+
+# --- Builder gates and budgets ---
+
+# Hard standards every BUILT skill must satisfy. Unlike persistent_facts
+# (context), these are enforced: applied as build criteria and checked again as
+# a conformance pass during Analyze. Each entry is a `skill:`, `file:`, or
+# plain-text directive. Append-only. Empty by default (no org gates).
+#   "Every skill must ship at least one eval case."
+#   "skill:acme-co:security-review"
+build_standards = []
+
+# Eval requirement for a build to be declared done. Empty (default) keeps evals
+# opt-in, offered at the eval beat but never forced. Set a directive to gate the
+# build on evals and to flag their absence during Analyze:
+#   "baseline"  -- require a passing baseline run (skill beats the bare model)
+#   "any"       -- require at least one eval case to exist and pass
+evals_required = ""
+
+# SKILL.md token budget, measured via scripts/count_tokens.py (cl100k_base).
+# Tiered: aim under _desired; between _desired and _budget warns the user; over
+# _budget is a hard finding the builder resolves by progressive disclosure
+# (lifting sections to references/ or assets/) until it is back under budget.
+skill_md_token_desired = 2000
+skill_md_token_budget = 3000

@@ -1,0 +1,66 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-product-brief.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-product-brief.toml         (team)
+#   {project-root}/_bmad/custom/bmad-product-brief.user.toml    (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays: append
+
+# Steps to run before the standard activation (config load, greet).
+# Use for pre-flight loads, compliance checks, etc.
+activation_steps_prepend = []
+
+# Steps to run after greet but before the workflow begins.
+# Use for context-heavy setup that should happen once the user has been acknowledged.
+activation_steps_append = []
+
+# Persistent facts the workflow keeps in mind for the whole run
+# (standards, compliance constraints, stylistic guardrails).
+# Each entry is either a literal sentence, a skill prefixed with `skill:`, or a `file:`-prefixed path/glob
+# whose contents are loaded as facts.
+# Default is empty. Common opt-ins (set in your team/user override TOML):
+#   "file:{project-root}/_bmad-output/planning-artifacts/project-context.md"  # bmad-generate-project-context output
+#   "skill:acme-co:terms-and-conditions"                                      # a skill that contains some relevant info to the documents that may be generated
+#   "Elvis has left the building"                                             # generic agent instructions
+persistent_facts = []
+
+# Executed when the workflow completes (after the user has been told the
+# brief is ready). Accepts either a string scalar (single instruction)
+# or an array of instructions executed in order. Empty for none.
+on_complete = ""
+
+# Default brief structure. Treated as a starting point — the LLM adapts it
+# to the product, purpose, and domain. Override the path in team/user TOML
+# to enforce a different structure (e.g. regulated-industry, investor-deck).
+brief_template = "assets/brief-template.md"
+
+# Run folder location. The brief, optional addendum, and optional distillate
+# all land inside `{output_dir}/{output_folder_name}/`.
+output_dir = "{planning_artifacts}/briefs"
+output_folder_name = "brief-{project_name}-{date}"
+
+# Document standards applied to human-consumed docs at finalize. Each entry is
+# a `skill:`, `file:`, or plain-text directive; the parent LLM applies the
+# findings before the user sees the draft. Encodes standards, not options.
+#
+# Examples:
+#   "skill:bmad-editorial-review-prose"
+#   "file:{project-root}/_bmad/style-guides/company-voice.md"
+#   "Convert all dates to ISO 8601 format."
+#
+# Suggested order (broader passes first, narrower last):
+#   1. Structural (cuts, reorganization, section sizing)
+#   2. Content/voice/conventions (org standards, tone, terminology, compliance)
+#   3. Prose mechanics (grammar, clarity, typos)
+#
+# Override the array in team/user TOML to add additional standards. Append-only:
+# base entries cannot be removed or replaced (resolver has no removal mechanism).
+doc_standards = [
+  "skill:bmad-editorial-review-structure",
+  "skill:bmad-editorial-review-prose",
+]

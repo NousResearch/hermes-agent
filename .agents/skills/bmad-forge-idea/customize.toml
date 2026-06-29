@@ -1,0 +1,42 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-forge-idea.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-forge-idea.toml        (team)
+#   {project-root}/_bmad/custom/bmad-forge-idea.user.toml   (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays: append
+
+# Steps to run before the standard activation (config load, greet).
+activation_steps_prepend = []
+
+# Steps to run after greet but before the session begins.
+activation_steps_append = []
+
+# Persistent facts the interrogator keeps in mind for the whole session
+# (domain constraints, house rules, what's off the table). Each entry is a
+# literal sentence, a skill prefixed with `skill:`, or a `file:`-prefixed
+# path/glob whose contents are loaded as facts. Default loads project-context.md
+# when one exists (e.g. from bmad-generate-project-context), so the forge grounds
+# in the project's tech, domain, and constraints without re-asking.
+persistent_facts = [
+  "file:{project-root}/**/project-context.md",
+]
+
+# Executed when the session completes. Scalar or array of instructions. Empty for none.
+on_complete = []
+
+# Parent folder for all forge sessions. Each session gets its own run
+# folder underneath (see run_folder_pattern). Lands directly under
+# {output_folder} so the forge works in core-only installs.
+forge_output_path = "{output_folder}/forge"
+
+# Run-folder pattern inside forge_output_path. Resolved against the
+# idea-derived slug at activation. Same slug = same folder, so resuming
+# an idea reuses its memlog. Override to add {date} or other components
+# if a fresh dated history per run is preferred.
+run_folder_pattern = "{slug}"

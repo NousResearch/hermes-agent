@@ -1,0 +1,53 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-spec.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-spec.toml        (team)
+#   {project-root}/_bmad/custom/bmad-spec.user.toml   (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays: append
+
+# Steps to run before the standard activation (config load, greet).
+activation_steps_prepend = []
+
+# Steps to run after greet but before the operation begins.
+activation_steps_append = []
+
+# Persistent facts the workflow keeps in mind for the whole run.
+# Each entry is either a literal sentence, a skill prefixed with `skill:`,
+# or a `file:`-prefixed path/glob whose contents are loaded as facts.
+# Default points to a single top-level file; override in team/user TOML
+# to widen the scope (e.g. `_bmad/**/project-context.md`) if needed.
+persistent_facts = [
+  "file:{project-root}/project-context.md",
+]
+
+# Executed when the workflow completes. Scalar or array of instructions.
+on_complete = ""
+
+# Spec template. The five-field kernel skeleton. Override the path in
+# team/user TOML to enforce a different shape (e.g. a hypothesis field
+# for research initiatives, or a mechanics field for games).
+spec_template = "assets/spec-template.md"
+
+# Canonical filename for the kernel artifact inside the spec folder.
+# Uppercase by convention to signal "the central source of truth."
+spec_filename = "SPEC.md"
+
+# Output path for spec folders. Lands directly under {output_folder}
+# so bmad-spec works in core-only installs and matches the
+# long-term BMad direction of grouping artifacts as siblings under
+# {output_folder}/<type>/ rather than nested inside planning vs
+# implementation folders.
+spec_output_path = "{output_folder}/specs"
+
+# Run-folder pattern inside spec_output_path. Resolved against the
+# input-derived slug at activation. Same slug = same folder, so a
+# second invocation updates the existing spec in place (capability
+# IDs preserved). Override to add {date} or other components if a
+# fresh dated history is preferred.
+run_folder_pattern = "spec-{slug}"

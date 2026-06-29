@@ -9,7 +9,9 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { isTodoDone } from '../lib/liveProgress.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
@@ -18,7 +20,9 @@ import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
+import { flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
+import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -219,11 +223,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     agentsNudgedThisTurn = false
   }
 
-  // Kick off the config fetch eagerly at handler creation so the flag is
-  // resolved well before the first delegation of any real session (which
-  // only happens after gateway.ready + a user turn).
-  ensureAgentsNudgeConfig()
-
   const refreshDelegationStatus = (force = false) => {
     const now = Date.now()
 
@@ -311,6 +310,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     if (skin) {
       applySkin(skin)
     }
+
+    // Kick off the config fetch once the gateway is actually ready. If handler
+    // construction does this during React render, a startup transport error can
+    // report through sys(), mutate transcript state, and trip React's
+    // "too many re-renders" guard in embedded dashboard PTYs.
+    ensureAgentsNudgeConfig()
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {
@@ -532,6 +537,29 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         turnController.clearNotice(ev.payload?.key)
 
         return
+      case 'billing.step_up.verification': {
+        // The billing step-up device flow runs in the headless gateway, so it
+        // can't open a browser or print the URL where the user sees it. Surface
+        // the link here (clickable/copyable in the transcript) and best-effort
+        // open it via the TUI process's own opener. This event arrives while the
+        // billing.step_up RPC is still polling (and may even outlive the RPC's
+        // 120s timeout), so the link — not the RPC result — is the source of truth.
+        const url = ev.payload.verification_url
+        const code = ev.payload.user_code
+
+        if (!url) {
+          return
+        }
+
+        sys('💳 Open this link to grant terminal billing access:')
+        sys(url)
+        if (code) {
+          sys(`If prompted, enter code: ${code}`)
+        }
+        void openExternalUrl(url)
+
+        return
+      }
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 
@@ -728,8 +756,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')
+        // Only an explicit false (tirith warning) drops the permanent-allow option.
+        const allowPermanent = ev.payload.allow_permanent !== false
 
-        patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
+        patchOverlayState({
+          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+        })
         setStatus('approval needed')
 
         return
@@ -879,6 +911,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
 
+          // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
+          flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
+
           if (bellOnComplete && stdout?.isTTY) {
             stdout.write('\x07')
           }
@@ -895,6 +930,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'error':
         turnController.recordError()
+        flashPet('failed')
 
         {
           const message = String(ev.payload?.message || 'unknown error')

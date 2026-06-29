@@ -1,0 +1,84 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Workflow customization surface for bmad-brainstorming.
+#
+# Override files (not edited here):
+#   {project-root}/_bmad/custom/bmad-brainstorming.toml         (team)
+#   {project-root}/_bmad/custom/bmad-brainstorming.user.toml    (personal)
+
+[workflow]
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays: append
+
+# Steps to run before the standard activation (config load, greet).
+# Use for pre-flight loads, compliance checks, etc.
+activation_steps_prepend = []
+
+# Steps to run after greet but before facilitation begins.
+# Use for context-heavy setup that should happen once the user has been acknowledged.
+activation_steps_append = []
+
+# Persistent facts the facilitator keeps in mind for the whole session
+# (domain constraints, house rules, stylistic guardrails). Each entry is a
+# literal sentence, a skill prefixed with `skill:`, or a `file:`-prefixed
+# path/glob whose contents are loaded as facts. Default loads project-context.md
+# if bmad-generate-project-context has produced one, giving the facilitator
+# persistent awareness of the project's domain without re-asking.
+persistent_facts = [
+  "file:{project-root}/**/project-context.md",
+]
+
+# The technique library loaded on demand during the session. Swap the path in
+# team/user TOML to ship a different or extended catalog of creative methods.
+# Kept `{skill-root}`-anchored so it resolves regardless of the working directory
+# (brain.py is always invoked with `--file {workflow.brain_methods}`).
+brain_methods = "{skill-root}/assets/brain-methods.csv"
+
+# Techniques the facilitator should reach for first. When proposing a method
+# (the AI-led default), it prefers these where they fit the goal before ranging
+# wider. Names should match an entry in the library or in additional_techniques.
+# Append-merges, so a team list and a personal list both contribute. Empty = no
+# preference; the facilitator chooses purely on fit.
+#
+# Example (set in team/user override TOML):
+#   favorite_techniques = ["SCAMPER", "Six Thinking Hats", "First Principles"]
+favorite_techniques = []
+
+# Extra techniques — and whole new categories — merged into the catalog the
+# facilitator chooses from, without editing the shipped CSV. Each entry mirrors
+# the library's shape (category, technique_name, description); a new category is
+# just a category value the CSV doesn't have. Entries append, so teams and users
+# can each grow the library. The facilitator treats these as first-class
+# alongside brain_methods across every flow — facilitator-chosen, browse,
+# category draws, and inventive.
+#
+# Example (set in team/user override TOML):
+#   [[workflow.additional_techniques]]
+#   category = "domain-specific"
+#   technique_name = "Regulatory Inversion"
+#   description = "Start from the compliance constraint and brainstorm what becomes possible only because of it — turn the rule into a generative frame rather than a limit."
+additional_techniques = []
+
+# Session output location. The running log and any final artifacts land inside
+# `{output_dir}/{output_folder_name}/`. `{topic_slug}` is filled from the session
+# topic so each topic gets its own folder — a user can brainstorm several topics
+# without collision. The resume check globs `{output_dir}/*/.memlog.md`.
+output_dir = "{output_folder}/brainstorming"
+output_folder_name = "brainstorm-{topic_slug}-{date}"
+
+# Executed when the session completes (after artifacts are produced and the user
+# has the paths). Accepts a string scalar (single instruction) or an array of
+# instructions executed in order. Empty for none.
+on_complete = ""
+
+# External-handoff routing. Natural-language directives applied after artifacts
+# are produced, to route them beyond local files (Confluence, Notion, Drive,
+# etc.). Each entry names the MCP tool, the destination, and the fields it needs.
+# URLs/IDs returned are surfaced to the user. If a named tool is unavailable at
+# runtime, the handoff is skipped and flagged; local files always exist. Empty
+# by default.
+#
+# Example (set in team/user override TOML):
+#   "After artifacts are produced, upload brainstorm.html to Confluence via corp:confluence_upload (space_key='IDEAS', parent_page='Brainstorms', author={user_name})."
+external_handoffs = []

@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────────────────
+# Installer-managed. Regenerated on every install — treat as read-only.
+# Holds install answers scoped to YOU personally.
+#
+# Direct edits to this file will be overwritten on the next install.
+# To change an answer durably, re-run the installer (your prior answers
+# are remembered as defaults). For pinned overrides or custom sections
+# the installer does not know about, use _bmad/custom/config.user.toml
+# — it is never touched by the installer.
+# ─────────────────────────────────────────────────────────────────
+
+[core]
+user_name = "kevin"
+communication_language = "English"
+
+[modules.bmm]
+user_skill_level = "intermediate"

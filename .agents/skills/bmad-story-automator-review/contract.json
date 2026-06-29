@@ -1,0 +1,7 @@
+{
+  "blockingSeverity": ["critical"],
+  "doneValues": ["done"],
+  "inProgressValues": ["in-progress", "in_progress", "review", "qa"],
+  "sourceOrder": ["sprint-status.yaml", "story-file"],
+  "syncSprintStatus": true
+}

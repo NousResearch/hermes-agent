@@ -1,0 +1,109 @@
+category,technique_name,description,detail,provenance,good_for,audience
+collaborative,Yes And Building,"Never negate; each person opens with ""Yes, and..."" and adds to the last idea, stacking a chain of accepted additions",,classic,novel|unstuck|planning,group
+collaborative,Brain Writing Round Robin,"Everyone writes ideas silently, then passes their sheet; you build on whatever lands in front of you, round after round",,classic,novel|feature,group
+collaborative,Random Stimulation,"Pull a random word or image and force a link to the problem: ""how does THIS spark a solution?""",,classic,unstuck|novel,either
+collaborative,Role Playing,"Each person speaks as a different stakeholder, voicing what that role wants, fears, and would demand of the idea",,classic,strategy|personal|feature,either
+collaborative,Ideation Relay Race,"30-second turns, no pausing: add one idea, slap it to the next person, keep the baton moving before anyone overthinks",,playful,unstuck,group
+collaborative,Idea Hot Potato,"One idea gets tossed around the circle; each catcher must mutate it in 10 seconds before passing, no repeats allowed",,playful,unstuck,group
+collaborative,Steal And Upgrade,"Pick a neighbor's idea you envy, claim it out loud, then make it visibly better before handing it back improved",,signature,novel|unstuck,group
+collaborative,Fold The Paper,"Each person adds one line to a hidden drawing or sentence, sees only the previous fragment, then unfold the surreal whole",,playful,unstuck|novel,group
+creative,What If Scenarios,"Detonate one constraint at a time — unlimited budget, opposite is true, problem vanished — and chase what rushes in",,signature,novel|strategy|unstuck,either
+creative,Analogical Thinking,Ask 'this is like what?' and steal the solution pattern from the domain that answers,,signature,feature|novel|diagnosis,either
+creative,First Principles Thinking,"Strip every assumption to bedrock facts, then rebuild the solution from scratch on truth alone",,classic,feature|novel|diagnosis|strategy,either
+creative,Forced Relationships,Grab two unrelated things at random and force a bridge between them until an idea falls out,,signature,novel|unstuck,either
+creative,Time Shifting,"Solve the problem as a 1900s artisan, then a 2150 colonist — harvest the era-bound constraints and tricks",,signature,novel|unstuck,either
+creative,Metaphor Mapping,"Declare the problem IS a chosen metaphor, extend the metaphor fully, map each part back to find insights",,signature,novel|diagnosis,either
+creative,Cross-Pollination,"Ask how a wildly different industry — casinos, ERs, beekeeping — would crack this, then adapt their move",,signature,novel|feature|strategy,either
+creative,Concept Blending,"Fuse two concepts into one new hybrid category and name what the merger becomes, not just combines",,signature,novel,either
+creative,Reverse Brainstorming,Generate problems instead of solutions — 'how could we make this fail?' — then mine each for its inverse,,classic,diagnosis|feature|unstuck,either
+creative,Sensory Exploration,"Interrogate the idea through each sense — its taste, smell, sound, texture — to surface non-analytical angles",,signature,novel|unstuck,either
+deep,Five Whys,"Ask ""why?"" five times in a chain, each answer feeding the next, until you hit the root cause beneath the symptom",,classic,diagnosis,either
+deep,Provocation Technique,"State something deliberately absurd, then mine it: ""how could this be useful?"" Extract the usable principle hiding inside",,classic,unstuck|novel,either
+deep,Assumption Reversal,"List every assumption baked into the problem, flip each to its opposite, then rebuild a solution on the inverted foundation",,classic,novel|diagnosis|strategy,either
+deep,Question Storming,"Generate only questions about the problem, zero answers allowed, until the real problem worth solving comes into focus",,classic,diagnosis|strategy|unstuck,either
+deep,Constraint Mapping,"Map every constraint, sort real from imagined, then attack each: dissolve it, route around it, or turn it into an asset",,signature,feature|strategy|diagnosis,either
+deep,Failure Analysis,"Dissect a relevant failure: what broke, why it broke, what lesson it leaves, and how to apply that wisdom here",,signature,diagnosis|strategy|feature,either
+deep,Emergent Thinking,Stop forcing a solution; watch what patterns the system keeps producing and name what's trying to emerge on its own,,signature,strategy|novel,either
+deep,Causal Loop Mapping,"Diagram the feedback loops linking causes and effects, find the reinforcing and balancing cycles, and target the leverage point",,classic,diagnosis|strategy,either
+deep,Morphological Analysis,"List the problem's independent parameters, generate options for each, then combine across them to surface untried configurations",,classic,feature|novel|planning,either
+deep,Laddering,"Ask 'and what would that give you?' up the chain until you reach the real underlying need, then ideate fresh at that level",,classic,personal|strategy|diagnosis,either
+introspective_delight,Inner Child Conference,"Answer as your 7-year-old self: ask naive 'why why why' questions, chase wonder, ban every boring adult thought",,signature,personal|unstuck,solo
+introspective_delight,Shadow Work Mining,"Name what you're avoiding, resisting, or scared of about this — then dig there for the buried insight",,signature,personal|diagnosis,solo
+introspective_delight,Values Archaeology,Keep asking 'why do I care?' until you hit bedrock: the non-negotiable value secretly steering the choice,,signature,personal|strategy,solo
+introspective_delight,Future Self Interview,Interview your wise 80-year-old self about this problem and write down the advice they give you,,signature,personal,solo
+introspective_delight,Body Wisdom Dialogue,"Scan for the tension, flutter, or gut pull each option triggers; let the body's yes/no drive the ideas",,signature,personal,solo
+introspective_delight,Permission Giving,"Write yourself an explicit permission slip to think the forbidden, impossible thought — then think it out loud",,signature,personal|unstuck,solo
+introspective_delight,Secret Wish Confession,"Whisper the embarrassing thing you secretly want here but won't admit, then build the idea honoring it",,signature,personal,solo
+introspective_delight,Mood Weather Report,"Name the inner weather right now (fog, storm, sun) and let that exact emotional climate generate the ideas",,signature,personal|unstuck,solo
+structured,SCAMPER Method,"Run your idea through seven lenses: Substitute, Combine, Adapt, Modify, Put-to-other-use, Eliminate, Reverse",,classic,feature|novel,either
+structured,Six Thinking Hats,"Examine the problem six ways one at a time: facts, feelings, benefits, risks, new ideas, process",,classic,strategy|diagnosis|planning|personal,either
+structured,Decision Tree Mapping,"Chart every choice point and the paths it forks into, following each branch to its outcome and risk",,signature,planning|strategy|diagnosis,either
+structured,Solution Matrix,"Grid problem variables against solution approaches, score every cell, hunt the best pairings and empty gaps",,signature,feature|planning,either
+structured,Trait Transfer,"Name what makes an unrelated success work, then graft those winning traits onto your own problem",,signature,novel|feature,either
+structured,Lotus Blossom,"Put the theme at the center of a 3x3 grid, fill the 8 cells around it, then promote each of those to the center of its own new 3x3",,classic,feature|planning|novel,either
+structured,Worst Possible Idea,"Deliberately generate the most terrible solutions you can, then flip each into what it teaches you to do right",,classic,unstuck|novel,either
+structured,Disney Method,"Cycle the idea through three rooms: Dreamer (anything goes), Realist (how we'd build it), Critic (what breaks)",,classic,feature|strategy|planning,either
+structured,Starbursting,"Interrogate the idea with only questions — who, what, where, when, why, how — exhaust each before answering any",,classic,feature|planning|diagnosis,either
+structured,Mind Mapping,"Branch the central topic outward, each node spawning children; follow tangents wherever they pull and let the web sprawl",,classic,planning|novel|feature,either
+structured,Crazy 8s,"Eight ideas in eight minutes, one per box, no editing — speed outruns your inner critic",,classic,feature|novel|unstuck,either
+theatrical,Time Travel Talk Show,"Host a talk show interviewing your past, present, and future selves to mine each era for advice on the problem",,playful,novel|personal,either
+theatrical,Alien Anthropologist,"Become a baffled alien studying the problem and narrate aloud what seems strange, arbitrary, or insane about it",,playful,diagnosis|unstuck|strategy,either
+theatrical,Dream Fusion Laboratory,"Voice the impossible fantasy solution first, then reverse-engineer the bridging steps back to reality",,signature,novel|unstuck,either
+theatrical,Emotion Orchestra,"Run a separate ideation round led by each emotion (rage, joy, fear, hope), then harmonize their conflicting ideas",,playful,personal|strategy,either
+theatrical,Parallel Universe Cafe,"Rewrite one fundamental rule of reality (physics, economics, social norms) and solve the problem under those laws",,playful,novel|unstuck,either
+theatrical,Persona Journey,"Embody an archetype and solve the problem in-character, naming what that persona sees that you normally miss",,signature,feature|strategy,either
+theatrical,Devil's Advocate Courtroom,"Stage a trial: prosecute the idea, defend it, then deliver the jury verdict, each role argued fully in character",,signature,strategy|diagnosis,group
+wild,Chaos Engineering,"Deliberately break your idea every way it could fail, then rebuild only the parts that survive the wreckage",,signature,feature|diagnosis|strategy,either
+wild,Guerrilla Gardening Ideas,Plant your solution in the least expected place and let it grow underground until it surprises everyone,,playful,strategy|unstuck,either
+wild,Pirate Code Brainstorm,"Steal the best bits from anywhere, remix without asking permission, grab what works and run",,playful,novel|unstuck,either
+wild,Zombie Apocalypse Planning,"Society just collapsed — strip your idea to only what survives with no power, no rules, no backup",,playful,feature|strategy|unstuck,either
+wild,Drunk History Retelling,"Explain it like you're three drinks in: no filter, no jargon, just the raw stupid-simple truth",,playful,unstuck|diagnosis,either
+wild,Anti-Solution,"Brainstorm how to make the problem spectacularly worse, then invert every sabotage into a fix",,signature,diagnosis|unstuck,either
+wild,Elemental Forces,"Let fire, water, earth, and air each sculpt your idea their own brutal way and see what survives",,playful,novel|unstuck,either
+biomimetic,Nature's Solutions,"Name an organism that already solved your problem, then copy its mechanism into your design",,signature,feature|novel,either
+biomimetic,Ecosystem Thinking,"Map your problem as an ecosystem: who eats whom, who partners, what decays, what fills the gaps",,signature,strategy|diagnosis,either
+biomimetic,Evolutionary Pressure,"Spawn many ugly variants, apply a brutal selection rule, breed the survivors, repeat until it adapts",,signature,feature|novel,either
+biomimetic,Predator & Prey,"Pick a threat to your idea, then design the defense, camouflage, or escape an animal would evolve against it",,signature,strategy|feature,either
+biomimetic,Metamorphosis Stages,"Force your idea through egg, larva, pupa, adult: a radically different form and purpose at each life stage",,signature,novel|strategy,either
+biomimetic,Swarm Logic,Forbid the master plan: solve it with dumb local rules each agent follows so order emerges from the bottom up,,signature,feature|strategy,either
+quantum,Observer Effect,"Ask how the act of watching, measuring, or shipping this idea changes the very thing you're trying to capture",,signature,strategy|diagnosis,either
+quantum,Entanglement Thinking,Pair two distant parts of the problem and insist a change in one instantly flips the other — surface the hidden linkage,,signature,diagnosis|strategy,either
+quantum,Superposition Collapse,"Hold all rival solutions alive at once, then name the one constraint that collapses them to a single winner",,signature,strategy|diagnosis,either
+quantum,Relativity Frame Shift,"Re-run the idea from a wildly different observer's reference frame — the slow user, the rival, future-you — and see what warps",,signature,strategy|novel,either
+quantum,Field Lines,Treat the goal as a charge and map the invisible forces pulling every stakeholder toward or away from it,,signature,strategy,either
+quantum,Quantum Tunneling,"Assume the idea can pass straight through the 'impossible' barrier instead of over it — what's on the other side, reached cheaply",,signature,unstuck|novel,either
+cultural,Indigenous Wisdom,"Ask how an indigenous or traditional knowledge system would approach this — name the culture, channel its ancestral problem-solving",,signature,personal|strategy|novel,either
+cultural,Fusion Cuisine,Pick two unrelated cultures and force-blend their approaches; harvest the hybrid that neither alone would invent,,signature,novel,either
+cultural,Ritual Innovation,"Redesign the idea as a ceremony — define the threshold, the gestures, the transformation participants undergo",,signature,novel|personal,either
+cultural,Mythic Frameworks,"Map the problem onto a myth: name the archetypes, find the parallel tale, let its structure dictate the resolution",,signature,strategy|personal|novel,either
+cultural,Proverb Mining,"Collect proverbs from many cultures on this theme, then build the solution from the one that clashes hardest with your assumptions",,signature,personal|strategy,either
+cultural,Ancestor Council,"Convene three ancestors or elders from different traditions, voice each one's verdict on your idea, reconcile their disagreement",,signature,personal|strategy,either
+cultural,Trickster's Gambit,"Channel the trickster figure — coyote, Anansi, Loki — and solve it by cheating, inverting, or breaking the sacred rule",,playful,unstuck|strategy,either
+absurdist,Villain's Monologue,Pitch your problem as an evil mastermind gloating about their scheme; the diabolical plan reveals the real solution,,playful,diagnosis|strategy|unstuck,either
+absurdist,Explain It to a Golden Retriever,"Re-pitch the idea to an excitable dog who only cares about treats, balls, and naps; keep only what survives",,playful,unstuck|diagnosis|feature,either
+absurdist,Infomercial at 3AM,"Sell your half-baked idea as a desperate late-night infomercial: 'But wait, there's more!' until features fall out",,playful,strategy|novel,either
+absurdist,Drunk Uncle at Thanksgiving,"Have your loudest, least-filtered relative rant about the problem; mine the unhinged hot takes for buried truth",,playful,unstuck|diagnosis,either
+absurdist,Cursed Genie,"Make a wish, then let a malicious genie grant it in the most technically-correct disastrous way; patch each loophole",,playful,diagnosis|feature,either
+absurdist,Three Rounds of Stupid,"Round 1 absurd ideas, Round 2 make each MORE absurd, Round 3 find the smallest serious thing hiding in the silliest",,playful,unstuck|novel,either
+constraint,Kill the Crown Jewel,"Delete the single best, most beloved feature — now redesign the whole thing to win without it",,signature,feature|strategy|unstuck,either
+constraint,1000x Budget,"Pretend money, time, and people are infinite — design the absurd version, then mine it for ideas you can actually steal",,signature,novel|strategy,either
+constraint,Ship in 60 Minutes,"You launch in one hour with what's already on hand — name what you cut, fake, or borrow to make it real",,signature,feature|planning|unstuck,either
+constraint,The $0 Mandate,"Achieve the goal spending literally nothing — no tools, hires, or ads; only people, favors, and what you own",,signature,planning|strategy|feature,either
+constraint,One Feature Only,"You may keep exactly ONE capability and nothing else — pick it, then make that single thing unbelievably good",,signature,feature|strategy,either
+constraint,Crank the Dial to 11,"Pick one dimension and exaggerate it to a ludicrous extreme — fastest, biggest, cheapest, weirdest — and see what breaks open",,signature,novel|unstuck,either
+constraint,Constraint Roulette,"Each round draw a brutal random limit (no screens, half the team, one day) and re-solve under it; survivors become real ideas",,signature,unstuck|feature,either
+speculative_future,Time Horizon Ladder,"Solve the idea for 1 year out, then 10, then 100 — note what survives, breaks, or becomes absurd at each rung",,signature,strategy|planning|novel,either
+speculative_future,Post-Scarcity Test,"Assume the core constraint (money, energy, time, attention) is now infinite and free — what does the idea become",,signature,novel|strategy,either
+speculative_future,Utopia vs Dystopia Split-Screen,Write the same future twice: the brochure where it went perfectly and the headline where it went horribly,,signature,strategy|diagnosis,either
+speculative_future,Sci-Fi Artifact From the Future,"Describe one physical object, ad, or news clip from the world where this idea already won — reverse-engineer it",,signature,novel|feature,either
+speculative_future,Emerging Tech Collision,"Force-marry your idea to a frontier tech (AGI, fusion, neural implants, gene edit) and ask what new thing is born",,signature,novel|feature|strategy,either
+speculative_future,What-If-The-World-Changed Card Flip,"Draw a wild world-shift (no privacy, half population, 200-yr lifespans) and redesign the idea to fit that world",,signature,novel|unstuck,either
+speculative_future,Future Anthropologist Dig,"A scholar in 2200 unearths your idea as a relic — what do they conclude it reveals about us, and what replaced it",,signature,strategy|novel,either
+structured,How Might We,"Reframe the problem as a batch of 'How might we...' opportunity questions first, then ideate against the sharpest one",,classic,feature|novel|strategy|diagnosis,either
+structured,Job to Be Done,"Ask what the user is really hiring this to do, then ideate around that underlying job, not the feature you assumed",,classic,feature|strategy|novel,either
+structured,Empathy Map,"Map what the user says, thinks, does, and feels around the problem, then mine each quadrant for the unmet need",,classic,feature|personal,either
+structured,Backcasting,"Fix the finished future in vivid detail, then work backward step by step to the one move you'd have to make first",,classic,strategy|planning|novel,either
+deep,TRIZ Contradiction,"Name the core contradiction (what only improves by making something else worse), then brainstorm ways to win both instead of trading off",,classic,feature|novel|diagnosis,either
+deep,Fishbone Diagram,"Branch the problem's spine into cause categories (people, process, tools, environment) and mine each bone for contributing causes",,classic,diagnosis,either
+deep,Build on What Works,"Name what's already succeeding and why, then ideate how to amplify and extend it instead of fixing what's broken",,classic,personal|strategy,either
+speculative_future,Scenario Cross,"Pick two high-impact uncertainties, cross them into four futures, and ideate the move that wins in every one",,classic,strategy|planning,either

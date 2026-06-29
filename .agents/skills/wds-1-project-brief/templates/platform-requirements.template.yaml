@@ -1,0 +1,69 @@
+# WDS Platform Requirements Template
+# Save to: A-Project-Brief/platform-requirements.yaml
+
+project:
+  name: "Project Name"
+  type: "mobile_app" # mobile_app | web_app | desktop_app | api
+  wds_version: "6.0"
+  created_at: "YYYY-MM-DDTHH:MM:SSZ"
+
+platform:
+  frontend:
+    framework: "framework-name" # react_native | react | vue | angular | svelte
+    version: "X.X"
+    state_management: "library" # zustand | redux | mobx | context
+    navigation: "library" # react_navigation | react_router | vue_router
+    styling: "approach" # tailwind | styled_components | css_modules
+    ui_library: "library" # shadcn | mui | chakra (optional)
+
+  backend:
+    framework: "framework-name" # supabase | firebase | express | fastapi | django
+    version: "X.X"
+    auth: "auth-provider" # supabase_auth | firebase_auth | auth0 | custom
+    database: "database-type" # postgresql | mysql | mongodb | firestore
+    storage: "storage-provider" # supabase_storage | s3 | cloudinary
+    api: "api-type" # rest | graphql | grpc
+
+  database:
+    type: "database-type" # postgresql | mysql | mongodb
+    version: "XX"
+    orm: "orm-library" # prisma | typeorm | mongoose (optional)
+
+  deployment:
+    frontend: "platform" # expo_eas | vercel | netlify | aws
+    backend: "platform" # supabase_cloud | firebase | heroku | aws
+    ci_cd: "platform" # github_actions | gitlab_ci | circle_ci
+    hosting: "platform" # vercel | netlify | aws (if web app)
+
+integrations:
+  - name: "integration-name"
+    provider: "provider-name"
+    required: true # true | false
+    purpose: "[Why this integration is needed]"
+
+  - name: "integration-name"
+    provider: "provider-name"
+    required: false
+    purpose: "[Why this integration is needed]"
+
+constraints:
+  - "[Technical constraint 1]"
+  - "[Technical constraint 2]"
+  - "[Business constraint 1]"
+  - "[Regulatory constraint 1]"
+
+performance_requirements:
+  - "[Performance requirement 1]"
+  - "[Performance requirement 2]"
+  - "[Performance requirement 3]"
+
+security_requirements:
+  - "[Security requirement 1]"
+  - "[Security requirement 2]"
+  - "[Security requirement 3]"
+
+wds_metadata:
+  project_brief: "A-Project-Brief/project-brief.md"
+  trigger_map: "B-Trigger-Map/trigger-map.md"
+  scenarios: "C-UX-Scenarios/"
+  design_system: "D-Design-System/"

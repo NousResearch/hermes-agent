@@ -1,0 +1,20 @@
+code: bmb
+name: "BMad Builder"
+description: "Standard Skill Compliant Factory for BMad Agents, Workflows and Modules"
+module_version: 1.0.0
+default_selected: false
+module_greeting: >
+  Enjoy making your dream creations with the BMad Builder Module!
+  Run this again at any time if you want to reconfigure a setting or have updated the module, (or optionally just update _bmad/config.yaml and config.user.yaml to change existing values)
+
+  For questions, suggestions and support - check us on Discord at https://discord.gg/gk8jAdXWmj
+
+bmad_builder_output_folder:
+  prompt: "Where should your custom output (agent, workflow, module config) be saved?"
+  default: "{project-root}/skills"
+  result: "{project-root}/{value}"
+
+bmad_builder_reports:
+  prompt: "Output for Evals, Test, Quality and Planning Reports?"
+  default: "{project-root}/skills/reports"
+  result: "{project-root}/{value}"

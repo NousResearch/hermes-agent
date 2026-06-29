@@ -1,0 +1,450 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<workflow id="wds-3-scenarios-create" name="WDS Phase 3 — UX Scenarios" version="1.0">
+  <description>
+    Transform the Trigger Map into concrete UX scenario outlines — linear sunshine paths that expose
+    all pages for design scrutiny. Each step must be completed in sequence. User checkpoints at
+    steps 2 and 4 enforce that no scenario is created without explicit user approval of scope and plan.
+  </description>
+
+  <prerequisites>
+    <require file="{project-root}/_bmad/wds/config.yaml" label="WDS project config"/>
+    <require file="{output_folder}/A-Product-Brief/product-brief.md" label="Product Brief (Phase 1)"/>
+    <require file="{output_folder}/B-Trigger-Map/trigger-map.md" label="Trigger Map (Phase 2)"/>
+  </prerequisites>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- INITIALIZATION — runs before step 1                                -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <initialization>
+    <instruction>
+      Read {project-root}/_bmad/wds/config.yaml and resolve: project_name, output_folder,
+      user_name, communication_language, document_output_language.
+    </instruction>
+    <instruction>
+      Read {output_folder}/_progress/00-design-log.md. Check Current and Backlog sections
+      for any in-progress work from a previous session.
+    </instruction>
+    <instruction>
+      Check invocation mode:
+      - If invoked with "validate" or -v flag: load and execute ./workflow-validate.md instead.
+      - Default: proceed to Step 1.
+    </instruction>
+    <gate type="config-resolved" required-keys="project_name output_folder user_name communication_language document_output_language"/>
+  </initialization>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 1 — Load Context                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="1-load-context" name="Load project context" step-file="steps-c/step-01-load-context.md">
+    <instruction>
+      Read {project-root}/_bmad/wds/config.yaml completely and extract all required fields.
+    </instruction>
+    <instruction>
+      Read {output_folder}/A-Product-Brief/product-brief.md completely. Extract and note:
+      site/app type, business context, technical platform, page count, navigation structure.
+    </instruction>
+    <instruction>
+      Read {output_folder}/B-Trigger-Map/trigger-map.md completely. Extract and note:
+      business goals with priority tiers, all personas (name, priority, wants, fears, flywheel role).
+      Also read any linked persona documents (02-*.md, 03-*.md, 04-*.md) if they exist.
+    </instruction>
+    <instruction>
+      Check for existing work: does {output_folder}/C-UX-Scenarios/ exist? Are there scenario files?
+      Is there in-progress work in the design log? If YES — present options to resume, review, or start fresh.
+      Wait for user response before proceeding.
+    </instruction>
+    <instruction>
+      Present context summary to user: project name, site type, business goal count, persona list,
+      primary persona + top driving force. Wait for user acknowledgment.
+    </instruction>
+
+    <gate type="file-exists" path="{output_folder}/A-Product-Brief/product-brief.md"
+          failure-message="Product Brief not found. Phase 1 must be completed before running Phase 3."/>
+    <gate type="file-exists" path="{output_folder}/B-Trigger-Map/trigger-map.md"
+          failure-message="Trigger Map not found. Phase 2 must be completed before running Phase 3."/>
+    <gate type="data-extracted" required="site_type business_goals personas"
+          failure-message="Could not extract required data from prerequisite artifacts. Re-read both files completely."/>
+    <gate type="user-confirms" prompt="Context summary presented and acknowledged by user?"/>
+
+    <output>Project context loaded — site type, business goals, and personas extracted and verified.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 2 — Analyze Scope (USER CHECKPOINT)                           -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="2-analyze-scope" name="Analyze scope and scale strategy" step-file="steps-c/step-02-analyze-scope.md">
+    <instruction>
+      Classify the site type from Product Brief data:
+      - Presentation Site → Screen Flow format, expose all pages.
+      - Dynamic App → Storyboard format, focus on core workflow.
+      - Mixed → use both formats as needed.
+    </instruction>
+    <instruction>
+      Create a complete numbered page inventory from the Product Brief. Include every page mentioned
+      or implied by navigation and business goals. Exclude shared elements (header, footer, nav).
+    </instruction>
+    <instruction>
+      Assess scale and recommend approach mode:
+      - Small (fewer than 20 pages): Comprehensive coverage, recommend Dream or Suggest.
+      - Medium (20-50 pages): Comprehensive coverage with groupings, recommend Suggest.
+      - Large (100+ pages): Selective ignorance, recommend Dialog.
+    </instruction>
+    <instruction>
+      Determine page documentation strategy: separate pages (high variation) vs. template with
+      content variations (low variation, many structurally identical pages).
+    </instruction>
+    <instruction>
+      Present the full scope analysis to the user — site type, total pages, scale, recommended mode,
+      scenario format, page inventory, page strategy. Ask: "Does this look right? Any pages missing
+      or that should be grouped differently?" WAIT for explicit user approval. Do not proceed until
+      the user confirms the scope.
+    </instruction>
+
+    <gate type="user-confirms" prompt="User has explicitly approved the scope analysis, page inventory, and scale strategy?"/>
+
+    <output>Scope analysis approved — site type classified, page inventory complete, scale strategy confirmed.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 3 — Build Strategic Context                                   -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="3-build-strategic-context" name="Build strategic context chains" step-file="steps-c/step-03-build-strategic-context.md">
+    <instruction>
+      For each business goal from the Trigger Map, trace the complete strategic context chain:
+      Business Goal → Persona → Driving Force → Transaction → Candidate Scenario.
+      Answer all 7 Decision Matrix questions for every chain:
+      (1) business goal, (2) persona, (3) driving force, (4) transaction,
+      (5) where user comes from, (6) user value, (7) business value.
+    </instruction>
+    <instruction>
+      Assign pages from the approved inventory (Step 2) to each scenario chain.
+      Rules: each page appears in exactly ONE chain. If a page fits multiple chains,
+      assign it to the highest-priority one. Exclude shared elements.
+    </instruction>
+    <instruction>
+      Prioritize scenario chains:
+      - Priority 1 (Critical Path): top business goal + primary persona + core product value.
+      - Priority 2 (Supporting): secondary persona or alternative entry paths.
+      - Priority 3 (Edge Cases): admin tasks, rare segments, error recovery.
+    </instruction>
+    <instruction>
+      Run coverage check: every page from inventory assigned to exactly one chain,
+      primary persona has at least one Priority 1 scenario, top business goal addressed,
+      no page appears in multiple chains. If pages are unassigned, expand chains to cover them.
+    </instruction>
+    <instruction>
+      Present the complete strategic context chain list with priorities and page assignments.
+      Include coverage count (X/Y pages assigned). Wait for user to confirm before proceeding.
+    </instruction>
+
+    <gate type="coverage-check" rule="all-pages-assigned"
+          failure-message="Not all pages from the inventory are assigned to a scenario chain. Expand chains to achieve full coverage before proceeding."/>
+    <gate type="decision-matrix-complete" required-questions="7" per="each-scenario-chain"
+          failure-message="All 7 Decision Matrix questions must be answered for every scenario chain."/>
+    <gate type="user-confirms" prompt="Strategic context chains and page assignments presented to user?"/>
+
+    <output>Strategic context chains built — all pages assigned, prioritized, coverage verified.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 4 — Suggest Scenarios (USER CHECKPOINT)                       -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="4-suggest-scenarios" name="Present scenario plan for approval" step-file="steps-c/step-04-suggest-scenarios.md">
+    <instruction>
+      Format the complete scenario plan using the exact template from step-04-suggest-scenarios.md:
+      - Site Analysis header (type, total pages, format, scenario count).
+      - For each scenario: persona name + purpose, page list, persona driving force,
+        user value, business value, format. Scenario IDs as 01, 02, 03 etc.
+      - Scenario names MUST use persona names (e.g., "Hasse's Emergency Search",
+        NOT "Emergency Booking Flow"). This is non-negotiable.
+    </instruction>
+    <instruction>
+      Include a Coverage Check section with four verifications:
+      all pages assigned, no page repetition, primary persona covered, top business goal addressed.
+    </instruction>
+    <instruction>
+      Present the complete scenario plan to the user and WAIT for explicit approval.
+      Handle feedback: combine scenarios, add scenarios, apply selective ignorance, add missing pages.
+      Re-present adjusted plan after any changes. Do NOT proceed to outlining until user explicitly approves.
+    </instruction>
+    <instruction>
+      After user approval, record the final scenario count, page assignments, and any user adjustments.
+      Assign folder slugs: 01-persona-name-slug, 02-persona-name-slug, etc.
+    </instruction>
+
+    <gate type="naming-check" rule="scenario-names-contain-persona-name"
+          failure-message="All scenario names must include the persona's name. Feature-first naming is forbidden."/>
+    <gate type="coverage-check" rule="all-pages-assigned-no-repetition"
+          failure-message="Coverage check must show all pages assigned with no repetition before presenting for approval."/>
+    <gate type="user-confirms" prompt="User has explicitly approved the scenario plan (not just seen it)?"/>
+
+    <output>Scenario plan approved — scenario names confirmed, page assignments final, folder slugs assigned.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 5 — Outline Scenarios (loops once per scenario)               -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="5-outline-scenario" name="Outline one scenario at a time" step-file="steps-c/step-05-outline-scenario.md"
+        loop="for-each-scenario-in-approved-plan" loop-order="priority-ascending">
+    <instruction>
+      Load the scenario outline template from data/scenario-outline-template.md before starting.
+    </instruction>
+    <instruction>
+      Determine which scenario to work on: process in priority order (Priority 1 first).
+      If returning from a loop, continue with the next unfinished scenario.
+    </instruction>
+    <instruction>
+      Run the 8-Question Scenario Dialog for the current scenario. Default is Conversation Mode
+      (agent asks, user answers one question at a time). Suggest Mode available if user requests it.
+      Questions must be asked one at a time — never all at once.
+
+      Q1: What transaction do we need to get really right? (user purpose, not feature name)
+      Q2: Which business goal does a successful transaction add value to? (reference Trigger Map)
+      Q3: Which user experiences this most, and in what real-life situation? (persona + context)
+      Q4: What do they want and what do they fear? (hope + worry, ONE sentence each, visceral)
+      Q5: What device are they on? (mobile / desktop / tablet)
+      Q6: What is the natural starting point — how do they actually arrive? (1-2 sentences, specific)
+      Q7: What does the best possible outcome look like — for both sides? (measurable, both parties)
+      Q8: What is the shortest path through the site to get there? (linear, numbered, zero branches)
+    </instruction>
+    <instruction>
+      Name the scenario after the persona: Name + Purpose. Assign ID and slug.
+    </instruction>
+    <instruction>
+      Run all 7 quality gates before creating any file:
+      - All 8 questions answered with specific, concrete responses.
+      - Mental state is visceral and specific (not generic "interested").
+      - Entry point is realistic with device + context + discovery method.
+      - Path is truly linear (zero "if" statements, zero branches).
+      - Both successes are specific and measurable.
+      - Scenario name includes persona name.
+      - Trigger Map connection is explicit.
+      Fix any failing gates before proceeding.
+    </instruction>
+    <instruction>
+      Create folder: {output_folder}/C-UX-Scenarios/[NN-slug]/
+      Create file: {output_folder}/C-UX-Scenarios/[NN-slug]/[NN-slug].md
+      Use the template structure with all 8 answers filled in.
+    </instruction>
+    <instruction>
+      After saving the scenario file, begin outlining scenario steps from Q8's path.
+      Process the FIRST step automatically: name it from Q8 step 1, create the page folder,
+      fill metadata from Q3 (situation), Q4 (mental state), Q5 (device), Q6 (entry point).
+      Present the result, then show the Scenario Step Menu.
+
+      Page folder naming: {NN}.{step-number}-{page-slug}
+      Each page folder contains: {NN}.{step}-{page-slug}.md + Sketches/
+
+      Scenario Step Menu after each step:
+      1. Outline next scenario step — [next step name from Q8]
+      2. Start designing — enter the design loop from step 1
+      ---
+      [N] Define the next scenario
+      [C] Continue to overview (when all scenarios are done)
+
+      Handle menu choices:
+      - 1: ask the two per-step questions (step purpose + exit action), create folder, re-show menu.
+      - 2: hand over to Phase 4 (Discuss activity), starting from scenario step 1.
+      - N: loop back to the next unfinished scenario (Instruction 2 above).
+      - C: only when ALL scenarios from approved plan are outlined. Proceed to Step 6.
+    </instruction>
+
+    <gate type="quality-gates-pass" required="all-7" per="each-scenario"
+          failure-message="All 7 quality gates must pass for the scenario before creating any output file. Fix failing items first."/>
+    <gate type="file-created" path="{output_folder}/C-UX-Scenarios/{scenario-slug}/{scenario-slug}.md"
+          failure-message="Scenario outline file must be created before proceeding to the next scenario."/>
+    <gate type="page-folder-created" path="{output_folder}/C-UX-Scenarios/{scenario-slug}/{NN}.1-{first-page-slug}/"
+          failure-message="At least the first page folder must be created from Q8's path before moving on."/>
+
+    <check-if condition="more-scenarios-remain-in-approved-plan">
+      <then>Loop back — present Scenario Step Menu option [N] for next scenario</then>
+      <else>All scenarios complete — proceed to Step 6</else>
+    </check-if>
+
+    <gate type="all-scenarios-complete" rule="every-scenario-in-approved-plan-has-outline-file"
+          failure-message="All scenarios from the approved plan must be outlined before generating the overview."/>
+
+    <output>All scenario outlines created with page folders — quality gates passed for each scenario.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 6 — Generate Overview                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="6-generate-overview" name="Create 00-ux-scenarios.md index" step-file="steps-c/step-06-generate-overview.md">
+    <instruction>
+      Create {output_folder}/C-UX-Scenarios/00-ux-scenarios.md using the exact document
+      structure from step-06-generate-overview.md:
+      - Header with project name, date, author, method.
+      - Scenario Summary table (ID, name, persona, pages, priority, status).
+      - Per-scenario sections with persona, pages, user value, business value, link.
+      - Page Coverage Matrix (every page, which scenario, purpose in flow).
+      - Coverage count (X/Y pages assigned).
+      - Next Phase section.
+    </instruction>
+    <instruction>
+      Verify all links before completing:
+      - Each scenario link points to the correct folder/file.
+      - All scenarios from the approved plan are listed.
+      - Page coverage matrix is complete — no pages missing.
+    </instruction>
+
+    <gate type="file-created" path="{output_folder}/C-UX-Scenarios/00-ux-scenarios.md"
+          failure-message="Overview index file must be created at the correct path before proceeding."/>
+    <gate type="links-verified" rule="all-scenario-links-resolve"
+          failure-message="All scenario links in the overview must resolve to existing files. Fix broken links before continuing."/>
+    <gate type="coverage-matrix-complete" rule="every-page-in-matrix"
+          failure-message="Every page from the inventory must appear in the coverage matrix. Add missing pages."/>
+    <gate type="user-confirms" prompt="Overview file created and link verification passed?"/>
+
+    <output>00-ux-scenarios.md created — all scenario links verified, coverage matrix complete.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 7 — Quality Review                                            -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="7-quality-review" name="Self-review all scenarios against quality rubric" step-file="steps-c/step-07-quality-review.md">
+    <instruction>
+      Load the full quality checklist from data/quality-checklist.md before starting.
+    </instruction>
+    <instruction>
+      Review EVERY scenario across all four dimensions:
+
+      Dimension 1 — Completeness (7 components, minimum 6/7):
+      Core feature, entry point, mental state, success goals, shortest path, scenario name, Trigger Map connections.
+
+      Dimension 2 — Quality Criteria (7 checks, minimum 5/7):
+      Persona-specific, visceral mental state, measurable successes, zero "if" statements, minimum viable steps,
+      realistic entry point, explicit business goal connection.
+
+      Dimension 3 — Mistakes Avoided (6 checks, ALL 6 required):
+      No edge cases in path, goal-first naming, mental state present, page descriptions include purpose,
+      uses Trigger Map persona, business value defined.
+
+      Dimension 4 — Best Practices (4 checks, minimum 2/4):
+      Named after persona, started with highest-value persona, one job-to-be-done per scenario,
+      driving forces linked.
+    </instruction>
+    <instruction>
+      Fix any failing items: go back to the scenario file, correct the specific gaps, re-verify.
+      If still failing after corrections, present gaps to user for guidance before proceeding.
+    </instruction>
+    <instruction>
+      Present the quality review summary table to the user (per scenario: scores for all four
+      dimensions + status). Include overall rating and list of any remaining gaps.
+    </instruction>
+
+    <gate type="quality-threshold" dimension="completeness" minimum="6" of="7" per="each-scenario"
+          failure-message="Completeness score below 6/7 for one or more scenarios. Fix gaps before proceeding."/>
+    <gate type="quality-threshold" dimension="quality-criteria" minimum="5" of="7" per="each-scenario"
+          failure-message="Quality criteria score below 5/7 for one or more scenarios. Fix gaps before proceeding."/>
+    <gate type="quality-threshold" dimension="mistakes-avoided" minimum="6" of="6" per="each-scenario"
+          failure-message="All 6 mistake-avoidance checks must pass for every scenario. Zero tolerance here."/>
+    <gate type="quality-threshold" dimension="best-practices" minimum="2" of="4" per="each-scenario"
+          failure-message="Best practices score below 2/4 for one or more scenarios. Review and improve."/>
+    <gate type="user-confirms" prompt="Quality review summary presented and all scenarios meet minimum thresholds?"/>
+
+    <output>Quality review complete — all scenarios pass minimum thresholds across all four dimensions.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 8 — Update Design Log                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="8-update-design-log" name="Document Phase 3 completion in design log" step-file="steps-c/step-08-update-design-log.md">
+    <instruction>
+      Read the existing {output_folder}/_progress/00-design-log.md before making any changes.
+      Understand the current format and find the last entry.
+    </instruction>
+    <instruction>
+      APPEND (never overwrite) a Phase 3 progress entry under the Progress section:
+      - Date, phase label, agent name, scenario count, page count, quality rating.
+      - Artifacts: list EVERY file created individually — no summarizing with "etc."
+        Include 00-ux-scenarios.md and ALL scenario + page folder files.
+      - Summary: 2-3 specific sentences mentioning actual decisions made, page coverage status.
+      - Next: Phase 4 — UX Design.
+    </instruction>
+    <instruction>
+      Add rows to the Key Decisions table for any significant Phase 3 choices:
+      scenario count changes, page reassignments, priority reordering, scope decisions.
+      Skip this section only if truly no significant decisions were made.
+    </instruction>
+    <instruction>
+      Verify before completing:
+      - Progress entry is appended, not overwriting existing entries.
+      - All artifact files listed individually.
+      - Summary is specific, not generic.
+      - Key decisions recorded where applicable.
+    </instruction>
+
+    <gate type="file-read-before-write" path="{output_folder}/_progress/00-design-log.md"
+          failure-message="Design log must be read before writing to it. Never overwrite without reading first."/>
+    <gate type="append-only" rule="no-existing-entries-modified"
+          failure-message="Only append to the design log. Existing entries must not be modified."/>
+    <gate type="artifacts-listed" rule="every-created-file-listed-individually"
+          failure-message="Every created file must be listed individually. Summaries with 'etc.' are not allowed."/>
+    <gate type="user-confirms" prompt="Design log updated with all required information?"/>
+
+    <output>Design log updated — Phase 3 entry appended with all artifacts listed and key decisions recorded.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- STEP 9 — Handover                                                  -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <step id="9-handover" name="Complete Phase 3 and prepare Phase 4" step-file="steps-c/step-09-handover.md">
+    <instruction>
+      Present the final completion summary: project name, scenario count, scenario table (ID, name,
+      persona, pages, priority), coverage stats, quality rating, all files created.
+    </instruction>
+    <instruction>
+      Guide the user through Design Intent selection for each scenario. For each scenario,
+      present the five options:
+      [K] Sketch — user draws, agent interprets later
+      [C] Discuss — creative dialog
+      [S] Suggest — agent proposes step by step, user confirms
+      [D] Dream Up — agent creates autonomously, user reviews
+      [L] Later — decide at Phase 4 start
+
+      Save the chosen approach as design_intent in each scenario's frontmatter.
+      Also add design_status: not-started to each scenario file.
+    </instruction>
+    <instruction>
+      Explain Phase 4 clearly: how each design intent maps to a Phase 4 activity,
+      that the user can always change approach in Phase 4, and how the adaptive dashboard
+      reads the design log to suggest where to continue.
+    </instruction>
+    <instruction>
+      Ask the user: "Would you like to continue to Phase 4, or take a break?"
+      Present [M] Main Menu option to return to workflow start.
+    </instruction>
+
+    <gate type="design-intent-saved" rule="all-scenarios-have-design_intent-in-frontmatter"
+          failure-message="Design intent must be saved to every scenario file's frontmatter before completing. Do not skip this."/>
+    <gate type="design-status-set" rule="all-scenarios-have-design_status-not-started"
+          failure-message="design_status: not-started must be set in every scenario file."/>
+    <gate type="user-confirms" prompt="Completion summary presented, design intents captured, next steps explained?"/>
+
+    <output>Phase 3 complete — all scenarios outlined and approved, design intents saved, Phase 4 prepared.</output>
+  </step>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- COMPLETION                                                         -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <completion>
+    <require step="all" failure-message="All 9 steps must be completed before Phase 3 is considered done."/>
+    <output-file>{output_folder}/C-UX-Scenarios/00-ux-scenarios.md</output-file>
+    <output-file>{output_folder}/C-UX-Scenarios/{NN-scenario-slug}/{NN-scenario-slug}.md</output-file>
+    <output-file>{output_folder}/C-UX-Scenarios/{NN-scenario-slug}/{NN}.{step}-{page-slug}/{NN}.{step}-{page-slug}.md</output-file>
+    <next-phase>wds-4-ux-design</next-phase>
+  </completion>
+
+</workflow>

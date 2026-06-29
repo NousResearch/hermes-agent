@@ -1,0 +1,9 @@
+{
+  "name": "claude-code",
+  "invocation": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"],
+  "auth_env": "ANTHROPIC_API_KEY",
+  "transcript": { "format": "stdout-jsonl" },
+  "skill_dir": ".claude/skills",
+  "load_signal": { "skill_tool": "Skill", "read_tool": "Read" },
+  "env_passthrough": []
+}

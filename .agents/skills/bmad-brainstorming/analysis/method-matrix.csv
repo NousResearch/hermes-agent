@@ -1,0 +1,109 @@
+category,technique,provenance,mechanism_primary,mechanism_secondary,goal_affinity,audience
+collaborative,Yes And Building,classic,combination,perspective,novel|unstuck|planning,group
+collaborative,Brain Writing Round Robin,classic,combination,decomposition,novel|feature,group
+collaborative,Random Stimulation,classic,analogy,,unstuck|novel,either
+collaborative,Role Playing,classic,perspective,,strategy|personal|feature,either
+collaborative,Ideation Relay Race,playful,combination,,unstuck,group
+collaborative,Idea Hot Potato,playful,combination,,unstuck,group
+collaborative,Steal And Upgrade,signature,combination,analogy,novel|unstuck,group
+collaborative,Fold The Paper,playful,combination,,unstuck|novel,group
+creative,What If Scenarios,signature,constraint,,novel|strategy|unstuck,either
+creative,Analogical Thinking,signature,analogy,,feature|novel|diagnosis,either
+creative,First Principles Thinking,classic,decomposition,,feature|novel|diagnosis|strategy,either
+creative,Forced Relationships,signature,combination,analogy,novel|unstuck,either
+creative,Time Shifting,signature,time-shift,perspective,novel|unstuck,either
+creative,Metaphor Mapping,signature,analogy,,novel|diagnosis,either
+creative,Cross-Pollination,signature,analogy,,novel|feature|strategy,either
+creative,Concept Blending,signature,combination,,novel,either
+creative,Reverse Brainstorming,classic,inversion,,diagnosis|feature|unstuck,either
+creative,Sensory Exploration,signature,sensory,,novel|unstuck,either
+deep,Five Whys,classic,questioning,,diagnosis,either
+deep,Provocation Technique,classic,provocation,inversion,unstuck|novel,either
+deep,Assumption Reversal,classic,inversion,,novel|diagnosis|strategy,either
+deep,Question Storming,classic,questioning,,diagnosis|strategy|unstuck,either
+deep,Constraint Mapping,signature,constraint,decomposition,feature|strategy|diagnosis,either
+deep,Failure Analysis,signature,inversion,diagnosis,diagnosis|strategy|feature,either
+deep,Emergent Thinking,signature,systems,,strategy|novel,either
+deep,Causal Loop Mapping,classic,systems,,diagnosis|strategy,either
+deep,Morphological Analysis,classic,decomposition,combination,feature|novel|planning,either
+deep,Laddering,classic,questioning,decomposition,personal|strategy|diagnosis,either
+introspective_delight,Inner Child Conference,signature,perspective,sensory,personal|unstuck,solo
+introspective_delight,Shadow Work Mining,signature,sensory,,personal|diagnosis,solo
+introspective_delight,Values Archaeology,signature,questioning,,personal|strategy,solo
+introspective_delight,Future Self Interview,signature,perspective,time-shift,personal,solo
+introspective_delight,Body Wisdom Dialogue,signature,sensory,,personal,solo
+introspective_delight,Permission Giving,signature,provocation,constraint,personal|unstuck,solo
+introspective_delight,Secret Wish Confession,signature,sensory,,personal,solo
+introspective_delight,Mood Weather Report,signature,sensory,,personal|unstuck,solo
+structured,SCAMPER Method,classic,combination,decomposition,feature|novel,either
+structured,Six Thinking Hats,classic,perspective,,strategy|diagnosis|planning|personal,either
+structured,Decision Tree Mapping,signature,decomposition,,planning|strategy|diagnosis,either
+structured,Solution Matrix,signature,decomposition,,feature|planning,either
+structured,Trait Transfer,signature,analogy,,novel|feature,either
+structured,Lotus Blossom,classic,decomposition,,feature|planning|novel,either
+structured,Worst Possible Idea,classic,inversion,,unstuck|novel,either
+structured,Disney Method,classic,perspective,,feature|strategy|planning,either
+structured,Starbursting,classic,questioning,,feature|planning|diagnosis,either
+structured,Mind Mapping,classic,decomposition,,planning|novel|feature,either
+structured,Crazy 8s,classic,combination,,feature|novel|unstuck,either
+theatrical,Time Travel Talk Show,playful,perspective,time-shift,novel|personal,either
+theatrical,Alien Anthropologist,playful,perspective,,diagnosis|unstuck|strategy,either
+theatrical,Dream Fusion Laboratory,signature,constraint,time-shift,novel|unstuck,either
+theatrical,Emotion Orchestra,playful,sensory,perspective,personal|strategy,either
+theatrical,Parallel Universe Cafe,playful,constraint,,novel|unstuck,either
+theatrical,Persona Journey,signature,perspective,,feature|strategy,either
+theatrical,Devil's Advocate Courtroom,signature,inversion,perspective,strategy|diagnosis,group
+wild,Chaos Engineering,signature,inversion,constraint,feature|diagnosis|strategy,either
+wild,Guerrilla Gardening Ideas,playful,analogy,,strategy|unstuck,either
+wild,Pirate Code Brainstorm,playful,combination,analogy,novel|unstuck,either
+wild,Zombie Apocalypse Planning,playful,constraint,,feature|strategy|unstuck,either
+wild,Drunk History Retelling,playful,perspective,,unstuck|diagnosis,either
+wild,Anti-Solution,signature,inversion,,diagnosis|unstuck,either
+wild,Elemental Forces,playful,perspective,analogy,novel|unstuck,either
+biomimetic,Nature's Solutions,signature,analogy,,feature|novel,either
+biomimetic,Ecosystem Thinking,signature,systems,,strategy|diagnosis,either
+biomimetic,Evolutionary Pressure,signature,systems,,feature|novel,either
+biomimetic,Predator & Prey,signature,perspective,inversion,strategy|feature,either
+biomimetic,Metamorphosis Stages,signature,time-shift,decomposition,novel|strategy,either
+biomimetic,Swarm Logic,signature,systems,,feature|strategy,either
+quantum,Observer Effect,signature,systems,perspective,strategy|diagnosis,either
+quantum,Entanglement Thinking,signature,systems,,diagnosis|strategy,either
+quantum,Superposition Collapse,signature,convergence,decomposition,strategy|diagnosis,either
+quantum,Relativity Frame Shift,signature,perspective,,strategy|novel,either
+quantum,Field Lines,signature,systems,,strategy,either
+quantum,Quantum Tunneling,signature,constraint,,unstuck|novel,either
+cultural,Indigenous Wisdom,signature,perspective,analogy,personal|strategy|novel,either
+cultural,Fusion Cuisine,signature,combination,analogy,novel,either
+cultural,Ritual Innovation,signature,analogy,,novel|personal,either
+cultural,Mythic Frameworks,signature,analogy,perspective,strategy|personal|novel,either
+cultural,Proverb Mining,signature,analogy,,personal|strategy,either
+cultural,Ancestor Council,signature,perspective,,personal|strategy,either
+cultural,Trickster's Gambit,playful,inversion,provocation,unstuck|strategy,either
+absurdist,Villain's Monologue,playful,inversion,perspective,diagnosis|strategy|unstuck,either
+absurdist,Explain It to a Golden Retriever,playful,perspective,,unstuck|diagnosis|feature,either
+absurdist,Infomercial at 3AM,playful,perspective,,strategy|novel,either
+absurdist,Drunk Uncle at Thanksgiving,playful,perspective,,unstuck|diagnosis,either
+absurdist,Cursed Genie,playful,inversion,,diagnosis|feature,either
+absurdist,Three Rounds of Stupid,playful,provocation,,unstuck|novel,either
+constraint,Kill the Crown Jewel,signature,constraint,,feature|strategy|unstuck,either
+constraint,1000x Budget,signature,constraint,,novel|strategy,either
+constraint,Ship in 60 Minutes,signature,constraint,,feature|planning|unstuck,either
+constraint,The $0 Mandate,signature,constraint,,planning|strategy|feature,either
+constraint,One Feature Only,signature,constraint,,feature|strategy,either
+constraint,Crank the Dial to 11,signature,constraint,,novel|unstuck,either
+constraint,Constraint Roulette,signature,constraint,,unstuck|feature,either
+speculative_future,Time Horizon Ladder,signature,time-shift,,strategy|planning|novel,either
+speculative_future,Post-Scarcity Test,signature,constraint,,novel|strategy,either
+speculative_future,Utopia vs Dystopia Split-Screen,signature,perspective,inversion,strategy|diagnosis,either
+speculative_future,Sci-Fi Artifact From the Future,signature,time-shift,perspective,novel|feature,either
+speculative_future,Emerging Tech Collision,signature,combination,,novel|feature|strategy,either
+speculative_future,What-If-The-World-Changed Card Flip,signature,constraint,,novel|unstuck,either
+speculative_future,Future Anthropologist Dig,signature,time-shift,perspective,strategy|novel,either
+structured,How Might We,classic,questioning,,feature|novel|strategy|diagnosis,either
+structured,Job to Be Done,classic,perspective,questioning,feature|strategy|novel,either
+structured,Empathy Map,classic,perspective,,feature|personal,either
+structured,Backcasting,classic,time-shift,,strategy|planning|novel,either
+deep,TRIZ Contradiction,classic,inversion,decomposition,feature|novel|diagnosis,either
+deep,Fishbone Diagram,classic,decomposition,systems,diagnosis,either
+deep,Build on What Works,classic,perspective,systems,personal|strategy,either
+speculative_future,Scenario Cross,classic,constraint,systems,strategy|planning,either

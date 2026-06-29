@@ -1,0 +1,65 @@
+# DO NOT EDIT -- overwritten on every update.
+#
+# Agent customization surface for {skill-name}.
+# Team overrides:     {project-root}/_bmad/custom/{skill-name}.toml
+# Personal overrides: {project-root}/_bmad/custom/{skill-name}.user.toml
+
+[agent]
+
+# --- Metadata (install-time roster contract) ---
+# Consumed by module.yaml:agents[] and `[agents.<code>]` in central config.
+
+code = "{agent-code}"
+name = "{agent-name-or-empty}"
+title = "{agent-title}"
+icon = "{agent-icon}"
+description = "{agent-description}"
+agent_type = "{agent-type}"   # stateless | memory | autonomous
+
+{if-customizable}
+
+# --- Configurable below. Overrides merge per BMad structural rules: ---
+#   scalars: override wins • arrays (persistent_facts, activation_steps_*): append
+#   arrays-of-tables with `code`/`id`: replace matching items, append new ones.
+#
+# For memory/autonomous agents: your sanctum (PERSONA/CREED/BOND/CAPABILITIES)
+# is the primary behavior surface. Prefer editing sanctum files over this block.
+
+# Steps to run before the standard activation (config load, greet).
+# Overrides append. Use for pre-flight loads, compliance checks, etc.
+
+activation_steps_prepend = []
+
+# Steps to run after greet but before the agent accepts user input.
+# Overrides append. Use for context-heavy setup that should happen
+# once the user has been acknowledged.
+
+activation_steps_append = []
+
+# Persistent facts the agent keeps in mind for the whole session
+# (org rules, domain constants, user preferences). Overrides append.
+# These are static build-time config loaded on activation. They are not
+# the sanctum: the sanctum is the agent's runtime memory across wakings,
+# a separate surface that lives under {project-root}/_bmad/memory/.
+#
+# Each entry is either:
+#   - a literal sentence, e.g. "Our org is AWS-only -- do not propose GCP or Azure."
+#   - a file reference prefixed with `file:`, e.g. "file:{project-root}/docs/standards.md"
+#     (glob patterns are supported; the file's contents are loaded and treated as facts).
+
+persistent_facts = [
+  "file:{project-root}/**/project-context.md",
+]
+
+# --- Agent-specific configurables (lifted during Configurability Discovery) ---
+#
+# Swappable reference docs, output paths, or hooks the builder surfaced with
+# the author. Bare paths resolve from the skill root; use `{project-root}/...`
+# to point at an org-owned resource elsewhere in the repo. Override wins.
+#
+# Naming conventions:
+#   *_template        -- file paths for templates the agent loads
+#   *_output_path     -- writable destinations
+#   on_<event>        -- hook scalars (prompts/commands)
+
+{/if-customizable}

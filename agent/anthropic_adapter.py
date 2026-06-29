@@ -395,6 +395,26 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     if "default_query" in kwargs:  # historical: this path also strips a stray trailing slash on Azure
         kwargs["base_url"] = normalized_base_url.rstrip("/")
+    # Build the SDK's httpx client ourselves so the OS *system* proxy is never silently applied.
+    # The Anthropic SDK's default client uses trust_env=True, which on macOS/Windows reads the
+    # system proxy (via urllib.getproxies()). That hijacks requests to endpoints the proxy cannot
+    # reach (e.g. an intranet gateway) and surfaces as an opaque APIConnectionError. Disable
+    # trust_env and route only through hermes's own env-/NO_PROXY-aware resolver: explicit
+    # HTTP(S)_PROXY still applies for users who need egress, and NO_PROXY is honored for hosts
+    # that must bypass it. (#25319 is the same class of bug on the OpenAI wire.)
+    #
+    # Deliberately NOT build_keepalive_http_client() (agent/process_bootstrap.py), which applies
+    # the same env-only proxy policy: that helper is shaped for the OpenAI wire — it pins
+    # read=None for SSE streaming, so reusing it would silently discard this path's
+    # caller-supplied read timeout, and it returns None on failure, which the SDK reads as "no
+    # http_client" and falls straight back to the trust_env default this fix exists to prevent.
+    import httpx as _httpx
+    from agent.process_bootstrap import _get_proxy_for_base_url
+    kwargs["http_client"] = _httpx.Client(
+        timeout=kwargs["timeout"],
+        trust_env=False,
+        proxy=_get_proxy_for_base_url(base_url),
+    )
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
     style = _auth_style(api_key, base_url, normalized_base_url)
     kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key

@@ -1325,6 +1325,12 @@ def init_agent(
     # single turn; the runtime already executes such batches concurrently.
     agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
 
+    # Configurable attribution string for agent identity and help guidance.
+    # "Nous Research" (default) → current behavior, backward-compatible.
+    # "Acme Corp" → "created by Acme Corp" / "(by Acme Corp)".
+    # "" (empty) → attribution block omitted entirely.
+    agent._attribution = str(_agent_section.get("attribution", "Nous Research"))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

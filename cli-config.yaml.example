@@ -615,6 +615,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Attribution label for the agent identity in the system prompt.
+  # - "Nous Research" (default) → "created by Nous Research"
+  # - "Acme Corp" → "created by Acme Corp"
+  # - "" (empty) → attribution block omitted entirely
+  # attribution: "Nous Research"
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

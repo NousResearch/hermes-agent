@@ -120,26 +120,52 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # Constants
 # =========================================================================
 
-DEFAULT_AGENT_IDENTITY = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
-    "You are helpful, knowledgeable, and direct. You assist users with a wide "
-    "range of tasks including answering questions, writing and editing code, "
-    "analyzing information, creative work, and executing actions via your tools. "
-    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below. "
-    "Be targeted and efficient in your exploration and investigations."
-)
+def _build_agent_identity(attribution: str = "Nous Research") -> str:
+    """Build the default agent identity string with configurable attribution."""
+    if attribution:
+        return (
+            f"You are Hermes Agent, an intelligent AI assistant created by "
+            f"{attribution}. You are helpful, knowledgeable, and direct. You "
+            "assist users with a wide range of tasks including answering "
+            "questions, writing and editing code, analyzing information, "
+            "creative work, and executing actions via your tools. You "
+            "communicate clearly, admit uncertainty when appropriate, and "
+            "prioritize being genuinely useful over being verbose unless "
+            "otherwise directed below. Be targeted and efficient in your "
+            "exploration and investigations."
+        )
+    return (
+        "You are Hermes Agent, an intelligent AI assistant. You are "
+        "helpful, knowledgeable, and direct. You assist users with a wide "
+        "range of tasks including answering questions, writing and editing "
+        "code, analyzing information, creative work, and executing actions "
+        "via your tools. You communicate clearly, admit uncertainty when "
+        "appropriate, and prioritize being genuinely useful over being "
+        "verbose unless otherwise directed below. Be targeted and efficient "
+        "in your exploration and investigations."
+    )
 
-HERMES_AGENT_HELP_GUIDANCE = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
-    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
-    "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://hermes-agent.nousresearch.com/docs is your "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
-    "of truth when the two differ."
-)
+
+def _build_help_guidance(attribution: str = "Nous Research") -> str:
+    """Build the help-guidance string with configurable attribution.
+    Returns empty string when attribution is empty (block omitted entirely).
+    """
+    if not attribution:
+        return ""
+    return (
+        f"You run on Hermes Agent (by {attribution}). When the user needs help with "
+        "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+        "it — or when you need to understand your own features, tools, or capabilities, "
+        "the documentation at https://hermes-agent.nousresearch.com/docs is your "
+        "authoritative reference and always holds the latest, most up-to-date "
+        "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+        "for additional guidance and proven workflows, but treat the docs as the source "
+        "of truth when the two differ."
+    )
+
+
+DEFAULT_AGENT_IDENTITY = _build_agent_identity()
+HERMES_AGENT_HELP_GUIDANCE = _build_help_guidance()
 
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "

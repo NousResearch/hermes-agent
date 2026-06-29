@@ -1266,6 +1266,10 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
+    child_disabled_toolsets = list(getattr(parent_agent, "disabled_toolsets", None) or [])
+    if "delegate_blocked" not in child_disabled_toolsets:
+        child_disabled_toolsets.append("delegate_blocked")
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1280,6 +1284,7 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
+        disabled_toolsets=child_disabled_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",

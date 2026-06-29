@@ -1414,6 +1414,38 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], "http://localhost:11434/v1")
             self.assertEqual(kwargs["api_key"], "ollama")
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_disables_delegate_blocked_tools(self, mock_cfg):
+        """Delegated children subtract blocked tools from mixed platform bundles.
+
+        Gateway platform bundles such as hermes-telegram contain both safe tools
+        and blocked child-only tools. The child keeps the bundle enabled but must
+        also pass a subtraction toolset so model_tools removes cronjob,
+        delegate_task, execute_code, memory, clarify, and send_message during
+        schema resolution.
+        """
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["hermes-telegram"]
+        parent.disabled_toolsets = ["browser"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="check delegated tool boundary",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["enabled_toolsets"], ["hermes-telegram"])
+        self.assertIn("browser", kwargs["disabled_toolsets"])
+        self.assertIn("delegate_blocked", kwargs["disabled_toolsets"])
+
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_credential_error_returns_json_error(self, mock_creds, mock_cfg):

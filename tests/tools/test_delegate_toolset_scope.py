@@ -63,3 +63,27 @@ class TestToolsetIntersection:
         scoped = [t for t in requested if t in parent_toolsets]
 
         assert scoped == []
+
+    def test_composite_platform_toolset_subtracts_delegate_blocked_tools(self):
+        """Mixed platform bundles keep safe tools but subtract blocked child tools.
+
+        A platform bundle such as ``hermes-telegram`` contains a mix of safe
+        tools and tools that delegated children must not receive.  Stripping
+        only whole toolset names is not enough because the bundle itself must
+        remain enabled for the safe tools.
+        """
+        from model_tools import get_tool_definitions
+
+        child_tools = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["delegate_blocked"],
+            quiet_mode=True,
+        )
+
+        child_tool_names = {t["function"]["name"] for t in child_tools}
+        assert "cronjob" not in child_tool_names
+        assert "delegate_task" not in child_tool_names
+        assert "execute_code" not in child_tool_names
+        assert "memory" not in child_tool_names
+        assert "clarify" not in child_tool_names
+        assert "read_file" in child_tool_names

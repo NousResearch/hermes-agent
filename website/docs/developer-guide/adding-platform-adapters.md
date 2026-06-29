@@ -185,7 +185,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
-| send_message tool | Routes through live gateway adapter |
+| send engine (`tools/send_message_tool.py`) | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |

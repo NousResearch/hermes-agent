@@ -65,6 +65,11 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
+from agent.redact import (
+    redact_sensitive_text,
+    _redact_url_query_params,
+    _redact_url_userinfo,
+)
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -236,6 +241,26 @@ _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
 
 
+def _sanitize_url_for_logs(value: object) -> str:
+    """Mask secrets in logged browser endpoint URLs and URL-like errors.
+
+    The global ``redact_sensitive_text`` deliberately passes web-URL query
+    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
+    magic-link / pre-signed URLs the agent is meant to follow — see the
+    web-URL note in ``agent/redact.py``). CDP discovery endpoints are NOT
+    such a workflow: their query-string tokens and userinfo passwords are
+    pure credentials that must never reach the logs. So at these log sites
+    we opt INTO the URL redactors that the global pass leaves off, reusing
+    the shared ``redact.py`` helpers rather than a second regex.
+    """
+    text = redact_sensitive_text(value)
+    if not text:
+        return text
+    text = _redact_url_query_params(text)
+    text = _redact_url_userinfo(text)
+    return text
+
+
 def _get_command_timeout() -> int:
     """Return the configured browser command timeout from config.yaml.
 
@@ -244,10 +269,9 @@ def _get_command_timeout() -> int:
     cached after the first call and cleared by ``cleanup_all_browsers()``.
     """
     global _cached_command_timeout, _command_timeout_resolved
-    if _command_timeout_resolved:
-        return _cached_command_timeout  # type: ignore[return-value]
+    if _command_timeout_resolved and _cached_command_timeout is not None:
+        return _cached_command_timeout
 
-    _command_timeout_resolved = True
     result = DEFAULT_COMMAND_TIMEOUT
     try:
         from hermes_cli.config import read_raw_config
@@ -257,13 +281,29 @@ def _get_command_timeout() -> int:
             result = max(int(val), 5)  # Floor at 5s to avoid instant kills
     except Exception as e:
         logger.debug("Could not read command_timeout from config: %s", e)
+    # Assign the cached value BEFORE flipping the resolved flag so a
+    # concurrent reader cannot observe ``resolved=True`` while the cache
+    # is still ``None`` (see issue #14331).
     _cached_command_timeout = result
+    _command_timeout_resolved = True
     return result
+
+
+def _safe_command_timeout() -> int:
+    """Like ``_get_command_timeout`` but guaranteed non-None.
+
+    Defense in depth against the race fixed in ``_get_command_timeout``:
+    if anything ever returns ``None`` (e.g. cache reset mid-flight), fall
+    back to ``DEFAULT_COMMAND_TIMEOUT``. Uses ``is not None`` rather than
+    ``or`` so a legitimately configured ``0`` is preserved.
+    """
+    val = _get_command_timeout()
+    return val if val is not None else DEFAULT_COMMAND_TIMEOUT
 
 
 def _get_open_command_timeout(*, first_open: bool = False) -> int:
     """Timeout for agent-browser ``open`` (navigation / daemon cold start)."""
-    base = _get_command_timeout()
+    base = _safe_command_timeout()
     floor = MIN_FIRST_OPEN_TIMEOUT if first_open else MIN_OPEN_TIMEOUT
     return max(base, floor)
 
@@ -394,15 +434,27 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        logger.warning("Failed to resolve CDP endpoint %s via %s: %s", raw, version_url, exc)
+        logger.warning(
+            "Failed to resolve CDP endpoint %s via %s: %s",
+            _sanitize_url_for_logs(raw),
+            _sanitize_url_for_logs(version_url),
+            _sanitize_url_for_logs(exc),
+        )
         return raw
 
     ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
     if ws_url:
-        logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
+        logger.info(
+            "Resolved CDP endpoint %s -> %s",
+            _sanitize_url_for_logs(raw),
+            _sanitize_url_for_logs(ws_url),
+        )
         return ws_url
 
-    logger.warning("CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint", version_url)
+    logger.warning(
+        "CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint",
+        _sanitize_url_for_logs(version_url),
+    )
     return raw
 
 
@@ -2002,7 +2054,15 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
 
 
 
-def _find_agent_browser() -> str:
+def _agent_browser_candidate_present(path: str | None) -> bool:
+    if not path:
+        return False
+    if " " in path and path.split()[0].endswith("npx"):
+        return True
+    return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
+
+
+def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
 
@@ -2041,7 +2101,11 @@ def _find_agent_browser() -> str:
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result and agent_browser_runnable(which_result):
+    if which_result and (
+        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
+    ):
+        if not validate:
+            return which_result
         _cached_agent_browser = which_result
         _agent_browser_resolved = True
         return which_result
@@ -2051,7 +2115,11 @@ def _find_agent_browser() -> str:
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and agent_browser_runnable(which_result):
+        if which_result and (
+            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
+        ):
+            if not validate:
+                return which_result
             _cached_agent_browser = which_result
             _agent_browser_resolved = True
             return which_result
@@ -2068,7 +2136,11 @@ def _find_agent_browser() -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and agent_browser_runnable(local_which):
+        if local_which and (
+            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
+        ):
+            if not validate:
+                return local_which
             _cached_agent_browser = local_which
             _agent_browser_resolved = True
             return _cached_agent_browser
@@ -2078,9 +2150,14 @@ def _find_agent_browser() -> str:
     if not npx_path and extended_path:
         npx_path = shutil.which("npx", path=extended_path)
     if npx_path:
+        if not validate:
+            return "npx agent-browser"
         _cached_agent_browser = "npx agent-browser"
         _agent_browser_resolved = True
         return _cached_agent_browser
+
+    if not validate:
+        raise FileNotFoundError("agent-browser CLI not found")
 
     # Nothing found — try lazy installation before giving up.
     try:
@@ -2155,7 +2232,7 @@ def _run_browser_command(
         Parsed JSON response from agent-browser
     """
     if timeout is None:
-        timeout = _get_command_timeout()
+        timeout = _safe_command_timeout()
     args = args or []
 
     # Build the command
@@ -3464,6 +3541,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "eval", [js_code])
 
     if result.get("success"):
+        # ── Private-network guard (sibling of snapshot/vision/eval guards) ──
+        if _eval_ssrf_guard_active(effective_task_id):
+            _blocked_url = _current_page_private_url(effective_task_id)
+            if _blocked_url:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Blocked: page URL targets a private or internal address "
+                        f"({_blocked_url}). This may have been caused by a "
+                        "JavaScript navigation via browser_console."
+                    ),
+                }, ensure_ascii=False)
+
         data = result.get("data", {})
         raw_result = data.get("result", "[]")
 
@@ -3991,8 +4081,10 @@ def cleanup_all_browsers() -> None:
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
-    _cached_command_timeout = None
+    # Flip the resolved flag BEFORE nulling the cache so a concurrent
+    # reader never sees ``resolved=True`` with ``cache=None`` (#14331).
     _command_timeout_resolved = False
+    _cached_command_timeout = None
     _cached_chromium_installed = None
     global _chromium_autoinstall_attempted
     _chromium_autoinstall_attempted = False
@@ -4206,8 +4298,12 @@ def check_browser_requirements() -> bool:
         return True
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.
+    # Tool-schema assembly runs during Desktop startup; do not execute
+    # ``agent-browser --version`` here, because Windows .cmd shims route through
+    # cmd.exe and can flash a console before the user invokes any browser tool.
+    # Actual browser execution paths still validate the candidate before use.
     try:
-        browser_cmd = _find_agent_browser()
+        browser_cmd = _find_agent_browser(validate=False)
     except FileNotFoundError:
         return False
 

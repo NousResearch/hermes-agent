@@ -2445,7 +2445,7 @@ class TestSchemaInit:
         db = SessionDB(db_path=old_db)
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
-        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        assert {"telegram_dm_topic_mode", "telegram_topic_thread_id"}.isdisjoint(columns)
         db.close()
 
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
@@ -4191,6 +4191,96 @@ class TestApplyWalProbe:
             "set-pragma must fire on a fresh (non-WAL) connection"
         )
 
+    def test_macos_checkpoint_fullsync_barrier_applied(self, tmp_path, monkeypatch):
+        """On Darwin, apply_wal_with_fallback sets checkpoint_fullfsync=1 (issue #30636)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        db_path = tmp_path / "macos_fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("checkpoint_fullfsync=1" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync barrier must be applied on macOS"
+        )
+
+    def test_macos_barrier_applied_when_already_wal(self, tmp_path, monkeypatch):
+        """The Darwin barrier fires on the already-WAL early-return path too."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "macos_wal.db"
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("checkpoint_fullfsync=1" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync barrier must fire on the already-WAL path"
+        )
+
+    def test_checkpoint_fullsync_barrier_skipped_off_darwin(self, tmp_path, monkeypatch):
+        """Non-macOS platforms must NOT issue the macOS-only PRAGMA."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+
+        db_path = tmp_path / "linux_fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert not any("checkpoint_fullfsync" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync must not be issued off macOS"
+        )
+
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
         """20 threads calling connect() on the same DB must not see disk I/O error."""
         import sys
@@ -4539,3 +4629,68 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+def test_gateway_session_peer_round_trip_and_recovery(db):
+    db.create_session(
+        "gw-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+    db.append_message("gw-session", "user", "hello")
+
+    row = db.get_session("gw-session")
+    assert row["session_key"] == "agent:main:telegram:dm:chat-1"
+    assert row["chat_id"] == "chat-1"
+    assert row["chat_type"] == "dm"
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "gw-session"
+
+
+def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
+    db.create_session(
+        "closed-gw-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("closed-gw-session", "user", "hello")
+    db.end_session("closed-gw-session", "agent_close")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "closed-gw-session"
+
+    db.end_session("closed-gw-session", "session_reset")
+    # First end reason wins, so force explicit reset state for this branch.
+    db._conn.execute(
+        "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+        (time.time(), "session_reset", "closed-gw-session"),
+    )
+    db._conn.commit()
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    ) is None

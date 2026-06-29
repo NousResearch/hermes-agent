@@ -570,3 +570,71 @@ class TestCrossProfileRead:
             assert result["success"] is True, kwargs
             assert result["mode"] == "read"
             assert result["session_id"] == "s_other"
+
+
+# =========================================================================
+# Cron demotion in discover ranking (#19434)
+# =========================================================================
+
+class TestCronDemotion:
+    def _seed_cron_and_interactive(self, db):
+        """One interactive (telegram) session and several cron sessions, all
+        matching the same query. Cron rows accumulate repetitive vocabulary
+        and out-number the user's single interactive session — the live-data
+        symptom in #19434.
+        """
+        now = int(time.time())
+        # Interactive user session — older, so it loses on bare recency too.
+        db.create_session("s_user", source="telegram")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                         (now - 90000, "s_user"))
+        db.append_message("s_user", role="user", content="how is the venom project going")
+        db.append_message("s_user", role="assistant", content="The venom project shipped its first milestone.")
+        # Several cron sessions, all newer and all stuffed with the same terms.
+        for i in range(8):
+            sid = f"cron_{i}"
+            db.create_session(sid, source="cron")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                             (now - 1000 - i, sid))
+            db.append_message(sid, role="user", content="venom project daily status")
+            db.append_message(sid, role="assistant", content="venom project venom project venom summary")
+        db._conn.commit()
+
+    def test_interactive_session_surfaces_above_cron(self, db):
+        self._seed_cron_and_interactive(db)
+        result = json.loads(session_search(query="venom project", limit=1, db=db))
+        assert result["success"] is True
+        assert result["count"] == 1
+        # With cron drowning FTS, bare BM25/recency would return a cron_* hit.
+        # Demotion must put the user's interactive session first.
+        assert result["results"][0]["source"] == "telegram"
+        assert result["results"][0]["session_id"] == "s_user"
+
+    def test_cron_still_reachable_when_only_match(self, db):
+        """Demotion must not exclude cron — when only cron matches, it still
+        comes back."""
+        now = int(time.time())
+        db.create_session("cron_only", source="cron")
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                         (now - 500, "cron_only"))
+        db.append_message("cron_only", role="user", content="quarterly archive sweep")
+        db.append_message("cron_only", role="assistant", content="Archive sweep complete.")
+        db._conn.commit()
+        result = json.loads(session_search(query="archive sweep", db=db))
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["source"] == "cron"
+
+    def test_order_for_recall_is_stable_within_class(self):
+        from tools.session_search_tool import _order_for_recall
+        rows = [
+            {"id": 1, "source": "cron"},
+            {"id": 2, "source": "telegram"},
+            {"id": 3, "source": "cron"},
+            {"id": 4, "source": "cli"},
+            {"id": 5, "source": None},
+        ]
+        ordered = _order_for_recall(rows)
+        # Interactive rows first, in original relative order; cron last, in
+        # original relative order.
+        assert [r["id"] for r in ordered] == [2, 4, 5, 1, 3]

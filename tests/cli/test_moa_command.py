@@ -25,28 +25,41 @@ def _make_cli():
     cli._pending_input = queue.Queue()
     cli._pending_agent_seed = None
     cli._pending_moa_config = None
+    cli._pending_moa_disable_after_turn = False
+    cli._pending_moa_restore_model = None
     cli._agent_running = False
     cli.agent = None
+    cli.provider = "openrouter"
+    cli.requested_provider = "openrouter"
+    cli.model = "anthropic/claude-opus-4.8"
+    cli.api_key = "test-key"
+    cli.base_url = "https://openrouter.ai/api/v1"
+    cli.api_mode = "chat_completions"
     return cli
 
 
-def test_moa_bare_switches_to_default_preset_model():
+def test_moa_bare_shows_usage_no_switch():
+    # /moa with no prompt is usage-only now; switching to a preset for the
+    # session is done via the model picker, not /moa.
     cli = _make_cli()
+    cli._pending_moa_disable_after_turn = False
     with patch("cli._cprint"):
         assert cli.process_command("/moa") is True
-    assert cli.provider == "moa"
-    assert cli.requested_provider == "moa"
-    assert cli.model == "default"
-    assert cli.agent is None
+    assert cli.provider != "moa"
+    assert cli._pending_agent_seed is None
+    assert cli._pending_moa_disable_after_turn is False
 
 
-def test_moa_exact_preset_switches_to_named_preset_model():
+def test_moa_arg_is_always_one_shot_prompt():
+    # Any argument (even a string that matches a preset name) is treated as a
+    # one-shot prompt through the DEFAULT preset, then the model is restored.
     cli = _make_cli()
     with patch("cli._cprint"):
         cli.process_command("/moa review")
+    assert cli._pending_agent_seed == "review"
+    assert cli._pending_moa_disable_after_turn is True
     assert cli.provider == "moa"
-    assert cli.model == "review"
-    assert cli.agent is None
+    assert cli.model == "default"
 
 
 def test_moa_non_preset_is_one_shot_prompt():

@@ -234,7 +234,11 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.showFiles': 'Show file browser',
-      'view.showTerminal': 'Show terminal',
+      'view.showTerminal': 'Toggle terminal',
+      'view.newTerminal': 'New terminal',
+      'view.nextTerminal': 'Next terminal',
+      'view.prevTerminal': 'Previous terminal',
+      'view.closeTerminal': 'Close terminal',
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',
@@ -376,6 +380,13 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      embedsTitle: 'Inline Embeds',
+      embedsDesc:
+        'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
+      embedsAsk: 'Ask',
+      embedsAlways: 'Always',
+      embedsOff: 'Off',
+      embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
@@ -1042,6 +1053,7 @@ export const en: Translations = {
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
     title: 'Profiles',
     count: count => `${count} ${count === 1 ? 'profile' : 'profiles'}`,
+    search: 'Search profiles...',
     loading: 'Loading profiles...',
     newProfile: 'New profile',
     allProfiles: 'All profiles',
@@ -1114,6 +1126,8 @@ export const en: Translations = {
 
   cron: {
     close: 'Close cron',
+    title: 'Scheduled jobs',
+    count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     search: 'Search cron jobs...',
     loading: 'Loading cron jobs...',
     states: {
@@ -1873,6 +1887,10 @@ export const en: Translations = {
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
     terminalHide: 'Hide terminal',
+    terminalsAria: 'Terminals',
+    terminalNew: 'New terminal',
+    terminalCloseOthers: 'Close others',
+    terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
   },
 
@@ -2028,10 +2046,8 @@ export const en: Translations = {
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
-      shortcutSuffix: ' to send',
-      back: 'Back',
       skip: 'Skip',
-      send: 'Send'
+      continueLabel: 'Continue'
     },
     tool: {
       code: 'Code',
@@ -2061,6 +2077,7 @@ export const en: Translations = {
         reading: 'Reading',
         opened: 'Opened',
         opening: 'Opening',
+        failedToOpen: 'Failed to open',
         searched: 'Searched',
         searching: 'Searching',
         ran: 'Ran',

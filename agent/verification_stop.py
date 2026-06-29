@@ -15,9 +15,135 @@ from typing import Any, Iterable
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
 
+# Non-code file extensions whose edits carry no verifiable runtime behavior:
+# documentation, prose, and data/markup that no test/build exercises. When a
+# turn touches ONLY these, verify-on-stop has nothing to check, so the nudge is
+# suppressed (this is fix "C" for the doc/markdown/skill false-positive — a
+# SKILL.md or README edit must never demand a /tmp verification script). A turn
+# that edits any non-listed path (a real source/code/config file) still nudges.
+_NON_CODE_VERIFY_EXTENSIONS = frozenset(
+    {
+        ".md",
+        ".markdown",
+        ".mdx",
+        ".rst",
+        ".txt",
+        ".text",
+        ".adoc",
+        ".asciidoc",
+        ".org",
+        ".log",
+        ".csv",
+        ".tsv",
+    }
+)
+
+# Filenames (case-insensitive, extension-less or otherwise) that are pure prose
+# even without a recognized doc extension.
+_NON_CODE_VERIFY_FILENAMES = frozenset(
+    {
+        "license",
+        "licence",
+        "notice",
+        "authors",
+        "contributors",
+        "changelog",
+        "codeowners",
+    }
+)
+
+
+def _is_non_code_path(raw: str) -> bool:
+    """Return True when a changed path is documentation/prose with nothing to verify."""
+    try:
+        p = Path(str(raw))
+    except Exception:
+        return False
+    suffix = p.suffix.lower()
+    if suffix in _NON_CODE_VERIFY_EXTENSIONS:
+        return True
+    if not suffix and p.name.lower() in _NON_CODE_VERIFY_FILENAMES:
+        return True
+    return False
+
+
+def _filter_verifiable_paths(paths: Iterable[str]) -> list[str]:
+    """Drop documentation/prose paths; keep paths that could have verifiable behavior."""
+    return [p for p in paths if p and not _is_non_code_path(p)]
+
+
+# Session identities (platform or source) that are NOT human conversational
+# messaging surfaces: interactive coding surfaces (CLI, TUI, desktop, codex,
+# local, gateway) and programmatic callers (API server, webhooks, tools).
+# Verify-on-stop stays ON by default for these. Any other resolved gateway
+# platform is a conversational messaging surface (Telegram, Discord, WhatsApp,
+# Signal, Slack, etc.) where the verification narrative would reach a human as
+# chat noise, so it defaults OFF. Mirrors LOCAL_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts; keep roughly in sync when adding a
+# local or programmatic surface. Default-deny by design: an unrecognized
+# identity is treated as messaging (OFF) so a new chat platform never leaks the
+# verification receipt before this set is updated.
+_NON_MESSAGING_SESSION_SURFACES = frozenset(
+    {
+        "",
+        "cli",
+        "codex",
+        "desktop",
+        "gateway",
+        "local",
+        "tui",
+        "tool",
+        "api_server",
+        "webhook",
+        "msgraph_webhook",
+    }
+)
+
+
+def _session_is_messaging_surface() -> bool:
+    """Return whether this turn is delivered over a human messaging channel.
+
+    The gateway binds the platform value (e.g. ``telegram``) to
+    ``HERMES_SESSION_PLATFORM``; the CLI and TUI set ``HERMES_SESSION_SOURCE``
+    (e.g. ``cli``, ``tui``) instead. Both are consulted via the session-context
+    helper (with an ``os.environ`` fallback), alongside the ``HERMES_PLATFORM``
+    override, matching the sibling platform resolution in
+    ``agent/skill_commands.py`` and ``agent/prompt_builder.py``. A turn is a
+    messaging surface when a resolved identity is present and is not a known
+    non-messaging surface.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = (
+            os.getenv("HERMES_PLATFORM")
+            or get_session_env("HERMES_SESSION_PLATFORM", "")
+        )
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+    except Exception:
+        platform = os.getenv("HERMES_PLATFORM", "") or os.environ.get(
+            "HERMES_SESSION_PLATFORM", ""
+        )
+        source = os.environ.get("HERMES_SESSION_SOURCE", "")
+    for identity in (platform, source):
+        identity = str(identity or "").strip().lower()
+        if identity and identity not in _NON_MESSAGING_SESSION_SURFACES:
+            return True
+    return False
+
 
 def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return whether edit -> verify-before-finish behavior is enabled."""
+    """Return whether edit -> verify-before-finish behavior is enabled.
+
+    Precedence: an explicit ``HERMES_VERIFY_ON_STOP`` env var wins, then an
+    explicit ``agent.verify_on_stop`` config value. The config default is
+    ``False`` (see ``DEFAULT_CONFIG``) — verify-on-stop is OFF unless the user
+    opts in. The legacy ``"auto"`` sentinel is still honored for anyone who
+    sets it explicitly: it resolves to ON for interactive coding surfaces
+    (CLI, TUI, desktop) and programmatic callers, and OFF for conversational
+    messaging surfaces (Telegram, Discord, etc.). A missing/unknown value
+    falls back to OFF.
+    """
     env = os.environ.get("HERMES_VERIFY_ON_STOP")
     if env is not None:
         return env.strip().lower() not in {"0", "false", "no", "off"}
@@ -29,9 +155,20 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
         except Exception:
             config = {}
     agent_cfg = (config or {}).get("agent") if isinstance(config, dict) else None
-    if isinstance(agent_cfg, dict) and "verify_on_stop" in agent_cfg:
-        return bool(agent_cfg.get("verify_on_stop"))
-    return True
+    cfg_val = agent_cfg.get("verify_on_stop") if isinstance(agent_cfg, dict) else None
+    if isinstance(cfg_val, bool):
+        return cfg_val
+    if isinstance(cfg_val, str):
+        token = cfg_val.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off"}:
+            return False
+        if token == "auto":
+            # Explicit opt-in to the legacy surface-aware behavior.
+            return not _session_is_messaging_surface()
+    # Missing or unknown value -> OFF (the new default).
+    return False
 
 
 def _candidate_cwds(paths: Iterable[str]) -> list[Path]:
@@ -114,7 +251,10 @@ def build_verify_on_stop_nudge(
     max_attempts: int = 2,
 ) -> str | None:
     """Return a synthetic follow-up when edited code lacks fresh verification."""
-    paths = sorted({str(p) for p in changed_paths if p})
+    # Drop documentation/prose paths (markdown, skills, README, LICENSE, ...) —
+    # they carry no verifiable behavior, so a turn that touched only those has
+    # nothing to verify and must not nudge.
+    paths = sorted({str(p) for p in _filter_verifiable_paths(changed_paths)})
     if not paths or attempts >= max_attempts:
         return None
 

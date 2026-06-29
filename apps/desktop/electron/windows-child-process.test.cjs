@@ -38,7 +38,7 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   requireHiddenChildOptions(source, /hermesProcess = spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /spawn\(\s*py,\s*\['-m', 'hermes_cli\.main', 'uninstall', '--gui-summary'\]/)
 
-  assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, dashboardArgs\)/)
+  assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, backendArgs\)/)
   assert.match(source, /existing Hermes no-console Python at/)
   assert.match(source, /function getNoConsoleVenvPython\(venvRoot\)/)
   assert.match(source, /function toNoConsolePython\(pythonPath\)/)
@@ -50,7 +50,23 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /readyFile: true/)
   assert.match(source, /function getVenvSitePackagesEntries\(venvRoot\)/)
   assert.match(source, /path\.join\(venvRoot, 'Lib', 'site-packages'\)/)
-  assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.dashboardArgs\]/)
+  assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.backendArgs\]/)
+})
+
+test('getNoConsoleVenvPython prefers base pythonw over the uv re-exec shim', () => {
+  const source = readElectronFile('main.cjs')
+  const body = source.slice(
+    source.indexOf('function getNoConsoleVenvPython(venvRoot)'),
+    source.indexOf('function getVenvSitePackagesEntries(venvRoot)')
+  )
+
+  // The venv Scripts\pythonw.exe re-execs a console python.exe (flashes a
+  // conhost); the base pythonw must be resolved first so it never runs.
+  const baseIdx = body.indexOf('basePythonw')
+  const shimIdx = body.indexOf("'Scripts', 'pythonw.exe'")
+  assert.notEqual(baseIdx, -1, 'base pythonw resolution missing')
+  assert.notEqual(shimIdx, -1, 'venv shim fallback missing')
+  assert.ok(baseIdx < shimIdx, 'base pythonw must be preferred before the venv Scripts shim')
 })
 
 test('intentional or interactive desktop child processes stay documented', () => {

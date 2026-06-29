@@ -24,6 +24,7 @@ const https = require('node:https')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
+const { installEmbedReferer } = require('./embed-referer.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
@@ -38,6 +39,7 @@ const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
+const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
@@ -533,9 +535,10 @@ function getTitleBarOverlayOptions() {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  // Windows + WSLg paint WCO natively; plain Linux disables it (frameless hidden
-  // titlebar still applies).
-  if (!IS_WINDOWS && !IS_WSL) {
+  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
+  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
+  // GNOME) can use the native overlay — let it through.
+  if (!IS_WINDOWS && IS_WSL) {
     return false
   }
 
@@ -789,7 +792,7 @@ let rendererReloadTimes = []
 // the renderer's "Reload and retry" path or by quitting the app.
 let bootstrapFailure = null
 // Latched non-bootstrap backend spawn failure — stops getConnection() from
-// respawning hermes dashboard children in a tight loop while boot is broken.
+// respawning hermes serve backend children in a tight loop while boot is broken.
 let backendStartFailure = null
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
@@ -1283,8 +1286,14 @@ function findOnPath(command) {
   const pathEntries = String(process.env.PATH || '')
     .split(path.delimiter)
     .filter(Boolean)
+  // On Windows, try PATHEXT extensions BEFORE the bare (empty-extension) name.
+  // A real command must resolve via its .exe/.cmd (Windows command-resolution
+  // semantics consult PATHEXT); an extensionless file — e.g. a Git-Bash
+  // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
+  // The empty entry is kept LAST so callers that already include the extension
+  // (py.exe, pwsh.exe, powershell.exe) still resolve.
   const extensions = IS_WINDOWS
-    ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+    ? [...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean), '']
     : ['']
 
   for (const entry of pathEntries) {
@@ -1301,7 +1310,7 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
-function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
+function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   if (!IS_WINDOWS || !command || isCommandScript(command)) return null
 
   const resolved = path.resolve(String(command))
@@ -1318,7 +1327,7 @@ function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
   return {
     label: `existing Hermes no-console Python at ${python}`,
     command: python,
-    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
     bootstrap: false,
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
@@ -1326,9 +1335,71 @@ function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
       venvRoot
     }),
     kind: 'python',
+    // Surfaced so backendSupportsServe() can read this runtime's source for the
+    // `serve` capability check instead of falling back to a heavyweight probe.
+    root,
     readyFile: true,
     shell: false
   }
+}
+
+// Does the resolved runtime understand the `serve` subcommand? The desktop
+// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
+// detect support so getBackendArgsForRuntime() can route old runtimes through
+// the legacy `dashboard --no-open` form instead of crashing on an unknown
+// subcommand (would brick every user mid-upgrade — #54568 follow-up).
+//
+// Fast path: read the runtime's own dashboard.py (instant, covers managed
+// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
+// (covers a bare `hermes` resolved from PATH with no known source root). Result
+// is cached per resolved runtime so we probe at most once per backend.
+const _serveSupportCache = new Map()
+function backendSupportsServe(backend) {
+  if (!backend || !backend.command) return true
+  const key = `${backend.command}::${backend.root || ''}`
+  if (_serveSupportCache.has(key)) return _serveSupportCache.get(key)
+
+  let supported = null
+  if (backend.root) {
+    try {
+      const src = fs.readFileSync(
+        path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
+        'utf8'
+      )
+      supported = sourceDeclaresServe(src)
+    } catch {
+      supported = null // source unreadable — fall through to the probe
+    }
+  }
+
+  if (supported === null) {
+    try {
+      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
+      execFileSync(backend.command, [...prefix, 'serve', '--help'], {
+        cwd: backend.root || undefined,
+        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
+        timeout: 15000,
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      supported = true
+    } catch {
+      supported = false
+    }
+  }
+
+  _serveSupportCache.set(key, supported)
+  rememberLog(
+    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
+  )
+  return supported
+}
+
+// Given a resolved backend whose args target `serve`, return the args the
+// runtime actually understands: unchanged when `serve` is supported, or
+// rewritten to `dashboard --no-open` for older runtimes.
+function getBackendArgsForRuntime(backend) {
+  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -1564,19 +1635,17 @@ function readVenvHome(venvRoot) {
 function getNoConsoleVenvPython(venvRoot) {
   if (!IS_WINDOWS) return getVenvPython(venvRoot)
 
-  // Prefer the venv's own pythonw shim — it carries pyvenv.cfg / site-packages
-  // wiring. Falling back to the base uv/python.org pythonw.exe skips the venv
-  // and breaks imports (yaml, hermes_cli, …) even when PYTHONPATH is patched.
-  const venvPythonw = path.join(venvRoot, 'Scripts', 'pythonw.exe')
-  if (fileExists(venvPythonw)) return venvPythonw
-
+  // The venv's ``Scripts\pythonw.exe`` is a uv launcher shim that re-execs the
+  // base console ``python.exe``, allocating a conhost/Windows Terminal window
+  // that CREATE_NO_WINDOW can't suppress. Use the base ``pythonw.exe`` directly;
+  // callers put the venv site-packages on PYTHONPATH so imports still resolve.
   const baseHome = readVenvHome(venvRoot)
   if (baseHome) {
     const basePythonw = path.join(baseHome, 'pythonw.exe')
     if (fileExists(basePythonw)) return basePythonw
   }
 
-  return venvPythonw
+  return path.join(venvRoot, 'Scripts', 'pythonw.exe')
 }
 
 function toNoConsolePython(pythonPath) {
@@ -1963,6 +2032,16 @@ async function readCommitLog(cwd, branch) {
 
 let updateInFlight = false
 
+// Set to true when the desktop is about to quit so a detached swap/install/
+// uninstall script can take over. On macOS, app.quit() closes windows but
+// window-all-closed deliberately keeps the process alive (standard Electron
+// macOS convention). Without this flag the process never exits — the detached
+// hand-off script spins its PID-wait for the full timeout, and the user sees a
+// blank app with no window (and an uninstall that appears to do nothing). When
+// set, window-all-closed calls app.quit() on every platform so the process
+// actually dies and the hand-off script can proceed immediately.
+let isQuittingForHandoff = false
+
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
 // apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
@@ -2218,6 +2297,7 @@ async function applyUpdates(opts = {}) {
     // appears), THEN quit to release the venv shim. The updater rebuilds and
     // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
     // and lured users into the #50238 relaunch loop.)
+    isQuittingForHandoff = true
     setTimeout(() => {
       app.quit()
     }, UPDATE_HANDOFF_DWELL_MS)
@@ -2241,7 +2321,18 @@ async function handOffWindowsBootstrapRecovery(reason) {
     : configuredBranch || DEFAULT_UPDATE_BRANCH
   const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
-  const updaterArgs = fileExists(venvHermes) ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
+  // Choose the gentle in-place --update when ANY real-install signal is present,
+  // not just the `hermes.exe` console-script shim. That shim is generated at the
+  // END of venv setup and is absent in exactly the interrupted/quarantined states
+  // this recovery exists to heal — gating on it alone forced the destructive
+  // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
+  // and the bootstrap-complete marker are present earlier and are better signals.
+  const haveRealInstall =
+    fileExists(venvPython) ||
+    fileExists(venvHermes) ||
+    fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
+  const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 
   await releaseBackendLockForUpdate(updateRoot)
 
@@ -2264,6 +2355,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // Same dwell as the in-app update hand-off (#50419): give the updater's
   // window time to appear before we vanish, so the recovery doesn't look like
   // a crash and provoke a mid-recovery relaunch.
+  isQuittingForHandoff = true
   setTimeout(() => {
     app.quit()
   }, UPDATE_HANDOFF_DWELL_MS)
@@ -2343,14 +2435,14 @@ async function applyUpdatesPosixInApp() {
     PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
 
-  // `hermes update` reaps stale `hermes dashboard` backends (a code update
+  // `hermes update` reaps stale `hermes serve` backends (a code update
   // leaves the running process serving old Python against the freshly-updated
   // JS bundle). But OUR backend is one of those processes, and killing it
   // mid-update produces the boot→kill→crash loop in #37532 — the desktop
   // already restarts its own backend via the rebuild+relaunch below, so the
   // reap must spare it. Hand the live backend's PID to the update process;
   // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
-  // it while still reaping any genuinely-orphaned dashboards. (#37532)
+  // it while still reaping any genuinely-orphaned backends. (#37532)
   // Exclude every desktop-managed backend (primary + all pool profiles) from
   // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
   // list (a single int still parses for back-compat).
@@ -2471,6 +2563,7 @@ async function applyUpdatesPosixInApp() {
           `[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath} ` +
             `(args=${relaunchArgs.length}, env=${Object.keys(relaunchEnv).length})`
         )
+        isQuittingForHandoff = true
         setTimeout(() => app.quit(), UPDATE_HANDOFF_DWELL_MS)
         return { ok: true, handedOff: true }
       } catch (err) {
@@ -2576,6 +2669,7 @@ fi
   child.unref()
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
+  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 600)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
@@ -2606,6 +2700,24 @@ function readBootstrapMarker() {
   return readJson(BOOTSTRAP_COMPLETE_MARKER)
 }
 
+// Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually
+// runnable right now? A complete CLI install (`install.sh --include-desktop`)
+// or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
+// ever having written the bootstrap marker -- so we must be able to recognise
+// "already installed" off the filesystem alone, not just the marker.
+function isActiveRuntimeUsable() {
+  const venvPython = getVenvPython(VENV_ROOT)
+  return (
+    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
+    fileExists(venvPython) &&
+    canImportHermesCli(venvPython, {
+      env: {
+        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+      }
+    })
+  )
+}
+
 function isBootstrapComplete() {
   const marker = readBootstrapMarker()
   if (!marker || typeof marker !== 'object') return false
@@ -2618,7 +2730,7 @@ function isBootstrapComplete() {
   // a runnable venv: an interrupted or split-home install can leave the marker
   // + checkout without a venv, and trusting that spawns a dead backend
   // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
+  return isActiveRuntimeUsable()
 }
 
 function writeBootstrapMarker(payload) {
@@ -2781,7 +2893,7 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
-function createPythonBackend(root, label, dashboardArgs, options = {}) {
+function createPythonBackend(root, label, backendArgs, options = {}) {
   const python = findPythonForRoot(root)
   if (!python) return null
 
@@ -2793,10 +2905,10 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
     kind: 'python',
     label,
     command,
-    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [root],
+      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
       venvRoot
     }),
     root,
@@ -2809,7 +2921,7 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
 // canonical install location shared with the CLI installer. The venv at
 // VENV_ROOT may not exist yet on first run; bootstrap=true tells
 // ensureRuntime() to create / refresh it before launch.
-function createActiveBackend(dashboardArgs) {
+function createActiveBackend(backendArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
   const command = fileExists(venvPython) ? getNoConsoleVenvPython(VENV_ROOT) : toNoConsolePython(findSystemPython())
 
@@ -2817,10 +2929,10 @@ function createActiveBackend(dashboardArgs) {
     kind: 'python',
     label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
     command,
-    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+    args: ['-m', 'hermes_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT],
+      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
       venvRoot: VENV_ROOT
     }),
     root: ACTIVE_HERMES_ROOT,
@@ -2829,12 +2941,12 @@ function createActiveBackend(dashboardArgs) {
   })
 }
 
-function resolveHermesBackend(dashboardArgs) {
+function resolveHermesBackend(backendArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, dashboardArgs)
+    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
     if (backend) return backend
   }
 
@@ -2843,7 +2955,7 @@ function resolveHermesBackend(dashboardArgs) {
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, dashboardArgs)
+    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
     if (backend) return backend
   }
 
@@ -2854,7 +2966,7 @@ function resolveHermesBackend(dashboardArgs) {
   //    to spawning hermes. Updates flow through the in-app update path
   //    (applyUpdates -> git pull) or `hermes update` from the CLI.
   if (isBootstrapComplete()) {
-    return createActiveBackend(dashboardArgs)
+    return createActiveBackend(backendArgs)
   }
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
@@ -2887,7 +2999,7 @@ function resolveHermesBackend(dashboardArgs) {
     }
 
     if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs)
+      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
       if (unwrapped) {
         return unwrapped
       }
@@ -2902,10 +3014,10 @@ function resolveHermesBackend(dashboardArgs) {
       const shellForProbe = isCommandScript(hermesCommand)
       if (verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
         return (
-          unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs) || {
+          unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
             label: `existing Hermes CLI at ${hermesCommand}`,
             command: hermesCommand,
-            args: dashboardArgs,
+            args: backendArgs,
             bootstrap: false,
             env: {},
             kind: 'command',
@@ -2937,7 +3049,7 @@ function resolveHermesBackend(dashboardArgs) {
         kind: 'python',
         label: `installed hermes_cli module via ${python}`,
         command: toNoConsolePython(python),
-        args: ['-m', 'hermes_cli.main', ...dashboardArgs],
+        args: ['-m', 'hermes_cli.main', ...backendArgs],
         bootstrap: false,
         env: {},
         shell: false
@@ -2960,7 +3072,7 @@ function resolveHermesBackend(dashboardArgs) {
     kind: 'bootstrap-needed',
     label: 'Hermes Agent not installed yet; bootstrap required',
     command: null,
-    args: dashboardArgs,
+    args: backendArgs,
     bootstrap: true,
     env: {},
     shell: false,
@@ -3787,7 +3899,7 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
 function getWindowState() {
@@ -5193,8 +5305,10 @@ async function spawnPoolBackend(profile, entry) {
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const dashboardArgs = ['--profile', profile, 'dashboard', '--no-open', '--host', '127.0.0.1', '--port', '0']
-  const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
+  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
+  const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+  // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
+  backend.args = getBackendArgsForRuntime(backend)
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -5410,7 +5524,7 @@ async function startHermes() {
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', '0']
+    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -5418,10 +5532,12 @@ async function startHermes() {
     // unaffected.
     const activeProfile = readActiveDesktopProfile()
     if (activeProfile) {
-      dashboardArgs.unshift('--profile', activeProfile)
+      backendArgs.unshift('--profile', activeProfile)
     }
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
-    const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
+    const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+    // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
+    backend.args = getBackendArgsForRuntime(backend)
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -7322,6 +7438,7 @@ async function runDesktopUninstall(mode) {
 
   // Give the renderer a beat to show its "uninstalling…" state, then quit so
   // the venv python shim + app bundle unlock and the cleanup script can run.
+  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 800)
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
@@ -7447,6 +7564,7 @@ app.whenReady().then(() => {
   }
   installMediaPermissions()
   registerMediaProtocol()
+  installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()
@@ -7526,5 +7644,11 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // macOS convention: keep the process alive in the Dock when the user closes
+  // the last window. But when we're handing off to a detached updater / swap /
+  // uninstall script, the process MUST exit so the script can replace or remove
+  // the bundle and relaunch — without this the script's PID-wait spins to its
+  // full timeout and the user is left with an invisible app (or an uninstall
+  // that appears to do nothing).
+  if (process.platform !== 'darwin' || isQuittingForHandoff) app.quit()
 })

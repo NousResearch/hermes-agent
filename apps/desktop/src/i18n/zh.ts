@@ -369,6 +369,13 @@ export const zh: Translations = {
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      embedsTitle: '内嵌预览',
+      embedsDesc:
+        '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
+      embedsAsk: '询问',
+      embedsAlways: '总是',
+      embedsOff: '关闭',
+      embedsReset: (count: number) => `重置 ${count} 个已允许的服务`,
       product: '产品',
       productDesc: '易读的工具活动与简洁摘要。',
       technical: '技术',
@@ -1227,6 +1234,7 @@ export const zh: Translations = {
     nameHint: '小写字母、数字、连字符和下划线。必须以字母或数字开头。',
     title: '配置档案',
     count: count => `${count} 个配置档案`,
+    search: '搜索配置档案…',
     loading: '正在加载配置档案…',
     newProfile: '新建配置档案',
     allProfiles: '全部配置档案',
@@ -1299,6 +1307,8 @@ export const zh: Translations = {
 
   cron: {
     close: '关闭定时任务',
+    title: '定时任务',
+    count: count => `${count} 个任务`,
     search: '搜索定时任务…',
     loading: '正在加载定时任务…',
     states: {
@@ -2048,6 +2058,10 @@ export const zh: Translations = {
     loadingTree: '正在加载文件树',
     loadingFiles: '正在加载文件',
     terminalHide: '隐藏终端',
+    terminalsAria: '终端',
+    terminalNew: '新建终端',
+    terminalCloseOthers: '关闭其他',
+    terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
   },
 
@@ -2198,10 +2212,8 @@ export const zh: Translations = {
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
-      shortcutSuffix: ' 发送',
-      back: '返回',
       skip: '跳过',
-      send: '发送'
+      continueLabel: '继续'
     },
     tool: {
       code: '代码',
@@ -2231,6 +2243,7 @@ export const zh: Translations = {
         reading: '正在读取',
         opened: '已打开',
         opening: '正在打开',
+        failedToOpen: '打开失败',
         searched: '已搜索',
         searching: '正在搜索',
         ran: '已运行',

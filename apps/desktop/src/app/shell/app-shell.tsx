@@ -192,7 +192,7 @@ export function AppShell({
       {nativeOverlayWidth > 0 && (
         <div
           aria-hidden
-          className="pointer-events-none fixed inset-x-0 top-0 z-[4] h-(--titlebar-height) border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background)"
+          className="pointer-events-none fixed right-0 top-0 z-[4] h-(--titlebar-height) w-(--titlebar-tools-right) border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background)"
         />
       )}
 

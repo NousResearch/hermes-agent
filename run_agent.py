@@ -1367,14 +1367,26 @@ class AIAgent:
         return False
 
     def _is_ollama_glm_backend(self) -> bool:
-        """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        """Detect Ollama-hosted GLM models affected by stop misreports.
+
+        Ollama can misreport truncated output as finish_reason='stop'.
+        Detection relies on explicit Ollama signatures:
+        - Port 11434 (Ollama default)
+        - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+        - provider explicitly set to "ollama"
+
+        Crucially it does NOT match arbitrary local/private endpoints
+        (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
+        report finish_reason correctly and were the source of #13971's
+        false-positive truncation continuations.
+        """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        return provider_lower == "ollama"
 
     def _should_treat_stop_as_truncated(
         self,
@@ -1412,10 +1424,13 @@ class AIAgent:
         user_message: str,
         assistant_content: str,
         messages: List[Dict[str, Any]],
+        require_workspace: bool = True,
     ) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.looks_like_codex_intermediate_ack``."""
         from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
-        return looks_like_codex_intermediate_ack(self, user_message, assistant_content, messages)
+        return looks_like_codex_intermediate_ack(
+            self, user_message, assistant_content, messages, require_workspace
+        )
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
@@ -1937,6 +1952,29 @@ class AIAgent:
                 prefix = f"HTTP {status_code}: " if status_code else ""
                 msg = AIAgent._coerce_api_error_detail(msg)
                 return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+
+        # SDK may leave body empty while httpx still has the payload (#36109).
+        # Redact before returning: the raw provider/proxy error body is
+        # attacker-influenced and may echo Authorization / x-api-key / request
+        # JSON, which would otherwise leak into final_response + logs (this path
+        # widens exposure vs the old empty-body "HTTP 400" string).
+        response = getattr(error, "response", None)
+        if response is not None:
+            snippet = (getattr(response, "text", None) or "").strip()
+            if snippet:
+                status_code = getattr(error, "status_code", None)
+                prefix = f"HTTP {status_code}: " if status_code else ""
+                try:
+                    payload = json.loads(snippet)
+                except (json.JSONDecodeError, TypeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    err = payload.get("error")
+                    if isinstance(err, dict) and err.get("message"):
+                        return redact_sensitive_text(f"{prefix}{str(err['message'])[:300]}")
+                    if payload.get("message"):
+                        return redact_sensitive_text(f"{prefix}{str(payload['message'])[:300]}")
+                return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
@@ -3670,16 +3708,28 @@ class AIAgent:
             client = getattr(self, "client", None)
             if client is not None and not self._is_openai_client_closed(client):
                 return client
+            old_client = client
+            try:
+                new_client = self._create_openai_client(
+                    self._client_kwargs, reason=reason, shared=True
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to recreate closed OpenAI client (%s) %s error=%s",
+                    reason,
+                    self._client_log_context(),
+                    exc,
+                )
+                raise RuntimeError("Failed to recreate closed OpenAI client") from exc
+            self.client = new_client
 
         logger.warning(
-            "Detected closed shared OpenAI client; recreating before use (%s) %s",
+            "Detected closed shared OpenAI client; recreated before use (%s) %s",
             reason,
             self._client_log_context(),
         )
-        if not self._replace_primary_openai_client(reason=f"recreate_closed:{reason}"):
-            raise RuntimeError("Failed to recreate closed OpenAI client")
-        with self._openai_client_lock():
-            return self.client
+        self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
+        return new_client
 
     def _cleanup_dead_connections(self) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.cleanup_dead_connections``."""
@@ -4379,9 +4429,19 @@ class AIAgent:
                 return True
         return False
 
+    # 20 MB base64 ≈ 15 MB decoded image — generous but prevents OOM from an
+    # oversized data: URL (a 100 MB+ payload creates ~275 MB of memory pressure,
+    # and gateway users sharing the same process can trivially OOM it).
+    _MAX_DATA_URL_BASE64_BYTES = 20 * 1024 * 1024
+
     @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
         header, _, data = str(image_url or "").partition(",")
+        if len(data) > AIAgent._MAX_DATA_URL_BASE64_BYTES:
+            logger.warning(
+                "data-URL payload too large (%d bytes), skipping", len(data)
+            )
+            return "", None
         mime = "image/jpeg"
         if header.startswith("data:"):
             mime_part = header[len("data:"):].split(";", 1)[0].strip()

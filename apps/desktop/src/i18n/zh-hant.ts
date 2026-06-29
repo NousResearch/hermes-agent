@@ -278,6 +278,13 @@ export const zhHant = defineLocale({
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
+      embedsTitle: '內嵌預覽',
+      embedsDesc:
+        '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
+      embedsAsk: '詢問',
+      embedsAlways: '一律',
+      embedsOff: '關閉',
+      embedsReset: (count: number) => `重設 ${count} 個已允許的服務`,
       product: '產品',
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',
@@ -1120,6 +1127,7 @@ export const zhHant = defineLocale({
     nameHint: '小寫字母、數字、連字號和底線。必須以字母或數字開頭。',
     title: '設定檔',
     count: count => `${count} 個設定檔`,
+    search: '搜尋設定檔…',
     loading: '正在載入設定檔…',
     newProfile: '新增設定檔',
     allProfiles: '全部設定檔',
@@ -1192,6 +1200,8 @@ export const zhHant = defineLocale({
 
   cron: {
     close: '關閉排程',
+    title: '排程工作',
+    count: count => `${count} 個工作`,
     search: '搜尋排程工作…',
     loading: '正在載入排程工作…',
     states: {
@@ -1936,6 +1946,10 @@ export const zhHant = defineLocale({
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
     terminalHide: '隱藏終端機',
+    terminalsAria: '終端機',
+    terminalNew: '新增終端機',
+    terminalCloseOthers: '關閉其他',
+    terminalCloseAll: '全部關閉',
     addToChat: '新增至聊天'
   },
 
@@ -2085,10 +2099,8 @@ export const zhHant = defineLocale({
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
-      shortcutSuffix: ' 傳送',
-      back: '返回',
       skip: '略過',
-      send: '傳送'
+      continueLabel: '繼續'
     },
     tool: {
       code: '程式碼',
@@ -2118,6 +2130,7 @@ export const zhHant = defineLocale({
         reading: '正在讀取',
         opened: '已開啟',
         opening: '正在開啟',
+        failedToOpen: '開啟失敗',
         searched: '已搜尋',
         searching: '正在搜尋',
         ran: '已執行',

@@ -3,10 +3,20 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages } from '@/hermes'
+import { getSessionMessages, type SessionInfo } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentCwd,
+  $messages,
+  $resumeFailedSessionId,
+  setActiveSessionId,
+  setMessages,
+  setResumeFailedSessionId,
+  setSessions
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -22,6 +32,25 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+
+function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    ended_at: null,
+    id: 'stored-1',
+    input_tokens: 0,
+    is_active: false,
+    last_active: 1,
+    message_count: 0,
+    model: null,
+    output_tokens: 0,
+    preview: null,
+    source: 'desktop',
+    started_at: 1,
+    title: 'stored',
+    tool_call_count: 0,
+    ...overrides
+  }
+}
 
 function Harness({
   onReady,
@@ -85,6 +114,7 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    $currentCwd.set('')
     vi.restoreAllMocks()
   })
 
@@ -127,6 +157,14 @@ describe('createBackendSessionForSend profile routing', () => {
 
     expect(params).toMatchObject({ source: 'desktop' })
   })
+
+  it('passes the current workspace cwd into session.create', async () => {
+    const params = await createWith(() => {
+      $currentCwd.set('/remote/worktree')
+    })
+
+    expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
 })
 
 // ── Resume failure recovery (the "stuck loading session window" bug) ──────────
@@ -136,10 +174,14 @@ describe('createBackendSessionForSend profile routing', () => {
 // succeeds must NOT leave the flag armed.
 function ResumeHarness({
   onReady,
-  requestGateway
+  requestGateway,
+  runtimeIdByStoredSessionIdRef,
+  sessionStateByRuntimeIdRef
 }: {
   onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
+  sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
@@ -152,10 +194,10 @@ function ResumeHarness({
     getRouteToken: () => 'token',
     navigate: vi.fn() as never,
     requestGateway,
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
-    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
   })
@@ -170,16 +212,22 @@ function ResumeHarness({
 describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
+    setActiveSessionId(null)
     setResumeFailedSessionId(null)
     setMessages([])
+    setSessions([])
     vi.restoreAllMocks()
   })
 
   async function runResume(
-    requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+    requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
+    options: {
+      runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
+      sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
+    } = {}
   ): Promise<void> {
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
-    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} {...options} />)
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
   }
@@ -294,6 +342,189 @@ describe('resumeSession failure recovery', () => {
 
     expect(resumeParams).not.toHaveProperty('lazy')
     expect(resumeParams).not.toHaveProperty('eager_build')
+  })
+
+  it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {
+    setSessions([storedSession({ message_count: 4 })])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect($resumeFailedSessionId.get()).toBe('stored-1')
+    expect($activeSessionId.get()).toBeNull()
+    expect($messages.get()).toEqual([])
+  })
+
+  it('does not reuse an empty cached runtime view for a stored session with history', async () => {
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([['stored-1', 'runtime-stale']])
+    } satisfies MutableRefObject<Map<string, string>>
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map([
+        [
+          'runtime-stale',
+          {
+            awaitingResponse: false,
+            branch: '',
+            busy: false,
+            cwd: '',
+            fast: false,
+            interrupted: false,
+            messages: [],
+            model: '',
+            needsInput: false,
+            pendingBranchGroup: null,
+            personality: '',
+            provider: '',
+            reasoningEffort: '',
+            sawAssistantPayload: false,
+            serviceTier: '',
+            storedSessionId: 'stored-1',
+            streamId: null,
+            turnStartedAt: null,
+            yolo: false
+          }
+        ]
+      ])
+    } satisfies MutableRefObject<Map<string, ClientSessionState>>
+
+    setSessions([storedSession({ message_count: 4 })])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'existing text', role: 'user', timestamp: 1 }],
+      session_id: 'stored-1'
+    } as never)
+
+    await runResume(requestGateway, {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.usage', { session_id: 'runtime-stale' })
+    expect(runtimeIdByStoredSessionIdRef.current.has('stored-1')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('runtime-stale')).toBe(false)
+    expect($activeSessionId.get()).toBe('runtime-1')
+    expect($messages.get().length).toBe(1)
+  })
+})
+
+// ── Warm-cache mapping integrity (the "open chat A, chat B loads" bug) ─────────
+// resumeSession's warm fast-path maps storedSessionId -> runtimeId -> cached
+// state. A reaped/respawned pooled backend re-mints runtime ids, so a recycled
+// id can resolve to a live-but-DIFFERENT session's cache entry. The fast-path
+// must verify the cached state still BELONGS to the resumed session before it
+// paints, or it shows a totally different thread under the current route.
+const clientState = (storedSessionId: string | null): ClientSessionState => createClientSessionState(storedSessionId)
+
+describe('resumeSession warm-cache mapping integrity', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setResumeFailedSessionId(null)
+    setMessages([])
+    setSessions([])
+    vi.restoreAllMocks()
+  })
+
+  it('rejects a cross-wired runtime mapping and falls through to a full resume', async () => {
+    // A recycled runtime id ('rt-recycled') is mapped to 'stored-A', but its
+    // cached state actually belongs to a DIFFERENT session ('stored-B') — the
+    // exact "open chat A, chat B loads" corruption a reaped/respawned pooled
+    // backend can leave behind.
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-recycled']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-recycled', clientState('stored-B')]])
+    }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'rt-A-fresh', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={r => (resume = r)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    // The fast-path did NOT short-circuit on the cross-wired cache — the full
+    // resume RPC ran, for the session that was actually requested.
+    const resumeCalls = requestGateway.mock.calls.filter(([method]) => method === 'session.resume')
+    expect(resumeCalls.length).toBe(1)
+    expect(resumeCalls[0][1]).toMatchObject({ session_id: 'stored-A' })
+
+    // The corrupt mapping was purged so it can't mis-resolve again.
+    expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+  })
+
+  it('honours a warm cache entry whose stored id matches (no needless refetch)', async () => {
+    // Correctly-wired mapping: 'rt-A' <-> 'stored-A'. The fast-path should trust
+    // it and never reach session.resume (only the lightweight usage probe).
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', clientState('stored-A')]])
+    }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.usage') {
+        return { input: 0, output: 0, total: 0 } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={r => (resume = r)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    // Fast-path served the session from cache: no full resume RPC, mapping intact.
+    const methods = requestGateway.mock.calls.map(([method]) => method)
+    expect(methods).not.toContain('session.resume')
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 })
 

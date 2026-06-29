@@ -22,6 +22,7 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import suppress
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
+_DISCORD_COUNCIL_ROUTES_STATE_FILENAME = "discord_council_routes.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
@@ -231,6 +233,78 @@ class _DiscordNonConversationalMessageTracker:
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
+
+
+class _DiscordCouncilRouteRecordTracker:
+    """Persistent bounded council route records for restart reconstruction."""
+
+    _MAX_TRACKED = 500
+
+    def __init__(self, max_tracked: int = _MAX_TRACKED):
+        self._max_tracked = max_tracked
+        self._routes: dict[str, dict[str, Any]] = self._load()
+
+    def _state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return (
+            get_hermes_home()
+            / _DISCORD_COMMAND_SYNC_STATE_SUBDIR
+            / _DISCORD_COUNCIL_ROUTES_STATE_FILENAME
+        )
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        path = self._state_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("routes"), dict):
+                data = data["routes"]
+            if isinstance(data, dict):
+                return {
+                    str(route_id): record
+                    for route_id, record in data.items()
+                    if str(route_id).strip() and isinstance(record, dict)
+                }
+        except Exception:
+            logger.debug("[%s] Failed to load Discord council route records", "Discord", exc_info=True)
+        return {}
+
+    def _save(self) -> None:
+        items = list(self._routes.items())
+        if len(items) > self._max_tracked:
+            self._routes = dict(items[-self._max_tracked:])
+        try:
+            atomic_json_write(self._state_path(), {"routes": self._routes}, indent=None)
+        except Exception:
+            logger.debug("[%s] Failed to save Discord council route records", "Discord", exc_info=True)
+
+    def upsert(self, route_id: str, **fields: Any) -> dict[str, Any]:
+        route_id = str(route_id or "").strip()
+        if not route_id:
+            return {}
+        record = dict(self._routes.get(route_id) or {})
+        record["route_id"] = route_id
+        for key, value in fields.items():
+            record[key] = value
+        self._routes[route_id] = record
+        self._save()
+        return record
+
+    def get(self, route_id: str) -> Optional[dict[str, Any]]:
+        record = self._routes.get(str(route_id or ""))
+        return dict(record) if isinstance(record, dict) else None
+
+    def records(self) -> list[dict[str, Any]]:
+        return [dict(record) for record in self._routes.values()]
+
+    def by_huddle_thread_id(self, thread_id: str) -> Optional[dict[str, Any]]:
+        thread_id = str(thread_id or "")
+        for record in reversed(list(self._routes.values())):
+            if str(record.get("huddle_thread_id") or "") == thread_id:
+                return dict(record)
+        return None
 
 
 def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
@@ -820,6 +894,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # open/closed, the coordinator must not ambiently respond to worker
         # chatter in that thread; only explicit direct mentions should wake it.
         self._council_huddle_threads: Dict[str, str] = {}
+        self._council_route_records = _DiscordCouncilRouteRecordTracker()
+        for _record in self._council_route_records.records():
+            _huddle_id = str(_record.get("huddle_thread_id") or "")
+            _status = str(_record.get("status") or "")
+            if _huddle_id and _status in {"open", "closed"}:
+                self._council_huddle_threads[_huddle_id] = _status
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
@@ -4556,9 +4636,14 @@ class DiscordAdapter(BasePlatformAdapter):
         name = f"{prefix}: {cleaned}"
         return name[:90]
 
-    def _format_council_brief(self, request_text: str, workers: list[dict[str, str]], origin_channel_id: str) -> str:
+    @staticmethod
+    def _council_route_id_for_message(message: Any) -> str:
+        mid = str(getattr(message, "id", "") or "unknown")
+        return f"discord-council-{mid}"
+
+    def _format_council_brief(self, request_text: str, workers: list[dict[str, str]], origin_channel_id: str, route_id: str = "") -> str:
         lines = [
-            "Council brief — bounded huddle.",
+            f"Council brief — bounded huddle. Route: `{route_id}`" if route_id else "Council brief — bounded huddle.",
             "",
             f"User request: {request_text.strip() or '(no text)'}",
             f"Origin channel/thread: <#{origin_channel_id}>",
@@ -4651,10 +4736,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 failures.append(f"{worker.get('name') or wid}: {exc}")
         return failures
 
-    async def _collect_council_transcript(self, thread: Any, limit: int) -> str:
+    async def _collect_council_transcript_and_responders(
+        self,
+        thread: Any,
+        limit: int,
+        workers: list[dict[str, str]],
+    ) -> tuple[str, list[str]]:
         history = getattr(thread, "history", None)
         if not callable(history):
-            return "(No readable huddle transcript; thread history unavailable.)"
+            return "(No readable huddle transcript; thread history unavailable.)", []
+        worker_ids = {str(worker.get("id") or "") for worker in workers}
+        responder_ids: set[str] = set()
         lines: list[str] = []
         try:
             async for msg in history(limit=limit, oldest_first=True):
@@ -4662,13 +4754,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not content:
                     continue
                 author = getattr(msg, "author", None)
+                author_id = str(getattr(author, "id", "") or "")
+                if author_id in worker_ids:
+                    responder_ids.add(author_id)
                 name = getattr(author, "display_name", None) or getattr(author, "name", None) or "unknown"
                 if getattr(author, "bot", False):
                     name = f"{name} [bot]"
                 lines.append(f"[{name}] {content}")
         except Exception as exc:
-            return f"(Failed to read huddle transcript: {exc})"
-        return "\n".join(lines) if lines else "(No worker replies captured.)"
+            return f"(Failed to read huddle transcript: {exc})", sorted(responder_ids)
+        transcript = "\n".join(lines) if lines else "(No worker replies captured.)"
+        return transcript, sorted(responder_ids)
+
+    async def _collect_council_transcript(self, thread: Any, limit: int) -> str:
+        transcript, _responders = await self._collect_council_transcript_and_responders(thread, limit, [])
+        return transcript
 
     async def _run_council_synthesis_after_wait(
         self,
@@ -4677,17 +4777,22 @@ class DiscordAdapter(BasePlatformAdapter):
         huddle_thread: Any,
         request_text: str,
         wait_seconds: float,
+        route_id: str,
+        workers: list[dict[str, str]],
     ) -> None:
         thread_id = str(getattr(huddle_thread, "id", ""))
         try:
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
-            transcript = await self._collect_council_transcript(
+            transcript, actual_responder_ids = await self._collect_council_transcript_and_responders(
                 huddle_thread,
                 self._discord_council_history_limit(),
+                workers,
             )
+            worker_ids = [str(worker.get("id") or "") for worker in workers if str(worker.get("id") or "")]
+            missing_worker_ids = [wid for wid in worker_ids if wid not in set(actual_responder_ids)]
             close_text = (
-                "Huddle closed. I have enough for this round. "
+                f"Huddle closed. Route: `{route_id}`. I have enough for this round. "
                 "Workers, stop here unless this thread is reopened or you are tagged directly."
             )
             with suppress(Exception):
@@ -4718,6 +4823,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 role_authorized=True,
             )
             huddle_ref = f"<#{thread_id}>" if thread_id else "the council huddle"
+            self._council_route_records.upsert(
+                route_id,
+                status="closed",
+                actual_responder_ids=actual_responder_ids,
+                missing_worker_ids=missing_worker_ids,
+                closed_at=datetime.now(timezone.utc).isoformat(),
+                final_delivery_target=str(getattr(origin_channel, "id", "")),
+            )
             event = MessageEvent(
                 text=(
                     "[COUNCIL MODE SYNTHESIS]\n"
@@ -4738,6 +4851,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             await self.handle_message(event)
         except Exception:
+            self._council_route_records.upsert(
+                route_id,
+                status="failed",
+                closed_at=datetime.now(timezone.utc).isoformat(),
+            )
             logger.warning("[%s] Council synthesis task failed", self.name, exc_info=True)
         finally:
             if thread_id:
@@ -4787,6 +4905,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
             return True
 
+        route_id = self._council_route_id_for_message(message)
         request_text = normalized_content
         for role in bot_role_mentions:
             request_text = request_text.replace(f"<@&{getattr(role, 'id')}>", "").strip()
@@ -4806,10 +4925,28 @@ class DiscordAdapter(BasePlatformAdapter):
         if thread_id:
             self._council_huddle_threads[thread_id] = "open"
         add_failures = await self._add_council_workers_to_thread(huddle, workers)
+        origin_channel = getattr(message, "channel", None)
+        origin_channel_id = str(getattr(origin_channel, "id", ""))
+        origin_thread_id = origin_channel_id if isinstance(origin_channel, discord.Thread) else None
+        self._council_route_records.upsert(
+            route_id,
+            status="open",
+            origin_channel_id=origin_channel_id,
+            origin_thread_id=origin_thread_id,
+            origin_message_id=str(getattr(message, "id", "")),
+            huddle_thread_id=thread_id,
+            worker_ids=[str(worker.get("id") or "") for worker in workers if str(worker.get("id") or "")],
+            actual_responder_ids=[],
+            missing_worker_ids=[str(worker.get("id") or "") for worker in workers if str(worker.get("id") or "")],
+            opened_at=datetime.now(timezone.utc).isoformat(),
+            closed_at=None,
+            final_delivery_target=origin_channel_id,
+        )
         brief = self._format_council_brief(
             request_text,
             workers,
-            str(getattr(getattr(message, "channel", None), "id", "")),
+            origin_channel_id,
+            route_id,
         )
         if add_failures:
             brief += "\n\nWorker thread-add warnings (continuing with direct mentions):\n" + "\n".join(f"- {item}" for item in add_failures)
@@ -4831,6 +4968,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 huddle_thread=huddle,
                 request_text=request_text,
                 wait_seconds=self._discord_council_wait_seconds(),
+                route_id=route_id,
+                workers=workers,
             )
         )
         return True

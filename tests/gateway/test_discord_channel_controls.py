@@ -110,9 +110,12 @@ class FakeThread:
 
 
 @pytest.fixture
-def adapter(monkeypatch):
+def adapter(monkeypatch, tmp_path):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
@@ -124,10 +127,10 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, role_mentions=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, message_id: int = 123):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
-        id=123,
+        id=message_id,
         content=content,
         mentions=list(mentions or []),
         role_mentions=list(role_mentions or []),
@@ -340,7 +343,71 @@ async def test_council_mode_opens_huddle_invites_workers_closes_and_synthesizes(
     assert event.text.startswith("[COUNCIL MODE SYNTHESIS]")
     assert "Huddle transcript" in event.text
     assert "Huddle closed" in huddle.sent_messages[-1]
+    assert "Route: `discord-council-123`" in huddle.sent_messages[0]
+    assert "Route: `discord-council-123`" in huddle.sent_messages[-1]
     assert adapter._council_huddle_threads[str(huddle.id)] == "closed"
+    record = adapter._council_route_records.get("discord-council-123")
+    assert record["status"] == "closed"
+    assert record["origin_channel_id"] == "700"
+    assert record["huddle_thread_id"] == str(huddle.id)
+    assert record["worker_ids"] == ["111", "222", "333"]
+    assert record["actual_responder_ids"] == []
+    assert record["missing_worker_ids"] == ["111", "222", "333"]
+    assert record["final_delivery_target"] == "700"
+
+
+@pytest.mark.asyncio
+async def test_council_route_records_do_not_collide_between_huddles(adapter, monkeypatch):
+    """Separate @Crew requests get distinct route records and huddle IDs."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+    channel = FakeTextChannel(channel_id=700)
+
+    await adapter._handle_message(
+        make_message(channel=channel, content="crew: first huddle", mentions=[], message_id=123)
+    )
+    await adapter._handle_message(
+        make_message(channel=channel, content="crew: second huddle", mentions=[], message_id=124)
+    )
+    for _ in range(20):
+        if adapter.handle_message.await_count >= 2:
+            break
+        await asyncio.sleep(0)
+
+    first = adapter._council_route_records.get("discord-council-123")
+    second = adapter._council_route_records.get("discord-council-124")
+    assert first["route_id"] != second["route_id"]
+    assert first["huddle_thread_id"] != second["huddle_thread_id"]
+    assert first["status"] == "closed"
+    assert second["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_council_route_records_restore_huddle_status_from_disk(adapter):
+    """Restart reconstruction restores open/closed huddle suppression state."""
+    adapter._council_route_records.upsert(
+        "discord-council-restore",
+        status="open",
+        huddle_thread_id="9001",
+        origin_channel_id="700",
+        worker_ids=["111"],
+        actual_responder_ids=[],
+        missing_worker_ids=["111"],
+    )
+
+    restored = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+
+    assert restored._council_huddle_threads["9001"] == "open"
+    assert restored._council_route_records.get("discord-council-restore")["worker_ids"] == ["111"]
 
 
 @pytest.mark.asyncio

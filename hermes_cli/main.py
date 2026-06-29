@@ -2002,11 +2002,11 @@ def _launch_tui(
     env = os.environ.copy()
     try:
         from hermes_cli.config import (
-            apply_interactive_terminal_color_env,
+            apply_interactive_terminal_env,
             apply_terminal_config_to_env,
         )
         apply_terminal_config_to_env(env=env)
-        apply_interactive_terminal_color_env(env=env)
+        apply_interactive_terminal_env(env=env)
     except Exception:
         logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
     active_session_fd, active_session_file = tempfile.mkstemp(
@@ -5821,14 +5821,6 @@ def _find_stale_dashboard_pids(
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
     ]
-
-    def _looks_like_dashboard_server(command: str) -> bool:
-        return (
-            any(p in command for p in patterns)
-            and " --status" not in command
-            and " --stop" not in command
-        )
-
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5865,7 +5857,7 @@ def _find_stale_dashboard_pids(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        _looks_like_dashboard_server(current_cmd)
+                        any(p in current_cmd for p in patterns)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -5898,7 +5890,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if _looks_like_dashboard_server(command) and pid != self_pid:
+                    if any(p in command for p in patterns) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

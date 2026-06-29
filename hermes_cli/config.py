@@ -6151,20 +6151,15 @@ def apply_terminal_config_to_env(
     return target
 
 
-def apply_interactive_terminal_color_env(
+def apply_interactive_terminal_env(
     *,
     env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
-    """Ensure embedded interactive terminals can render ANSI colors."""
+    """Normalize TERM for interactive child terminals without forcing color."""
     target = os.environ if env is None else env
-    target.pop("NO_COLOR", None)
-    target.pop("NODE_DISABLE_COLORS", None)
-    if not target.get("TERM") or target.get("TERM") == "dumb":
+    term = (target.get("TERM") or "").strip()
+    if not term or term == "dumb":
         target["TERM"] = "xterm-256color"
-    if not target.get("COLORTERM"):
-        target["COLORTERM"] = "truecolor"
-    if not target.get("CLICOLOR"):
-        target["CLICOLOR"] = "1"
     return target
 
 

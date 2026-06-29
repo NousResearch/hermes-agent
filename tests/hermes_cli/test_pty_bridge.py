@@ -306,6 +306,17 @@ class TestPtyBridgeEnv:
         finally:
             bridge.close()
 
+    def test_dumb_term_gets_pty_default(self):
+        bridge = PtyBridge.spawn(
+            ["/bin/sh", "-c", "printf %s \"$TERM\""],
+            env={**os.environ, "TERM": "dumb"},
+        )
+        try:
+            output = _read_until(bridge, b"xterm-256color")
+            assert b"xterm-256color" in output
+        finally:
+            bridge.close()
+
 
 class TestPtyBridgeUnavailable:
     """Platform fallback semantics — PtyUnavailableError is importable and

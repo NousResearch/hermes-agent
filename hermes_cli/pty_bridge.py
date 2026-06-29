@@ -142,9 +142,9 @@ class PtyBridge:
         # CI often runs without TERM in the parent process, which makes
         # simple terminal probes like `tput cols` fail before winsize reads.
         # Preserve explicit caller overrides, but backfill a sensible default
-        # when TERM is missing or blank.
+        # when TERM is missing, blank, or the non-interactive "dumb" fallback.
         spawn_env = (os.environ.copy() if env is None else env.copy())
-        if not spawn_env.get("TERM"):
+        if not spawn_env.get("TERM") or spawn_env.get("TERM") == "dumb":
             spawn_env["TERM"] = "xterm-256color"
         proc = ptyprocess.PtyProcess.spawn(  # type: ignore[union-attr]
             list(argv),

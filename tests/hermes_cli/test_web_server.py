@@ -5644,6 +5644,31 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
+    def test_resolve_chat_argv_normalizes_dumb_term_without_forcing_color(
+        self, monkeypatch
+    ):
+        """Dashboard chat fixes TERM while preserving explicit color policy."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setenv("TERM", "dumb")
+        monkeypatch.setenv("NO_COLOR", "1")
+        monkeypatch.setenv("NODE_DISABLE_COLORS", "1")
+        monkeypatch.delenv("COLORTERM", raising=False)
+        monkeypatch.delenv("CLICOLOR", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["TERM"] == "xterm-256color"
+        assert env["NO_COLOR"] == "1"
+        assert env["NODE_DISABLE_COLORS"] == "1"
+        assert "COLORTERM" not in env
+        assert "CLICOLOR" not in env
+
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
     ):

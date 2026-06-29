@@ -12,21 +12,21 @@ metadata:
 
 # Adversarial Self-Review Skill
 
-Adversarially review your own code, documents, or configuration before delivering to the user. Instead of checking your own work (confirmation bias), spawn independent subagents instructed to find flaws. Proven to catch bugs that self-review misses — one 200-line script had 9 bugs found, 8 by adversarial review alone.
+Adversarially review your own code, documents, or configuration before delivering to the user. Instead of checking your own work (confirmation bias), spawn independent subagents via `delegate_task` instructed to find flaws. Proven in practice: a 200-line Python script had 9 bugs caught by 4 rounds of automated adversarial review — the same script had zero bugs found by standard self-review.
 
 This skill does NOT replace human code review. It catches the class of errors that self-review is blind to: untested assumptions, missing edge cases, format inconsistencies, and silent failures.
 
 ## When to Use
 
-- After writing code/scripts/documents where correctness matters (满分 scenarios, production configs, security-sensitive code)
-- When the user says "review this", "check my work", "is this correct?", or "自审"
+- After writing code, scripts, documents, or configuration where correctness matters
+- When the user says "review this", "check my work", "is this correct?"
 - Before pushing a PR, publishing content, or delivering a complex output
 - After any multi-file edit session where errors could cascade
 
 Do NOT use for:
-- Single-line typo fixes
-- Trivial formatting changes
+- Single-line typo fixes or trivial formatting changes
 - Tasks the user explicitly says don't need review
+- Mid-task — complete the work first, then review
 
 ## Prerequisites
 
@@ -36,11 +36,11 @@ Do NOT use for:
 
 ## How to Run
 
-Invoke through a `delegate_task` subagent with adversarial framing. The key is the prompt — standard review prompts trigger confirmation bias. Adversarial prompts force the reviewer to assume bugs exist:
+Invoke adversarial review by calling `delegate_task` with a deliberately adversarial prompt. The exact tool call follows Hermes' standard subagent invocation pattern:
 
 ```
-Spawn via delegate_task:
-"You are an adversarial reviewer. You did NOT write this output.
+delegate_task(
+  task="You are an adversarial reviewer. You did NOT write this output.
 Your job is to find every problem before it reaches production.
 Be harsh. Assume nothing works. Check for:
 1. Logic errors and edge cases
@@ -49,80 +49,69 @@ Be harsh. Assume nothing works. Check for:
 4. Format inconsistencies
 5. Security concerns
 
-Output: [CRITICAL/HIGH/MEDIUM/LOW] <finding> — <why it matters>"
+Output format: [CRITICAL/HIGH/MEDIUM/LOW] <finding> — <why it matters>",
+  context="<paste the code or document to review here>"
+)
 ```
 
-For higher confidence, spawn 3 independent subagents and require ≥2/3 agreement before dismissing a finding.
+For higher confidence, spawn 3 independent `delegate_task` calls with varied expertise angles and require ≥2/3 agreement before dismissing a finding.
 
 ## Quick Reference
 
-| Scenario | Subagent count | Review standard |
-|----------|---------------|-----------------|
+| Scenario | Subagents | Review standard |
+|----------|-----------|-----------------|
 | Quick check (simple fix) | 1 | One adversarial pass |
-| Standard review (PR, config) | 2 | Both must agree on pass/fail |
-| 满分 (exam/critical) | 3 | 2/3 majority = confirmed finding |
+| Standard review (PR, config) | 2 | Both flag same issue = confirmed |
+| Critical (production, exam) | 3 | ≥2/3 majority = confirmed finding |
 
 ## Procedure
 
 ### 1. Identify what to review
 
-After completing a task, identify the output artifacts: code files, documents, config changes, PR descriptions. If the task involved ≥3 file edits, adversarial review is mandatory.
+After completing a task, identify the output artifacts. If the task involved ≥3 `write_file` or `patch` calls, adversarial review is strongly recommended.
 
 ### 2. Frame the review prompt
 
-Do NOT ask "is this correct?" — that triggers confirmation bias. Instead frame as:
+Do NOT ask "is this correct?" — that triggers confirmation bias. Use adversarial framing:
 
-```
-"You did NOT write this code. Someone else did. Your job is to find every
-problem with it before it reaches production. Be harsh. Assume nothing works."
-```
-
-Key adversarial framing techniques:
 - "You did NOT write this" — breaks ownership bias
 - "Assume nothing works" — forces verification
 - "Be harsh" — sets adversarial tone
-- Require specific findings — "zero findings = invalid review round"
+- "Zero findings = invalid review round" — prevents rubber-stamping
 
 ### 3. Spawn subagents via `delegate_task`
 
-For each reviewer, use `delegate_task` with the adversarial prompt. If using multiple reviewers, vary their expertise angles:
+For each reviewer, call `delegate_task` with the adversarial prompt. If using multiple reviewers, vary their expertise angles:
 - Reviewer A: logic correctness and edge cases
 - Reviewer B: security and error handling
 - Reviewer C (optional): format consistency and documentation accuracy
 
 ### 4. Triage findings
 
-Classify each finding:
-- **CRITICAL**: Would cause incorrect output, data loss, or security issue
-- **HIGH**: Would cause failure in specific conditions
-- **MEDIUM**: Reduces quality but doesn't break functionality
-- **LOW**: Style, naming, minor improvements
+- **CRITICAL**: Incorrect output, data loss, or security vulnerability — must fix
+- **HIGH**: Failure in specific conditions — must fix
+- **MEDIUM**: Quality reduction without breaking functionality — fix if time permits
+- **LOW**: Style, naming, minor improvements — note but don't block
 
 ### 5. Fix and verify
 
-Fix all CRITICAL and HIGH findings. For MEDIUM, fix if time permits. For LOW, note but don't block delivery. After fixing, re-run review on changed sections only.
+Fix all CRITICAL and HIGH findings. After fixing, re-run review on changed sections only.
 
 ### 6. Report to user
 
-```
-Adversarial review complete:
-- 3 subagents spawned
-- 2 CRITICAL, 3 HIGH, 1 MEDIUM found
-- All CRITICAL/HIGH fixed
-- MEDIUM: <brief note if unfixed>
-```
+Summarize: how many subagents spawned, how many findings by severity, what was fixed. Always include at least one concrete example of what was found.
 
 ## Pitfalls
 
-- **Don't skip the adversarial framing.** "Please review this code" produces generic suggestions. "You didn't write this, find every bug" produces real findings.
-- **One reviewer can miss things.** For critical work, use 2-3 independent reviewers with different angles.
-- **Don't argue with findings.** If a reviewer flags something you disagree with, verify objectively before dismissing. The whole point is they see what you can't.
-- **Zero findings is suspicious.** If all reviewers return nothing, the adversarial framing probably wasn't strong enough. Re-run with harsher instructions.
-- **Don't review mid-task.** Complete the work first, then review. Context-switching between creating and reviewing degrades both.
+- **Standard prompts produce generic results.** "Please review this" → "looks good." Adversarial framing → real findings.
+- **Single reviewer = single blind spot.** Critical work needs 2-3 independent reviewers with different angles.
+- **Don't argue with findings.** If a reviewer flags something, verify objectively before dismissing.
+- **Zero findings usually means weak framing.** Re-run with harsher instructions before accepting a clean pass.
+- **Don't review mid-task.** Complete the work first. Context-switching between creating and reviewing degrades both.
 
 ## Verification
 
 After running an adversarial review, confirm:
-1. All CRITICAL/HIGH findings are addressed in the output
-2. The subagent response contains at least one specific, actionable finding (not "looks good")
-3. The user sees a summary of what was found and fixed
+1. All CRITICAL and HIGH findings are addressed in the output
+2. Each subagent returned at least one specific, actionable finding (not generic approval)
+3. The user received a summary of what was found and what was fixed

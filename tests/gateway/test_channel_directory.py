@@ -190,6 +190,48 @@ class TestResolveChannelName:
                 == "1504852553031221391:1514503390321967184"
             )
 
+    def test_discord_stale_self_parent_thread_id_does_not_shadow_alias(self, tmp_path):
+        platforms = {
+            "discord": [
+                {
+                    "id": "1514503390321967184:1514503390321967184",
+                    "name": "Adventico / #booking-ops / stale topic 1514503390321967184",
+                    "type": "thread",
+                    "thread_id": "1514503390321967184",
+                }
+            ]
+        }
+        aliases = {
+            "discord": {
+                "1504852553031221391:1514503390321967184": {
+                    "name": "booking-ops / VZ827147 thread 1514503390321967184",
+                    "aliases": ["1514503390321967184", "VZ827147"],
+                }
+            }
+        }
+        alias_file = tmp_path / "channel_aliases.json"
+        alias_file.write_text(json.dumps(aliases))
+        with self._setup(tmp_path, platforms), \
+             patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", alias_file):
+            assert (
+                resolve_channel_name("discord", "1514503390321967184")
+                == "1504852553031221391:1514503390321967184"
+            )
+
+    def test_discord_stale_self_parent_thread_id_falls_back_to_bare_thread(self, tmp_path):
+        platforms = {
+            "discord": [
+                {
+                    "id": "1514503390321967184:1514503390321967184",
+                    "name": "Adventico / #booking-ops / stale topic 1514503390321967184",
+                    "type": "thread",
+                    "thread_id": "1514503390321967184",
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("discord", "1514503390321967184") == "1514503390321967184"
+
     def test_display_label_with_type_suffix_resolves(self, tmp_path):
         platforms = {
             "telegram": [

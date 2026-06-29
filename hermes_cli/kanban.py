@@ -705,6 +705,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
     )
+    p_nsub.add_argument(
+        "--inject", action="store_true",
+        help="Inject notification as a user message (triggers agent turn instead of silent push)",
+    )
 
     p_nlist = sub.add_parser(
         "notify-list",
@@ -2441,8 +2445,10 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
             notifier_profile=args.notifier_profile or _profile_author(),
+            inject_as_turn=getattr(args, 'inject', False),
         )
-    print(f"Subscribed {args.platform}:{args.chat_id}"
+    inject_hint = " (inject as turn)" if getattr(args, 'inject', False) else ""
+    print(f"Subscribed {args.platform}:{args.chat_id}{inject_hint}"
           + (f":{args.thread_id}" if args.thread_id else "")
           + f" to {args.task_id}")
     return 0

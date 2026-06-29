@@ -32,7 +32,6 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
@@ -600,6 +599,7 @@ def init_agent(
     # Stateful scrubber for <memory-context> spans split across stream
     # deltas (#5719).  sanitize_context() alone can't survive chunk
     # boundaries because the block regex needs both tags in one string.
+    from agent.memory_manager import StreamingContextScrubber
     agent._stream_context_scrubber = StreamingContextScrubber()
     # Stateful scrubber for reasoning/thinking tags in streamed deltas
     # (#17924).  Replaces the per-delta _strip_think_blocks regex that

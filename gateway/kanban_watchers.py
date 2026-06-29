@@ -384,13 +384,39 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
-                            )
-                            logger.debug(
-                                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
-                            )
+                            inject = bool(sub.get("inject_as_turn", 0))
+                            if inject:
+                                # Inject as synthetic MessageEvent with internal=True so the
+                                # message triggers an agent turn (rather than a silent push).
+                                from gateway.session import SessionSource
+                                from gateway.platforms.base import MessageEvent, MessageType
+                                plat = _Platform(platform_str)
+                                source = SessionSource(
+                                    platform=plat,
+                                    chat_id=sub["chat_id"],
+                                    chat_type="direct",
+                                    user_id=sub.get("user_id") or None,
+                                    thread_id=str(sub.get("thread_id") or "").strip() or None,
+                                )
+                                synth_event = MessageEvent(
+                                    text=msg,
+                                    message_type=MessageType.TEXT,
+                                    source=source,
+                                    internal=True,
+                                )
+                                await adapter.handle_message(synth_event)
+                                logger.debug(
+                                    "kanban notifier: injected %s event for %s as turn in %s/%s on board %s",
+                                    kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                                )
+                            else:
+                                await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
+                                )
+                                logger.debug(
+                                    "kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                                    kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                                )
                             # After delivering the text notification, surface
                             # any artifact paths the worker referenced in
                             # ``kanban_complete(summary=..., artifacts=[...])``

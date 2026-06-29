@@ -547,6 +547,8 @@ _TELEGRAM_BOT_API_MAX_COMMANDS = 100
 _TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
 
 _TELEGRAM_MENU_PRIORITY = (
+    # Custom pinned commands
+    "llm-wiki",
     # Most-typed everyday commands first.
     "help",
     "new",
@@ -887,38 +889,48 @@ def _collect_gateway_skill_entries(
 # ---------------------------------------------------------------------------
 
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
-    """Return Telegram menu commands capped to the Bot API limit.
-
-    Priority order (higher priority = never bumped by overflow):
-      1. Core CommandDef commands (always included)
-      2. Plugin slash commands (take precedence over skills)
-      3. Built-in skill commands (fill remaining slots, alphabetical)
-
-    Skills are the only tier that gets trimmed when the cap is hit.
-    User-installed hub skills are excluded — accessible via /skills.
-    Skills disabled for the ``"telegram"`` platform (via ``hermes skills
-    config``) are excluded from the menu entirely.
-
-    Returns:
-        (menu_commands, hidden_count) where hidden_count is the number of
-        commands omitted due to the cap.
-    """
+    """Return Telegram menu commands capped to the Bot API limit."""
+    # Build list of core commands
     core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
+    
+    # We want to pin llm-wiki, which is a skill command, to the top of the menu if it exists.
+    # To do this, we collect all skill entries first.
     reserved_names = {n for n, _ in core_commands}
-    all_commands = list(core_commands)
-    hidden_core_count = max(0, len(all_commands) - max_commands)
-
-    remaining_slots = max(0, max_commands - len(all_commands))
+    
     entries, hidden_count = _collect_gateway_skill_entries(
         platform="telegram",
-        max_slots=remaining_slots,
-        reserved_names=reserved_names,
+        max_slots=200, # Large buffer to search all skills
+        reserved_names=reserved_names.copy(),
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
-    # Drop the cmd_key — Telegram only needs (name, desc) pairs.
-    all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count + hidden_core_count
+    
+    # Locate llm-wiki
+    pinned_skills = []
+    other_skills = []
+    for n, d, k in entries:
+        if n == "llm-wiki" or n == "llm_wiki":
+            pinned_skills.append((n, d))
+        else:
+            other_skills.append((n, d))
+            
+    # Combine lists: Pinned skills first, then core commands, then other skills
+    combined = pinned_skills + core_commands + other_skills
+    
+    # Now slice to max_commands and compute the actual hidden count
+    menu_commands = combined[:max_commands]
+    
+    # Calculate hidden totals
+    total_skills_count = len(entries)
+    skills_in_menu = len([c for c in menu_commands if c in [(n, d) for n, d, _ in entries]])
+    hidden_skills = total_skills_count - skills_in_menu
+    
+    total_cores_count = len(core_commands)
+    cores_in_menu = len([c for c in menu_commands if c in core_commands])
+    hidden_cores = total_cores_count - cores_in_menu
+    
+    return menu_commands, hidden_skills + hidden_cores
+
 
 
 def discord_skill_commands(

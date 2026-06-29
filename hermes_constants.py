@@ -4,6 +4,8 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+from __future__ import annotations
+
 import os
 import shutil
 import stat

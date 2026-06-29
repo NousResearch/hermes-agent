@@ -77,6 +77,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Sequential Thinking MCP
+    "mcp_sequential_thinking_sequential_thinking",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,

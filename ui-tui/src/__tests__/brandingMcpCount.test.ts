@@ -46,6 +46,109 @@ const mcp = (over: Partial<McpServerStatus> & Pick<McpServerStatus, 'name'>): Mc
 const baseInfo = (mcp_servers: McpServerStatus[]): SessionInfo => ({
   mcp_servers,
   model: 'test-model',
+  profiles: [
+    {
+      active: true,
+      is_default: true,
+      model: 'gpt-5.4',
+      name: 'default',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'archived-codingcoco-20260609',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'audit-readonly',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'coding',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'critic',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'dev',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'elliottbay',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'executor',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'hermes-ops',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'planner',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'previewer',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'research',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'reviewer',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'sandbox',
+      provider: 'openai-codex'
+    },
+    {
+      model: 'gpt-5.4',
+      name: 'scout',
+      provider: 'openai-codex'
+    },
+    {
+      gateway_running: true,
+      model: 'gpt-5.4',
+      name: 'telegram2',
+      provider: 'openai-codex'
+    },
+    {
+      gateway_running: true,
+      model: 'gpt-5.4',
+      name: 'telegram3',
+      provider: 'openai-codex'
+    },
+    {
+      gateway_running: true,
+      model: 'gpt-5.4',
+      name: 'jarvis_iii',
+      provider: 'openai-codex'
+    },
+    {
+      gateway_running: true,
+      model: 'gpt-5.4',
+      name: 'wifetodoist',
+      provider: 'openai-codex'
+    }
+  ],
   skills: { core: ['a', 'b'] },
   tools: { file: ['read_file', 'write_file'] }
 })
@@ -55,9 +158,9 @@ async function renderFooter(info: SessionInfo): Promise<string> {
 
   const instance = renderSync(React.createElement(SessionPanel, { info, sid: 'test', t: DEFAULT_THEME }), {
     patchConsole: false,
-    stderr: streams.stderr as NodeJS.WriteStream,
-    stdin: streams.stdin as NodeJS.ReadStream,
-    stdout: streams.stdout as NodeJS.WriteStream
+    stderr: streams.stderr as unknown as NodeJS.WriteStream,
+    stdin: streams.stdin as unknown as NodeJS.ReadStream,
+    stdout: streams.stdout as unknown as NodeJS.WriteStream
   })
 
   try {
@@ -73,6 +176,35 @@ async function renderFooter(info: SessionInfo): Promise<string> {
 }
 
 describe('branding MCP headline count', () => {
+  it('shows delegation profile names and hides archived or bot profiles', async () => {
+    const frame = await renderFooter(baseInfo([]))
+
+    expect(frame).toContain('Profiles (13)')
+    for (const name of [
+      'audit-readonly',
+      'coding',
+      'critic',
+      'dev',
+      'elliottbay',
+      'executor',
+      'hermes-ops',
+      'planner',
+      'previewer',
+      'research',
+      'reviewer',
+      'sandbox',
+      'scout'
+    ]) {
+      expect(frame).toContain(name)
+    }
+    for (const name of ['default', 'archived-codingcoco', 'telegram2', 'telegram3', 'jarvis_iii', 'wifetodoist']) {
+      expect(frame).not.toContain(name)
+    }
+    expect(frame).not.toContain('openai-codex')
+    expect(frame).not.toContain('gpt-5.4')
+    expect(frame).not.toContain('Available Tools')
+  })
+
   it('counts only connected servers, not configured-but-disabled ones', async () => {
     const frame = await renderFooter(
       baseInfo([

@@ -28,6 +28,21 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export const STATUS_BAR_FIELDS = [
+  'status',
+  'model',
+  'context',
+  'session_duration',
+  'compressions',
+  'delegation',
+  'voice',
+  'background',
+  'cost',
+  'cwd'
+] as const
+export type StatusBarField = (typeof STATUS_BAR_FIELDS)[number]
+export const DEFAULT_STATUS_BAR_FIELDS: readonly StatusBarField[] = STATUS_BAR_FIELDS
+
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
 export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
@@ -50,9 +65,9 @@ export interface Notice {
 // derived from this tuple so adding/removing a style only touches one
 // line — `useConfigSync` (validation) and `session.ts` (slash arg
 // validation + usage hint) both import it.
-export const INDICATOR_STYLES = ['ascii', 'emoji', 'kaomoji', 'unicode'] as const
+export const INDICATOR_STYLES = ['plain', 'kaomoji', 'emoji', 'unicode', 'ascii'] as const
 export type IndicatorStyle = (typeof INDICATOR_STYLES)[number]
-export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'kaomoji'
+export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'plain'
 
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
@@ -178,6 +193,7 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  statusBarFields: readonly StatusBarField[]
   streaming: boolean
   theme: Theme
   usage: Usage

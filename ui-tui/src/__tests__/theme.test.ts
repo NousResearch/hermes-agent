@@ -57,20 +57,23 @@ describe('DEFAULT_THEME', () => {
 })
 
 describe('LIGHT_THEME', () => {
-  it('avoids bright-yellow accents unreadable on white backgrounds (#11300)', async () => {
+  it('defaults light terminals to the jarvis-light palette', async () => {
     const { LIGHT_THEME } = await importThemeWithCleanEnv()
 
-    expect(LIGHT_THEME.color.primary).not.toBe('#FFD700')
-    expect(LIGHT_THEME.color.accent).not.toBe('#FFBF00')
-    expect(LIGHT_THEME.color.muted).not.toBe('#B8860B')
-    expect(LIGHT_THEME.color.statusWarn).not.toBe('#FFD700')
+    expect(LIGHT_THEME.color.primary).toBe('#020617')
+    expect(LIGHT_THEME.color.accent).toBe('#2563EB')
+    expect(LIGHT_THEME.color.statusBg).toBe('#E2E8F0')
+    expect(LIGHT_THEME.brand.name).toBe('Jarvis')
+    expect(LIGHT_THEME.brand.tool).toBe('│')
+    expect(LIGHT_THEME.brand.helpHeader).toBe('Available Commands')
   })
 
-  it('keeps the same shape as DARK_THEME', async () => {
+  it('keeps the same color shape as DARK_THEME', async () => {
     const { DARK_THEME, LIGHT_THEME } = await importThemeWithCleanEnv()
 
     expect(Object.keys(LIGHT_THEME.color).sort()).toEqual(Object.keys(DARK_THEME.color).sort())
-    expect(LIGHT_THEME.brand).toEqual(DARK_THEME.brand)
+    expect(LIGHT_THEME.brand.icon).toBe(DARK_THEME.brand.icon)
+    expect(LIGHT_THEME.brand.prompt).toBe(DARK_THEME.brand.prompt)
   })
 })
 
@@ -79,6 +82,14 @@ describe('DEFAULT_THEME aliasing', () => {
     const { DEFAULT_THEME, DARK_THEME: DARK } = await importThemeWithCleanEnv()
 
     expect(DEFAULT_THEME).toBe(DARK)
+  })
+
+  it('defaults to jarvis-light when light mode is detected', async () => {
+    const { DEFAULT_THEME, LIGHT_THEME } = await importThemeWithEnv({ HERMES_TUI_THEME: 'light' })
+
+    expect(DEFAULT_THEME).toBe(LIGHT_THEME)
+    expect(DEFAULT_THEME.brand.name).toBe('Jarvis')
+    expect(DEFAULT_THEME.color.accent).toBe('#2563EB')
   })
 })
 
@@ -153,6 +164,43 @@ describe('detectLightMode', () => {
     expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#fff' })).toBe(true)
     // Garbage falls through to the default-dark path.
     expect(detectLightMode({ HERMES_TUI_BACKGROUND: 'not-a-colour' })).toBe(false)
+  })
+
+  it('checks iTerm live background before stale COLORFGBG', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+    const noDefaultLightPrograms = new Set<string>()
+
+    expect(
+      detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, () => 0.95)
+    ).toBe(true)
+    expect(
+      detectLightMode({ COLORFGBG: '0;15', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, () => 0.1)
+    ).toBe(false)
+  })
+
+  it('falls back to COLORFGBG when iTerm live background is unavailable', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+    const noDefaultLightPrograms = new Set<string>()
+    const unavailable = () => null
+
+    expect(detectLightMode({ COLORFGBG: '0;15', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, unavailable)).toBe(true)
+    expect(detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, unavailable)).toBe(false)
+  })
+
+  it('lets explicit overrides beat iTerm live background', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+    const noDefaultLightPrograms = new Set<string>()
+    const brightIterm = () => 0.95
+
+    expect(
+      detectLightMode({ HERMES_TUI_LIGHT: '0', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, brightIterm)
+    ).toBe(false)
+    expect(
+      detectLightMode({ HERMES_TUI_THEME: 'dark', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, brightIterm)
+    ).toBe(false)
+    expect(
+      detectLightMode({ HERMES_TUI_BACKGROUND: '#000000', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, brightIterm)
+    ).toBe(false)
   })
 
   it('rejects partially-invalid hex instead of silently truncating', async () => {

@@ -32,11 +32,14 @@ export interface SubagentProgress {
   index: number
   inputTokens?: number
   iteration?: number
+  lane?: string
   model?: string
   notes: string[]
   outputTail?: SubagentOutputEntry[]
   outputTokens?: number
   parentId: null | string
+  profile?: string
+  provider?: string
   reasoningTokens?: number
   startedAt?: number
   status: SubagentStatus
@@ -147,6 +150,18 @@ export interface McpServerStatus {
   transport: string
 }
 
+export interface ProfileSummary {
+  active?: boolean
+  alias?: string | null
+  description?: string
+  gateway_running?: boolean
+  is_default?: boolean
+  model?: string | null
+  name: string
+  provider?: string | null
+  skill_count?: number
+}
+
 export interface SessionInfo {
   cwd?: string
   fast?: boolean
@@ -154,6 +169,7 @@ export interface SessionInfo {
   mcp_servers?: McpServerStatus[]
   model: string
   profile_name?: string
+  profiles?: ProfileSummary[]
   reasoning_effort?: string
   release_date?: string
   service_tier?: string

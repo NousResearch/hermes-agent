@@ -797,6 +797,9 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    profile: Optional[str] = None,
+    lane: Optional[str] = None,
+    provider: Optional[str] = None,
     session_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
@@ -806,10 +809,11 @@ def _build_child_progress_callback(
       Gateway: batches tool names and relays to parent's progress callback
 
     The identity kwargs (``subagent_id``, ``parent_id``, ``depth``, ``model``,
-    ``toolsets``) are threaded into every relayed event so the TUI can
-    reconstruct the live spawn tree and route per-branch controls (kill,
-    pause) back by ``subagent_id``.  All are optional for backward compat —
-    older callers that ignore them still produce a flat list on the TUI.
+    ``toolsets``, ``profile``, ``lane``, ``provider``) are threaded into every
+    relayed event so the TUI can reconstruct the live spawn tree and route
+    per-branch controls (kill, pause) back by ``subagent_id``.  All are
+    optional for backward compat — older callers that ignore them still produce
+    a flat list on the TUI.
 
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
@@ -845,6 +849,12 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        if profile is not None:
+            kw["profile"] = profile
+        if lane is not None:
+            kw["lane"] = lane
+        if provider is not None:
+            kw["provider"] = provider
         # The child's own session id — filled into the shared ref once the
         # child agent exists (the callback is built first), so every relayed
         # event lets UIs open/inspect the subagent's session directly.
@@ -1140,25 +1150,8 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
-
-    # Build progress callback to relay tool calls to parent display.
-    # Identity kwargs thread the subagent_id through every emitted event so the
-    # TUI can reconstruct the spawn tree and route per-branch controls.
     child_session_ref: Dict[str, Any] = {}
-    child_progress_cb = _build_child_progress_callback(
-        task_index,
-        goal,
-        parent_agent,
-        task_count,
-        subagent_id=subagent_id,
-        parent_id=parent_subagent_id,
-        depth=tui_depth,
-        model=effective_model_for_cb,
-        toolsets=child_toolsets,
-        session_ref=child_session_ref,
-    )
+    child_progress_cb = None
 
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
@@ -1166,17 +1159,6 @@ def _build_child_agent(
     # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
     child_thinking_cb = None
-    if child_progress_cb:
-
-        def _child_thinking(text: str) -> None:
-            if not text:
-                return
-            try:
-                child_progress_cb("_thinking", text)
-            except Exception as e:
-                logger.debug("Child thinking callback relay failed: %s", e)
-
-        child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
@@ -1219,6 +1201,49 @@ def _build_child_agent(
         # so run_agent.py initializes the CopilotACPClient.
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        effective_profile = get_active_profile_name() or "default"
+    except Exception:
+        effective_profile = "default"
+
+    # Human-facing delegation lane: native delegation runs inside the active
+    # Hermes profile, while role is the most precise worker-lane signal the
+    # delegate tool owns.  Thread both through live events so the TUI can show
+    # where work is actually running instead of just that delegation happened.
+    effective_lane = effective_role
+
+    # Build progress callback to relay tool calls to parent display.
+    # Identity kwargs thread the subagent_id through every emitted event so the
+    # TUI can reconstruct the spawn tree and route per-branch controls.
+    child_progress_cb = _build_child_progress_callback(
+        task_index,
+        goal,
+        parent_agent,
+        task_count,
+        subagent_id=subagent_id,
+        parent_id=parent_subagent_id,
+        depth=tui_depth,
+        model=effective_model,
+        toolsets=child_toolsets,
+        profile=effective_profile,
+        lane=effective_lane,
+        provider=effective_provider,
+        session_ref=child_session_ref,
+    )
+    if child_progress_cb:
+
+        def _child_thinking(text: str) -> None:
+            if not text:
+                return
+            try:
+                child_progress_cb("_thinking", text)
+            except Exception as e:
+                logger.debug("Child thinking callback relay failed: %s", e)
+
+        child_thinking_cb = _child_thinking
 
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)

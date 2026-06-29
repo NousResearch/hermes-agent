@@ -20,7 +20,7 @@ import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
-import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
+import { ComposerDivider, GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
@@ -97,15 +97,6 @@ const TranscriptPane = memo(function TranscriptPane({
     return -1
   }, [transcript.historyItems])
 
-  // Index of the first user-role message; every later user message gets a
-  // small dash above it so multi-turn transcripts visually segment by
-  // turn. -1 when no user message has been sent yet → no separator ever
-  // renders.
-  const firstUserIdx = useMemo(
-    () => transcript.historyItems.findIndex(m => m.role === 'user'),
-    [transcript.historyItems]
-  )
-
   return (
     <>
       <ScrollBox
@@ -125,12 +116,6 @@ const TranscriptPane = memo(function TranscriptPane({
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
-                <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
-                </Box>
-              )}
-
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>
                   <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
@@ -159,6 +144,7 @@ const TranscriptPane = memo(function TranscriptPane({
                     sections: ui.sections
                   })}
                   sections={ui.sections}
+                  showUserInputDividers
                   t={ui.theme}
                 />
               )}
@@ -277,19 +263,23 @@ const ComposerPane = memo(function ComposerPane({
         </Text>
       )}
 
-      {status.showStickyPrompt ? (
+      {status.showStickyPrompt && (
         <Text color={ui.theme.color.muted} wrap="truncate-end">
           <Text color={ui.theme.color.label}>↳ </Text>
 
           {status.stickyPrompt}
         </Text>
-      ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
 
-      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+      {!isBlocked && (
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag}>
+          <ComposerDivider cols={composer.cols} t={ui.theme} />
+        </Box>
+      )}
+
+      <Box flexDirection="column" position="relative">
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -356,6 +346,10 @@ const ComposerPane = memo(function ComposerPane({
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
             </Box>
+
+            <Box height={1}>
+              <ComposerDivider cols={composer.cols} t={ui.theme} />
+            </Box>
           </>
         )}
       </Box>
@@ -400,6 +394,7 @@ const StatusRulePane = memo(function StatusRulePane({
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
+        fields={ui.statusBarFields}
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}

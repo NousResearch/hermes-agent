@@ -591,7 +591,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/indicator sparkle')).toBe(true)
     expect(rpc).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [ascii|emoji|kaomoji|unicode]')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [plain|kaomoji|emoji|unicode|ascii]')
   })
 
   it('drops stale slash.exec output after a newer slash', async () => {

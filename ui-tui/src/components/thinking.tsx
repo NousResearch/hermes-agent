@@ -342,6 +342,16 @@ function SubagentAccordion({
   const statusLabel = item.status === 'queued' ? 'queued' : item.status === 'running' ? 'running' : String(item.status)
 
   const rollupBits: string[] = [statusLabel]
+  const profileLane = [item.profile, item.lane].filter(Boolean).join('/')
+  const modelProvider = [item.provider, item.model].filter(Boolean).join('/')
+
+  if (profileLane) {
+    rollupBits.push(profileLane)
+  }
+
+  if (modelProvider) {
+    rollupBits.push(compactPreview(modelProvider, 42))
+  }
 
   if (item.durationSeconds) {
     rollupBits.push(fmtElapsed(item.durationSeconds * 1000))

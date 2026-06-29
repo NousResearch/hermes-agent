@@ -14,7 +14,7 @@ import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
-import { fromSkin } from '../theme.js'
+import { DEFAULT_LIGHT_MODE, DEFAULT_THEME, fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -29,16 +29,43 @@ const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
+const hasPayload = (value: Record<string, string> | undefined) => Object.keys(value ?? {}).length > 0
+
+const shouldUseJarvisLightDefault = (s: GatewaySkin) => {
+  if (!DEFAULT_LIGHT_MODE) {
+    return false
+  }
+
+  const skinName = (s.name ?? '').trim().toLowerCase()
+
+  if (skinName === 'default') {
+    return true
+  }
+
+  // Old gateway payloads did not type the skin name. If they also carry no
+  // custom data, treat them as the default skin; otherwise respect the payload.
+  return (
+    !skinName &&
+    !hasPayload(s.colors) &&
+    !hasPayload(s.branding) &&
+    !s.banner_logo &&
+    !s.banner_hero &&
+    !s.tool_prefix
+  )
+}
+
 const applySkin = (s: GatewaySkin) =>
   patchUiState({
-    theme: fromSkin(
-      s.colors ?? {},
-      s.branding ?? {},
-      s.banner_logo ?? '',
-      s.banner_hero ?? '',
-      s.tool_prefix ?? '',
-      s.help_header ?? ''
-    )
+    theme: shouldUseJarvisLightDefault(s)
+      ? DEFAULT_THEME
+      : fromSkin(
+          s.colors ?? {},
+          s.branding ?? {},
+          s.banner_logo ?? '',
+          s.banner_hero ?? '',
+          s.tool_prefix ?? '',
+          s.help_header ?? ''
+        )
   })
 
 const dropBgTask = (taskId: string) =>

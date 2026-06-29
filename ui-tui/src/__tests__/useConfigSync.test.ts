@@ -7,7 +7,8 @@ import {
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
-  normalizeStatusBar
+  normalizeStatusBar,
+  normalizeStatusBarFields
 } from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
@@ -28,7 +29,8 @@ describe('applyDisplay', () => {
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
-            tui_statusbar: false
+            tui_statusbar: false,
+            tui_statusbar_fields: ['status', 'model', 'context', 'delegation', 'background', 'cwd']
           }
         }
       },
@@ -42,6 +44,7 @@ describe('applyDisplay', () => {
     expect(s.inlineDiffs).toBe(false)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
+    expect(s.statusBarFields).toEqual(['status', 'model', 'context', 'delegation', 'background', 'cwd'])
     expect(s.streaming).toBe(false)
   })
 
@@ -191,6 +194,27 @@ describe('normalizeStatusBar', () => {
   })
 })
 
+describe('normalizeStatusBarFields', () => {
+  it('defaults missing or invalid values to the full field set', () => {
+    expect(normalizeStatusBarFields(undefined)).toContain('session_duration')
+    expect(normalizeStatusBarFields('nonsense')).toContain('cost')
+  })
+
+  it('normalizes aliases, comma strings, and duplicate values', () => {
+    expect(normalizeStatusBarFields('status, model, tokens, bg, path, status')).toEqual([
+      'status',
+      'model',
+      'context',
+      'background',
+      'cwd'
+    ])
+  })
+
+  it('ignores unsupported fields without dropping valid ones', () => {
+    expect(normalizeStatusBarFields(['status', 'token-bar', 'sessions', 'bg'])).toEqual(['status', 'background'])
+  })
+})
+
 describe('normalizeMouseTracking', () => {
   it('defaults to all and prefers canonical mouse_tracking over legacy tui_mouse', () => {
     expect(normalizeMouseTracking({})).toBe('all')
@@ -251,6 +275,7 @@ describe('normalizeIndicatorStyle', () => {
     expect(normalizeIndicatorStyle('emoji')).toBe('emoji')
     expect(normalizeIndicatorStyle('unicode')).toBe('unicode')
     expect(normalizeIndicatorStyle('ascii')).toBe('ascii')
+    expect(normalizeIndicatorStyle('plain')).toBe('plain')
   })
 
   it('trims and lowercases input', () => {
@@ -258,12 +283,12 @@ describe('normalizeIndicatorStyle', () => {
     expect(normalizeIndicatorStyle('UNICODE')).toBe('unicode')
   })
 
-  it('defaults to kaomoji for missing/unknown values', () => {
-    expect(normalizeIndicatorStyle(undefined)).toBe('kaomoji')
-    expect(normalizeIndicatorStyle(null)).toBe('kaomoji')
-    expect(normalizeIndicatorStyle('')).toBe('kaomoji')
-    expect(normalizeIndicatorStyle('sparkle')).toBe('kaomoji')
-    expect(normalizeIndicatorStyle(42)).toBe('kaomoji')
+  it('defaults to plain for missing/unknown values', () => {
+    expect(normalizeIndicatorStyle(undefined)).toBe('plain')
+    expect(normalizeIndicatorStyle(null)).toBe('plain')
+    expect(normalizeIndicatorStyle('')).toBe('plain')
+    expect(normalizeIndicatorStyle('sparkle')).toBe('plain')
+    expect(normalizeIndicatorStyle(42)).toBe('plain')
   })
 })
 
@@ -308,14 +333,14 @@ describe('applyDisplay → tui_status_indicator', () => {
     expect($uiState.get().indicatorStyle).toBe('unicode')
   })
 
-  it('falls back to kaomoji default when missing or invalid', () => {
+  it('falls back to plain default when missing or invalid', () => {
     const setBell = vi.fn()
 
     applyDisplay({ config: { display: {} } }, setBell)
-    expect($uiState.get().indicatorStyle).toBe('kaomoji')
+    expect($uiState.get().indicatorStyle).toBe('plain')
 
     applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
-    expect($uiState.get().indicatorStyle).toBe('kaomoji')
+    expect($uiState.get().indicatorStyle).toBe('plain')
   })
 })
 

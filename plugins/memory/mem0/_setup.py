@@ -23,6 +23,8 @@ from ._oss_providers import (
     validate_oss_config,
 )
 
+_OLLAMA_TAGS_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
 
 def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
     """Interactive single-select with arrow keys."""
@@ -535,13 +537,23 @@ def _ollama_has_model(url: str, model: str) -> bool:
     """Check if Ollama already has a model pulled."""
     try:
         req = urllib.request.Request(f"{url}/api/tags", method="GET")
-        resp = urllib.request.urlopen(req, timeout=5)
-        data = json.loads(resp.read())
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _read_json_response(resp, _OLLAMA_TAGS_RESPONSE_BODY_MAX_BYTES)
         names = [m.get("name", "") for m in data.get("models", [])]
         base_model = model.split(":")[0]
         return any(model in n or base_model in n for n in names)
     except Exception:
         return False
+
+
+def _read_json_response(resp, max_bytes: int) -> dict:
+    raw = resp.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"response exceeded {max_bytes} bytes")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("response was not a JSON object")
+    return data
 
 
 def _ensure_pgvector_extension(pg_config: dict) -> None:

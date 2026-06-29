@@ -12,6 +12,7 @@ from plugins.memory.mem0._setup import (
     build_oss_config,
     _write_env,
     post_setup,
+    _ollama_has_model,
     _check_qdrant_path,
     _check_ollama,
     _check_pgvector,
@@ -245,6 +246,56 @@ class TestConnectivityChecks:
     def test_ollama_unreachable(self):
         ok, msg = _check_ollama("http://localhost:1")
         assert ok is False
+
+    def test_ollama_has_model_bounds_tags_response_read(self, monkeypatch):
+        import plugins.memory.mem0._setup as setup_mod
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                captured["size"] = size
+                data = json.dumps({
+                    "models": [{"name": "llama3:latest"}],
+                }).encode()
+                return data if size < 0 else data[:size]
+
+        monkeypatch.setattr(
+            setup_mod.urllib.request,
+            "urlopen",
+            lambda req, timeout=None: _Resp(),
+        )
+
+        assert _ollama_has_model("http://localhost:11434", "llama3:latest") is True
+        assert captured["size"] == setup_mod._OLLAMA_TAGS_RESPONSE_BODY_MAX_BYTES + 1
+
+    def test_ollama_has_model_rejects_oversized_tags_response(self, monkeypatch):
+        import plugins.memory.mem0._setup as setup_mod
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                return b"x" * size
+
+        monkeypatch.setattr(setup_mod, "_OLLAMA_TAGS_RESPONSE_BODY_MAX_BYTES", 8)
+        monkeypatch.setattr(
+            setup_mod.urllib.request,
+            "urlopen",
+            lambda req, timeout=None: _Resp(),
+        )
+
+        assert _ollama_has_model("http://localhost:11434", "llama3:latest") is False
 
     def test_pgvector_unreachable(self):
         ok, msg = _check_pgvector("localhost", 1)

@@ -884,6 +884,7 @@ def run_conversation(
             api_messages,
             drop_codex_reasoning_items=agent.api_mode != "codex_responses",
         )
+        agent._ensure_user_anchor(api_messages)
 
         # Normalize message whitespace and tool-call JSON for consistent
         # prefix matching.  Ensures bit-perfect prefixes across turns,

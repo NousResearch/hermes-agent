@@ -4871,10 +4871,44 @@ class AIAgent:
         """Return True when the base URL targets Qwen Portal."""
         return base_url_host_matches(self._base_url_lower, "portal.qwen.ai")
 
+    @staticmethod
+    def _ensure_user_anchor(messages: list) -> None:
+        """Ensure API payloads still contain at least one user-role message.
+
+        Some chat-template backends reject a request with only system,
+        assistant, and tool messages because there is no user query left after
+        long-context truncation. Add a minimal user anchor to the API copy so
+        those already-truncated histories fail less catastrophically. This is a
+        no-op for normal histories that still contain any user message.
+        """
+        if not messages:
+            return
+        if any(isinstance(m, dict) and m.get("role") == "user" for m in messages):
+            return
+        anchor = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "(Earlier user message was truncated from long context. "
+                        "Continue the current task.)"
+                    ),
+                }
+            ],
+        }
+        insert_at = 0
+        for i, message in enumerate(messages):
+            if isinstance(message, dict) and message.get("role") == "system":
+                insert_at = i + 1
+                break
+        messages.insert(insert_at, anchor)
+
     def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
         prepared = copy.deepcopy(api_messages)
         if not prepared:
             return prepared
+        self._ensure_user_anchor(prepared)
 
         for msg in prepared:
             if not isinstance(msg, dict):
@@ -4908,6 +4942,7 @@ class AIAgent:
         """In-place variant — mutates an already-copied message list."""
         if not messages:
             return
+        self._ensure_user_anchor(messages)
 
         for msg in messages:
             if not isinstance(msg, dict):

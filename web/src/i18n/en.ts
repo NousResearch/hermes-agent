@@ -107,6 +107,7 @@ export const en: Translations = {
     activeSessions: "Active Sessions",
     connected: "Connected",
     connectedPlatforms: "Connected Platforms",
+    disabled: "Disabled",
     disconnected: "Disconnected",
     error: "Error",
     failed: "Failed",

@@ -46,6 +46,7 @@ function buildWsUrl(
   resume: string | null,
   channel: string,
   profile: string,
+  fresh: boolean,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   // ``authParam`` is ``["token", <session>]`` in loopback mode and
@@ -53,6 +54,7 @@ function buildWsUrl(
   // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
   const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
   if (resume) qs.set("resume", resume);
+  if (fresh) qs.set("fresh", "1");
   // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
   // selected profile, so the conversation runs with that profile's model,
   // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -144,6 +146,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const forceFreshPtyRef = useRef(false);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
@@ -153,20 +158,32 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // is a dependency of the connect effect, so a fresh PTY spawns in place.
   const [sessionEnded, setSessionEnded] = useState(false);
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
   const reconnect = useCallback(() => {
+    forceFreshPtyRef.current = true;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
     setSessionEnded(false);
     setBanner(null);
     setReconnectNonce((n) => n + 1);
-  }, []);
+  }, [clearReconnectTimer]);
   const startFreshDashboardChat = useCallback(() => {
     const next = new URLSearchParams(searchParams);
 
     next.delete("resume");
+    forceFreshPtyRef.current = true;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
     setSearchParams(next, { replace: true });
     setSessionEnded(false);
     setBanner(null);
     setReconnectNonce((n) => n + 1);
-  }, [searchParams, setSearchParams]);
+  }, [clearReconnectTimer, searchParams, setSearchParams]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -655,15 +672,35 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    const forceFresh = forceFreshPtyRef.current;
+    forceFreshPtyRef.current = false;
+    const scheduleReconnect = (code: number) => {
+      if (reconnectTimerRef.current) {
+        return;
+      }
+      const attempt = Math.min(reconnectAttemptRef.current + 1, 5);
+      reconnectAttemptRef.current = attempt;
+      const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
+      setSessionEnded(false);
+      setBanner(
+        `Chat connection interrupted (code ${code}). Reconnecting…`,
+      );
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        setReconnectNonce((n) => n + 1);
+      }, delayMs);
+    };
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile);
+      const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile, forceFresh);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
     ws.onopen = () => {
+      clearReconnectTimer();
+      reconnectAttemptRef.current = 0;
       setBanner(null);
       setSessionEnded(false);
       // Send the initial RESIZE immediately so Ink has *a* size to lay
@@ -671,6 +708,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
+      // skill" panel) is typed into the composer as a /learn command once the
+      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
+      // so this reuses the existing composer path — no special PTY protocol.
+      const learnSeed = searchParams.get("learn");
+      if (learnSeed) {
+        const next = new URLSearchParams(searchParams);
+        next.delete("learn");
+        setSearchParams(next, { replace: true });
+        const cmd = `/learn ${learnSeed}`.trim();
+        // Delay so Ink's composer has mounted and grabbed focus before input.
+        setTimeout(() => {
+          try {
+            wsRef.current?.send(cmd + "\r");
+          } catch {
+            /* PTY not ready / closed — user can retype */
+          }
+        }, 800);
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -725,6 +781,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
+        return;
+      }
+      if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
+        scheduleReconnect(ev.code);
         return;
       }
       // Normal/clean exit: the agent process ended (e.g. the user typed
@@ -787,6 +847,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      clearReconnectTimer();
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer
       // effect's top level so it can't reach into that scope — close via
@@ -802,7 +863,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile, reconnectNonce]);
+  }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -945,7 +1006,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
-                showTools={false}
               />
             </div>
             <ChatSessionList
@@ -1038,14 +1098,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             aria-label={modelToolsLabel}
             className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
           >
-            {/* Model picker (tools card hidden — keeps the rail thin). */}
+            {/* Model picker — keeps the rail thin. */}
             <div className="shrink-0">
               <ChatSidebar
                 channel={channel}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
-                showTools={false}
               />
             </div>
 

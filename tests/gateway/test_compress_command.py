@@ -54,6 +54,7 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    runner._session_db = None
     return runner
 
 
@@ -245,5 +246,62 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     assert "auxiliary.compression.model" in result
     # The user's context is explicitly called out as intact
     assert "intact" in result
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_passes_session_db_and_persists_rotated_session():
+    """session_db must be wired into the /compress temp agent so that
+    _compress_context can actually rotate the session and persist the
+    compressed transcript — without it compression is a silent no-op."""
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    runner._session_db = object()
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.compression_in_place = False
+    agent_instance.session_id = "sess-1"
+
+    def _compress(messages, *_args, **_kwargs):
+        agent_instance.session_id = "sess-2"
+        return compressed, ""
+
+    agent_instance._compress_context.side_effect = _compress
+
+    def _estimate(messages, **_kwargs):
+        if messages == history:
+            return 100
+        if messages == compressed:
+            return 60
+        raise AssertionError(f"unexpected transcript: {messages!r}")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent_cls,
+        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    assert "Compressed:" in result
+    mock_agent_cls.assert_called_once()
+    assert mock_agent_cls.call_args.kwargs["session_db"] is runner._session_db
+    runner.session_store._save.assert_called_once()
+    runner.session_store.rewrite_transcript.assert_called_once_with(
+        "sess-2", compressed
+    )
+    runner.session_store.update_session.assert_called_once_with(
+        build_session_key(_make_source()), last_prompt_tokens=0
+    )
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()

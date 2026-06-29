@@ -1737,6 +1737,158 @@ class TestUnifiedSearchDedup:
 
 
 # ---------------------------------------------------------------------------
+# GitHub tap provider labeling + index search/filter
+# ---------------------------------------------------------------------------
+
+
+class TestGithubProviderLabeling:
+    def test_provider_for_known_taps_case_insensitive(self):
+        from tools.skills_hub import github_provider_for
+        assert github_provider_for("NVIDIA/skills") == "NVIDIA"
+        assert github_provider_for("nvidia/skills") == "NVIDIA"
+        assert github_provider_for("openai/skills") == "OpenAI"
+        assert github_provider_for("garrytan/gstack") == "gstack"
+
+    def test_provider_for_unknown_repo_is_none(self):
+        from tools.skills_hub import github_provider_for
+        assert github_provider_for("someuser/somerepo") is None
+        assert github_provider_for("") is None
+
+    def test_inspect_stamps_provider_in_extra(self):
+        gs = GitHubSource(auth=GitHubAuth())
+        skill_md = (
+            "---\nname: accelerated-computing-cudf\n"
+            "description: NVIDIA cuDF GPU DataFrames.\n---\n# body\n"
+        )
+        gs._fetch_file_content = lambda repo, path: skill_md
+        meta = gs.inspect("NVIDIA/skills/skills/accelerated-computing-cudf")
+        assert meta is not None
+        # source stays "github" (no churn to dedup/floor/skip logic) ...
+        assert meta.source == "github"
+        # ... but the per-tap provider label rides along in extra
+        assert meta.extra.get("provider") == "NVIDIA"
+
+    def test_inspect_no_provider_for_untapped_repo(self):
+        gs = GitHubSource(auth=GitHubAuth())
+        gs._fetch_file_content = lambda repo, path: (
+            "---\nname: foo\ndescription: bar.\n---\n# b\n"
+        )
+        meta = gs.inspect("someuser/somerepo/skills/foo")
+        assert meta is not None
+        assert "provider" not in meta.extra
+
+
+def _make_index_source(skills):
+    """Build a HermesIndexSource pre-loaded with a fixed skill list."""
+    from tools.skills_hub import HermesIndexSource
+    src = HermesIndexSource(auth=GitHubAuth())
+    src._index = {"skills": skills}
+    src._loaded = True
+    return src
+
+
+class TestHermesIndexSearch:
+    def test_search_matches_identifier_and_provider(self):
+        # NVIDIA skill whose name/description does NOT contain "nvidia" — only
+        # the identifier and the provider label do. The old substring-only
+        # search over name/description/tags would miss it entirely.
+        skills = [
+            {
+                "name": "accelerated-computing-cudf",
+                "description": "GPU DataFrames.",
+                "source": "github",
+                "identifier": "NVIDIA/skills/skills/accelerated-computing-cudf",
+                "tags": [],
+                "extra": {"provider": "NVIDIA"},
+            },
+            {
+                "name": "unrelated",
+                "description": "nothing here",
+                "source": "clawhub",
+                "identifier": "clawhub/unrelated",
+                "tags": [],
+            },
+        ]
+        src = _make_index_source(skills)
+        hits = src.search("nvidia", limit=25)
+        ids = [h.identifier for h in hits]
+        assert "NVIDIA/skills/skills/accelerated-computing-cudf" in ids
+        assert "clawhub/unrelated" not in ids
+
+    def test_search_ranks_exact_name_first(self):
+        skills = [
+            {"name": "z-cuda-helper", "description": "uses cuda", "source": "clawhub",
+             "identifier": "clawhub/z-cuda-helper", "tags": []},
+            {"name": "cuda", "description": "the cuda skill", "source": "github",
+             "identifier": "NVIDIA/skills/skills/cuda", "tags": [],
+             "extra": {"provider": "NVIDIA"}},
+        ]
+        src = _make_index_source(skills)
+        hits = src.search("cuda", limit=25)
+        # exact name match must rank ahead of the substring-in-description match
+        assert hits[0].name == "cuda"
+
+    def test_search_does_not_break_at_limit_arbitrarily(self):
+        # 30 substring matches; with limit=25 we must get the 25 best, and a
+        # higher-relevance name match placed late in index order must survive.
+        skills = [
+            {"name": f"thing-{i}", "description": "mentions cuda", "source": "clawhub",
+             "identifier": f"clawhub/thing-{i}", "tags": []}
+            for i in range(30)
+        ]
+        skills.append(
+            {"name": "cuda", "description": "exact", "source": "github",
+             "identifier": "NVIDIA/skills/skills/cuda", "tags": [],
+             "extra": {"provider": "NVIDIA"}}
+        )
+        src = _make_index_source(skills)
+        hits = src.search("cuda", limit=25)
+        assert len(hits) == 25
+        # The exact-name skill (last in index order) must NOT be dropped.
+        assert any(h.name == "cuda" for h in hits)
+        assert hits[0].name == "cuda"
+
+
+class TestProviderFilter:
+    def test_filter_results_by_provider_narrows_exactly(self):
+        from tools.skills_hub import _filter_results_by_provider
+        results = [
+            SkillMeta(name="a", description="", source="github", identifier="NVIDIA/skills/a",
+                      trust_level="trusted", extra={"provider": "NVIDIA"}),
+            SkillMeta(name="b", description="", source="github", identifier="openai/skills/b",
+                      trust_level="trusted", extra={"provider": "OpenAI"}),
+            SkillMeta(name="c", description="", source="official", identifier="official/c",
+                      trust_level="builtin"),
+        ]
+        nv = _filter_results_by_provider(results, "nvidia")
+        assert [r.identifier for r in nv] == ["NVIDIA/skills/a"]
+        oai = _filter_results_by_provider(results, "openai")
+        assert [r.identifier for r in oai] == ["openai/skills/b"]
+
+    def test_provider_filter_values_match_tap_labels(self):
+        from tools.skills_hub import _PROVIDER_FILTER_VALUES, GITHUB_TAP_PROVIDERS
+        assert _PROVIDER_FILTER_VALUES == frozenset(
+            v.lower() for v in GITHUB_TAP_PROVIDERS.values()
+        )
+
+    def test_unified_search_provider_filter_keeps_index_source(self):
+        # A provider filter must NOT be treated as a real source id (which would
+        # exclude every source and return nothing). It selects sources like
+        # "all", then narrows the merged results by provider.
+        nv = SkillMeta(name="cuda", description="gpu", source="github",
+                       identifier="NVIDIA/skills/cuda", trust_level="trusted",
+                       extra={"provider": "NVIDIA"})
+        other = SkillMeta(name="cuda-clone", description="gpu", source="clawhub",
+                          identifier="clawhub/cuda-clone", trust_level="community")
+        src = MagicMock()
+        src.source_id.return_value = "hermes-index"
+        src.is_available = True
+        src.search.return_value = [nv, other]
+        results = unified_search("cuda", [src], source_filter="nvidia", limit=25)
+        assert [r.identifier for r in results] == ["NVIDIA/skills/cuda"]
+
+
+# ---------------------------------------------------------------------------
 # append_audit_log
 # ---------------------------------------------------------------------------
 

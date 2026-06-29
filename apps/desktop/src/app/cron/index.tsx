@@ -14,7 +14,6 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { SearchField } from '@/components/ui/search-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -30,14 +29,28 @@ import {
   updateCronJob
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { AlertTriangle, Clock } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+import { AlertTriangle } from '@/lib/icons'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
-import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
-import { OverlayView } from '../overlays/overlay-view'
+import {
+  Panel,
+  PanelAction,
+  PanelAddButton,
+  PanelBlock,
+  PanelBody,
+  PanelDetail,
+  PanelEmpty,
+  PanelHeader,
+  PanelList,
+  PanelListRow,
+  PanelMeta,
+  PanelPill,
+  type PanelPillTone,
+  PanelRowMenu,
+  PanelSectionLabel
+} from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { jobState, jobTitle, STATE_DOT } from './job-state'
@@ -56,7 +69,7 @@ const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { value: 'custom' }
 ]
 
-const STATE_TONE: Record<string, 'good' | 'muted' | 'warn' | 'bad'> = {
+const STATE_TONE: Record<string, PanelPillTone> = {
   enabled: 'good',
   scheduled: 'good',
   running: 'good',
@@ -64,13 +77,6 @@ const STATE_TONE: Record<string, 'good' | 'muted' | 'warn' | 'bad'> = {
   disabled: 'muted',
   error: 'bad',
   completed: 'muted'
-}
-
-const PILL_TONE: Record<'good' | 'muted' | 'warn' | 'bad', string> = {
-  good: 'bg-primary/10 text-primary',
-  muted: 'bg-muted text-muted-foreground',
-  warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
-  bad: 'bg-destructive/10 text-destructive'
 }
 
 const asText = (value: unknown): string => (typeof value === 'string' ? value : '')
@@ -285,7 +291,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // it, queue a scroll, then clear the one-shot focus so re-opening cron
   // normally doesn't re-trigger it.
   useEffect(() => {
-    if (!focusJobId) {return}
+    if (!focusJobId) {
+      return
+    }
 
     const match = jobs.find(job => job.id === focusJobId || jobName(job) === focusJobId)
 
@@ -313,11 +321,13 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   useEffect(() => {
     const target = pendingScrollRef.current
 
-    if (!target || selectedJob?.id !== target) {return}
+    if (!target || selectedJob?.id !== target) {
+      return
+    }
 
     pendingScrollRef.current = null
     requestAnimationFrame(() => {
-      document.querySelector(`[data-cron-row="${CSS.escape(target)}"]`)?.scrollIntoView({ block: 'nearest' })
+      document.querySelector(`[data-panel-row="${CSS.escape(target)}"]`)?.scrollIntoView({ block: 'nearest' })
     })
   }, [selectedJob])
 
@@ -402,124 +412,120 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   }
 
   return (
-    <OverlayView closeLabel={c.close} onClose={onClose}>
+    <Panel closeLabel={c.close} onClose={onClose}>
       {loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
+      ) : totalCount === 0 ? (
+        <PanelEmpty
+          action={
+            <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+              {c.newCron}
+            </Button>
+          }
+          description={c.emptyDescNew}
+          icon="watch"
+          title={c.emptyTitleNew}
+        />
       ) : (
-        <OverlaySplitLayout>
-          <OverlaySidebar>
-            <OverlayNewButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
-            {totalCount > 0 && (
-              <SearchField
-                aria-label={c.search}
-                containerClassName="mb-1 w-full px-2"
-                onChange={setQuery}
-                placeholder={c.search}
-                value={query}
-              />
-            )}
-            {visibleJobs.map(job => (
-              <CronJobListRow
-                active={selectedJob?.id === job.id}
-                c={c}
-                job={job}
-                key={job.id}
-                onSelect={() => setSelectedJobId(job.id)}
-              />
-            ))}
-            {visibleJobs.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
-                {totalCount === 0 ? c.emptyTitleNew : c.emptyTitleSearch}
-              </p>
-            )}
-          </OverlaySidebar>
+        <>
+          <PanelHeader subtitle={c.count(totalCount)} title={c.title} />
+          <PanelBody>
+            <PanelList
+              onSearchChange={setQuery}
+              searchLabel={c.search}
+              searchPlaceholder={c.search}
+              searchValue={query}
+            >
+              {visibleJobs.map(job => (
+                <CronJobListRow
+                  active={selectedJob?.id === job.id}
+                  job={job}
+                  key={job.id}
+                  menu={
+                    <PanelRowMenu
+                      items={[
+                        { icon: 'edit', label: c.edit, onSelect: () => setEditor({ mode: 'edit', job }) },
+                        { icon: 'trash', label: t.common.delete, onSelect: () => setPendingDelete(job), tone: 'danger' }
+                      ]}
+                    />
+                  }
+                  onSelect={() => setSelectedJobId(job.id)}
+                />
+              ))}
+              {visibleJobs.length === 0 && (
+                <p className="px-2 py-4 text-center text-xs text-muted-foreground">{c.emptyTitleSearch}</p>
+              )}
+              <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
+            </PanelList>
 
-          <OverlayMain className="px-0">
             {selectedJob ? (
               <CronJobDetail
                 busy={busyJobId === selectedJob.id}
                 c={c}
                 job={selectedJob}
-                onDelete={() => setPendingDelete(selectedJob)}
-                onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
                 onOpenSession={onOpenSession}
                 onPauseResume={() => void handlePauseResume(selectedJob)}
                 onTrigger={() => void handleTrigger(selectedJob)}
               />
             ) : (
-              <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
-                <div>
-                  <Clock className="mx-auto size-6 text-muted-foreground/60" />
-                  <p className="mt-3">{totalCount === 0 ? c.emptyDescNew : c.emptyDescSearch}</p>
-                </div>
-              </div>
+              <PanelEmpty description={c.emptyDescSearch} icon="search" />
             )}
-          </OverlayMain>
-        </OverlaySplitLayout>
+          </PanelBody>
+        </>
       )}
 
       <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
 
-        <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>{c.deleteTitle}</DialogTitle>
-              <DialogDescription>
-                {pendingDelete ? (
-                  <>
-                    {c.deleteDescPrefix}
-                    <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
-                    {c.deleteDescSuffix}
-                  </>
-                ) : null}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-                {t.common.cancel}
-              </Button>
-              <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-                {deleting ? c.deleting : t.common.delete}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-    </OverlayView>
+      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{c.deleteTitle}</DialogTitle>
+            <DialogDescription>
+              {pendingDelete ? (
+                <>
+                  {c.deleteDescPrefix}
+                  <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
+                  {c.deleteDescSuffix}
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
+              {deleting ? c.deleting : t.common.delete}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Panel>
   )
 }
 
 function CronJobListRow({
   active,
-  c,
   job,
+  menu,
   onSelect
 }: {
   active: boolean
-  c: Translations['cron']
   job: CronJob
+  menu?: React.ReactNode
   onSelect: () => void
 }) {
   const state = jobState(job)
 
   return (
-    <button
-      className={cn(
-        'flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors',
-        active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
-      )}
-      data-cron-row={job.id}
-      onClick={onSelect}
-      type="button"
-    >
-      <span className="flex w-full items-center gap-2">
-        <span
-          aria-hidden="true"
-          className={cn('size-1.5 shrink-0 rounded-full', STATE_DOT[state] ?? 'bg-muted-foreground')}
-        />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">{jobTitle(job)}</span>
-      </span>
-      <span className="truncate pl-3.5 text-[0.66rem] text-muted-foreground">{jobScheduleDisplay(job)}</span>
-    </button>
+    <PanelListRow
+      active={active}
+      dotClassName={STATE_DOT[state] ?? 'bg-muted-foreground'}
+      menu={menu}
+      onSelect={onSelect}
+      rowKey={job.id}
+      title={jobTitle(job)}
+    />
   )
 }
 
@@ -527,8 +533,6 @@ function CronJobDetail({
   busy,
   c,
   job,
-  onDelete,
-  onEdit,
   onOpenSession,
   onPauseResume,
   onTrigger
@@ -536,8 +540,6 @@ function CronJobDetail({
   busy: boolean
   c: Translations['cron']
   job: CronJob
-  onDelete: () => void
-  onEdit: () => void
   onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
@@ -548,69 +550,49 @@ function CronJobDetail({
   const prompt = jobPrompt(job)
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-6 px-6 py-6">
-          <header className="space-y-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-xl font-semibold tracking-tight">{jobTitle(job)}</h3>
-                  <StatePill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</StatePill>
-                  {deliver && deliver !== DEFAULT_DELIVER && (
-                    <StatePill tone="muted">{c.deliveryLabels[deliver] ?? deliver}</StatePill>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.7rem] text-muted-foreground">
-                  <span className="inline-flex items-center gap-1">
-                    <Clock className="size-3" />
-                    {jobScheduleDisplay(job)}
-                  </span>
-                  <span>
-                    {c.last} {formatTime(job.last_run_at)}
-                  </span>
-                  <span>
-                    {c.next} {formatTime(job.next_run_at)}
-                  </span>
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button disabled={busy} onClick={onPauseResume} size="sm" variant="outline">
-                  <Codicon name={isPaused ? 'play' : 'debug-pause'} size="0.875rem" />
-                  {isPaused ? c.resumeTitle : c.pauseTitle}
-                </Button>
-                <Button disabled={busy} onClick={onTrigger} size="sm" variant="outline">
-                  <Codicon name="zap" size="0.875rem" />
-                  {c.triggerNow}
-                </Button>
-                <Button onClick={onEdit} size="sm" variant="outline">
-                  <Codicon name="edit" size="0.875rem" />
-                  {c.edit}
-                </Button>
-                <Button
-                  className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                  onClick={onDelete}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <Codicon name="trash" size="0.875rem" />
-                </Button>
-              </div>
-            </div>
-
-            {prompt && <p className="line-clamp-3 text-xs text-muted-foreground">{prompt}</p>}
-            {job.last_error && (
-              <p className="inline-flex items-start gap-1 text-[0.7rem] text-destructive">
-                <AlertTriangle className="mt-px size-3 shrink-0" />
-                <span className="line-clamp-2">{job.last_error}</span>
-              </p>
-            )}
-          </header>
-
-          <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+    <PanelDetail>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{jobTitle(job)}</h3>
+            <PanelPill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</PanelPill>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <PanelAction disabled={busy} icon={isPaused ? 'play' : 'debug-pause'} onClick={onPauseResume}>
+              {isPaused ? c.resumeTitle : c.pauseTitle}
+            </PanelAction>
+            <PanelAction disabled={busy} icon="zap" onClick={onTrigger}>
+              {c.triggerNow}
+            </PanelAction>
+          </div>
         </div>
-      </div>
-    </div>
+
+        <PanelMeta
+          rows={[
+            { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
+            { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
+            { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
+            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver }
+          ]}
+        />
+
+        {job.last_error ? (
+          <div className="flex items-start gap-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
+            <AlertTriangle className="mt-px size-3 shrink-0" />
+            <span className="min-w-0 break-words">{job.last_error}</span>
+          </div>
+        ) : null}
+      </header>
+
+      {prompt ? (
+        <section className="space-y-1.5">
+          <PanelSectionLabel>{c.promptLabel}</PanelSectionLabel>
+          <PanelBlock>{prompt}</PanelBlock>
+        </section>
+      ) : null}
+
+      <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+    </PanelDetail>
   )
 }
 
@@ -646,20 +628,28 @@ function CronJobRuns({
     const load = () =>
       getCronJobRuns(jobId)
         .then(result => {
-          if (!cancelled) {setRuns(result)}
+          if (!cancelled) {
+            setRuns(result)
+          }
         })
         .catch(() => {
-          if (!cancelled) {setRuns(prev => prev ?? [])}
+          if (!cancelled) {
+            setRuns(prev => prev ?? [])
+          }
         })
 
     void load()
 
     const intervalId = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {void load()}
+      if (document.visibilityState === 'visible') {
+        void load()
+      }
     }, RUNS_POLL_INTERVAL_MS)
 
     const onVisible = () => {
-      if (document.visibilityState === 'visible') {void load()}
+      if (document.visibilityState === 'visible') {
+        void load()
+      }
     }
 
     document.addEventListener('visibilitychange', onVisible)
@@ -673,10 +663,10 @@ function CronJobRuns({
 
   return (
     <div>
-      <div className="mb-1.5 text-[0.62rem] font-medium uppercase tracking-wide text-muted-foreground">
+      <PanelSectionLabel className="mb-1.5">
         {c.runHistory}
         {runs && runs.length > 0 ? ` · ${runs.length}` : ''}
-      </div>
+      </PanelSectionLabel>
       {runs === null ? (
         <div className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground">
           <Codicon name="loading" size="0.75rem" spinning />
@@ -687,13 +677,13 @@ function CronJobRuns({
         <div className="flex flex-col gap-px">
           {runs.map(run => (
             <button
-              className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              className="flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs transition-colors duration-100 hover:bg-(--ui-row-hover-background) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               key={run.id}
               onClick={() => onOpenSession?.(run.id)}
               type="button"
             >
-              <span className="truncate text-foreground">{run.title?.trim() || run.preview?.trim() || run.id}</span>
-              <span className="shrink-0 text-[0.62rem] text-muted-foreground tabular-nums">
+              <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
+              <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
                 {formatRunTime(run.last_active || run.started_at)}
               </span>
             </button>
@@ -701,16 +691,6 @@ function CronJobRuns({
         </div>
       )}
     </div>
-  )
-}
-
-function StatePill({ children, tone }: { children: string; tone: keyof typeof PILL_TONE }) {
-  return (
-    <span
-      className={cn('inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.64rem] capitalize', PILL_TONE[tone])}
-    >
-      {children}
-    </span>
   )
 }
 

@@ -248,7 +248,7 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str) -> Optional[str]:
+    def _reload_target(self, target: str, *, skip_drift: bool = False) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
@@ -258,9 +258,13 @@ class MemoryStore:
         When drift is detected the caller must abort the mutation —
         flushing would discard the un-roundtrippable content.
         Returns None on clean reload.
+
+        When *skip_drift* is True the round-trip / entry-size check is
+        bypassed.  Used by the ``add`` action which appends without
+        rewriting, so existing content is never clobbered.
         """
         path = self._path_for(target)
-        bak = self._detect_external_drift(target)
+        bak = None if skip_drift else self._detect_external_drift(target)
         fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
@@ -306,12 +310,12 @@ class MemoryStore:
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
-            # If external drift was detected, the file was backed up to .bak.<ts>
-            # — refuse the mutation so we don't clobber the un-roundtrippable
-            # content the patch tool / shell append / sister session wrote.
-            bak = self._reload_target(target)
-            if bak:
-                return _drift_error(self._path_for(target), bak)
+            # For add (append-only), we skip the drift guard — appending never
+            # clobbers existing content, so round-trip mismatches from prior
+            # tool-written entries in the same session are harmless.  The drift
+            # guard remains active for replace/remove where full-file rewrite
+            # would discard un-roundtrippable content (issue #26045).
+            self._reload_target(target, skip_drift=True)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)

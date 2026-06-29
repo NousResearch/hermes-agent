@@ -26,8 +26,24 @@ import json
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+
+# Force stdout/stderr to UTF-8. On non-UTF-8 Windows locales (e.g. CP936/GBK
+# on zh-CN), Python's default stream encoding can't represent the checkmark /
+# arrow glyphs this script prints (✓ U+2713, ↑ U+2191), raising
+# UnicodeEncodeError mid-run. The bootstrap installer (install.ps1) captures
+# this script's stdout and parses it as UTF-8; a GBK byte stream then surfaces
+# as "stream did not contain valid UTF-8" and aborts the config-templates
+# stage even though the script itself exits 0. Reconfigure unconditionally so
+# output is valid UTF-8 regardless of the active codepage or caller.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, TypeError):
+            pass
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple

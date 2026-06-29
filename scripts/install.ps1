@@ -2120,7 +2120,22 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
-            & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
+            # Force the child python.exe to emit UTF-8 on its stdout/stderr.
+            # On non-UTF-8 Windows locales (CP936/GBK zh-CN) Python defaults
+            # its stream encoding to the active codepage and crashes on glyphs
+            # like ✓ (U+2713) that the codepage can't encode; the resulting
+            # non-UTF-8 bytes break this script's JSON result frame on stdout
+            # and abort the config-templates stage. Scope to this call only.
+            $prevPythonioencoding = $env:PYTHONIOENCODING
+            $prevPythonutf8 = $env:PYTHONUTF8
+            $env:PYTHONIOENCODING = "utf-8"
+            $env:PYTHONUTF8 = "1"
+            try {
+                & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
+            } finally {
+                $env:PYTHONIOENCODING = $prevPythonioencoding
+                $env:PYTHONUTF8 = $prevPythonutf8
+            }
             Write-Success "Skills synced to $HermesHome\skills"
         } catch {
             # Fallback: simple directory copy

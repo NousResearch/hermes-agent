@@ -479,6 +479,7 @@ def run_import(args) -> None:
 _QUICK_STATE_FILES = (
     "state.db",
     "config.yaml",
+    "config.yaml.sha256",   # seal file for Config Integrity Watchdog
     ".env",
     "auth.json",
     "cron/jobs.json",
@@ -655,6 +656,16 @@ def restore_quick_snapshot(
             logger.error("Failed to restore %s: %s", rel, exc)
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
+
+    # Reseal if config.yaml was among the restored files so the Config
+    # Integrity Watchdog sees an authorized restore, not tampering.
+    if restored > 0 and "config.yaml" in meta.get("files", {}):
+        try:
+            from hermes_cli.config import seal_config
+            seal_config()
+        except (OSError, ImportError):
+            pass
+
     return restored > 0
 
 

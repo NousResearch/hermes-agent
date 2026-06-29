@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import hashlib
 import logging
 import os
 import platform
@@ -4582,6 +4583,49 @@ def save_config(config: Dict[str, Any]):
         )
         _secure_file(config_path)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        # Keep the integrity seal in sync so authorised saves (e.g. model
+        # scanner, /model command) don't trigger the Config Integrity Watchdog.
+        try:
+            seal_config()
+        except OSError:
+            pass
+
+
+def get_config_seal_path() -> Path:
+    """Return the path to the config integrity seal file."""
+    return get_config_path().parent / (get_config_path().name + ".sha256")
+
+
+def seal_config() -> str:
+    """Compute SHA256 of the current config.yaml and write it to the seal file.
+
+    Call this after any authorised out-of-band config mutation (e.g. a restore
+    script) so the Config Integrity Watchdog does not raise a false alarm.
+    Returns the hex digest that was written.
+    """
+    config_path = get_config_path()
+    seal_path = get_config_seal_path()
+    digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    seal_path.write_text(digest + "\n", encoding="utf-8")
+    _secure_file(seal_path)
+    return digest
+
+
+def verify_config_integrity() -> tuple[bool, str, str]:
+    """Check whether config.yaml matches its integrity seal.
+
+    Returns (ok, current_digest, sealed_digest).
+    ok is True when the file matches the seal (or no seal exists yet).
+    """
+    config_path = get_config_path()
+    seal_path = get_config_seal_path()
+    if not config_path.exists():
+        return True, "", ""
+    current = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    if not seal_path.exists():
+        return True, current, ""
+    sealed = seal_path.read_text(encoding="utf-8").strip()
+    return current == sealed, current, sealed
 
 
 def load_env() -> Dict[str, str]:

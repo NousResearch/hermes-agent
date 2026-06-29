@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -17,9 +18,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+USAGE_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _read_usage_json_response(response: httpx.Response, *, label: str) -> dict[str, Any]:
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        total += len(chunk)
+        if total > USAGE_RESPONSE_MAX_BYTES:
+            raise ValueError(
+                f"{label}: JSON response exceeds {USAGE_RESPONSE_MAX_BYTES} bytes"
+            )
+        chunks.append(chunk)
+    if not chunks:
+        return {}
+    payload = json.loads(b"".join(chunks).decode("utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _get_usage_json(
+    client: httpx.Client, url: str, headers: dict[str, str], *, label: str
+) -> dict[str, Any]:
+    with client.stream("GET", url, headers=headers) as response:
+        response.raise_for_status()
+        return _read_usage_json_response(response, label=label)
 
 
 @dataclass(frozen=True)
@@ -449,9 +476,12 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
     with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+        payload = _get_usage_json(
+            client,
+            _resolve_codex_usage_url(creds.get("base_url", "")),
+            headers,
+            label="Codex usage",
+        )
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -503,9 +533,12 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         "User-Agent": "claude-code/2.1.0",
     }
     with httpx.Client(timeout=15.0) as client:
-        response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+        payload = _get_usage_json(
+            client,
+            "https://api.anthropic.com/api/oauth/usage",
+            headers,
+            label="Anthropic usage",
+        )
     windows: list[AccountUsageWindow] = []
     mapping = (
         ("five_hour", "Current session"),
@@ -562,13 +595,25 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         "Accept": "application/json",
     }
     with httpx.Client(timeout=10.0) as client:
-        credits_resp = client.get(credits_url, headers=headers)
-        credits_resp.raise_for_status()
-        credits = (credits_resp.json() or {}).get("data") or {}
+        credits = (
+            _get_usage_json(
+                client,
+                credits_url,
+                headers,
+                label="OpenRouter credits",
+            )
+            or {}
+        ).get("data") or {}
         try:
-            key_resp = client.get(key_url, headers=headers)
-            key_resp.raise_for_status()
-            key_data = (key_resp.json() or {}).get("data") or {}
+            key_data = (
+                _get_usage_json(
+                    client,
+                    key_url,
+                    headers,
+                    label="OpenRouter key usage",
+                )
+                or {}
+            ).get("data") or {}
         except Exception:
             key_data = {}
     total_credits = float(credits.get("total_credits") or 0.0)

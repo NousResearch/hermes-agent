@@ -55,6 +55,7 @@ def query_session_listing(
         source=query_source,
         exclude_sources=exclude_sources,
         limit=fetch_limit,
+        order_by_last_active=True,
     )
     result: list[dict[str, Any]] = []
     for row in rows:

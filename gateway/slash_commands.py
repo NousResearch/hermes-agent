@@ -3137,7 +3137,11 @@ class GatewaySlashCommandsMixin:
 
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source,
+                limit=40,
+                order_by_last_active=True,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:

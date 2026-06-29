@@ -97,6 +97,70 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_list_named_sessions_requests_last_active_order(self):
+        """Gateway /resume should list numbered sessions by latest activity."""
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return [
+                    {
+                        "id": "sess_001",
+                        "source": "telegram",
+                        "title": "Research",
+                        "preview": "latest work",
+                    }
+                ]
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=FakeDB(), event=event)
+
+        result = await runner._handle_resume_command(event)
+
+        assert captured["kwargs"] == {
+            "source": "telegram",
+            "limit": 40,
+            "order_by_last_active": True,
+        }
+        assert "Research" in result
+
+    @pytest.mark.asyncio
+    async def test_list_named_sessions_overfetches_before_title_filter(self):
+        """Recent unnamed sessions should not hide older named sessions."""
+        captured = {}
+
+        class FakeDB:
+            def list_sessions_rich(self, **kwargs):
+                captured["kwargs"] = kwargs
+                unnamed = [
+                    {
+                        "id": f"unnamed_{idx}",
+                        "source": "telegram",
+                        "title": "",
+                        "preview": f"recent unnamed {idx}",
+                    }
+                    for idx in range(10)
+                ]
+                return unnamed + [
+                    {
+                        "id": "named_older",
+                        "source": "telegram",
+                        "title": "Research",
+                        "preview": "older titled work",
+                    }
+                ]
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=FakeDB(), event=event)
+
+        result = await runner._handle_resume_command(event)
+
+        assert captured["kwargs"]["limit"] == 40
+        assert "Research" in result
+        assert "No named sessions" not in result
+
+    @pytest.mark.asyncio
     async def test_list_shows_usage_when_no_titled(self, tmp_path):
         """With no arg and no titled sessions, shows instructions."""
         from hermes_state import SessionDB

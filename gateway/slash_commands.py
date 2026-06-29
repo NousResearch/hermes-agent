@@ -34,7 +34,7 @@ from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
+from hermes_cli.config import cfg_get, clear_model_endpoint_credentials, detect_install_method
 from utils import (
     atomic_json_write,
     atomic_yaml_write,
@@ -4011,7 +4011,12 @@ class GatewaySlashCommandsMixin:
         project_root = Path(__file__).parent.parent.resolve()
         git_dir = project_root / '.git'
 
-        if not git_dir.exists():
+        # pip/pipx installs don't have .git in the install tree but are
+        # fully updatable via ``pipx upgrade`` (which the spawned
+        # ``hermes update --gateway`` handles).  Only block when the
+        # install method is unknown *and* there's no .git directory.
+        install_method = detect_install_method(project_root)
+        if install_method != "pip" and not git_dir.exists():
             return t("gateway.update.not_git_repo")
 
         hermes_cmd = _resolve_hermes_bin()

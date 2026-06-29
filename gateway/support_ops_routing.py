@@ -37,6 +37,10 @@ IVCHO_MENTION = "<@1283039346295050271>"
 FATIH_MENTION = "<@779368140512821268>"
 PLAMENA_MENTION = "<@1282940574533423125>"
 BACKEND_MENTION = f"{ALEX_MENTION} {IVCHO_MENTION}"
+SKYVISION_BACKEND_CHANNEL_ID = "1504852408227069993"
+SKYVISION_CONTROL_TOWER_CHANNEL_ID = "1504852355588423801"
+BACKEND_RESOLVER_MENTIONS = frozenset({ALEX_MENTION, IVCHO_MENTION})
+SUPPORT_REQUESTER_MENTIONS = frozenset({PLAMENA_MENTION})
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,13 @@ class MentionLintResult:
     ok: bool
     content: str
     blocked_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DiscordTargetLintResult:
+    ok: bool
+    blocked_reason: Optional[str] = None
+    expected_channel_id: Optional[str] = None
 
 
 def _replace_display_handles(text: str) -> tuple[str, Optional[str]]:
@@ -70,3 +81,41 @@ def lint_and_resolve_discord_content(content: str) -> MentionLintResult:
         return MentionLintResult(ok=False, content=text, blocked_reason="blocked_unresolved_text_teammate_mention")
 
     return MentionLintResult(ok=True, content=text)
+
+
+def lint_discord_target_for_content(
+    content: str,
+    *,
+    chat_id: str,
+    thread_id: str | None = None,
+) -> DiscordTargetLintResult:
+    """Validate already-chosen Discord target against explicit teammate mentions.
+
+    This is deliberately not a business classifier. It does not inspect words
+    like voucher, backend, PBX, product, reservation, or frontend. It only
+    prevents an authored message that already includes exact backend-resolver
+    Discord mentions from being delivered to the wrong SkyVision lane.
+    """
+
+    text = str(content or "")
+    target_chat_id = str(chat_id or "").strip()
+    has_backend_resolver = any(mention in text for mention in BACKEND_RESOLVER_MENTIONS)
+    if not has_backend_resolver:
+        return DiscordTargetLintResult(ok=True)
+
+    if target_chat_id != SKYVISION_BACKEND_CHANNEL_ID:
+        return DiscordTargetLintResult(
+            ok=False,
+            blocked_reason="blocked_backend_resolver_mention_wrong_discord_lane",
+            expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+        )
+
+    has_support_requester = any(mention in text for mention in SUPPORT_REQUESTER_MENTIONS)
+    if has_support_requester:
+        return DiscordTargetLintResult(
+            ok=False,
+            blocked_reason="blocked_mixed_backend_resolver_and_requester_mentions",
+            expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+        )
+
+    return DiscordTargetLintResult(ok=True)

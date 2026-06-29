@@ -344,6 +344,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   verbose:
     not_enabled:           "Der Befehl `/verbose` ist für Messaging-Plattformen nicht aktiviert.\n\nIn `config.yaml` aktivieren:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Tool-Fortschritt: **OFF** — keine Tool-Aktivität angezeigt."
+    mode_summary:          "📊 Tool progress: **SUMMARY** — one concise operational status bubble with stage, counters, and agents/profiles when detected."
     mode_new:              "⚙️ Tool-Fortschritt: **NEW** — angezeigt bei Tool-Wechsel (Vorschaulänge: `display.tool_preview_length`, Standard 40)."
     mode_all:              "⚙️ Tool-Fortschritt: **ALL** — jeder Tool-Aufruf wird angezeigt (Vorschaulänge: `display.tool_preview_length`, Standard 40)."
     mode_verbose:          "⚙️ Tool-Fortschritt: **VERBOSE** — jeder Tool-Aufruf mit vollständigen Argumenten."

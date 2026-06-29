@@ -22,6 +22,12 @@ class TestResolveDisplaySetting:
         }
         assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
 
+    def test_summary_tool_progress_mode_is_preserved(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"tool_progress": "summary"}}}}
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "summary"
+
     def test_global_setting_when_no_platform_override(self):
         """Falls back to display.<key> when no platform override exists."""
         from gateway.display_config import resolve_display_setting

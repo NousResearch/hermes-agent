@@ -341,6 +341,7 @@ gateway:
   verbose:
     not_enabled:           "El comando `/verbose` no está habilitado para plataformas de mensajería.\n\nHabilítalo en `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progreso de herramientas: **OFF** — no se muestra actividad de herramientas."
+    mode_summary:          "📊 Tool progress: **SUMMARY** — one concise operational status bubble with stage, counters, and agents/profiles when detected."
     mode_new:              "⚙️ Progreso de herramientas: **NEW** — se muestra al cambiar de herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_all:              "⚙️ Progreso de herramientas: **ALL** — se muestra cada llamada a herramienta (longitud de vista previa: `display.tool_preview_length`, por defecto 40)."
     mode_verbose:          "⚙️ Progreso de herramientas: **VERBOSE** — cada llamada a herramienta con sus argumentos completos."

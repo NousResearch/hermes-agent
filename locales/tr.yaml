@@ -344,6 +344,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   verbose:
     not_enabled:           "`/verbose` komutu mesajlaşma platformlarında etkin değil.\n\n`config.yaml` içinde etkinleştirin:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Araç ilerlemesi: **OFF** — araç etkinliği gösterilmez."
+    mode_summary:          "📊 Tool progress: **SUMMARY** — one concise operational status bubble with stage, counters, and agents/profiles when detected."
     mode_new:              "⚙️ Araç ilerlemesi: **NEW** — araç değiştiğinde gösterilir (önizleme uzunluğu: `display.tool_preview_length`, varsayılan 40)."
     mode_all:              "⚙️ Araç ilerlemesi: **ALL** — her araç çağrısı gösterilir (önizleme uzunluğu: `display.tool_preview_length`, varsayılan 40)."
     mode_verbose:          "⚙️ Araç ilerlemesi: **VERBOSE** — her araç çağrısı tüm argümanlarıyla gösterilir."

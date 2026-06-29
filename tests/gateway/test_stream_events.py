@@ -151,6 +151,25 @@ def test_tool_finished_emits_no_chrome():
     assert lines == []
 
 
+def test_summary_mode_enqueues_replacement_snapshots():
+    lines = []
+    d = GatewayEventDispatcher(
+        _base_adapter(), _FakeSink(),
+        enqueue_tool_line=lines.append, tool_mode="summary",
+    )
+    d.dispatch(ToolCallChunk(
+        tool_name="terminal",
+        args={"command": "hermes -p mes-release-run chat -q 'work kanban task t_62b0683f'"},
+    ))
+    d.dispatch(ToolCallFinished(tool_name="terminal", duration=2.0, ok=True))
+
+    assert len(lines) == 2
+    assert all(isinstance(line, tuple) and line[0] == "__replace__" for line in lines)
+    assert "Profil mes-release-run" in lines[0][1]
+    assert "t_62b0683f" in lines[0][1]
+    assert "outils 1/1 terminés" in lines[-1][1]
+
+
 # ── Control events → gateway-owned hooks ─────────────────────────────────────
 
 def test_long_tool_hint_routes_to_hook():

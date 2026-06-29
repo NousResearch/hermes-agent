@@ -405,6 +405,17 @@ class CLIAgentSetupMixin:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Kanban dispatcher workers are plain CLI agents launched with
+            # HERMES_KANBAN_TASK in their environment. Compose a best-effort
+            # journal onto the existing callbacks so dashboards can show
+            # observable progress (tools + visible assistant text) without
+            # exposing private reasoning and without affecting ordinary CLI runs.
+            try:
+                from hermes_cli.kanban_worker_journal import install_on_agent
+
+                install_on_agent(self.agent)
+            except Exception:
+                logger.debug("kanban worker journal install failed", exc_info=True)
             # Hydrate credits notices at session OPEN (parity with the TUI), so a
             # depletion / usage-band warning shows before the first message. The
             # notice_callback is bound above → _on_notice renders the line. Idempotent

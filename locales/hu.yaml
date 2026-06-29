@@ -344,6 +344,7 @@ Future messages in this room will use that transcript until `/reset` or another 
   verbose:
     not_enabled:           "A `/verbose` parancs nincs engedélyezve az üzenetküldő platformokon.\n\nEngedélyezd a `config.yaml` fájlban:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Eszközfolyamat: **OFF** — nem jelenik meg eszközaktivitás."
+    mode_summary:          "📊 Tool progress: **SUMMARY** — one concise operational status bubble with stage, counters, and agents/profiles when detected."
     mode_new:              "⚙️ Eszközfolyamat: **NEW** — eszközváltáskor jelenik meg (előnézet hossza: `display.tool_preview_length`, alapértelmezetten 40)."
     mode_all:              "⚙️ Eszközfolyamat: **ALL** — minden eszközhívás megjelenik (előnézet hossza: `display.tool_preview_length`, alapértelmezetten 40)."
     mode_verbose:          "⚙️ Eszközfolyamat: **VERBOSE** — minden eszközhívás teljes argumentumokkal."

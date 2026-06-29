@@ -35,6 +35,22 @@ export interface ComposerStatusItem {
 // registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
 
+// Flattened process-id → output tail, for the read-only agent terminal tabs that
+// mirror background processes (keyed globally since a tab outlives its session view).
+export const $backgroundOutputByProc = computed($backgroundStatusBySession, bySession => {
+  const out: Record<string, string> = {}
+
+  for (const list of Object.values(bySession)) {
+    for (const item of list) {
+      if (item.output) {
+        out[item.id] = item.output
+      }
+    }
+  }
+
+  return out
+})
+
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.
 const dismissedBySession = new Map<string, Set<string>>()

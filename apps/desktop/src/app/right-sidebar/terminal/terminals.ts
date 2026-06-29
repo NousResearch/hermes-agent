@@ -16,6 +16,10 @@ export interface TerminalEntry {
    *  (the project root if opened in one, else the backend's default). Switching
    *  sessions never moves or recreates a terminal. */
   cwd: string
+  /** `user` = interactive PTY shell. `agent` = read-only mirror of an agent
+   *  background process (`terminal(background=true)`), keyed by `procId`. */
+  kind: 'user' | 'agent'
+  procId?: string
 }
 
 export const $terminals = atom<readonly TerminalEntry[]>([])
@@ -33,15 +37,57 @@ const newId = () =>
  *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
 export function createTerminal(cwd: string = $currentCwd.get()): string {
   const id = newId()
-  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd }])
+  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
   $activeTerminalId.set(id)
 
   return id
 }
 
-/** Guarantee at least one terminal exists (called when the pane opens). */
+// Procs we've already surfaced a tab for — so closing an agent tab doesn't
+// resurrect it on the next poll while the process is still running.
+const surfacedProcs = new Set<string>()
+
+const findByProc = (procId: string) => $terminals.get().find(term => term.procId === procId)
+
+/** Auto-surface an agent background process as a read-only tab — once. Returns
+ *  the tab id, or null if it was already surfaced and the user has since closed it. */
+export function ensureAgentTerminal(procId: string, title: string): string | null {
+  const existing = findByProc(procId)
+
+  if (existing) {
+    return existing.id
+  }
+
+  if (surfacedProcs.has(procId)) {
+    return null
+  }
+
+  surfacedProcs.add(procId)
+  const id = newId()
+  $terminals.set([...$terminals.get(), { id, title: title || 'agent', auto: false, cwd: '', kind: 'agent', procId }])
+
+  return id
+}
+
+/** Open + focus an agent process's tab (the status-stack link), recreating it if
+ *  the user had closed it. Opens the pane. */
+export function openAgentTerminal(procId: string, title: string): void {
+  surfacedProcs.add(procId)
+  let id = findByProc(procId)?.id
+
+  if (!id) {
+    id = newId()
+    $terminals.set([...$terminals.get(), { id, title: title || 'agent', auto: false, cwd: '', kind: 'agent', procId }])
+  }
+
+  $activeTerminalId.set(id)
+  setTerminalTakeover(true)
+}
+
+/** Guarantee at least one user shell exists (called when the pane opens) — agent
+ *  mirror tabs don't count, so opening the pane always yields a real shell. */
 export function ensureTerminal(): void {
-  if (!$terminals.get().length) {
+  if (!$terminals.get().some(term => term.kind === 'user')) {
     createTerminal()
   }
 }

@@ -1,13 +1,21 @@
 import '@xterm/xterm/css/xterm.css'
 
+import { useStore } from '@nanostores/react'
+
 import { Button } from '@/components/ui/button'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $backgroundOutputByProc } from '@/store/composer-status'
 
 import { reportTerminalShell } from './terminals'
+import { useAgentTerminal } from './use-agent-terminal'
 import { useTerminalSession } from './use-terminal-session'
+
+// Absolute-stacked so inactive tabs keep layout size (a display:none host goes
+// 0×0 and renders garbled on re-show); visibility toggles which one is seen.
+const INSTANCE_CLASS = 'absolute inset-0 flex flex-col bg-(--ui-editor-surface-background) px-2 pb-2 pt-0'
 
 interface TerminalInstanceProps {
   id: string
@@ -31,15 +39,7 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat }: Term
 
   return (
     <div
-      className={cn(
-        // Stack every terminal absolutely and toggle visibility (NOT display) so
-        // inactive tabs keep their layout size and track pane resizes — a
-        // display:none host goes 0×0, skips fit, and renders garbled when shown
-        // again at a changed size. No top padding so the prompt hugs the
-        // titlebar-clearance line (the rest of the gap is required clearance).
-        'absolute inset-0 flex flex-col bg-(--ui-editor-surface-background) px-2 pb-2 pt-0',
-        active ? 'visible' : 'invisible pointer-events-none'
-      )}
+      className={cn(INSTANCE_CLASS, active ? 'visible' : 'invisible pointer-events-none')}
       // Focus-scope marker so isFocusWithin('[data-terminal]') can route ⌘W here.
       data-terminal=""
     >
@@ -68,6 +68,27 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat }: Term
       )}
       {/* Outer div paints the terminal inset; inner div is the xterm host so the
           canvas sizes to the content area and p-2 stays as terminal padding. */}
+      <div
+        className="h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-editor-surface-background)! [&_.xterm-viewport]:bg-(--ui-editor-surface-background)!"
+        ref={hostRef}
+      />
+    </div>
+  )
+}
+
+interface AgentTerminalInstanceProps {
+  active: boolean
+  procId: string
+}
+
+/** Read-only mirror of an agent background process — a write-only xterm fed by
+ *  the process's output tail (no PTY, no input). */
+export function AgentTerminalInstance({ active, procId }: AgentTerminalInstanceProps) {
+  const output = useStore($backgroundOutputByProc)[procId] ?? ''
+  const { hostRef } = useAgentTerminal({ active, output })
+
+  return (
+    <div className={cn(INSTANCE_CLASS, active ? 'visible' : 'invisible pointer-events-none')}>
       <div
         className="h-full min-h-0 overflow-hidden text-(--ui-text-secondary) [&_.xterm]:h-full [&_.xterm-screen]:bg-(--ui-editor-surface-background)! [&_.xterm-viewport]:bg-(--ui-editor-surface-background)!"
         ref={hostRef}

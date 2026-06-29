@@ -5537,11 +5537,41 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
-    Env vars take precedence over YAML. Returns None — flows through env.
+    Env vars take precedence over YAML. Returning the config values as
+    PlatformConfig.extra lets multiplexed profile adapters avoid reading another
+    profile's process-global FEISHU_* values at construction time.
     """
+    seeded: dict[str, Any] = {}
+    direct_keys = (
+        "app_id",
+        "app_secret",
+        "domain",
+        "connection_mode",
+        "encrypt_key",
+        "verification_token",
+        "group_policy",
+        "allow_bots",
+        "bot_open_id",
+        "bot_user_id",
+        "bot_name",
+        "webhook_host",
+        "webhook_port",
+        "webhook_path",
+        "require_mention",
+        "default_group_policy",
+        "group_rules",
+        "admins",
+    )
+    for key in direct_keys:
+        if key in feishu_cfg:
+            seeded[key] = feishu_cfg[key]
+    if "allowed_users" in feishu_cfg:
+        seeded["allowed_users"] = feishu_cfg["allowed_users"]
+    if "allow_all_users" in feishu_cfg:
+        seeded["allow_all_users"] = feishu_cfg["allow_all_users"]
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

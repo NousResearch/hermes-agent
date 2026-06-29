@@ -630,6 +630,19 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Handle message_metadata_posted and message_metadata_updated events.
+            # These fire when a message tagged with a custom metadata event type
+            # (declared in the manifest's message_metadata_events array) is posted
+            # or updated. We forward them into the standard message pipeline so
+            # the agent can react to tagged messages (e.g. "messages:hermes" tags).
+            @self._app.event("message_metadata_posted")
+            async def handle_message_metadata_posted(event, say):
+                await self._handle_message_metadata_event(event)
+
+            @self._app.event("message_metadata_updated")
+            async def handle_message_metadata_updated(event, say):
+                await self._handle_message_metadata_event(event)
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -1764,18 +1777,142 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
-    async def _handle_slack_message(self, event: dict) -> None:
-        """Handle an incoming Slack message event."""
+    async def _handle_message_metadata_event(self, event: dict) -> None:
+        """Handle Slack message_metadata_posted / message_metadata_updated events.
+
+        Slack fires these events when a message carrying a custom metadata event
+        type (listed under ``metadata_subscriptions`` in the app manifest) is
+        posted or updated.  The metadata payload is in ``event.metadata`` with
+        the shape::
+
+            {
+                "event_type": "messages:hermes",
+                "event_payload": { ... }
+            }
+
+        We extract the ``event_type`` tag and forward the underlying message into
+        the normal message pipeline.  The raw metadata is attached to the
+        reconstructed event so downstream handlers (tools, skills) can inspect
+        it if needed.
+
+        Metadata events use different field names than normal message events:
+        - ``channel_id`` instead of ``channel``
+        - ``user_id`` instead of ``user``
+        - ``message_ts`` for the message timestamp (``ts`` in normal events)
+        - ``event_ts`` for the event timestamp
+        - No ``text`` field (text lives on the original message)
+
+        We normalize these to the standard message event shape before forwarding,
+        and bypass the bot/mention gates since the metadata tag itself is the
+        addressing signal.
+        """
+        metadata_payload = event.get("metadata") or {}
+        event_type = metadata_payload.get("event_type", "")
+        logger.debug(
+            "[Slack] message_metadata event: type=%s channel=%s ts=%s",
+            event_type,
+            event.get("channel_id", event.get("channel", "")),
+            event.get("message_ts", event.get("ts", "")),
+        )
+
+        # Normalize metadata event fields to standard message event shape.
+        # Metadata events use channel_id/user_id instead of channel/user.
+        normalized = dict(event)
+        if "channel_id" in normalized and "channel" not in normalized:
+            normalized["channel"] = normalized["channel_id"]
+        if "user_id" in normalized and "user" not in normalized:
+            normalized["user"] = normalized["user_id"]
+        # message_ts is the message timestamp; ensure ts is set for the pipeline.
+        if "message_ts" in normalized and "ts" not in normalized:
+            normalized["ts"] = normalized["message_ts"]
+        # Mark as metadata-tagged so downstream can identify source.
+        normalized["_metadata_event_type"] = event_type
+
+        # Fetch the original message text via conversations_history.
+        # Metadata events carry channel_id/message_ts/metadata but no text field,
+        # so _handle_slack_message would build a MessageEvent with text="" and the
+        # agent gets triggered with empty content.  Best-effort: if the API call
+        # fails, proceed with empty text rather than dropping the event entirely.
+        if not normalized.get("text") and normalized.get("channel") and normalized.get("ts"):
+            try:
+                resp = await self._app.client.conversations_history(
+                    channel=normalized["channel"],
+                    latest=normalized.get("ts"),
+                    limit=1,
+                    inclusive=True,
+                )
+                msgs = resp.get("messages", [])
+                if msgs:
+                    normalized["text"] = msgs[0].get("text", "")
+                    # Also pick up any blocks/attachments if present
+                    for key in ("blocks", "attachments"):
+                        if key in msgs[0] and key not in normalized:
+                            normalized[key] = msgs[0][key]
+            except Exception:
+                # Best-effort; proceed with empty text rather than crashing
+                pass
+
+        # Use a metadata-specific dedup key to prevent the normal message event
+        # (which shares the same ts) from pre-empting this path. When an
+        # unmentioned channel message arrives, Slack fires both a normal
+        # message.channels event AND a message_metadata_posted event with the
+        # same ts. The normal event is processed first: ts is recorded in the
+        # dedup cache, then the mention gate drops it. Without a distinct key,
+        # the metadata event would be deduped out before bypass_filters=True
+        # can route it.
+        #
+        # We also include the Slack event type name and event_ts so that
+        # message_metadata_posted and message_metadata_updated events for the
+        # same message do NOT collide: without event_ts in the key, the updated
+        # event would be dropped as a duplicate of posted within the 300s window.
+        #
+        # We pass a separate dedup_key rather than mutating normalized["ts"] so
+        # that the real ts value remains intact for Slack reply threading
+        # (chat_postMessage uses thread_ts=event["ts"], and sending
+        # thread_ts='meta:<ts>' causes Slack to reject the call).
+        event_type_name = event.get("type", "message_metadata")
+        event_ts = event.get("event_ts", event.get("ts", ""))
+        meta_dedup_key = f"meta:{event_type_name}:{event_ts}" if event_ts else None
+
+        # Bypass bot/mention gates — the metadata tag is the addressing signal.
+        await self._handle_slack_message(
+            normalized,
+            bypass_filters=True,
+            dedup_key=meta_dedup_key,
+        )
+
+    async def _handle_slack_message(
+        self,
+        event: dict,
+        bypass_filters: bool = False,
+        dedup_key: Optional[str] = None,
+    ) -> None:
+        """Handle an incoming Slack message event.
+
+        Args:
+            event: The Slack event dict (may be normalized from a metadata event).
+            bypass_filters: When True, skip bot-filtering and mention-gating.
+                Used by ``_handle_message_metadata_event`` so that metadata-tagged
+                messages are always routed regardless of sender type or mention status.
+            dedup_key: Optional override for the dedup cache key.  When set, this
+                key is used for dedup lookup/storage instead of ``event["ts"]``.
+                Used by ``_handle_message_metadata_event`` so that the metadata event
+                (which shares ``ts`` with the normal message event) gets its own
+                distinct dedup slot without mutating the ``ts`` field that Slack uses
+                for reply threading.
+        """
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
-        if event_ts and self._dedup.is_duplicate(event_ts):
+        _dedup_key = dedup_key or event_ts
+        if _dedup_key and self._dedup.is_duplicate(_dedup_key):
             return
 
         # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        # Skipped when bypass_filters=True (e.g. metadata-tagged messages).
+        if not bypass_filters and (event.get("bot_id") or event.get("subtype") == "bot_message"):
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
@@ -1963,36 +2100,40 @@ class SlackAdapter(BasePlatformAdapter):
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
         if not is_dm and bot_uid:
-            # Check allowed channels — if set, only respond in these channels (whitelist)
+            # Check allowed channels — always enforced regardless of bypass_filters.
+            # The allowlist is a hard gate; even metadata-tagged messages must
+            # originate from permitted channels to reach the agent.
             allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
                 logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
                 return
 
-            if channel_id in self._slack_free_response_channels():
-                pass  # Free-response channel — always process
-            elif not self._slack_require_mention():
-                pass  # Mention requirement disabled globally for Slack
-            elif self._slack_strict_mention() and not is_mentioned:
-                return  # Strict mode: ignore until @-mentioned again
-            elif not is_mentioned:
-                reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
-                )
-                in_mentioned_thread = (
-                    event_thread_ts is not None
-                    and event_thread_ts in self._mentioned_threads
-                )
-                has_session = (
-                    is_thread_reply
-                    and self._has_active_session_for_thread(
-                        channel_id=channel_id,
-                        thread_ts=event_thread_ts,
-                        user_id=user_id,
+            # Bot filter and mention gate — skipped when routing via metadata tag.
+            if not bypass_filters:
+                if channel_id in self._slack_free_response_channels():
+                    pass  # Free-response channel — always process
+                elif not self._slack_require_mention():
+                    pass  # Mention requirement disabled globally for Slack
+                elif self._slack_strict_mention() and not is_mentioned:
+                    return  # Strict mode: ignore until @-mentioned again
+                elif not is_mentioned:
+                    reply_to_bot_thread = (
+                        is_thread_reply and event_thread_ts in self._bot_message_ts
                     )
-                )
-                if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
-                    return
+                    in_mentioned_thread = (
+                        event_thread_ts is not None
+                        and event_thread_ts in self._mentioned_threads
+                    )
+                    has_session = (
+                        is_thread_reply
+                        and self._has_active_session_for_thread(
+                            channel_id=channel_id,
+                            thread_ts=event_thread_ts,
+                            user_id=user_id,
+                        )
+                    )
+                    if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+                        return
 
         if is_mentioned:
             # Strip the bot mention from the text

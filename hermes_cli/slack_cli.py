@@ -88,6 +88,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "im:history",
                     "im:read",
                     "im:write",
+                    "metadata.message:read",
                     "users:read",
                 ],
             },
@@ -101,6 +102,11 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "message.channels",
                     "message.groups",
                     "message.im",
+                    "message_metadata_posted",
+                    "message_metadata_updated",
+                ],
+                "metadata_subscriptions": [
+                    {"app_id": "*", "event_type": "messages:hermes"},
                 ],
             },
             "interactivity": {

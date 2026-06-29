@@ -1077,15 +1077,21 @@ def execute_code(
         return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config
-    env_type = _get_env_config()["env_type"]
+    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+    _env_config = _get_env_config()
+    env_type = _env_config["env_type"]
 
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
     # here before either dispatch path spawns it. Runs synchronously in the
     # caller (tool-executor) thread, which holds the session context (#30882).
+    # A Docker sandbox with host bind mounts is no longer isolated, so its
+    # script does not get the container fast-path.
     from tools.approval import check_execute_code_guard
-    _guard = check_execute_code_guard(code, env_type)
+    _guard = check_execute_code_guard(
+        code, env_type,
+        has_host_access=_docker_has_host_access(_env_config),
+    )
     if not _guard.get("approved", False):
         return json.dumps({
             "status": "error",

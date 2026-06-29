@@ -1,7 +1,6 @@
 import { useAuiState } from '@assistant-ui/react'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { composerPanelCard } from '@/components/chat/composer-dock'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 
@@ -19,13 +18,11 @@ const HOVER_CLOSE_MS = 140
 const ROW_CLASS =
   'relative flex w-full min-w-0 max-w-full cursor-pointer select-none overflow-hidden rounded-md px-2 py-1 text-left outline-hidden transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none'
 
-const POPOVER_SHELL = cn(
-  'absolute right-full top-1/2 z-50 mr-1.5 max-h-[min(22rem,calc(100vh-8rem))] w-80 max-w-[min(20rem,calc(100vw-2rem))] -translate-y-1/2 overflow-x-hidden overflow-y-auto overscroll-contain p-1 text-popover-foreground transition-[opacity,transform] duration-100 ease-out group-hover/timeline:transition-none',
-  composerPanelCard,
-  // Solid fill — composerPanelCard is deliberately translucent; without this,
-  // directive chips in the transcript bleed through and look like popover overflow.
-  'bg-(--composer-fill)'
-)
+// Surface (border-color/bg/shadow/blur) comes from the shared
+// `[data-slot='thread-timeline-popover']` rule in styles.css, so it's 1:1 with
+// the dropdown/select/dialog menus. We only own layout + the border/radius here.
+const POPOVER_SHELL =
+  'absolute right-full top-1/2 z-50 max-h-[min(22rem,calc(100vh-8rem))] w-80 max-w-[min(20rem,calc(100vw-2rem))] -translate-y-1/2 overflow-x-hidden overflow-y-auto overscroll-contain rounded-lg border p-1 text-popover-foreground transition-[opacity,transform] duration-100 ease-out group-hover/timeline:transition-none'
 
 function escapeSelectorValue(value: string): string {
   return globalThis.CSS?.escape?.(value) ?? value.replace(/["\\]/g, '\\$&')
@@ -153,6 +150,8 @@ export const ThreadTimeline: FC = () => {
   const tickRefs = useRef<(HTMLSpanElement | null)[]>([])
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([])
 
+  // Hover sync: light the tick + its popover row, and scroll that row into view
+  // when the list overflows so the hovered prompt is always visible.
   const paint = useCallback((index: number, on: boolean) => {
     const tick = tickRefs.current[index]
 
@@ -160,7 +159,12 @@ export const ThreadTimeline: FC = () => {
       tick.style.opacity = on ? '1' : ''
     }
 
-    rowRefs.current[index]?.classList.toggle('bg-(--ui-row-hover-background)', on)
+    const row = rowRefs.current[index]
+    row?.classList.toggle('bg-(--ui-row-hover-background)', on)
+
+    if (on) {
+      row?.scrollIntoView({ block: 'nearest' })
+    }
   }, [])
 
   const keepOpen = useCallback(() => {

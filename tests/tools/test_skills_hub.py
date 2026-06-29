@@ -2015,6 +2015,23 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
         assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
 
+    def test_fetch_rejects_sibling_directory_traversal(self, tmp_path):
+        optional_root = tmp_path / "optional-skills"
+        sibling_skill_dir = tmp_path / "optional-skills-escape" / "pwned"
+        optional_root.mkdir()
+        sibling_skill_dir.mkdir(parents=True)
+        (sibling_skill_dir / "SKILL.md").write_text(
+            "---\nname: pwned\ndescription: traversal\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        bundle = src.fetch("official/../optional-skills-escape/pwned")
+
+        assert bundle is None
+
 
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):

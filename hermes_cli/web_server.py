@@ -33,6 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+import zipfile
 
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
@@ -4986,7 +4987,7 @@ async def get_env_vars(profile: Optional[str] = None):
     channel_keys = _channel_managed_env_keys()
     catalog_meta = _catalog_provider_env_metadata()
 
-    def _row(var_name: str, info: dict) -> dict:
+    def _row(var_name: str, info: dict, *, custom: bool = False) -> dict:
         value = env_on_disk.get(var_name)
         cat_meta = catalog_meta.get(var_name) or {}
         # Hand OPTIONAL_ENV_VARS prose wins where present; the catalog fills any
@@ -5009,6 +5010,12 @@ async def get_env_vars(profile: Optional[str] = None):
             # CLI `hermes model` picker uses (not desktop-only prefix guesses).
             "provider": cat_meta.get("provider", ""),
             "provider_label": cat_meta.get("provider_label", ""),
+            # True when this key exists in the user's .env but is NOT in any
+            # catalog (OPTIONAL_ENV_VARS or the provider catalog) — an
+            # arbitrary/custom env var the user added directly. Surfaced so the
+            # Keys page can list (and let the user manage) them instead of
+            # hiding everything it doesn't recognise.
+            "custom": custom,
         }
 
     result = {}
@@ -5020,6 +5027,19 @@ async def get_env_vars(profile: Optional[str] = None):
     for var_name in catalog_meta:
         if var_name not in result:
             result[var_name] = _row(var_name, {})
+    # Surface arbitrary/custom keys the user set in .env that aren't in any
+    # catalog. These are always "set" (they're on disk). Treated as secrets by
+    # default (is_password=True → redacted, reveal-gated) since an unrecognised
+    # key could hold anything. Channel-managed credentials are excluded — those
+    # belong to the Channels page. This makes the "add a custom key" surface
+    # round-trip: a key added there reappears here under its own section.
+    for var_name in env_on_disk:
+        if var_name in result or var_name in channel_keys:
+            continue
+        row = _row(var_name, {}, custom=True)
+        row["category"] = "custom"
+        row["is_password"] = True
+        result[var_name] = row
     return result
 
 
@@ -10001,17 +10021,63 @@ class BackupRequest(BaseModel):
     output: Optional[str] = None
 
 
+def _dashboard_backup_dir() -> Path:
+    return get_hermes_home() / "backups"
+
+
+def _new_dashboard_backup_path() -> Path:
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    return _dashboard_backup_dir() / f"hermes-backup-{stamp}-{secrets.token_hex(4)}.zip"
+
+
 @app.post("/api/ops/backup")
 async def run_backup(body: BackupRequest):
     args = ["backup"]
+    archive: Optional[Path] = None
     if body.output:
         args.append(body.output.strip())
+    else:
+        archive = _new_dashboard_backup_path()
+        try:
+            archive.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not create backup directory: {exc}",
+            )
+        args.append(str(archive))
     try:
         proc = _spawn_hermes_action(args, "backup")
     except Exception as exc:
         _log.exception("Failed to spawn backup")
         raise HTTPException(status_code=500, detail=f"Failed to run backup: {exc}")
-    return {"ok": True, "pid": proc.pid, "name": "backup"}
+    response = {"ok": True, "pid": proc.pid, "name": "backup"}
+    if archive is not None:
+        response["archive"] = str(archive)
+    return response
+
+
+@app.get("/api/ops/backup/download")
+async def download_dashboard_backup(archive: str):
+    try:
+        backup_dir = _dashboard_backup_dir().expanduser().resolve(strict=False)
+        target = Path(archive).expanduser().resolve(strict=True)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid backup path")
+
+    if not _path_is_under(backup_dir, target):
+        raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    return FileResponse(
+        path=str(target),
+        media_type="application/zip",
+        filename=target.name,
+        content_disposition_type="attachment",
+    )
 
 
 class ImportRequest(BaseModel):
@@ -10042,6 +10108,94 @@ async def run_import(body: ImportRequest):
         _log.exception("Failed to spawn import")
         raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "import"}
+
+
+def _safe_backup_upload_name(filename: str | None) -> str:
+    name = Path(filename or "backup.zip").name.strip()
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
+    if not name:
+        name = "backup.zip"
+    if not name.lower().endswith(".zip"):
+        name = f"{name}.zip"
+    return name
+
+
+@app.post("/api/ops/import-upload")
+async def run_import_upload(
+    file: UploadFile = File(...),
+    force: bool = Form(False),
+):
+    staging_dir = _dashboard_backup_dir()
+    try:
+        staging_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create import staging directory: {exc}",
+        )
+
+    safe_name = _safe_backup_upload_name(file.filename)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = staging_dir / f"dashboard-import-{stamp}-{secrets.token_hex(4)}-{safe_name}"
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".upload",
+        dir=str(staging_dir),
+    )
+    tmp_path = Path(tmp_name)
+    total = 0
+    renamed = False
+    try:
+        with os.fdopen(tmp_fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MANAGED_FILE_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="Archive is too large")
+                out.write(chunk)
+        os.replace(tmp_path, target)
+        renamed = True
+    except HTTPException:
+        raise
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Import staging directory is not writable",
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not write uploaded archive: {exc}",
+        )
+    finally:
+        if not renamed:
+            tmp_path.unlink(missing_ok=True)
+        await file.close()
+
+    if not zipfile.is_zipfile(target):
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded archive is not a valid zip file",
+        )
+
+    args = ["import", str(target)]
+    if force:
+        args.append("--force")
+    try:
+        proc = _spawn_hermes_action(args, "import")
+    except Exception as exc:
+        _log.exception("Failed to spawn import")
+        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "name": "import",
+        "archive": str(target),
+        "uploaded_bytes": total,
+    }
 
 
 @app.get("/api/ops/hooks")

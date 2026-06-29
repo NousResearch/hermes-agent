@@ -14680,7 +14680,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and cached[0] is not _AGENT_PENDING_SENTINEL
             ):
                 if cached[2] != _live:
-                    _cache[session_key] = (cached[0], cached[1], _live)
+                    # Preserve session_id in the 4th slot if present
+                    new_tuple = (cached[0], cached[1], _live)
+                    if len(cached) > 3:
+                        new_tuple = (cached[0], cached[1], _live, cached[3])
+                    _cache[session_key] = new_tuple
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
@@ -16359,11 +16363,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if cached and cached[1] == _sig:
                         # cached[2] is the message_count at cache time;
                         # stale when a second process appended rows.
+                        # cached[3] (if present) is the session_id at cache time;
+                        # skip the cross-process check when the session_id
+                        # differs — the message_count values belong to
+                        # different DB rows and comparison is meaningless.
                         _cached_mc = cached[2] if len(cached) > 2 else None
+                        _cached_sid = cached[3] if len(cached) > 3 else None
                         if (
                             _cached_mc is not None
                             and _current_msg_count is not None
                             and _current_msg_count != _cached_mc
+                            and (_cached_sid is None or _cached_sid == session_id)
                         ):
                             # Cross-process write detected — discard stale
                             # agent so it rebuilds from fresh DB transcript.
@@ -16462,7 +16472,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
-                        _cache[session_key] = (agent, _sig, _current_msg_count)
+                        _cache[session_key] = (agent, _sig, _current_msg_count, session_id)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 

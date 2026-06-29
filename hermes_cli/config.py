@@ -960,6 +960,12 @@ DEFAULT_CONFIG = {
         # plausible-looking output when a real path is blocked.  Costs ~80
         # tokens in the cached system prompt.  Set False to disable globally.
         "task_completion_guidance": True,
+        # Attribution label injected into the agent's default identity and the
+        # Hermes self-help guidance block.  "Nous Research" (default) preserves
+        # historical behavior; any other string rebrands the "created by ..." /
+        # "(by ...)" clauses; an empty string ("") omits attribution entirely
+        # while keeping the rest of the identity and the docs/skill pointer.
+        "attribution": "Nous Research",
         # Universal parallel-tool-call guidance — short prompt block applied to
         # all models that tells the model to batch independent tool calls
         # (reads, searches, web fetches, read-only commands) into one turn

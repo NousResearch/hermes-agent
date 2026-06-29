@@ -28,8 +28,11 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    DEFAULT_ATTRIBUTION,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    build_agent_identity,
+    build_help_guidance,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -157,12 +160,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             stable_parts.append(_soul_content)
             _soul_loaded = True
 
-    if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+    # Resolve the configured attribution once.  Default preserves historical
+    # behavior; empty string drops attribution from both blocks below.
+    _attribution = getattr(agent, "_attribution", DEFAULT_ATTRIBUTION)
 
-    # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    if not _soul_loaded:
+        # Fallback to hardcoded identity (honoring configured attribution).
+        if _attribution == DEFAULT_ATTRIBUTION:
+            stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        else:
+            stable_parts.append(build_agent_identity(_attribution))
+
+    # Pointer to the hermes-agent skill + docs for user questions about Hermes
+    # itself.  When attribution is empty the leading "by ..." sentence is
+    # dropped but the docs/skill pointer is preserved.
+    if _attribution == DEFAULT_ATTRIBUTION:
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    else:
+        stable_parts.append(build_help_guidance(_attribution))
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

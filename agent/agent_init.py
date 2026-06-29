@@ -1319,6 +1319,15 @@ def init_agent(
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
 
+    # Attribution label for the agent identity.  Default "Nous Research".  When
+    # set to a different org name it rebrands the "created by ..." / "(by ...)"
+    # clauses; an empty string omits attribution entirely.  Used by the system
+    # prompt builder for the default-identity fallback and the Hermes self-help
+    # guidance block.
+    from agent.prompt_builder import DEFAULT_ATTRIBUTION as _DEFAULT_ATTRIBUTION
+    _attr = _agent_section.get("attribution", _DEFAULT_ATTRIBUTION)
+    agent._attribution = _attr if isinstance(_attr, str) else _DEFAULT_ATTRIBUTION
+
     # Universal parallel-tool-call guidance toggle.  Default True.  Separate
     # flag from task_completion_guidance because a user may want one but not
     # the other.  Steers the model to batch independent tool calls into a

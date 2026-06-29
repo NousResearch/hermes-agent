@@ -123,26 +123,68 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # Constants
 # =========================================================================
 
-DEFAULT_AGENT_IDENTITY = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
-    "You are helpful, knowledgeable, and direct. You assist users with a wide "
-    "range of tasks including answering questions, writing and editing code, "
-    "analyzing information, creative work, and executing actions via your tools. "
-    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below. "
-    "Be targeted and efficient in your exploration and investigations."
-)
+# Default attribution organization.  Surfaced via ``agent.attribution`` in
+# config.yaml so downstream operators can rebrand the agent identity or drop
+# attribution entirely (see ``build_agent_identity`` / ``build_help_guidance``).
+DEFAULT_ATTRIBUTION = "Nous Research"
 
-HERMES_AGENT_HELP_GUIDANCE = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
-    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
-    "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://hermes-agent.nousresearch.com/docs is your "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
-    "of truth when the two differ."
-)
+
+def build_agent_identity(attribution: str = DEFAULT_ATTRIBUTION) -> str:
+    """Build the fallback agent identity string.
+
+    *attribution* names the creating organization.  When it is empty (or
+    falsy after stripping) the "created by ..." clause is omitted entirely so
+    the identity reads as a clean, unattributed description.
+    """
+    attribution = (attribution or "").strip()
+    if attribution:
+        opening = (
+            f"You are Hermes Agent, an intelligent AI assistant created by {attribution}. "
+        )
+    else:
+        opening = "You are Hermes Agent, an intelligent AI assistant. "
+    return (
+        opening
+        + "You are helpful, knowledgeable, and direct. You assist users with a wide "
+        "range of tasks including answering questions, writing and editing code, "
+        "analyzing information, creative work, and executing actions via your tools. "
+        "You communicate clearly, admit uncertainty when appropriate, and prioritize "
+        "being genuinely useful over being verbose unless otherwise directed below. "
+        "Be targeted and efficient in your exploration and investigations."
+    )
+
+
+def build_help_guidance(attribution: str = DEFAULT_ATTRIBUTION) -> str:
+    """Build the Hermes self-help guidance block.
+
+    When *attribution* is empty the leading "You run on Hermes Agent (by ...)"
+    sentence is dropped; the docs/skill pointer (the functional part of the
+    block) is preserved so users still get help-routing guidance.
+    """
+    attribution = (attribution or "").strip()
+    if attribution:
+        lead = f"You run on Hermes Agent (by {attribution}). When the user needs help with "
+    else:
+        lead = "You run on Hermes Agent. When the user needs help with "
+    return (
+        lead
+        + "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+        "it — or when you need to understand your own features, tools, or capabilities, "
+        "the documentation at https://hermes-agent.nousresearch.com/docs is your "
+        "authoritative reference and always holds the latest, most up-to-date "
+        "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+        "for additional guidance and proven workflows, but treat the docs as the source "
+        "of truth when the two differ."
+    )
+
+
+# Backward-compatible module-level constants (default attribution).  Existing
+# importers (run_agent, codex transport, codex_responses_adapter) keep working
+# unchanged; the system prompt builder uses the factories above to honor the
+# configured attribution.
+DEFAULT_AGENT_IDENTITY = build_agent_identity()
+
+HERMES_AGENT_HELP_GUIDANCE = build_help_guidance()
 
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "

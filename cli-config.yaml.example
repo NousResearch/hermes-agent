@@ -610,6 +610,17 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
+  # Attribution label woven into the agent's built-in identity. Controls the
+  # "created by <X>" clause in the default identity fallback and the
+  # "You run on Hermes Agent (by <X>)" sentence in the self-help guidance.
+  #   "Nous Research" (default) -> unchanged, backward compatible
+  #   "Acme Corp"               -> "...created by Acme Corp" / "(by Acme Corp)"
+  #   ""                        -> attribution omitted; identity + docs pointer kept
+  # Note: SOUL.md still overrides the main identity slot when present; this
+  # controls the hardcoded fallback (subagents, Feishu, etc.) and the
+  # always-injected help guidance block.
+  # attribution: "Nous Research"
+
   # Maximum tool-calling iterations per conversation
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration

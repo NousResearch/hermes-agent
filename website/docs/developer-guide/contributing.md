@@ -74,13 +74,20 @@ this way, make sure you run the `hermes` entrypoint from this venv; running the
 system `python3 -m hermes_cli.main` can pick up unrelated system Python
 packages.
 
+Create the venv **outside** the cloned source tree. A venv that lives inside
+the directory the agent operates from can be wiped by a relative-path command
+the agent runs against its own checkout (`rm -rf venv`, `uv venv venv`, etc.),
+which silently destroys the running runtime mid-session. Keeping it outside the
+tree means no relative path from the workspace resolves to it.
+
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Create venv with Python 3.11
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
+# Create venv with Python 3.11, OUTSIDE the source tree
+uv venv ~/.hermes/venvs/hermes-dev --python 3.11
+export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"

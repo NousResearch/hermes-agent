@@ -84,8 +84,8 @@ class TestHandleResumeCommand:
         """With no argument, lists recently titled sessions."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram", user_id="12345")
-        db.create_session("sess_002", "telegram", user_id="12345")
+        db.create_session("sess_001", "telegram", user_id="12345", chat_id="67890")
+        db.create_session("sess_002", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("sess_001", "Research")
         db.set_session_title("sess_002", "Coding")
 
@@ -105,7 +105,7 @@ class TestHandleResumeCommand:
         """With no arg and no titled sessions, shows instructions."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram", user_id="12345")  # No title
+        db.create_session("sess_001", "telegram", user_id="12345", chat_id="67890")  # No title
 
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
@@ -119,11 +119,11 @@ class TestHandleResumeCommand:
         """Numeric argument resumes the indexed titled session from the list."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram", user_id="12345")
-        db.create_session("sess_002", "telegram", user_id="12345")
+        db.create_session("sess_001", "telegram", user_id="12345", chat_id="67890")
+        db.create_session("sess_002", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("sess_001", "Research")
         db.set_session_title("sess_002", "Coding")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume 2")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -141,9 +141,9 @@ class TestHandleResumeCommand:
         """Out-of-range numeric arguments show a helpful error."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram", user_id="12345")
+        db.create_session("sess_001", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("sess_001", "Research")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume 9")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -160,9 +160,9 @@ class TestHandleResumeCommand:
         """Resolves a title and switches to that session."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session_abc", "telegram", user_id="12345")
+        db.create_session("old_session_abc", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("old_session_abc", "My Project")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume My Project")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -216,7 +216,7 @@ class TestHandleResumeCommand:
         """Returns error for unknown session name."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume Nonexistent Session")
         runner = _make_runner(session_db=db, event=event)
@@ -229,7 +229,7 @@ class TestHandleResumeCommand:
         """Returns friendly message when already on the requested session."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("current_session_001", "Active Project")
 
         event = _make_event(text="/resume Active Project")
@@ -244,11 +244,11 @@ class TestHandleResumeCommand:
         """Asking for 'My Project' when 'My Project #2' exists gets the latest."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_v1", "telegram", user_id="12345")
+        db.create_session("sess_v1", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("sess_v1", "My Project")
-        db.create_session("sess_v2", "telegram", user_id="12345")
+        db.create_session("sess_v2", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("sess_v2", "My Project #2")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume My Project")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -267,12 +267,12 @@ class TestHandleResumeCommand:
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("compressed_root", "telegram", user_id="12345")
+        db.create_session("compressed_root", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("compressed_root", "Compressed Work")
         db.end_session("compressed_root", "compression")
-        db.create_session("compressed_child", "telegram", user_id="12345", parent_session_id="compressed_root")
+        db.create_session("compressed_child", "telegram", user_id="12345", chat_id="67890", parent_session_id="compressed_root")
         db.append_message("compressed_child", "user", "hello from continuation")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume Compressed Work")
         runner = _make_runner(
@@ -300,9 +300,9 @@ class TestHandleResumeCommand:
         """Switching sessions clears any cached running agent."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session", "telegram", user_id="12345")
+        db.create_session("old_session", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("old_session", "Old Work")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume Old Work")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -326,9 +326,9 @@ class TestHandleResumeCommand:
         import threading
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session", "telegram", user_id="12345")
+        db.create_session("old_session", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("old_session", "Old Work")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume Old Work")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
@@ -353,9 +353,9 @@ class TestHandleResumeCommand:
         """
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("abc123", "telegram", user_id="12345")
+        db.create_session("abc123", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("abc123", "Bracketed")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         for raw in ("<abc123>", "[abc123]", '"abc123"', "'abc123'"):
             event = _make_event(text=f"/resume {raw}")
@@ -382,9 +382,9 @@ class TestHandleResumeCommand:
         """
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("unnamed_session_xyz", "telegram", user_id="12345")
+        db.create_session("unnamed_session_xyz", "telegram", user_id="12345", chat_id="67890")
         # Deliberately no title set — this session can ONLY be resolved by ID.
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         event = _make_event(text="/resume unnamed_session_xyz")
         runner = _make_runner(
@@ -409,7 +409,7 @@ class TestHandleSessionsCommand:
     async def test_sessions_command_lists_current_platform_sessions(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("tg_session", "telegram", user_id="12345")
+        db.create_session("tg_session", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("tg_session", "Telegram Work")
         db.create_session("discord_session", "discord")
         db.set_session_title("discord_session", "Discord Work")
@@ -434,7 +434,7 @@ class TestHandleSessionsCommand:
         config is not."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("tg_named", "telegram", user_id="12345")
+        db.create_session("tg_named", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("tg_named", "Telegram Work")
         db.create_session("discord_unnamed", "discord")  # other origin
         db.append_message("discord_unnamed", "user", "discord first prompt")
@@ -462,7 +462,7 @@ class TestHandleSessionsCommand:
         db.set_session_title("victim_other_uid", "Other User")
         db.create_session("victim_missing_uid", "telegram")  # NULL owner
         db.set_session_title("victim_missing_uid", "Unowned")
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         for name in ("Other User", "victim_other_uid", "Unowned", "victim_missing_uid"):
             event = _make_event(text=f"/resume {name}")
@@ -482,14 +482,14 @@ class TestHandleSessionsCommand:
         unproven-origin transcript)."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("blank_source_same_uid", "telegram", user_id="12345")
+        db.create_session("blank_source_same_uid", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("blank_source_same_uid", "Blank Source Same UID")
         # Simulate a malformed/legacy row that does not record its origin.
         db._conn.execute(
             "UPDATE sessions SET source = '' WHERE id = ?", ("blank_source_same_uid",)
         )
         db._conn.commit()
-        db.create_session("current_session_001", "telegram", user_id="12345")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
 
         for name in ("Blank Source Same UID", "blank_source_same_uid"):
             event = _make_event(text=f"/resume {name}")
@@ -538,10 +538,55 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_blocks_same_user_different_chat(self, tmp_path):
+        """egilewski/CodeRabbit probe: the SAME user must not move a persisted
+        transcript from another chat into the current one. The row records its
+        records origin chat_id, so a chat-a caller cannot resume a chat-b row even with
+        a matching user_id (persisted-row chat-scope proof)."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("same_user_chat_b", "telegram", user_id="12345",
+                          chat_id="chat-b")
+        db.set_session_title("same_user_chat_b", "Same User Chat B")
+        db.create_session("current_session_001", "telegram", user_id="12345",
+                          chat_id="chat-a")
+
+        for name in ("Same User Chat B", "same_user_chat_b"):
+            event = _make_event(text=f"/resume {name}", user_id="12345",
+                                chat_id="chat-a")
+            event.source.chat_type = "group"
+            runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                                  event=event)
+            result = await runner._handle_resume_command(event)
+            runner.session_store.switch_session.assert_not_called()
+            assert "Resumed" not in result, name
+        db.close()
+
+    def test_resume_target_allowed_chat_scope(self, tmp_path):
+        """Unit-level: identity-bearing persisted fallback requires the row's
+        origin chat (and thread) to match the caller's."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("row_chat_a", "telegram", user_id="12345",
+                          chat_id="chat-a")
+        db.create_session("row_chat_b", "telegram", user_id="12345",
+                          chat_id="chat-b")
+        db.create_session("row_legacy_nochat", "telegram", user_id="12345")  # NULL chat
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: None  # persisted-only
+        caller = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-a",
+                               chat_type="group", user_id="12345")
+        # Same chat → allowed; different chat → blocked; legacy NULL-chat → blocked.
+        assert runner._resume_target_allowed(caller, "row_chat_a", allow_override=False) is True
+        assert runner._resume_target_allowed(caller, "row_chat_b", allow_override=False) is False
+        assert runner._resume_target_allowed(caller, "row_legacy_nochat", allow_override=False) is False
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_gateway_dispatches_sessions_command(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("tg_session", "telegram", user_id="12345")
+        db.create_session("tg_session", "telegram", user_id="12345", chat_id="67890")
         db.set_session_title("tg_session", "Telegram Work")
 
         event = _make_event(text="/sessions")
@@ -580,11 +625,40 @@ class TestSameOriginChatGroupScoping:
         runner.config.group_sessions_per_user = False
         assert runner._same_origin_chat(self._src("alice"), self._src("bob")) is True
 
-    def test_dm_cross_user_still_blocked(self):
+    def test_dm_cross_user_blocked_without_chat_id(self):
+        # No-chat_id DM: build_session_key falls back to the participant id
+        # (user_id_alt or user_id), so two different participants are different
+        # origins and must not match. (With a chat_id present the DM key IS the
+        # chat_id — see test_dm_same_chat_id_is_same_origin.)
+        runner = _make_runner()
+        a = self._src("alice", chat_type="dm", chat_id=None)
+        b = self._src("bob", chat_type="dm", chat_id=None)
+        assert runner._same_origin_chat(a, b) is False
+
+    def test_dm_no_identity_no_chat_id_fails_closed(self):
+        # teknium1 review: an identity-less no-chat_id DM must fail closed rather
+        # than be treated as a shared origin.
+        runner = _make_runner()
+        a = self._src(None, chat_type="dm", chat_id=None)
+        b = self._src(None, chat_type="dm", chat_id=None)
+        assert runner._same_origin_chat(a, b) is False
+
+    def test_dm_user_id_alt_mismatch_without_chat_id_blocked(self):
+        # No-chat_id DM keyed on user_id_alt (Signal/Feishu): different alt ids
+        # are different sessions even if user_id is absent/equal.
+        runner = _make_runner()
+        a = self._src(None, chat_type="dm", chat_id=None, user_id_alt="alice-alt")
+        b = self._src(None, chat_type="dm", chat_id=None, user_id_alt="bob-alt")
+        assert runner._same_origin_chat(a, b) is False
+
+    def test_dm_same_chat_id_is_same_origin(self):
+        # With a chat_id present, the DM session key is chat_id-only (no
+        # participant), so an equal chat_id is a same-origin match — mirrors
+        # build_session_key.
         runner = _make_runner()
         a = self._src("alice", chat_type="dm", chat_id="dm-1")
-        b = self._src("bob", chat_type="dm", chat_id="dm-1")
-        assert runner._same_origin_chat(a, b) is False
+        b = self._src("alice", chat_type="dm", chat_id="dm-1")
+        assert runner._same_origin_chat(a, b) is True
 
     def test_resume_target_allowed_blocks_cross_user_live_group(self):
         """End-to-end via the live-origin branch: Alice cannot resume Bob's

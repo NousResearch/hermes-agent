@@ -1,14 +1,13 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
-import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    _title_language,
 )
 
 
@@ -23,6 +22,42 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("help me fix this import", "Sure, let me check...")
             assert title == "Debugging Python Import Errors"
+
+    def test_default_prompt_matches_user_language(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Some Title"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response) as llm:
+            generate_title("質問です", "回答です")
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "same language the user is writing in" in system_prompt
+
+    def test_configured_language_pins_prompt(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Some Title"
+
+        with (
+            patch("agent.title_generator.call_llm", return_value=mock_response) as llm,
+            patch("agent.title_generator._title_language", return_value="Japanese"),
+        ):
+            generate_title("hello", "hi")
+
+        system_prompt = llm.call_args.kwargs["messages"][0]["content"]
+        assert "Write the title in Japanese" in system_prompt
+        assert "same language the user" not in system_prompt
+
+    def test_title_language_reads_config(self):
+        cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
+
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert _title_language() == "French"
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _title_language() == ""
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
+            assert _title_language() == ""
 
     def test_strips_quotes(self):
         mock_response = MagicMock()
@@ -136,6 +171,21 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_called_once_with("sess-1", "New Title")
 
+    def test_invokes_title_callback_after_setting_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        seen = []
+        with patch("agent.title_generator.generate_title", return_value="Readable Session"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                title_callback=seen.append,
+            )
+        db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
+        assert seen == ["Readable Session"]
+
     def test_skips_if_generation_fails(self):
         db = MagicMock()
         db.get_session_title.return_value = None
@@ -182,7 +232,13 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=None, main_runtime=None
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=None,
+                main_runtime=None,
+                title_callback=None,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -202,7 +258,13 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=_cb, main_runtime=None
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=_cb,
+                main_runtime=None,
+                title_callback=None,
             )
 
     def test_skips_if_no_response(self):

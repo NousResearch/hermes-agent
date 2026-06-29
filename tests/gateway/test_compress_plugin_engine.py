@@ -101,6 +101,7 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    runner._session_db = None
     return runner
 
 

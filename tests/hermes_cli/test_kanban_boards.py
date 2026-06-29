@@ -160,12 +160,34 @@ class TestCurrentBoard:
         kb.set_current_board("filepick")
         assert kb.get_current_board() == "filepick"
 
+    def test_stale_file_pointer_falls_back_to_default(self, fresh_home):
+        current = fresh_home / "kanban" / "current"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("missing-board\n", encoding="utf-8")
+
+        assert kb.get_current_board() == "default"
+        assert not kb.board_exists("missing-board")
+        assert [b["slug"] for b in kb.list_boards()] == ["default"]
+
+    def test_empty_board_dir_does_not_count_as_existing(self, fresh_home):
+        ghost = fresh_home / "kanban" / "boards" / "ghost"
+        ghost.mkdir(parents=True)
+
+        assert not kb.board_exists("ghost")
+        assert [b["slug"] for b in kb.list_boards()] == ["default"]
+
     def test_env_beats_file(self, fresh_home, monkeypatch):
         kb.create_board("a")
         kb.create_board("b")
         kb.set_current_board("a")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "b")
         assert kb.get_current_board() == "b"
+
+    def test_stale_env_falls_through_to_file_pointer(self, fresh_home, monkeypatch):
+        kb.create_board("persisted")
+        kb.set_current_board("persisted")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "missing-board")
+        assert kb.get_current_board() == "persisted"
 
     def test_invalid_env_falls_through(self, fresh_home, monkeypatch):
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "!!bad!!")
@@ -249,6 +271,37 @@ class TestBoardCRUD:
         kb.remove_board("pinned")
         assert kb.get_current_board() == "default"
 
+    @pytest.mark.parametrize("archive", [True, False])
+    def test_remove_clears_init_cache_for_recreated_db(self, fresh_home, archive):
+        # Regression for #23833: poll loops that call connect(board=slug) right
+        # after remove_board() recreate an empty kanban.db at the same path
+        # (connect() does mkdir(exist_ok=True)). If _INITIALIZED_PATHS still
+        # contains the resolved path, the CREATE TABLE pass is skipped and
+        # downstream readers hit `no such table: task_events`.
+        kb.create_board("recycle")
+        # First connect populates _INITIALIZED_PATHS for this DB.
+        with kb.connect(board="recycle") as conn:
+            kb.create_task(conn, title="t1", assignee="dev")
+        db_path = kb.board_dir("recycle") / "kanban.db"
+        assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
+
+        kb.remove_board("recycle", archive=archive)
+        # remove_board must drop the cache entry so a re-create through
+        # connect() gets a fresh schema-init pass.
+        assert str(db_path.resolve()) not in kb._INITIALIZED_PATHS
+
+        # Simulate the event-stream poll: re-open the same slug. connect()
+        # recreates the directory + empty .db; the schema must be re-applied.
+        with kb.connect(board="recycle") as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        assert "task_events" in tables
+        assert "tasks" in tables
+
     def test_rename_updates_metadata(self, fresh_home):
         kb.create_board("slug-immutable")
         kb.write_board_metadata("slug-immutable", name="New Display Name")
@@ -304,6 +357,22 @@ class TestConnectionIsolation:
             assert [t.title for t in kb.list_tasks(conn)] == ["via-env"]
         with kb.connect(board="persist") as conn:
             assert kb.list_tasks(conn) == []
+
+    def test_connect_stale_env_uses_fallback_board_without_recreating_it(
+        self, fresh_home, monkeypatch,
+    ):
+        kb.create_board("ephemeral")
+        kb.remove_board("ephemeral")
+        kb.create_board("persist")
+        kb.set_current_board("persist")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "ephemeral")
+
+        with kb.connect() as conn:
+            kb.create_task(conn, title="via-fallback", assignee="x")
+
+        with kb.connect(board="persist") as conn:
+            assert [t.title for t in kb.list_tasks(conn)] == ["via-fallback"]
+        assert not kb.board_exists("ephemeral")
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +538,13 @@ class TestCLI:
         # main.py's dispatcher doesn't propagate return codes today, so we
         # assert the user-visible signal: a stderr error message. Whether
         # the exit code stays 0 is a separate (pre-existing) issue.
+        assert "does not exist" in r.stderr
+
+    def test_board_flag_rejects_empty_board_dir(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        ghost = tmp_path / "kanban" / "boards" / "ghost"
+        ghost.mkdir(parents=True)
+        r = _cli(["--board", "ghost", "list"], env_extra=env)
         assert "does not exist" in r.stderr
 
     def test_boards_rm_archives(self, tmp_path):

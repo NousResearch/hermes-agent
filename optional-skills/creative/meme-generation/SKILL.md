@@ -4,6 +4,7 @@ description: Generate real meme images by picking a template and overlaying text
 version: 2.0.0
 author: adanaleycio
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [creative, memes, humor, images]

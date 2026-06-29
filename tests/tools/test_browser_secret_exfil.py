@@ -31,10 +31,35 @@ class TestBrowserSecretExfil:
     def test_allows_normal_url(self):
         """Normal URLs pass the secret check (may fail for other reasons)."""
         from tools.browser_tool import browser_navigate
-        result = browser_navigate("https://github.com/NousResearch/hermes-agent")
+        # Patch the actual browser command — we only care that the secret
+        # check doesn't block a clean URL, not that Chrome starts in CI.
+        mock_result = {"success": True, "data": {"title": "ok", "url": "https://github.com/NousResearch/hermes-agent"}}
+        with patch("tools.browser_tool._run_browser_command", return_value=mock_result), \
+             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool._is_local_backend", return_value=True):
+            result = browser_navigate("https://github.com/NousResearch/hermes-agent")
         parsed = json.loads(result)
         # Should NOT be blocked by secret detection
         assert "API key or token" not in parsed.get("error", "")
+
+    def test_normalizes_non_ascii_url_before_navigation(self):
+        from tools.browser_tool import browser_navigate
+
+        captured = {}
+
+        def mock_run(_session_key, command, args, **_kwargs):
+            if command == "open":
+                captured["url"] = args[0]
+            return {"success": True, "data": {"title": "ok", "url": args[0]}}
+
+        with patch("tools.browser_tool._run_browser_command", side_effect=mock_run), \
+             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool._is_local_backend", return_value=True):
+            result = browser_navigate("https://wttr.in/Köln")
+
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        assert captured["url"] == "https://wttr.in/K%C3%B6ln"
 
 
 class TestWebExtractSecretExfil:
@@ -58,6 +83,55 @@ class TestWebExtractSecretExfil:
         parsed = json.loads(result)
         # Should fail for API/config reason, not secret blocking
         assert "API key" not in parsed.get("error", "") or "Blocked" not in parsed.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_normalizes_non_ascii_url_before_extract_provider(self, monkeypatch):
+        from agent.web_search_provider import WebSearchProvider
+        from agent import web_search_registry
+        from tools import web_tools
+
+        class FakeExtractProvider(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "fake-extract"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_search(self) -> bool:
+                return False
+
+            def supports_extract(self) -> bool:
+                return True
+
+            def extract(self, urls, **_kwargs):
+                return [
+                    {
+                        "url": urls[0],
+                        "title": "ok",
+                        "content": "ok",
+                        "raw_content": "ok",
+                    }
+                ]
+
+        async def allow_url(_url: str) -> bool:
+            return True
+
+        web_search_registry._reset_for_tests()
+        web_search_registry.register_provider(FakeExtractProvider())
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "fake-extract")
+        monkeypatch.setattr(web_tools, "async_is_safe_url", allow_url)
+
+        try:
+            result = await web_tools.web_extract_tool(
+                urls=["https://wttr.in/Köln"],
+            )
+        finally:
+            web_search_registry._reset_for_tests()
+
+        parsed = json.loads(result)
+        assert parsed["results"][0]["url"] == "https://wttr.in/K%C3%B6ln"
 
 
 class TestBrowserSnapshotRedaction:

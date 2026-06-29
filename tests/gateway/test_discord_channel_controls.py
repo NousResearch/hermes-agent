@@ -1122,6 +1122,33 @@ def test_config_bridges_crew_aliases(monkeypatch, tmp_path):
     assert os.getenv("DISCORD_CREW_ALIASES") == "crew:,get the crew"
 
 
+def test_config_seeds_council_mode_extra(monkeypatch, tmp_path):
+    """Nested discord.council_mode must reach DiscordAdapter via PlatformConfig.extra."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "enabled": True,
+            "council_mode": {
+                "enabled": True,
+                "workbench_channel_id": "700",
+                "wait_seconds": 0,
+                "workers": [{"name": "Boba", "id": "111"}],
+            },
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "token")
+
+    from gateway.config import Platform, load_gateway_config
+    config = load_gateway_config()
+
+    council_mode = config.platforms[Platform.DISCORD].extra["council_mode"]
+    assert council_mode["enabled"] is True
+    assert council_mode["workbench_channel_id"] == "700"
+    assert council_mode["workers"] == [{"name": "Boba", "id": "111"}]
+
+
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     """Env vars should take precedence over config.yaml values."""
     import yaml

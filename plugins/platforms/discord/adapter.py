@@ -7873,8 +7873,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 
     Env vars take precedence over YAML — every assignment is guarded by
     ``not os.getenv(...)`` so explicit env vars survive a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    update.  Most settings flow through env for backwards compatibility, but
+    structured settings such as ``discord.council_mode`` are returned into
+    ``PlatformConfig.extra`` because the adapter consumes them as nested data.
     """
     if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
@@ -7977,7 +7978,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     lft = discord_cfg.get("liveness_failure_threshold")
     if lft is not None and not os.getenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"):
         os.environ["HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD"] = str(lft)
-    return None  # all settings flow through env; nothing to merge into extras
+
+    seeded_extra = {}
+    council_mode = discord_cfg.get("council_mode") or discord_cfg.get("council")
+    if isinstance(council_mode, dict):
+        seeded_extra["council_mode"] = council_mode
+    return seeded_extra or None
 
 
 def _is_connected(config) -> bool:

@@ -92,6 +92,15 @@ _SECRET_VALUE_SUFFIXES = (
 )
 
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_COMMAND_API_KEY_HEAD_RE = re.compile(
+    r"^\s*(?:[$>]\s*)?(?:hermes|openclaw)\b",
+    re.IGNORECASE,
+)
+_COMMAND_API_KEY_AUTH_MARKER_RE = re.compile(
+    r"(?:^|\s)(?:auth|setup|model|portal|onboard)\b"
+    r"|(?:^|\s)--(?:api-key|auth-choice|auth-type|type|provider|model|label|non-interactive)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalize_key(key: Any) -> str:
@@ -109,6 +118,22 @@ def is_borrowed_credential_source(source: Any, provider_id: Any = None) -> bool:
         return False
     normalized_provider = str(provider_id or "").strip().lower()
     return (normalized_provider, normalized_source) not in _PERSISTABLE_PROVIDER_SOURCES
+
+
+def is_command_shaped_api_key(value: Any) -> bool:
+    """Return True when an API-key input is clearly a copied CLI command.
+
+    This deliberately stays narrow: it only rejects Hermes/OpenClaw command
+    lines that also contain auth/setup/model/onboard markers or auth flags.
+    Normal secrets that merely contain words like "hermes" remain accepted.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(
+        _COMMAND_API_KEY_HEAD_RE.search(text)
+        and _COMMAND_API_KEY_AUTH_MARKER_RE.search(text)
+    )
 
 
 def _is_secret_payload_key(key: Any) -> bool:

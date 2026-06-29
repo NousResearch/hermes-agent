@@ -18,6 +18,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
 from agent.credential_persistence import (
+    is_command_shaped_api_key,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
@@ -221,7 +222,10 @@ class PooledCredential:
                 ):
                     return token.strip()
             return ""
-        return str(self.access_token or "")
+        token = str(self.access_token or "").strip()
+        if is_command_shaped_api_key(token):
+            return ""
+        return token
 
     @property
     def runtime_base_url(self) -> Optional[str]:
@@ -1429,6 +1433,12 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
+            if (
+                entry.provider != "nous"
+                and entry.auth_type == "api_key"
+                and is_command_shaped_api_key(entry.access_token)
+            ):
+                continue
             available.append(entry)
         if entries_to_prune:
             pruned_ids = set(entries_to_prune)

@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import mimetypes
 import os
@@ -133,10 +134,47 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+_MATRIX_API_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
     re.DOTALL,
 )
+
+
+async def _read_matrix_api_response_text(resp: Any) -> str:
+    headers = getattr(resp, "headers", {}) or {}
+    content_length = None
+    try:
+        content_length = int(str(headers.get("content-length", "")).strip())
+    except (TypeError, ValueError):
+        content_length = None
+    if content_length is not None and content_length > _MATRIX_API_RESPONSE_MAX_BYTES:
+        raise ValueError(
+            f"Matrix API response exceeds {_MATRIX_API_RESPONSE_MAX_BYTES} bytes"
+        )
+
+    body = bytearray()
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        if not chunk:
+            continue
+        chunk_bytes = bytes(chunk)
+        if len(body) + len(chunk_bytes) > _MATRIX_API_RESPONSE_MAX_BYTES:
+            raise ValueError(
+                f"Matrix API response exceeds {_MATRIX_API_RESPONSE_MAX_BYTES} bytes"
+            )
+        body.extend(chunk_bytes)
+    return bytes(body).decode("utf-8", "replace")
+
+
+async def _read_matrix_api_response_json(resp: Any) -> Dict[str, Any]:
+    text = await _read_matrix_api_response_text(resp)
+    if not text.strip():
+        return {}
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("Matrix API JSON response was not an object")
+    return payload
 
 
 def _resolve_matrix_bang_command(name: str) -> str | None:
@@ -4306,9 +4344,9 @@ async def _standalone_send(
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.put(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:
-                    body = await resp.text()
+                    body = await _read_matrix_api_response_text(resp)
                     return {"error": f"Matrix API error ({resp.status}): {body}"}
-                data = await resp.json()
+                data = await _read_matrix_api_response_json(resp)
         return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
     except Exception as e:
         return {"error": f"Matrix send failed: {e}"}

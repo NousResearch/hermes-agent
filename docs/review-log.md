@@ -144,3 +144,33 @@ Verification notes:
 - No runtime, dependency, env, deploy, or secret-store changes were made in this refresh.
 - Full `npm run check` was not repeated because this refresh only updated review documentation and the source HEAD being reviewed already had a successful full gate recorded above: 1344 files, 28970 tests passed in 429.1s.
 - The targeted WhatsApp bridge regression gate was repeated and passed.
+
+## 2026-06-29 Continuation preflight for gated portfolio loop
+
+Framework run:
+
+- `/Volumes/500G/Claude Code Projects/Codex Code Review/security-reviews/2026-06-27-active-30d`
+
+Reviewed HEAD:
+
+- `f258f11b37c4563b51aef14b9d4e61c4ff0ba0ab`
+
+Scope:
+
+- AFK-safe read-only continuation preflight for the active portfolio review loop.
+- No package upgrade, lockfile rewrite, runtime code mutation, raw secret read, secret rotation, OAuth/login flow, messaging bridge smoke, production deploy, database operation, or external write was performed.
+
+Refreshed evidence:
+
+- Root `npm audit --json`: 11 total; 2 critical / 3 high / 4 moderate / 2 low.
+- `scripts/whatsapp-bridge npm audit --json`: 5 total; 1 critical / 2 high / 2 moderate. Groups include `baileys`, `express`, `protobufjs`, `qs`, and `ws`.
+- `website npm audit --json`: 39 total; 1 critical / 4 high / 33 moderate / 1 low.
+- `npm --prefix scripts/whatsapp-bridge test`: pass, 6 tests.
+- Recent-history gitleaks since `2026-05-29`: 10 redacted findings. Rule grouping: 9 `generic-api-key`, 1 `private-key`. Path grouping: 10 in `tests/`.
+
+Current gate:
+
+- `Dependency / Supply Chain` remains `approval_required`: root, WhatsApp bridge, and website dependency upgrades can affect messaging, desktop/web build chains, and runtime compatibility.
+- `Security` remains `human_required`: the ffmpeg command-injection sink remains fixed and tested, but CORS and browser-supervisor boundaries still require owner threat modeling before policy changes.
+- `Code Quality` remains `human_required`: remaining pattern volume crosses runtime, browser instrumentation, gateway, tests, and scanner fixtures; do not bulk rewrite.
+- `Secrets / Env Hygiene` remains fixture/noise for this pass because redacted findings are in tests, but future non-fixture or non-redacted candidates must be treated as incident triage.

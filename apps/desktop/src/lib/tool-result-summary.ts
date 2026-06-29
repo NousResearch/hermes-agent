@@ -259,8 +259,11 @@ function formatRecordSummary(record: Json, depth: number): string {
   const candidates = orderedKeys(keys).filter(k => !skipField(k, record[k]))
   const max = 8
   const lines: string[] = []
+  let consumed = 0
 
   for (const k of candidates) {
+    consumed += 1
+
     const v = formatFieldValue(record[k], depth + 1)
 
     if (!v) {
@@ -278,8 +281,13 @@ function formatRecordSummary(record: Json, depth: number): string {
     return ''
   }
 
-  if (candidates.length > lines.length) {
-    const remaining = candidates.length - lines.length
+  // Only candidates we never examined (because the `max` cap broke the loop
+  // early) are genuinely hidden. Candidates whose value rendered empty were
+  // consumed and intentionally produced nothing — counting them here would
+  // inflate the tail with fields that don't exist.
+  const remaining = candidates.length - consumed
+
+  if (remaining > 0) {
     lines.push(`- … ${remaining} more ${remaining === 1 ? 'field' : 'fields'}`)
   }
 

@@ -50,8 +50,8 @@ def test_proactive_event_store_idempotently_tracks_saga_and_context(tmp_path):
     assert "ignore previous instructions" not in block
     assert "raw visible body" not in block
     payload = json.loads(block.split("\n", 1)[1])
-    assert payload[0]["status"] == "context_ready"
-    assert payload[0]["introduced"] is False
+    assert payload["new_alerts"][0]["status"] == "context_ready"
+    assert payload["new_alerts"][0]["introduced"] is False
 
 
 def test_context_prompt_injects_full_alert_once_then_stops_repeating(tmp_path):
@@ -83,25 +83,41 @@ def test_context_prompt_injects_full_alert_once_then_stops_repeating(tmp_path):
     second_block = build_proactive_context_prompt(store, event.conversation_id)
 
     first_payload = json.loads(first_block.split("\n", 1)[1])
-    assert first_payload == [
-        {
-            "event_id": event.event_id,
-            "type": "email_alert",
-            "alert_id": "mail_alert_once",
-            "summary": "Admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment.",
-            "source_ref": "gmail:msg-1",
-            "status": "context_ready",
-            "resolution_status": "unresolved",
-            "created_at": event.created_at,
-            "introduced": False,
-            "account_label": "personal",
-            "sender": "Admin Services <admin@example.com>",
-            "subject": "Fwd: Confirmation of the publication of your HQ assessment",
-            "urgency": "urgent-ish",
-            "suggested_action": "draft_reply",
-        }
-    ]
-    assert second_block == ""
+    second_payload = json.loads(second_block.split("\n", 1)[1])
+    assert first_payload == {
+        "new_alerts": [
+            {
+                "event_id": event.event_id,
+                "type": "email_alert",
+                "alert_id": "mail_alert_once",
+                "summary": "Admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment.",
+                "source_ref": "gmail:msg-1",
+                "status": "context_ready",
+                "resolution_status": "unresolved",
+                "created_at": event.created_at,
+                "introduced": False,
+                "account_label": "personal",
+                "sender": "Admin Services <admin@example.com>",
+                "subject": "Fwd: Confirmation of the publication of your HQ assessment",
+                "urgency": "urgent-ish",
+                "suggested_action": "draft_reply",
+            }
+        ]
+    }
+    assert second_payload == {
+        "active_alert_breadcrumbs": [
+            {
+                "alert_id": "mail_alert_once",
+                "summary": "Admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment.",
+                "source_ref": "gmail:msg-1",
+                "introduced_at": second_payload["active_alert_breadcrumbs"][0]["introduced_at"],
+                "account_label": "personal",
+                "subject": "Fwd: Confirmation of the publication of your HQ assessment",
+                "urgency": "urgent-ish",
+                "suggested_action": "draft_reply",
+            }
+        ]
+    }
     introduced = store.get_event(event.event_id)
     assert introduced is not None
     assert introduced.injection_count == 1

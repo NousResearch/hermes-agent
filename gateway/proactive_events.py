@@ -282,6 +282,30 @@ class ProactiveEventStore:
             ).fetchall()
         return [ProactiveEvent.from_row(row) for row in rows]
 
+    def list_active_breadcrumbs(
+        self,
+        conversation_id: str,
+        *,
+        exclude_event_ids: set[str] | None = None,
+        limit: int = 3,
+    ) -> list[ProactiveEvent]:
+        exclude_event_ids = exclude_event_ids or set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM proactive_events
+                WHERE conversation_id = ?
+                  AND resolution_status = 'unresolved'
+                  AND status IN ('attached', 'context_ready', 'confirmed')
+                  AND introduced_at IS NOT NULL
+                ORDER BY introduced_at DESC, created_at DESC
+                LIMIT ?
+                """,
+                (conversation_id, limit + len(exclude_event_ids)),
+            ).fetchall()
+        events = [ProactiveEvent.from_row(row) for row in rows]
+        return [event for event in events if event.event_id not in exclude_event_ids][:limit]
+
     def get_event(self, event_id: str) -> ProactiveEvent | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -323,17 +347,42 @@ def _context_event_dict(event: ProactiveEvent) -> dict[str, Any]:
     return data
 
 
+def _breadcrumb_event_dict(event: ProactiveEvent) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "alert_id": event.alert_id,
+        "summary": event.canonical_summary,
+        "source_ref": event.source_ref,
+        "introduced_at": event.introduced_at,
+    }
+    for key in ("account_label", "subject", "urgency", "suggested_action"):
+        value = event.payload.get(key)
+        if value not in (None, ""):
+            data[key] = value
+    return data
+
+
 def build_proactive_context_prompt(
     store: ProactiveEventStore,
     conversation_id: str,
     *,
     limit: int = 5,
+    breadcrumb_limit: int = 3,
 ) -> str:
-    events = store.list_unintroduced(conversation_id, limit=limit)
-    if not events:
+    new_events = store.list_unintroduced(conversation_id, limit=limit)
+    new_event_ids = {event.event_id for event in new_events}
+    breadcrumbs = store.list_active_breadcrumbs(
+        conversation_id,
+        exclude_event_ids=new_event_ids,
+        limit=breadcrumb_limit,
+    )
+    if not new_events and not breadcrumbs:
         return ""
-    payload = [_context_event_dict(event) for event in events]
-    store.mark_introduced(event.event_id for event in events)
+    payload: dict[str, Any] = {}
+    if new_events:
+        payload["new_alerts"] = [_context_event_dict(event) for event in new_events]
+        store.mark_introduced(new_event_ids)
+    if breadcrumbs:
+        payload["active_alert_breadcrumbs"] = [_breadcrumb_event_dict(event) for event in breadcrumbs]
     return _CONTEXT_HEADER + "\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 

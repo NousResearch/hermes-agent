@@ -22,6 +22,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of shadow-check nudges per response before giving up.
+# Prevents infinite loops when the model keeps fabricating.
+MAX_SHADOW_ATTEMPTS = 3
+
 # ── Verifiable claim patterns ────────────────────────────────────────
 # Each tuple: (compiled_regex, claim_type, negation_hint)
 # claim_type: category label for logging
@@ -38,10 +42,21 @@ _VERIFIABLE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
         "Show the command/tool output that proves this.",
     ),
     # "X works" / "X is working" / "X is fixed"
+    # Tightened: require first-person or task-result framing to avoid
+    # matching general prose like "the code works by..." or "this works
+    # differently on Windows."  Terminal punctuation or end-of-string
+    # anchors prevent matching explanatory continuations.  Comma is only
+    # terminal when NOT followed by a space + lowercase letter (which would
+    # indicate a continuation clause like "it works, and here is the output").
+    # NOTE: We compile three separate patterns (no re.IGNORECASE) so that
+    # the comma lookahead [a-z] stays case-sensitive — re.IGNORECASE would
+    # make [a-z] match uppercase too, breaking continuation detection.
+    # Each branch is case-insensitive via inline (?i) at its own start.
     (
         re.compile(
-            r"(\S+(?:\s+\S+)?(?:\s+is\s+(?:working|fixed|correct|green|red|rendered|displayed))|\S+\s+(?:works|passes|succeeds|renders|displays))",
-            re.IGNORECASE,
+            r"(?i:the\s+(?:fix|change|patch|update|solution)\s+(?:is\s+(?:working|fixed|correct)|works?|passes?|succeeds?))\s*(?:now|already|again)?\s*(?:\.|!|(?!,\s+[a-z]),|$)|"
+            r"(?i:now\s+(?:works?|is\s+fixed|is\s+working))\s*(?:\.|!|(?!,\s+[a-z]),|$)|"
+            r"(?i:it\s+(?:is\s+(?:working|fixed|correct)|works?|passes?|succeeds?))\s*(?:now|already|again)?\s*(?:\.|!|(?!,\s+[a-z]),|$)",
         ),
         "claim_of_state",
         "Include the actual output or screenshot.",
@@ -83,9 +98,11 @@ _VERIFIABLE_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
         "Show the actual output that was inspected.",
     ),
     # "I can see" / "I observe" / "looking at"
+    # Tightened: exclude conversational filler ("I can see what you mean",
+    # "I notice that's a good point") by requiring task-result vocabulary.
     (
         re.compile(
-            r"(?:i\s+(?:can\s+see|observe|notice|see)\s+(?:that\s+)?(.+?)(?:\.|$))",
+            r"(?:i\s+(?:can\s+see|observe|notice|see)\s+(?:that\s+)?(?:the\s+(?:output|result|page|console|log|screen|element|button|color|text|value|number|status|response|rendering|display|test|build))\s+.+?)(?:\.|$)",
             re.IGNORECASE,
         ),
         "claim_of_observation",
@@ -112,6 +129,8 @@ _EVIDENCE_PATTERNS: List[re.Pattern] = [
     re.compile(r"(?:exit_code|output|status|content)\s*:", re.IGNORECASE),
     # "returned" / "output:" / "result:"
     re.compile(r"(?:returned|output:|result:)\s+", re.IGNORECASE),
+    # "return code" / "traceback"
+    re.compile(r"(?:return\s+code|traceback\s*\()", re.IGNORECASE),
 ]
 
 
@@ -234,15 +253,18 @@ def get_shadow_mode(agent) -> str:
     Checks agent._verification_shadow_mode first, then falls back to
     config.yaml agent.verification_shadow_mode. Default is "shadow".
     """
-    mode = getattr(agent, "_verification_shadow_mode", None)
+    mode = getattr(agent, "_shadow_verification_mode", None)
+    if mode is None:
+        mode = getattr(agent, "_verification_shadow_mode", None)
     if mode:
         return str(mode).lower()
-    # Fallback: check config
+    # Fallback: check config.yaml. cfg_get takes the loaded config dict as its
+    # first arg, then the key path; the previous cfg_get("agent", {}) passed
+    # "agent" as the dict, so it never actually read config.
     try:
-        from hermes_cli.config import cfg_get
-        cfg = cfg_get("agent", {})
-        if isinstance(cfg, dict):
-            return str(cfg.get("verification_shadow_mode", "shadow")).lower()
+        from hermes_cli.config import cfg_get, load_config
+        val = cfg_get(load_config(), "agent", "verification_shadow_mode", default="shadow")
+        return str(val).lower()
     except Exception:
         pass
     return "shadow"
@@ -257,10 +279,9 @@ def get_shadow_threshold(agent) -> float:
     if threshold is not None:
         return float(threshold)
     try:
-        from hermes_cli.config import cfg_get
-        cfg = cfg_get("agent", {})
-        if isinstance(cfg, dict):
-            return float(cfg.get("verification_shadow_threshold", 0.6))
+        from hermes_cli.config import cfg_get, load_config
+        val = cfg_get(load_config(), "agent", "verification_shadow_threshold", default=0.6)
+        return float(val)
     except Exception:
         pass
     return 0.6

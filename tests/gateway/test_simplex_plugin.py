@@ -467,3 +467,79 @@ async def test_image_file_still_sets_photo_type():
 
     assert dispatched, "_handle_chat_item did not dispatch any event"
     assert dispatched[0].message_type == MessageType.PHOTO
+
+
+def _make_pending_file_chat_item(file_name: str, file_id: int = 42) -> dict:
+    """Minimal direct-chat rcvMsgContent item carrying a file NOT yet downloaded.
+
+    The ``fileSource`` has no ``filePath`` key, simulating an XFTP transfer
+    that is still in progress (the daemon hasn't written the file to disk).
+    """
+    return {
+        "chatInfo": {
+            "type": "direct",
+            "contact": {"contactId": 42, "localDisplayName": "tester"},
+        },
+        "chatItem": {
+            "chatDir": {"type": "directRcv"},
+            "meta": {"itemTs": "2026-01-01T00:00:00Z"},
+            "content": {
+                "type": "rcvMsgContent",
+                "msgContent": {"type": "file", "text": "here you go"},
+            },
+            "file": {
+                "fileId": file_id,
+                "fileName": file_name,
+                "fileSource": {},  # no filePath → transfer not complete
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_pending_image_file_accepts_transfer():
+    """An image that hasn't finished downloading must be accepted via
+    /freceive and deferred until rcvFileComplete — not silently dropped."""
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent_commands: list = []
+    adapter._send_fire_and_forget = lambda cmd: (
+        sent_commands.append(cmd) or __import__("asyncio").sleep(0)
+    )
+
+    chat_item = _make_pending_file_chat_item("photo.jpg", file_id=99)
+    await adapter._handle_chat_item(chat_item)
+
+    # The adapter must accept the transfer …
+    assert any("/freceive 99" in c for c in sent_commands), (
+        f"Expected /freceive 99, got: {sent_commands}"
+    )
+    # … and defer the chat item until rcvFileComplete.
+    assert 99 in adapter._pending_file_transfers
+    # No message dispatched yet (deferred).
+    assert not hasattr(adapter, "_dispatched") or not getattr(adapter, "_dispatched", None)
+
+
+@pytest.mark.asyncio
+async def test_pending_document_file_accepts_transfer():
+    """A PDF/document that hasn't finished downloading must also be accepted
+    via /freceive — the fix for #55180 removes the audio-only guard."""
+    from gateway.config import PlatformConfig
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent_commands: list = []
+    adapter._send_fire_and_forget = lambda cmd: (
+        sent_commands.append(cmd) or __import__("asyncio").sleep(0)
+    )
+
+    chat_item = _make_pending_file_chat_item("report.pdf", file_id=77)
+    await adapter._handle_chat_item(chat_item)
+
+    assert any("/freceive 77" in c for c in sent_commands), (
+        f"Expected /freceive 77, got: {sent_commands}"
+    )
+    assert 77 in adapter._pending_file_transfers
+

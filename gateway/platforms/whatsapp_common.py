@@ -122,8 +122,10 @@ class WhatsAppBehaviorMixin:
         if not value:
             return ""
         normalized = str(value).strip()
-        if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
+        # Strip the :device-id segment (e.g. "123:38@lid" -> "123@lid") instead
+        # of turning the first ":" into "@", which produced the invalid
+        # "123@38@lid". Mirrors normalizeWhatsAppIdentifier() in allowlist.js.
+        normalized = re.sub(r":.*@", "@", normalized)
         return normalized
 
     @staticmethod

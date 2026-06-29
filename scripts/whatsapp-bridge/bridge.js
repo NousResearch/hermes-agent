@@ -156,7 +156,10 @@ function trackSentMessageId(sent) {
 
 function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  // Strip the :device-id segment (e.g. "123:38@lid" -> "123@lid") instead of
+  // turning the first ':' into '@', which produced the invalid "123@38@lid".
+  // Mirrors normalizeWhatsAppIdentifier() in allowlist.js.
+  return String(value).replace(/:.*@/, '@');
 }
 
 function getMessageContent(msg) {

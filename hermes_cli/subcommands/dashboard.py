@@ -1,7 +1,10 @@
-"""``hermes dashboard`` subcommand parser.
+"""``hermes dashboard`` / ``hermes serve`` subcommand parsers.
 
-Extracted verbatim from ``hermes_cli/main.py:main()`` (god-file Phase 2).
-Handler injected to avoid importing ``main``.
+``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
+what the desktop app and remote backends run. Both share one handler
+(``cmd_dashboard`` → ``start_server``). Extracted from
+``hermes_cli/main.py:main()`` (god-file Phase 2); handler injected to avoid
+importing ``main``.
 """
 
 from __future__ import annotations

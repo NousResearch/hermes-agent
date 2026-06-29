@@ -62,6 +62,7 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # overwrites prior turns server-side, so we keep the per-process
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
+_HINDSIGHT_VERSION_RESPONSE_BODY_MAX_BYTES = 64 * 1024
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -191,7 +192,7 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
         req.add_header("Authorization", f"Bearer {api_key}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            payload = resp.read().decode("utf-8", errors="replace")
+            payload = _read_hindsight_version_payload(resp)
         data = json.loads(payload)
     except Exception as exc:
         logger.debug("Hindsight /version probe failed for %s: %s", url, exc)
@@ -200,6 +201,16 @@ def _fetch_hindsight_api_version(api_url: str, api_key: str | None = None,
         return None
     version = data.get("version") or data.get("api_version")
     return str(version) if version else None
+
+
+def _read_hindsight_version_payload(resp: Any) -> str:
+    raw = resp.read(_HINDSIGHT_VERSION_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _HINDSIGHT_VERSION_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "Hindsight /version response exceeded "
+            f"{_HINDSIGHT_VERSION_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return raw.decode("utf-8", errors="replace")
 
 
 def _check_api_supports_update_mode_append(api_url: str,

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
@@ -27,6 +28,45 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
+
+_SENSITIVE_CDP_METHODS = {
+    "cachestorage.requestcachedresponse",
+    "cachestorage.requestcachenames",
+    "cachestorage.requestentries",
+    "domstorage.getdomstorageitems",
+    "indexeddb.requestdata",
+    "indexeddb.requestdatabase",
+    "indexeddb.requestdatabasenames",
+    "network.getallcookies",
+    "network.getcookies",
+    "storage.getcookies",
+}
+_SENSITIVE_RUNTIME_EVALUATE_PATTERNS = (
+    re.compile(r"\bdocument\s*(?:\?\s*)?\.\s*cookie\b", re.IGNORECASE),
+    re.compile(r"\bdocument\s*(?:\?\s*\.)?\s*\[\s*['\"`]cookie['\"`]\s*\]", re.IGNORECASE),
+    re.compile(
+        r"\b(?:window\s*\.\s*|globalThis\s*\.\s*)?(?:localStorage|sessionStorage)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:window|globalThis)\s*\[\s*['\"`](?:localStorage|sessionStorage)['\"`]\s*\]",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:(?:window|globalThis|self)\s*(?:\?\s*)?\.\s*)?(?:indexedDB|caches|CacheStorage)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:window|globalThis|self)\s*(?:\?\s*\.)?\s*\[\s*['\"`](?:indexedDB|caches|CacheStorage)['\"`]\s*\]",
+        re.IGNORECASE,
+    ),
+)
+_JS_IDENTIFIER_STRING_CONCAT_RE = re.compile(
+    r"(['\"`])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*\+\s*(['\"`])([A-Za-z_$][A-Za-z0-9_$]*)\3"
+)
+_JS_SIMPLE_ESCAPE_RE = re.compile(
+    r"\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})"
+)
 
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
 # supervisor and browser_dialog tool import it during tool discovery. Wrap the
@@ -187,6 +227,68 @@ async def _cdp_call(
 # ---------------------------------------------------------------------------
 
 
+def _sensitive_cdp_access_reason(method: str, params: Dict[str, Any]) -> Optional[str]:
+    """Return a block reason when a CDP call would expose browser secrets.
+
+    ``browser_cdp`` is an intentional low-level escape hatch, but raw cookie and
+    Web Storage reads can dump session tokens into the immutable model/tool
+    transcript. Block the known cookie/storage read surfaces before any CDP
+    WebSocket dispatch so those values never enter model context.
+    """
+    normalized = method.strip().lower()
+    if normalized in _SENSITIVE_CDP_METHODS:
+        return f"{method} can expose raw browser storage state"
+
+    if normalized == "runtime.evaluate":
+        source = params.get("expression")
+    elif normalized == "runtime.callfunctionon":
+        source = params.get("functionDeclaration")
+    else:
+        source = None
+
+    if isinstance(source, str) and _runtime_source_reads_sensitive_state(source):
+        return (
+            f"{method} source reads document.cookie/localStorage/"
+            "sessionStorage/indexedDB/caches"
+        )
+
+    return None
+
+
+def _runtime_source_reads_sensitive_state(source: str) -> bool:
+    normalized = _normalize_runtime_source_for_sensitive_scan(source)
+    return any(
+        pattern.search(normalized)
+        for pattern in _SENSITIVE_RUNTIME_EVALUATE_PATTERNS
+    )
+
+
+def _normalize_runtime_source_for_sensitive_scan(source: str) -> str:
+    """Normalize simple JS obfuscation before scanning for storage reads.
+
+    This guard is intentionally conservative and runs before CDP dispatch; it
+    catches direct property access plus common literal-splitting forms such as
+    ``document['co' + 'okie']`` without treating every Runtime call as unsafe.
+    """
+    normalized = _JS_SIMPLE_ESCAPE_RE.sub(_decode_js_escape_match, source)
+    previous = None
+    while previous != normalized:
+        previous = normalized
+        normalized = _JS_IDENTIFIER_STRING_CONCAT_RE.sub(
+            lambda match: f"{match.group(1)}{match.group(2)}{match.group(4)}{match.group(1)}",
+            normalized,
+        )
+    return normalized
+
+
+def _decode_js_escape_match(match: re.Match[str]) -> str:
+    value = next(group for group in match.groups() if group is not None)
+    try:
+        return chr(int(value, 16))
+    except ValueError:  # pragma: no cover - regex only allows hex
+        return match.group(0)
+
+
 def _browser_cdp_via_supervisor(
     task_id: str,
     frame_id: str,
@@ -330,22 +432,40 @@ def browser_cdp(
         JSON string ``{"success": True, "method": ..., "result": {...}}`` on
         success, or ``{"error": "..."}`` on failure.
     """
+    if not method or not isinstance(method, str):
+        return tool_error(
+            "'method' is required (e.g. 'Target.getTargets')",
+            cdp_docs=CDP_DOCS_URL,
+        )
+
+    call_params: Dict[str, Any] = params or {}
+    if not isinstance(call_params, dict):
+        return tool_error(
+            f"'params' must be an object/dict, got {type(call_params).__name__}"
+        )
+
+    sensitive_reason = _sensitive_cdp_access_reason(method, call_params)
+    if sensitive_reason:
+        return tool_error(
+            "Blocked browser_cdp request: sensitive browser state access is "
+            "not returned to model context. "
+            f"Reason: {sensitive_reason}. Use dedicated browser tools or ask "
+            "the user to inspect/export the value out-of-band if that secret "
+            "is truly required.",
+            method=method,
+            cdp_docs=CDP_DOCS_URL,
+        )
+
     # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
         return _browser_cdp_via_supervisor(
             task_id=task_id or "default",
             frame_id=frame_id,
             method=method,
-            params=params,
+            params=call_params,
             timeout=timeout,
         )
     del task_id  # stateless path below
-
-    if not method or not isinstance(method, str):
-        return tool_error(
-            "'method' is required (e.g. 'Target.getTargets')",
-            cdp_docs=CDP_DOCS_URL,
-        )
 
     if not _WS_AVAILABLE:
         return tool_error(
@@ -369,12 +489,6 @@ def browser_cdp(
             "Expected ws://... or wss://... — the /browser connect "
             "resolver should have rewritten this. Check that a Chromium-family "
             "browser is actually listening on the debug port."
-        )
-
-    call_params: Dict[str, Any] = params or {}
-    if not isinstance(call_params, dict):
-        return tool_error(
-            f"'params' must be an object/dict, got {type(call_params).__name__}"
         )
 
     try:
@@ -444,7 +558,6 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "- List tabs: method='Target.getTargets', params={}\n"
         "- Handle a native JS dialog: method='Page.handleJavaScriptDialog', "
         "params={'accept': true, 'promptText': ''}, target_id=<tabId>\n"
-        "- Get all cookies: method='Network.getAllCookies', params={}\n"
         "- Eval in a specific tab: method='Runtime.evaluate', "
         "params={'expression': '...', 'returnByValue': true}, "
         "target_id=<tabId>\n"
@@ -452,7 +565,11 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "params={'width': 1280, 'height': 720, 'deviceScaleFactor': 1, "
         "'mobile': false}, target_id=<tabId>\n\n"
         "**Usage rules:**\n"
-        "- Browser-level methods (Target.*, Browser.*, Storage.*): omit "
+        "- Raw cookie/storage reads are blocked: cookie reads, explicit "
+        "DOMStorage/IndexedDB/CacheStorage read methods, and Runtime.evaluate "
+        "or Runtime.callFunctionOn source touching document.cookie/"
+        "localStorage/sessionStorage are not returned to model context.\n"
+        "- Browser-level methods (Target.*, Browser.*): omit "
         "target_id and frame_id.\n"
         "- Page-level methods (Page.*, Runtime.*, DOM.*, Emulation.*, "
         "Network.* scoped to a tab): pass target_id from Target.getTargets.\n"

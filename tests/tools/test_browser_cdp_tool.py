@@ -271,6 +271,200 @@ def test_target_attach_then_call(cdp_server):
 
 
 # ---------------------------------------------------------------------------
+# Sensitive browser state access must not enter model context
+# ---------------------------------------------------------------------------
+
+
+def test_blocks_network_get_all_cookies_before_cdp_dispatch(cdp_server):
+    cdp_server.on(
+        "Network.getAllCookies",
+        lambda params, sid: {
+            "cookies": [
+                {"name": "session", "value": "secret-cookie-value", "domain": ".example.test"}
+            ]
+        },
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Network.getAllCookies"))
+
+    assert "error" in result
+    assert "sensitive browser state" in result["error"]
+    assert "secret-cookie-value" not in json.dumps(result)
+    assert cdp_server.received() == []
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "Storage.getCookies",
+    ],
+)
+def test_blocks_storage_cookie_read_method_before_cdp_dispatch(cdp_server, method):
+    cdp_server.on(method, lambda params, sid: {"value": "secret-storage-value"})
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method=method))
+
+    assert "error" in result
+    assert "sensitive browser state" in result["error"]
+    assert "secret-storage-value" not in json.dumps(result)
+    assert cdp_server.received() == []
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "DOMStorage.getDOMStorageItems",
+        "IndexedDB.requestData",
+        "IndexedDB.requestDatabase",
+        "IndexedDB.requestDatabaseNames",
+        "CacheStorage.requestCacheNames",
+        "CacheStorage.requestCachedResponse",
+        "CacheStorage.requestEntries",
+    ],
+)
+def test_blocks_explicit_storage_read_methods_before_cdp_dispatch(cdp_server, method):
+    cdp_server.on(method, lambda params, sid: {"value": "secret-storage-value"})
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method=method))
+
+    assert "error" in result
+    assert "sensitive browser state" in result["error"]
+    assert "secret-storage-value" not in json.dumps(result)
+    assert cdp_server.received() == []
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "Storage.getStorageKeyForFrame",
+        "Storage.getUsageAndQuota",
+        "DOMStorage.enable",
+        "IndexedDB.enable",
+        "CacheStorage.deleteCache",
+    ],
+)
+def test_allows_safe_storage_non_read_methods(cdp_server, method):
+    cdp_server.on(method, lambda params, sid: {"ok": True})
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method=method))
+
+    assert result["success"] is True
+    assert result["result"] == {"ok": True}
+    assert cdp_server.received()[0]["method"] == method
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "document.cookie",
+        "document?.cookie",
+        "document ?. cookie",
+        "document['cookie']",
+        "document[`cookie`]",
+        "document?.[\"cookie\"]",
+        "document?.[`cookie`]",
+        "document ?. ['cookie']",
+        "document ?. [`cookie`]",
+        "document['co' + 'okie']",
+        "document[`co` + `okie`]",
+        "JSON.stringify(window.localStorage)",
+        "JSON.stringify(window['localStorage'])",
+        "JSON.stringify(window[`localStorage`])",
+        "JSON.stringify(window[`local` + `Storage`])",
+        "JSON.stringify(globalThis['session' + 'Storage'])",
+        "JSON.stringify(globalThis[`session` + `Storage`])",
+        "Object.fromEntries(Object.entries(sessionStorage))",
+        "indexedDB.databases()",
+        "window.indexedDB.databases()",
+        "window?.indexedDB.databases()",
+        "globalThis.indexedDB.databases()",
+        "self.indexedDB.databases()",
+        'window["indexedDB"].databases()',
+        "window[`indexedDB`].databases()",
+        'globalThis?.["indexedDB"].databases()',
+        "globalThis?.[`indexedDB`].databases()",
+        "window['index' + 'edDB'].databases()",
+        "window[`index` + `edDB`].databases()",
+        "caches.keys()",
+        "window.caches.keys()",
+        "window?.caches.keys()",
+        'globalThis["caches"].keys()',
+        "globalThis[`caches`].keys()",
+        'self?.["caches"].keys()',
+        "self?.[`caches`].keys()",
+        "CacheStorage.prototype.keys",
+    ],
+)
+def test_blocks_runtime_evaluate_storage_expressions_before_cdp_dispatch(
+    cdp_server, expression
+):
+    cdp_server.on(
+        "Target.attachToTarget",
+        lambda params, sid: {"sessionId": f"sess-{params['targetId']}"},
+    )
+    cdp_server.on(
+        "Runtime.evaluate",
+        lambda params, sid: {
+            "result": {"type": "string", "value": "secret-browser-state"}
+        },
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            params={"expression": expression, "returnByValue": True},
+            target_id="tab-A",
+        )
+    )
+
+    assert "error" in result
+    assert "sensitive browser state" in result["error"]
+    assert "secret-browser-state" not in json.dumps(result)
+    assert cdp_server.received() == []
+
+
+@pytest.mark.parametrize(
+    "function_declaration",
+    [
+        "function(){ return document.cookie }",
+        "function(){ return document?.cookie }",
+        "function(){ return document?.[\"cookie\"] }",
+        "function(){ return document?.[`cookie`] }",
+        "function(){ return window['local' + 'Storage'].getItem('token') }",
+        "function(){ return globalThis.sessionStorage.length }",
+        "function(){ return indexedDB.databases() }",
+        "function(){ return window?.indexedDB.databases() }",
+        'function(){ return globalThis["indexedDB"].databases() }',
+        "function(){ return globalThis[`indexedDB`].databases() }",
+        "function(){ return caches.keys() }",
+        'function(){ return self?.["caches"].keys() }',
+        "function(){ return self?.[`caches`].keys() }",
+    ],
+)
+def test_blocks_runtime_call_function_on_storage_reads_before_cdp_dispatch(
+    cdp_server, function_declaration
+):
+    cdp_server.on(
+        "Runtime.callFunctionOn",
+        lambda params, sid: {
+            "result": {"type": "string", "value": "secret-browser-state"}
+        },
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.callFunctionOn",
+            params={"functionDeclaration": function_declaration, "returnByValue": True},
+        )
+    )
+
+    assert "error" in result
+    assert "sensitive browser state" in result["error"]
+    assert "secret-browser-state" not in json.dumps(result)
+    assert cdp_server.received() == []
+
+
+# ---------------------------------------------------------------------------
 # CDP error responses
 # ---------------------------------------------------------------------------
 

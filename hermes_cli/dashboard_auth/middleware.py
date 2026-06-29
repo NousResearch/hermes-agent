@@ -185,6 +185,11 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+    # Password-only providers have no OAuth redirect / start_login flow —
+    # auto-SSO to /auth/login would 500.  Fall through to /login (form).
+    if getattr(provider, "supports_password", False):
+        return None
+
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

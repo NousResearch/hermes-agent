@@ -593,3 +593,63 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Auto-SSO skip for password-only providers (#55130)
+# ---------------------------------------------------------------------------
+
+
+def _make_basic_provider():
+    """Create a BasicAuthProvider for testing (password-only, no OAuth)."""
+    import plugins.dashboard_auth.basic as basic_plugin
+    h = basic_plugin.hash_password("hunter2")
+    return basic_plugin.BasicAuthProvider(
+        username="admin",
+        password_hash=h,
+        secret=b"test-secret-at-least-16-bytes-long",
+    )
+
+
+@pytest.fixture
+def basic_only_app():
+    """Configure web_server.app with only the basic (password-only) provider."""
+    clear_providers()
+    register_provider(_make_basic_provider())
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+    client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+    yield client
+    clear_providers()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
+def test_auto_sso_skips_password_only_provider(basic_only_app):
+    """Auto-SSO must NOT redirect to /auth/login when the sole provider is
+    password-only (supports_password=True).  That route calls start_login()
+    which raises NotImplementedError for BasicAuthProvider, causing HTTP 500.
+
+    Instead, the request should fall through to the /login interstitial
+    which renders the password form.
+
+    Regression test for #55130.
+    """
+    r = basic_only_app.get("/", follow_redirects=False)
+    # Should redirect to /login (the password form), NOT to /auth/login
+    assert r.status_code == 302, (
+        f"Expected 302 redirect, got {r.status_code}"
+    )
+    location = r.headers.get("location", "")
+    assert "/auth/login" not in location, (
+        f"Auto-SSO redirected to {location} — password-only providers have "
+        f"no OAuth flow; should fall through to /login instead"
+    )
+    assert "/login" in location, (
+        f"Expected redirect to /login (password form), got {location}"
+    )

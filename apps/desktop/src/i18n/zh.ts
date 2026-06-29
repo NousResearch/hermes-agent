@@ -399,6 +399,8 @@ export const zh: Translations = {
         restartHint: '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Hermes，然后回到此处。',
         scaleTitle: '大小',
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
+        roamTitle: '漫游',
+        roamDesc: '空闲时让宠物自己在窗口内四处走动。',
         on: '开启',
         off: '关闭',
         chooseTitle: '选择宠物',

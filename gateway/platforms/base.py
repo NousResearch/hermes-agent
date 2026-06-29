@@ -2904,6 +2904,10 @@ class BasePlatformAdapter(ABC):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        multi_select: bool = False,
+        min_selections: int = 0,
+        max_selections: Optional[int] = None,
+        allow_other: bool = True,
     ) -> SendResult:
         """Send a clarify prompt to the user.
 
@@ -2936,10 +2940,27 @@ class BasePlatformAdapter(ABC):
         """
         if choices:
             lines = [f"❓ {question}", ""]
+            if multi_select:
+                suffix = ", or your own answer" if allow_other else ""
+                lines.append(
+                    "Multiple selections allowed: reply with numbers/letters "
+                    f"like `1,3` or `A+C`, or option text{suffix}."
+                )
+                lines.append("")
             for i, choice in enumerate(choices, start=1):
-                lines.append(f"  {i}. {choice}")
+                prefix = f"{i}."
+                if multi_select:
+                    letter = chr(ord("A") + i - 1)
+                    prefix = f"{i}/{letter}."
+                lines.append(f"  {prefix} {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            if multi_select:
+                suffix = ", option text, or your own answer" if allow_other else " or option text"
+                lines.append(f"Reply with one or more numbers/letters{suffix}.")
+            elif allow_other:
+                lines.append("Reply with the number, the option text, or your own answer.")
+            else:
+                lines.append("Reply with the number or the option text.")
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).

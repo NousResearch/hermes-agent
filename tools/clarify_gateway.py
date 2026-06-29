@@ -32,6 +32,7 @@ Two delivery paths from the adapter:
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -51,6 +52,10 @@ class _ClarifyEntry:
     session_key: str
     question: str
     choices: Optional[List[str]]
+    multi_select: bool = False
+    min_selections: int = 0
+    max_selections: Optional[int] = None
+    allow_other: bool = True
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
@@ -61,6 +66,10 @@ class _ClarifyEntry:
             "session_key": self.session_key,
             "question": self.question,
             "choices": list(self.choices) if self.choices else None,
+            "multi_select": self.multi_select,
+            "min_selections": self.min_selections,
+            "max_selections": self.max_selections,
+            "allow_other": self.allow_other,
         }
 
 
@@ -80,6 +89,10 @@ def register(
     session_key: str,
     question: str,
     choices: Optional[List[str]],
+    multi_select: bool = False,
+    min_selections: int = 0,
+    max_selections: Optional[int] = None,
+    allow_other: bool = True,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -91,6 +104,10 @@ def register(
         session_key=session_key,
         question=question,
         choices=list(choices) if choices else None,
+        multi_select=bool(multi_select),
+        min_selections=int(min_selections or 0),
+        max_selections=max_selections,
+        allow_other=bool(allow_other),
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
     )
@@ -98,6 +115,43 @@ def register(
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
     return entry
+
+
+def parse_multi_select_response(raw: str, choices: List[str]) -> Optional[List[str]]:
+    """Parse a text fallback multi-select response into offered choice labels.
+
+    Accepts compact forms like ``1,3``, ``A+C``, ``2 + 4``, and exact labels
+    like ``Alpha, Gamma``. Returns ``None`` when the response looks like a
+    custom free-form answer rather than a clean selection.
+    """
+    if not raw or not choices:
+        return None
+
+    tokens = [t.strip() for t in re.split(r"\s*(?:,|\+|;|\n)\s*", raw.strip()) if t.strip()]
+    if not tokens:
+        return None
+
+    labels = list(choices)
+    label_map = {label.lower(): label for label in labels}
+    selected: List[str] = []
+
+    for token in tokens:
+        label = label_map.get(token.lower())
+        if label is None and token.isdigit():
+            idx = int(token) - 1
+            if 0 <= idx < len(labels):
+                label = labels[idx]
+        elif label is None and len(token) == 1 and token.isalpha():
+            idx = ord(token.upper()) - ord("A")
+            if 0 <= idx < len(labels):
+                label = labels[idx]
+
+        if label is None:
+            return None
+        if label not in selected:
+            selected.append(label)
+
+    return selected or None
 
 
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
@@ -187,20 +241,48 @@ def get_pending_for_session(
         return None
 
 
-def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
-    """Map typed choice replies to canonical choice text, otherwise keep custom text."""
+def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
+    """Map typed replies to canonical choice text, or reject disallowed custom text."""
     text = str(response).strip()
     if entry.choices:
+        if entry.multi_select:
+            parsed = parse_multi_select_response(text, entry.choices)
+            if parsed:
+                if len(parsed) < int(entry.min_selections or 0):
+                    return None
+                if entry.max_selections is not None and len(parsed) > int(entry.max_selections):
+                    return None
+                return ", ".join(parsed)
+            return text if entry.allow_other else None
+
+        label_map = {str(choice).strip().casefold(): str(choice).strip() for choice in entry.choices}
+        exact = label_map.get(text.casefold())
+        if exact is not None:
+            return exact
         try:
             idx = int(text) - 1
         except ValueError:
             idx = -1
         if 0 <= idx < len(entry.choices):
             return entry.choices[idx]
-        for choice in entry.choices:
-            if text.casefold() == str(choice).strip().casefold():
-                return str(choice).strip()
+        return text if entry.allow_other else None
     return text
+
+
+def format_invalid_text_response_message(entry: _ClarifyEntry) -> str:
+    """Human retry hint for a typed reply that failed clarify coercion."""
+    if entry.multi_select:
+        bounds: List[str] = []
+        if entry.min_selections:
+            bounds.append(f"at least {entry.min_selections}")
+        if entry.max_selections is not None:
+            bounds.append(f"at most {entry.max_selections}")
+        bound_text = f" ({', '.join(bounds)})" if bounds else ""
+        return (
+            "That doesn't match this multi-select prompt. "
+            f"Reply with listed choices{bound_text}, for example `1,3` or `A+C`."
+        )
+    return "That doesn't match this prompt. Reply with one of the listed choices."
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
@@ -208,10 +290,10 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
         return False
-    return resolve_gateway_clarify(
-        entry.clarify_id,
-        _coerce_text_response(entry, response),
-    )
+    coerced = _coerce_text_response(entry, response)
+    if coerced is None:
+        return False
+    return resolve_gateway_clarify(entry.clarify_id, coerced)
 
 
 def mark_awaiting_text(clarify_id: str) -> bool:

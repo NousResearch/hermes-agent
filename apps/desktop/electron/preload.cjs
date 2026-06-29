@@ -45,6 +45,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
+  pinnedSessions: {
+    get: () => ipcRenderer.invoke('hermes:pinnedSessions:get'),
+    set: ids => ipcRenderer.invoke('hermes:pinnedSessions:set', ids),
+    onChanged: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:pinnedSessions:changed', listener)
+      return () => ipcRenderer.removeListener('hermes:pinnedSessions:changed', listener)
+    }
+  },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),

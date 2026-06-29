@@ -675,13 +675,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        multi_select: bool = False,
+        min_selections: int = 0,
+        max_selections: Optional[int] = None,
+        allow_other: bool = True,
     ) -> SendResult:
         """Render a clarify prompt as native WhatsApp interactive buttons.
 
-        - 1–3 choices → ``interactive.type=button`` (inline pill buttons).
-        - 4+ choices → ``interactive.type=list`` (tap-to-open sheet with
-          up to 10 rows). Telegram's "Other (type answer)" escape hatch
-          is appended as the final row, picking it flips the entry into
+        - Multi-select prompts fall back to the base numbered-text renderer
+          because WhatsApp Cloud interactive controls are single-select only.
+        - 1–3 single-select choices → ``interactive.type=button`` (inline pill buttons).
+        - 4+ single-select choices → ``interactive.type=list`` (tap-to-open sheet with
+          up to 10 rows). When ``allow_other`` is true, an "Other (type
+          answer)" row is appended; picking it flips the entry into
           text-capture mode handled by the gateway's text intercept.
         - 0 choices (open-ended) → plain text question; the next message
           in the session is captured by the gateway and resolves clarify.
@@ -698,6 +704,25 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Open-ended → just send the question, gateway captures next msg.
         if not choices:
             return await self.send(chat_id, f"❓ {question}", reply_to=reply_to)
+
+        # WhatsApp Cloud interactive buttons/lists are single-select. Preserve
+        # multi-select semantics by deliberately degrading to BasePlatformAdapter's
+        # numbered text fallback, where the gateway parser accepts replies like
+        # "1,3" / "A+C" and enforces min/max/allow_other.
+        if multi_select:
+            return await BasePlatformAdapter.send_clarify(
+                self,
+                chat_id=chat_id,
+                question=question,
+                choices=choices,
+                clarify_id=clarify_id,
+                session_key=session_key,
+                metadata=metadata,
+                multi_select=multi_select,
+                min_selections=min_selections,
+                max_selections=max_selections,
+                allow_other=allow_other,
+            )
 
         # Mirror Telegram: render full choice text in body so long
         # options aren't truncated to the 20-char button label cap.
@@ -736,11 +761,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "title": self._truncate_button_label(f"{idx + 1}", limit=24),
                     "description": self._truncate_button_label(choice_text, limit=72),
                 })
-            rows.append({
-                "id": f"cl:{clarify_id}:other",
-                "title": "✏️ Other",
-                "description": "Type your own answer",
-            })
+            if allow_other:
+                rows.append({
+                    "id": f"cl:{clarify_id}:other",
+                    "title": "✏️ Other",
+                    "description": "Type your own answer",
+                })
             interactive = {
                 "type": "list",
                 "body": {"text": body_text},

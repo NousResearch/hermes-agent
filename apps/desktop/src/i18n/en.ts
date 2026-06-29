@@ -2153,6 +2153,8 @@ export const en: Translations = {
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',
     promptFailed: 'Prompt failed',
+    promptSubmitTimedOut:
+      'Hermes did not confirm this message in time. The backend may still process it, so wait a moment before retrying to avoid sending it twice.',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
     emptySlashCommand: 'empty slash command',
     desktopCommands: 'Desktop commands',

@@ -2198,6 +2198,7 @@ export const zhHant = defineLocale({
     sessionUnavailable: '工作階段不可用',
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',
+    promptSubmitTimedOut: 'Hermes 未能及時確認這則訊息。後端可能仍會處理它；請稍等再重試，以免重複傳送。',
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
     emptySlashCommand: '空的斜線指令',
     desktopCommands: '桌面端指令',

@@ -3606,8 +3606,17 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
+        "clarify_callback": lambda q, c, **kw: _block(
+            "clarify.request",
+            sid,
+            {
+                "question": q,
+                "choices": c,
+                "multi_select": bool(kw.get("multi_select", False)),
+                "min_selections": kw.get("min_selections", 0),
+                "max_selections": kw.get("max_selections"),
+                "allow_other": kw.get("allow_other", True),
+            },
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
@@ -9629,6 +9638,69 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"task_id": task_id})
 
 
+def _coerce_clarify_response_from_payload(payload: dict, answer: str) -> tuple[bool, str, str]:
+    """Validate/normalize Desktop clarify replies before unblocking the agent.
+
+    The renderer is a convenience layer, not the trust boundary.  Keep the
+    server-side bridge aligned with ``tools.clarify_gateway`` so a stale or
+    buggy UI cannot turn a constrained single-select prompt into free-form or
+    multi-select input.
+    """
+    text = str(answer or "").strip()
+    if not text:
+        return True, "", ""
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        choices = []
+    clean_choices = [str(choice).strip() for choice in choices if str(choice).strip()]
+    if not clean_choices:
+        return True, text, ""
+
+    multi_select = bool(payload.get("multi_select", False))
+    allow_other = bool(payload.get("allow_other", True))
+    try:
+        min_selections = int(payload.get("min_selections") or 0)
+    except (TypeError, ValueError):
+        min_selections = 0
+    max_raw = payload.get("max_selections")
+    try:
+        max_selections = int(max_raw) if max_raw is not None else None
+    except (TypeError, ValueError):
+        max_selections = None
+
+    if multi_select:
+        try:
+            from tools.clarify_gateway import parse_multi_select_response
+
+            parsed = parse_multi_select_response(text, clean_choices)
+        except Exception:
+            parsed = None
+        if parsed:
+            if len(parsed) < min_selections:
+                return False, "", f"Select at least {min_selections} choices."
+            if max_selections is not None and len(parsed) > max_selections:
+                return False, "", f"Select at most {max_selections} choices."
+            return True, ", ".join(parsed), ""
+        if allow_other:
+            return True, text, ""
+        return False, "", "Reply with one or more listed choices."
+
+    label_map = {choice.casefold(): choice for choice in clean_choices}
+    exact = label_map.get(text.casefold())
+    if exact is not None:
+        return True, exact, ""
+    try:
+        idx = int(text) - 1
+    except ValueError:
+        idx = -1
+    if 0 <= idx < len(clean_choices):
+        return True, clean_choices[idx], ""
+    if allow_other:
+        return True, text, ""
+    return False, "", "Reply with one of the listed choices."
+
+
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
@@ -9646,6 +9718,18 @@ def _respond(rid, params, key):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
+    request_id = params.get("request_id", "")
+    answer = params.get("answer", "")
+    with _prompt_lock:
+        prompt_payload = _pending_prompt_payloads.get(request_id)
+    if prompt_payload and prompt_payload[0] == "clarify.request":
+        ok, coerced, message = _coerce_clarify_response_from_payload(
+            prompt_payload[1], str(answer),
+        )
+        if not ok:
+            return _err(rid, 4010, message or "Invalid clarify response")
+        params = dict(params)
+        params["answer"] = coerced
     return _respond(rid, params, "answer")
 
 

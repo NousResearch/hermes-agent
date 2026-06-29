@@ -119,6 +119,20 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
 }
 
+function isPromptSubmitTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /request timed out:\s*prompt\.submit/i.test(message)
+}
+
+function submitErrorMessage(error: unknown, copy: Translations['desktop']): string {
+  if (isPromptSubmitTimeoutError(error)) {
+    return copy.promptSubmitTimedOut
+  }
+
+  return inlineErrorMessage(error, copy.promptFailed)
+}
+
 function isSessionNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
@@ -818,7 +832,7 @@ export function usePromptActions({
           return false
         }
 
-        const message = inlineErrorMessage(err, copy.promptFailed)
+        const message = submitErrorMessage(err, copy)
 
         updateSessionState(sessionId, state => ({
           ...state,
@@ -840,6 +854,12 @@ export function usePromptActions({
 
         if (isProviderSetupError(err)) {
           requestDesktopOnboarding(copy.providerCredentialRequired)
+
+          return false
+        }
+
+        if (isPromptSubmitTimeoutError(err)) {
+          notify({ kind: 'error', title: copy.promptFailed, message })
 
           return false
         }

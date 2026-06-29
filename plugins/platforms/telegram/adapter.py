@@ -478,6 +478,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Native multi-select clarify state: clarify_id → {choices, selected, ...}.
+        self._clarify_multi_state: Dict[str, dict] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -4030,6 +4032,10 @@ class TelegramAdapter(BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        multi_select: bool = False,
+        min_selections: int = 0,
+        max_selections: Optional[int] = None,
+        allow_other: bool = True,
     ) -> SendResult:
         """Render a clarify prompt with one inline button per choice.
 
@@ -4058,7 +4064,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     f"{i + 1}. {_html.escape(str(c))}"
                     for i, c in enumerate(choices)
                 )
-                text += f"\n\n{option_lines}"
+                if multi_select:
+                    text += f"\n\nSelect one or more, then tap ✅ Done.\n\n{option_lines}"
+                else:
+                    text += f"\n\n{option_lines}"
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
@@ -4068,22 +4077,49 @@ class TelegramAdapter(BasePlatformAdapter):
             }
 
             if choices:
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.
+                # Telegram caps callback_data at 64 bytes; keep callback ids short.
                 rows = []
-                for idx in range(len(choices)):
+                if multi_select:
+                    clean_choices = [str(c).strip() for c in choices if str(c).strip()]
+                    self._clarify_multi_state[clarify_id] = {
+                        "choices": clean_choices,
+                        "selected": set(),
+                        "min_selections": int(min_selections or 0),
+                        "max_selections": max_selections,
+                        "allow_other": bool(allow_other),
+                    }
+                    for idx in range(len(clean_choices)):
+                        rows.append([
+                            InlineKeyboardButton(
+                                f"☐ {idx + 1}",
+                                callback_data=f"clms:{clarify_id}:toggle:{idx}",
+                            )
+                        ])
                     rows.append([
-                        InlineKeyboardButton(
-                            str(idx + 1),
-                            callback_data=f"cl:{clarify_id}:{idx}",
-                        )
+                        InlineKeyboardButton("✅ Done", callback_data=f"clms:{clarify_id}:done")
                     ])
-                rows.append([
-                    InlineKeyboardButton(
-                        "✏️ Other (type answer)",
-                        callback_data=f"cl:{clarify_id}:other",
-                    )
-                ])
+                    if allow_other:
+                        rows.append([
+                            InlineKeyboardButton(
+                                "✏️ Other (type answer)",
+                                callback_data=f"clms:{clarify_id}:other",
+                            )
+                        ])
+                else:
+                    for idx in range(len(choices)):
+                        rows.append([
+                            InlineKeyboardButton(
+                                str(idx + 1),
+                                callback_data=f"cl:{clarify_id}:{idx}",
+                            )
+                        ])
+                    if allow_other:
+                        rows.append([
+                            InlineKeyboardButton(
+                                "✏️ Other (type answer)",
+                                callback_data=f"cl:{clarify_id}:other",
+                            )
+                        ])
                 kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
 
             reply_to_id = self._reply_to_message_id_for_send(None, metadata)
@@ -4796,6 +4832,132 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Clarify multi-select callbacks (clms:clarify_id:toggle:idx | done | other) ---
+        if data.startswith("clms:"):
+            parts = data.split(":")
+            if len(parts) >= 3:
+                clarify_id = parts[1]
+                action = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                session_key = self._clarify_state.get(clarify_id)
+                state = self._clarify_multi_state.get(clarify_id)
+                if not session_key or not state:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                user_display = getattr(query.from_user, "first_name", "User")
+                choices = list(state.get("choices") or [])
+                selected = state.setdefault("selected", set())
+
+                if action == "toggle" and len(parts) == 4:
+                    try:
+                        idx = int(parts[3])
+                    except (ValueError, TypeError):
+                        await query.answer(text="Invalid choice.")
+                        return
+                    if not 0 <= idx < len(choices):
+                        await query.answer(text="Invalid choice.")
+                        return
+                    if idx in selected:
+                        selected.remove(idx)
+                    else:
+                        max_sel = state.get("max_selections")
+                        if max_sel is not None and len(selected) >= int(max_sel):
+                            await query.answer(text=f"Select at most {max_sel}.")
+                            return
+                        selected.add(idx)
+                    await query.answer(text=f"{len(selected)} selected")
+                    try:
+                        rows = []
+                        for choice_idx in range(len(choices)):
+                            mark = "☑" if choice_idx in selected else "☐"
+                            rows.append([
+                                InlineKeyboardButton(
+                                    f"{mark} {choice_idx + 1}",
+                                    callback_data=f"clms:{clarify_id}:toggle:{choice_idx}",
+                                )
+                            ])
+                        rows.append([
+                            InlineKeyboardButton("✅ Done", callback_data=f"clms:{clarify_id}:done")
+                        ])
+                        if state.get("allow_other", True):
+                            rows.append([
+                                InlineKeyboardButton(
+                                    "✏️ Other (type answer)",
+                                    callback_data=f"clms:{clarify_id}:other",
+                                )
+                            ])
+                        await query.edit_message_text(
+                            text=query.message.text or "",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=InlineKeyboardMarkup(rows),
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                if action == "other":
+                    try:
+                        from tools.clarify_gateway import mark_awaiting_text
+                        mark_awaiting_text(clarify_id)
+                    except Exception as exc:
+                        logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
+                    await query.answer(text="✏️ Type your answer in the chat.")
+                    try:
+                        await query.edit_message_text(
+                            text=f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                if action == "done":
+                    min_sel = int(state.get("min_selections") or 0)
+                    if len(selected) < min_sel:
+                        await query.answer(text=f"Select at least {min_sel}.")
+                        return
+                    resolved_labels = [choices[i] for i in sorted(selected) if 0 <= i < len(choices)]
+                    resolved_text = ", ".join(resolved_labels)
+                    self._clarify_state.pop(clarify_id, None)
+                    self._clarify_multi_state.pop(clarify_id, None)
+                    try:
+                        from tools.clarify_gateway import resolve_gateway_clarify
+                        resolved = resolve_gateway_clarify(clarify_id, resolved_text)
+                    except Exception as exc:
+                        logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
+                        resolved = False
+                    await query.answer(text=f"✓ {len(resolved_labels)} selected")
+                    try:
+                        await query.edit_message_text(
+                            text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    if resolved:
+                        logger.info(
+                            "Telegram clarify multi-select resolved (id=%s, choices=%r, user=%s)",
+                            clarify_id, resolved_text, user_display,
+                        )
+                    return
+
+                await query.answer(text="Invalid choice.")
             return
 
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---

@@ -46,6 +46,10 @@ function unpackedDirName(platform) {
   return 'linux-unpacked'
 }
 
+function pathForPlatform(platform) {
+  return platform === 'win32' ? path.win32 : path.posix
+}
+
 /**
  * If `execPath` lives under `<updateRoot>/apps/desktop/release/<plat>-unpacked`,
  * return that unpacked dir; otherwise null. A null result means the running
@@ -57,12 +61,16 @@ function unpackedDirName(platform) {
  */
 function resolveUnpackedRelease(execPath, updateRoot, platform) {
   if (!execPath || !updateRoot) return null
-  const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
-  const unpacked = path.join(releaseDir, unpackedDirName(platform))
-  const normalizedExec = path.resolve(String(execPath))
+  const pathMod = pathForPlatform(platform)
+  const releaseDir = pathMod.join(updateRoot, 'apps', 'desktop', 'release')
+  const unpacked = pathMod.resolve(pathMod.join(releaseDir, unpackedDirName(platform)))
+  const normalizedExec = pathMod.resolve(String(execPath))
   // execPath must be the unpacked dir itself or a descendant of it.
-  const withSep = unpacked.endsWith(path.sep) ? unpacked : unpacked + path.sep
-  if (normalizedExec === unpacked || normalizedExec.startsWith(withSep)) {
+  const withSep = unpacked.endsWith(pathMod.sep) ? unpacked : unpacked + pathMod.sep
+  const comparableExec = platform === 'win32' ? normalizedExec.toLowerCase() : normalizedExec
+  const comparableUnpacked = platform === 'win32' ? unpacked.toLowerCase() : unpacked
+  const comparableWithSep = platform === 'win32' ? withSep.toLowerCase() : withSep
+  if (comparableExec === comparableUnpacked || comparableExec.startsWith(comparableWithSep)) {
     return unpacked
   }
   return null

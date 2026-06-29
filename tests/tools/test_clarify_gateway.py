@@ -90,6 +90,88 @@ class TestClarifyPrimitive:
         assert cm.resolve_text_response_for_session("sk3d", custom) is True
         assert cm.wait_for_response("id3d", timeout=0.1) == custom
 
+    def test_parse_multi_select_response_exact_label_beats_letter_shortcut(self):
+        from tools import clarify_gateway as cm
+
+        assert cm.parse_multi_select_response("A", ["Alpha", "A", "Gamma"]) == ["A"]
+
+    def test_resolve_text_response_rejects_custom_when_other_disallowed(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("id-no-other", "sk-no-other", "Pick", ["X", "Y"], allow_other=False)
+        assert cm.resolve_text_response_for_session("sk-no-other", "not offered") is False
+        with cm._lock:
+            entry = cm._entries.get("id-no-other")
+        assert entry is not None
+        assert entry.response is None
+        assert not entry.event.is_set()
+
+    def test_resolve_text_response_accepts_exact_choice_when_other_disallowed(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("id-exact", "sk-exact", "Pick", ["Alpha", "A"], allow_other=False)
+        assert cm.resolve_text_response_for_session("sk-exact", "A") is True
+        assert cm.wait_for_response("id-exact", timeout=0.1) == "A"
+
+    def test_multi_select_text_response_enforces_min_max_and_allow_other(self):
+        from tools import clarify_gateway as cm
+
+        cm.register(
+            "id-ms-bounds",
+            "sk-ms-bounds",
+            "Pick",
+            ["A", "B", "C"],
+            multi_select=True,
+            min_selections=2,
+            max_selections=2,
+            allow_other=False,
+        )
+        assert cm.resolve_text_response_for_session("sk-ms-bounds", "1") is False
+        assert cm.resolve_text_response_for_session("sk-ms-bounds", "1,2,3") is False
+        assert cm.resolve_text_response_for_session("sk-ms-bounds", "custom") is False
+        assert cm.resolve_text_response_for_session("sk-ms-bounds", "1,3") is True
+        assert cm.wait_for_response("id-ms-bounds", timeout=0.1) == "A, C"
+
+    def test_invalid_text_response_message_mentions_bounds(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "id-ms-message",
+            "sk-ms-message",
+            "Pick",
+            ["A", "B", "C"],
+            multi_select=True,
+            min_selections=2,
+            max_selections=2,
+            allow_other=False,
+        )
+
+        message = cm.format_invalid_text_response_message(entry)
+        assert "multi-select" in message
+        assert "at least 2" in message
+        assert "at most 2" in message
+
+    def test_multi_select_metadata_is_stored_in_signature(self):
+        """Gateway entries carry multi-select metadata for adapters/Desktop."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "id-ms",
+            "sk-ms",
+            "Pick several",
+            ["Alpha", "Beta", "Gamma"],
+            multi_select=True,
+            min_selections=1,
+            max_selections=2,
+            allow_other=False,
+        )
+
+        assert entry.multi_select is True
+        assert entry.min_selections == 1
+        assert entry.max_selections == 2
+        assert entry.allow_other is False
+        assert entry.signature()["multi_select"] is True
+
     def test_other_button_flips_to_text_mode(self):
         """mark_awaiting_text makes get_pending_for_session find the entry."""
         from tools import clarify_gateway as cm
@@ -250,3 +332,19 @@ class TestGatewayTextIntercept:
         
         # Clean up
         cm.clear_session("sk-tf")
+
+    def test_parse_multi_select_response_accepts_numbers_and_letters(self):
+        from tools import clarify_gateway as cm
+
+        choices = ["Alpha", "Beta", "Gamma", "Delta"]
+
+        assert cm.parse_multi_select_response("1,3", choices) == ["Alpha", "Gamma"]
+        assert cm.parse_multi_select_response("A+C", choices) == ["Alpha", "Gamma"]
+        assert cm.parse_multi_select_response("2 + 4", choices) == ["Beta", "Delta"]
+
+    def test_parse_multi_select_response_exact_labels_and_custom_text(self):
+        from tools import clarify_gateway as cm
+
+        choices = ["Alpha", "Beta", "Gamma"]
+        assert cm.parse_multi_select_response("Alpha, Gamma", choices) == ["Alpha", "Gamma"]
+        assert cm.parse_multi_select_response("Something else", choices) is None

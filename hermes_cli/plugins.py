@@ -43,8 +43,9 @@ import sys
 import threading
 import types
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -2141,16 +2142,34 @@ def get_plugin_toolset_keys_from_manifests() -> Set[str]:
     if yaml_mod is None:
         return set()
 
-    keys: Set[str] = set()
-    disabled = _get_disabled_plugins()
-    enabled = _get_enabled_plugins()
-    scan_roots: List[tuple[Path, str]] = [
-        (get_bundled_plugins_dir(), "bundled"),
-        (get_bundled_plugins_dir() / "platforms", "bundled"),
-        (get_hermes_home() / "plugins", "user"),
-    ]
+    disabled = tuple(sorted(_get_disabled_plugins()))
+    enabled_raw = _get_enabled_plugins()
+    enabled = None if enabled_raw is None else tuple(sorted(enabled_raw))
+    scan_roots: Tuple[Tuple[str, str], ...] = (
+        (str(get_bundled_plugins_dir()), "bundled"),
+        (str(get_bundled_plugins_dir() / "platforms"), "bundled"),
+        (str(get_hermes_home() / "plugins"), "user"),
+    )
     if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
-        scan_roots.append((Path.cwd() / ".hermes" / "plugins", "project"))
+        scan_roots = scan_roots + ((str(Path.cwd() / ".hermes" / "plugins"), "project"),)
+
+    return set(_cached_plugin_toolset_keys_from_manifests(scan_roots, enabled, disabled))
+
+
+@lru_cache(maxsize=32)
+def _cached_plugin_toolset_keys_from_manifests(
+    scan_roots: Tuple[Tuple[str, str], ...],
+    enabled: Optional[Tuple[str, ...]],
+    disabled: Tuple[str, ...],
+) -> frozenset[str]:
+    """Cached implementation for manifest-only toolset lookup."""
+    yaml_mod = yaml
+    if yaml_mod is None:
+        return frozenset()
+
+    keys: Set[str] = set()
+    disabled_set = set(disabled)
+    enabled_set = None if enabled is None else set(enabled)
 
     def _scan(root: Path, source: str, prefix: str = "", depth: int = 0) -> None:
         if not root.is_dir():
@@ -2175,12 +2194,12 @@ def get_plugin_toolset_keys_from_manifests() -> Set[str]:
                 key = f"{prefix}/{child.name}" if prefix else name
                 raw_kind = data.get("kind", "standalone")
                 kind = raw_kind.strip().lower() if isinstance(raw_kind, str) else "standalone"
-                if key in disabled or name in disabled:
+                if key in disabled_set or name in disabled_set:
                     continue
                 if source == "bundled" and kind in {"backend", "platform"}:
                     keys.add(key)
                     continue
-                if enabled is not None and (key in enabled or name in enabled):
+                if enabled_set is not None and (key in enabled_set or name in enabled_set):
                     keys.add(key)
                 continue
             if depth < 1:
@@ -2188,8 +2207,8 @@ def get_plugin_toolset_keys_from_manifests() -> Set[str]:
                 _scan(child, source, sub_prefix, depth + 1)
 
     for root, source in scan_roots:
-        _scan(root, source)
-    return keys
+        _scan(Path(root), source)
+    return frozenset(keys)
 
 
 def get_plugin_toolsets() -> List[tuple]:

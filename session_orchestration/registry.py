@@ -59,6 +59,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from session_orchestration.types import SessionLifecycle
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -264,6 +266,14 @@ class SessionOrchestrationRegistry:
                 conn.execute(
                     "ALTER TABLE session_orchestration "
                     "ADD COLUMN discord_user_id TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN last_question TEXT"
                 )
             except sqlite3.OperationalError:
                 pass  # Column already exists — idempotent
@@ -576,16 +586,29 @@ class SessionOrchestrationRegistry:
                 self._write(_do)
 
         elif kind == "terminate":
-            # Full application (adapter.terminate + state update) is the
-            # watcher's responsibility (level 2).  Log at debug so the watcher
-            # can verify the intent was received; do not crash or warn here.
             task_id = intent.get("task_id") or payload.get("task_id")
+            if not task_id:
+                logger.warning(
+                    "registry._apply_intent: terminate intent missing task_id"
+                )
+                return
             restart = payload.get("restart", False)
-            logger.debug(
-                "registry._apply_intent: terminate queued for task_id=%s restart=%s "
-                "(watcher will apply)",
+            existing = self.get(task_id)
+            if existing is None:
+                logger.warning(
+                    "registry._apply_intent: terminate for unknown task_id=%s", task_id
+                )
+                return
+            terminal_state = (
+                SessionLifecycle.ERROR.value if restart else SessionLifecycle.DONE.value
+            )
+            self.upsert(
                 task_id,
-                restart,
+                agent=existing.get("agent", "unknown"),
+                run_id=existing.get("run_id"),
+                repo=existing.get("repo"),
+                source=existing.get("source", "spawn"),
+                state=terminal_state,
             )
 
         else:

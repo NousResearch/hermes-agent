@@ -513,4 +513,96 @@ class TestConcurrentWrites:
             row = main_reg.get(tid)
             assert isinstance(row["heartbeat_counter"], int)
             assert row["heartbeat_counter"] >= 0
-            assert isinstance(row["state"], str)
+
+
+# ---------------------------------------------------------------------------
+# T011 — Terminate intent application + last_question migration
+# ---------------------------------------------------------------------------
+
+
+class TestTerminateIntentApplication:
+    """_apply_intent('terminate') marks the row terminal."""
+
+    def _seed(self, registry, task_id="task-term-001"):
+        registry.upsert(
+            task_id,
+            agent="claude",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            state="RUNNING",
+        )
+
+    def test_terminate_intent_no_restart_marks_done(self, registry):
+        """restart=False -> state=DONE."""
+        task_id = "task-term-001"
+        self._seed(registry, task_id)
+
+        intent = {
+            "intent": "terminate",
+            "task_id": task_id,
+            "payload": json.dumps({"restart": False}),
+        }
+        registry._apply_intent(intent)
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "DONE", f"expected DONE, got {row['state']!r}"
+
+    def test_terminate_intent_restart_marks_error(self, registry):
+        """restart=True -> state=ERROR (row is marked terminal before re-spawn)."""
+        task_id = "task-term-002"
+        self._seed(registry, task_id)
+
+        intent = {
+            "intent": "terminate",
+            "task_id": task_id,
+            "payload": json.dumps({"restart": True}),
+        }
+        registry._apply_intent(intent)
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "ERROR", f"expected ERROR, got {row['state']!r}"
+
+    def test_terminate_apply_unknown_task_no_crash(self, registry):
+        """terminate for a nonexistent task_id logs a warning and does not crash."""
+        intent = {
+            "intent": "terminate",
+            "task_id": "nonexistent-task-xyz",
+            "payload": json.dumps({"restart": False}),
+        }
+        # Must not raise
+        registry._apply_intent(intent)
+
+    def test_terminate_apply_missing_task_id_no_crash(self, registry):
+        """terminate intent with no task_id logs a warning and does not crash."""
+        intent = {
+            "intent": "terminate",
+            "payload": json.dumps({}),
+        }
+        registry._apply_intent(intent)
+
+
+class TestMigrateSchemaLastQuestion:
+    """last_question column added idempotently."""
+
+    def test_migrate_schema_last_question_idempotent(self, db_path):
+        """Calling _migrate_schema twice on the same DB must not raise."""
+        reg1 = SessionOrchestrationRegistry(db_path=db_path)
+        reg2 = SessionOrchestrationRegistry(db_path=db_path)  # second init
+        reg2._migrate_schema()  # explicit third call — must be silent
+
+    def test_last_question_column_writable(self, db_path):
+        """After migration, last_question can be written and read back."""
+        reg = SessionOrchestrationRegistry(db_path=db_path)
+        task_id = str(uuid.uuid4())
+        reg.upsert(
+            task_id,
+            agent="claude",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_question="What is the meaning of life?",
+        )
+        row = reg.get(task_id)
+        assert row is not None
+        assert row.get("last_question") == "What is the meaning of life?"

@@ -1162,3 +1162,236 @@ class TestHangEscalation:
         assert error_upserts == [], (
             "state must NOT be set to ERROR on the first hang rung (nudge_count=0)"
         )
+
+
+# ---------------------------------------------------------------------------
+# T011 — terminate adapter helper + done-marker turn-change + last_question
+# ---------------------------------------------------------------------------
+
+
+class FakeAdapterWithTerminate(FakeAdapter):
+    """FakeAdapter that records terminate() calls instead of raising."""
+
+    def __init__(self, lifecycle: SessionLifecycle = SessionLifecycle.RUNNING):
+        super().__init__(lifecycle)
+        self.terminate_calls: List[SessionHandle] = []
+
+    def terminate(self, handle: SessionHandle) -> None:
+        self.terminate_calls.append(handle)
+
+
+class TestHandleTerminateAdapter:
+    """_handle_terminate_adapter calls adapter.terminate() and optionally re-spawns."""
+
+    def _make_registry_with_row(self, db_path: Path, task_id: str = "task-t011-001"):
+        reg = SessionOrchestrationRegistry(db_path=db_path)
+        reg.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            state="DONE",  # already marked terminal by _apply_intent
+            tmux_session="hermes-fake-t011",
+            workdir="/tmp/fake-workdir",
+        )
+        return reg
+
+    def test_handle_terminate_adapter_calls_adapter_terminate(self, db_path):
+        """_handle_terminate_adapter must call adapter.terminate(handle)."""
+        from session_orchestration.watcher import _handle_terminate_adapter
+
+        task_id = "task-t011-001"
+        reg = self._make_registry_with_row(db_path, task_id)
+        adapter = FakeAdapterWithTerminate(SessionLifecycle.RUNNING)
+        adapter_map = {"fake": adapter}
+
+        intent = {
+            "intent": "terminate",
+            "task_id": task_id,
+            "payload": json.dumps({"restart": False}),
+        }
+        _handle_terminate_adapter(intent, reg, adapter_map)
+
+        assert len(adapter.terminate_calls) == 1, (
+            "adapter.terminate() must be called exactly once"
+        )
+
+    def test_handle_terminate_adapter_restart_calls_spawn(self, db_path):
+        """With restart=True, _handle_terminate_adapter must call _spawn_fn."""
+        from session_orchestration.watcher import _handle_terminate_adapter
+
+        task_id = "task-t011-002"
+        reg = self._make_registry_with_row(db_path, task_id)
+        reg.upsert(
+            task_id,
+            agent="fake",
+            run_id=None,
+            repo=None,
+            source="spawn",
+            state="ERROR",  # restart path marks ERROR
+        )
+        adapter = FakeAdapterWithTerminate(SessionLifecycle.RUNNING)
+        adapter_map = {"fake": adapter}
+
+        spawn_calls: List = []
+
+        def fake_spawn(request):
+            spawn_calls.append(request)
+
+        intent = {
+            "intent": "terminate",
+            "task_id": task_id,
+            "payload": json.dumps({"restart": True}),
+        }
+        _handle_terminate_adapter(intent, reg, adapter_map, _spawn_fn=fake_spawn)
+
+        assert len(spawn_calls) == 1, "spawn_fn must be called exactly once on restart=True"
+        req = spawn_calls[0]
+        # Restart uses placeholder prompt because original is not persisted
+        assert req.prompt == "continue", (
+            f"restart must use placeholder prompt 'continue', got {req.prompt!r}"
+        )
+        assert req.agent == "fake", f"agent must be preserved, got {req.agent!r}"
+
+    def test_handle_terminate_adapter_no_restart_no_spawn(self, db_path):
+        """With restart=False, _handle_terminate_adapter must NOT call _spawn_fn."""
+        from session_orchestration.watcher import _handle_terminate_adapter
+
+        task_id = "task-t011-003"
+        reg = self._make_registry_with_row(db_path, task_id)
+        adapter = FakeAdapterWithTerminate(SessionLifecycle.RUNNING)
+
+        spawn_calls: List = []
+
+        intent = {
+            "intent": "terminate",
+            "task_id": task_id,
+            "payload": json.dumps({"restart": False}),
+        }
+        _handle_terminate_adapter(
+            intent, reg, {"fake": adapter}, _spawn_fn=lambda r: spawn_calls.append(r)
+        )
+
+        assert spawn_calls == [], "spawn_fn must NOT be called when restart=False"
+
+
+class TestDoneMarkerFiresTurnChange:
+    """A recent done marker transitions state to DONE and fires _on_turn_change."""
+
+    def test_done_marker_fires_on_turn_change(self, registry, tmp_path, monkeypatch):
+        """RUNNING -> DONE transition (via done marker) calls _on_turn_change."""
+        task_id = "t-done-tc-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "done",
+            {"summary": "task finished"},
+            task=task_id,
+        )
+
+        turn_change_calls: List = []
+        monkeypatch.setattr(
+            "session_orchestration.watcher._on_turn_change",
+            lambda tid, row, new_s, old_s: turn_change_calls.append(
+                (tid, new_s, old_s)
+            ),
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "DONE", f"expected DONE, got {row['state']!r}"
+
+        # _on_turn_change must have fired for the DONE transition
+        done_transitions = [c for c in turn_change_calls if c[1] == "DONE"]
+        assert done_transitions, (
+            "_on_turn_change must be called for the RUNNING -> DONE transition"
+        )
+        tid_called, new_s, old_s = done_transitions[0]
+        assert tid_called == task_id
+        assert old_s == "RUNNING"
+
+    def test_done_row_excluded_from_active_rows_next_tick(self, registry, tmp_path):
+        """After transitioning to DONE, the row is in _TERMINAL_STATES and
+        not re-processed on the next tick."""
+        task_id = "t-done-excl-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(str(marker_file), "done", {"summary": "all done"}, task=task_id)
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture()
+        watcher = _make_watcher(registry, adapter, capture)
+
+        # First tick: processes the row and marks DONE
+        n1 = watcher.tick()
+        assert registry.get(task_id)["state"] == "DONE"
+
+        # Second tick: DONE row must NOT be re-processed (terminal state)
+        n2 = watcher.tick()
+        assert n2 == 0, f"DONE row must not be processed on next tick, got n2={n2}"
+
+
+class TestNeedsInputMarkerStoresLastQuestion:
+    """A needs_input marker stores its question in the last_question column."""
+
+    def test_needs_input_marker_stores_last_question(self, registry, tmp_path):
+        """A recent needs_input marker must store payload.question in last_question."""
+        task_id = "t-ni-lq-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "needs_input",
+            {"question": "What next?", "options": ["A", "B"]},
+            task=task_id,
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        capture = FakeCapture("❯ ")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row.get("last_question") == "What next?", (
+            f"expected last_question='What next?', got {row.get('last_question')!r}"
+        )
+
+    def test_no_needs_input_marker_last_question_unchanged(self, registry, tmp_path):
+        """When no needs_input marker is present, last_question is not written."""
+        task_id = "t-ni-lq-002"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
+
+        # Write a heartbeat marker (not needs_input)
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(str(marker_file), "heartbeat", {}, task=task_id)
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("working…")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        # last_question must remain None (not written from a heartbeat marker)
+        assert row.get("last_question") is None, (
+            f"last_question must be None when no needs_input marker present, "
+            f"got {row.get('last_question')!r}"
+        )

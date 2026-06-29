@@ -585,6 +585,100 @@ def _build_handle_from_row(row: Dict[str, Any]) -> "SessionHandle":
 
 
 # ---------------------------------------------------------------------------
+# Terminate adapter helper (PART B)
+# ---------------------------------------------------------------------------
+
+
+def _handle_terminate_adapter(
+    intent: Dict[str, Any],
+    registry: "SessionOrchestrationRegistry",
+    adapter_map: Dict[str, "AgentAdapter"],
+    *,
+    _spawn_fn=None,
+) -> None:
+    """Adapter-side terminate: kill the tmux session and optionally re-spawn.
+
+    Called AFTER _apply_intent has already marked the registry row terminal.
+    This function handles the tmux kill and optional restart.
+
+    Parameters
+    ----------
+    intent:      The raw intent dict (from drain_intents).
+    registry:    The registry instance (for row lookup).
+    adapter_map: Dict of available adapters keyed by agent name.
+    _spawn_fn:   Injectable spawn callable (defaults to spawn_session).
+                 Pass a fake in tests to avoid real tmux launches.
+    """
+    import json as _json
+
+    payload: Dict[str, Any] = _json.loads(intent.get("payload", "{}"))
+    task_id = intent.get("task_id") or payload.get("task_id")
+    if not task_id:
+        logger.warning("_handle_terminate_adapter: intent missing task_id")
+        return
+
+    restart = payload.get("restart", False)
+    row = registry.get(task_id)
+    if row is None:
+        logger.warning(
+            "_handle_terminate_adapter: row not found for task_id=%s", task_id
+        )
+        return
+
+    agent_name = row.get("agent", "")
+    adapter = adapter_map.get(agent_name)
+    if adapter is None:
+        logger.warning(
+            "_handle_terminate_adapter: no adapter for agent=%s task_id=%s",
+            agent_name,
+            task_id,
+        )
+        # Still attempt restart if requested — adapter kill is best-effort
+    else:
+        handle = _build_handle_from_row(row)
+        try:
+            adapter.terminate(handle)
+            logger.info(
+                "_handle_terminate_adapter: terminated task_id=%s", task_id
+            )
+        except Exception as exc:
+            logger.error(
+                "_handle_terminate_adapter: adapter.terminate() failed for task_id=%s: %s",
+                task_id,
+                exc,
+            )
+
+    if restart:
+        # LIMITATION: the registry row does not persist the original prompt.
+        # Re-spawn with a placeholder "continue" prompt so the session is
+        # restarted best-effort.  A future task could persist the prompt to
+        # enable faithful restart.
+        if _spawn_fn is None:
+            from session_orchestration.spawn import SpawnRequest, spawn_session as _spawn_fn  # type: ignore[assignment]
+
+        from session_orchestration.spawn import SpawnRequest
+
+        workdir = row.get("workdir") or ""
+        request = SpawnRequest(
+            prompt="continue",  # placeholder — original prompt not persisted
+            agent=agent_name,
+            workdir=workdir,
+        )
+        try:
+            _spawn_fn(request)
+            logger.info(
+                "_handle_terminate_adapter: re-spawned task_id=%s (placeholder prompt)",
+                task_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "_handle_terminate_adapter: re-spawn failed for task_id=%s: %s",
+                task_id,
+                exc,
+            )
+
+
+# ---------------------------------------------------------------------------
 # Core watcher
 # ---------------------------------------------------------------------------
 
@@ -672,6 +766,21 @@ class SessionWatcher:
                 logger.error(
                     "watcher.tick: intent application failed for %r: %s",
                     intent,
+                    exc,
+                )
+
+        # Adapter-side terminate: kill tmux + optional restart (AFTER registry row
+        # is already marked terminal by _apply_intent above).
+        terminate_intents = [i for i in intents if i.get("intent") == "terminate"]
+        for term_intent in terminate_intents:
+            try:
+                _handle_terminate_adapter(
+                    term_intent, self._registry, self._available_adapters
+                )
+            except Exception as exc:
+                logger.error(
+                    "watcher.tick: _handle_terminate_adapter failed for %r: %s",
+                    term_intent,
                     exc,
                 )
 
@@ -875,6 +984,14 @@ class SessionWatcher:
         if new_offset != old_marker_offset:
             update_fields["marker_offset"] = new_offset
 
+        # Store last_question from most recent needs_input marker (PART C)
+        needs_input_markers = [m for m in new_markers if m.get("kind") == "needs_input"]
+        if needs_input_markers:
+            ni_payload = needs_input_markers[-1].get("payload") or {}
+            question = ni_payload.get("question", "")
+            if question:
+                update_fields["last_question"] = question
+
         # Write state update (single writer)
         self._registry.upsert(
             task_id,
@@ -895,16 +1012,17 @@ class SessionWatcher:
         # Re-read fresh row for hook calls (reflects counters just written)
         fresh_row = self._registry.get(task_id) or row
 
-        # Fire transition hook if state changed into a user-attention state
-        _ATTENTION_STATES = frozenset(
+        # Fire transition hook if state changed into a notify state (PART C)
+        _NOTIFY_STATES = frozenset(
             {
                 SessionLifecycle.WAITING_USER.value,
                 SessionLifecycle.PAUSED_HANDOFF.value,
+                SessionLifecycle.DONE.value,
             }
         )
-        if new_state != old_state and new_state in _ATTENTION_STATES:
+        if new_state != old_state and new_state in _NOTIFY_STATES:
             _on_turn_change(task_id, fresh_row, new_state, old_state)
-        elif new_state != old_state and old_state in _ATTENTION_STATES:
+        elif new_state != old_state and old_state in _NOTIFY_STATES:
             # Transitioning OUT of an attention state — re-arm the debounce
             # so the NEXT transition back fires as a new notification.
             try:

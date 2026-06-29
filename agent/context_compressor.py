@@ -637,6 +637,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._last_compression_interrupted = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
@@ -869,6 +870,10 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Tracks whether the last compression pass was interrupted mid-turn,
+        # so anti-thrashing (#45535) doesn't count an incomplete pass against
+        # future compression decisions.
+        self._last_compression_interrupted: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -910,6 +915,10 @@ class ContextCompressor(ContextEngine):
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
+        # Clear the interrupted flag on successful completion — the turn finished
+        # and we have real usage data, so stale interrupted state from a prior
+        # pass must not suppress future anti-thrashing decisions (#45535).
+        self._last_compression_interrupted = False
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
             if self.last_prompt_tokens < self.threshold_tokens:
@@ -961,26 +970,40 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
         return True
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int = None, force: bool = False) -> bool:
         """Check if context exceeds the compression threshold.
 
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
-        where each pass removes only 1-2 messages.
+        where each pass removes only 1-2 messages.  An interrupted compression
+        pass is excluded from the anti-thrashing count (#45535).
+
+        Args:
+            prompt_tokens: Token count to check against threshold. Defaults to
+                ``last_prompt_tokens``.
+            force: Bypass anti-thrashing back-off for auto-recovery after an
+                interrupted turn.  Corresponds to ``compress(force=True)``.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
-        # Anti-thrashing: back off if recent compressions were ineffective
-        if self._ineffective_compression_count >= 2:
-            if not self.quiet_mode:
-                logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
-                    self._ineffective_compression_count,
-                )
-            return False
+        # Anti-thrashing: back off if recent compressions were ineffective,
+        # but exclude any pass that was interrupted — partial state from an
+        # unfinished turn cannot be trusted as an ineffective compression
+        # (#45535).  The interrupted flag is cleared once a turn completes
+        # with real usage (update_from_response), so stale interrupted flags
+        # do not persist across completed turns.
+        if not force:
+            _blocked_by_antithrashing = self._ineffective_compression_count >= 2
+            if _blocked_by_antithrashing and not self._last_compression_interrupted:
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression skipped — last %d compressions saved <10%% each. "
+                        "Consider /new to start a fresh session, or /compress <topic> "
+                        "for focused compression.",
+                        self._ineffective_compression_count,
+                    )
+                return False
         return True
 
     # ------------------------------------------------------------------
@@ -2441,7 +2464,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             # an ineffective compression the anti-thrashing guard in
             # should_compress() never fires and every subsequent turn
             # re-triggers a no-op compression loop.  (#40803)
-            self._ineffective_compression_count += 1
+            # Skip anti-thrashing count if the prior pass was interrupted —
+            # partial state from an unfinished turn is not a real ineffective
+            # compression (#45535).
+            if not self._last_compression_interrupted:
+                self._ineffective_compression_count += 1
             self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(
@@ -2662,13 +2689,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         new_estimate = estimate_messages_tokens_rough(compressed)
         saved_estimate = display_tokens - new_estimate
 
-        # Anti-thrashing: track compression effectiveness
+        # Anti-thrashing: track compression effectiveness.
+        # Skip anti-thrashing count if the prior pass was interrupted —
+        # partial state from an unfinished turn is not a real ineffective
+        # compression (#45535).
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
-        if savings_pct < 10:
-            self._ineffective_compression_count += 1
-        else:
-            self._ineffective_compression_count = 0
+        if not self._last_compression_interrupted:
+            if savings_pct < 10:
+                self._ineffective_compression_count += 1
+            else:
+                self._ineffective_compression_count = 0
 
         if not self.quiet_mode:
             logger.info(

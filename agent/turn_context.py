@@ -382,6 +382,12 @@ def build_turn_context(
                 "This may take a moment."
             )
             for _pass in range(3):
+                # Mark that a compression pass is running.  If this specific
+                # iteration is interrupted before update_from_response() fires,
+                # anti-thrashing must not count it as ineffective (#45535).
+                # Set every iteration: a prior pass completing does not protect
+                # a subsequent interrupted pass.
+                _compressor._last_compression_interrupted = True
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
                 messages, active_system_prompt = agent._compress_context(

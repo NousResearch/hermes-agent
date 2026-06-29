@@ -1,5 +1,6 @@
 graft skills
 graft optional-skills
+graft skill-bundles
 graft optional-mcps
 graft locales
 # Bundled plugin manifests (plugin.yaml / plugin.yml). Without these the

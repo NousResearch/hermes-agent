@@ -395,6 +395,31 @@ hermes bundles reload
 
 From inside a chat session, `/bundles` lists every installed bundle and its skills.
 
+### Bundled vertical packs
+
+Hermes also ships a small default bundle catalog for role-oriented verticals.
+These are ordinary skill bundles backed by ordinary bundled skills, so they work
+in every surface that already supports slash commands and they do not mutate the
+system prompt or add always-on model tools.
+
+```text
+/product-manager turn these meeting notes into a PRD
+/analyst define activation and check last week's launch impact
+```
+
+The first bundled verticals are:
+
+- `/product-manager` - loads the product management vertical for PRDs, backlog
+  slices, launch plans, spec reviews, and decision memos.
+- `/analyst` - loads the analyst vertical for metric definitions, analysis
+  memos, experiment readouts, dashboard reviews, and decision recommendations.
+
+Each vertical skill includes role guidance, workflow presets, optional connector
+expectations, subagent brief patterns, quality bars, and templates under the
+skill's `templates/` directory. Custom bundles in
+`~/.hermes/skill-bundles/` still win over bundled defaults with the same slug,
+so teams can replace `/analyst` or `/product-manager` with their own pack.
+
 ### Behavior
 
 - **Bundles take precedence over individual skills** when slugs collide. If you name a bundle `research` and you also have a skill called `research`, `/research` invokes the bundle. This is intentional — you opted into the bundle by naming it.

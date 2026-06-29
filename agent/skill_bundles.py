@@ -8,7 +8,9 @@ referenced skill's full content into a single user message, the same way
 Storage
 -------
 Bundles live in ``~/.hermes/skill-bundles/*.yaml`` (and the equivalent
-profile-aware directory under ``HERMES_HOME``). Each file looks like::
+profile-aware directory under ``HERMES_HOME``). Hermes can also ship bundled
+defaults from the repo's ``skill-bundles/`` directory; user bundles with the
+same slug win. Each file looks like::
 
     name: backend-dev
     description: Backend feature work — code review, testing, PR workflow.
@@ -50,7 +52,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_bundled_skill_bundles_dir, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,13 @@ def _bundles_dir() -> Path:
     return get_hermes_home() / "skill-bundles"
 
 
+def _bundled_bundles_dir() -> Path:
+    """Return the directory containing repo-shipped default bundles."""
+    return get_bundled_skill_bundles_dir(
+        Path(__file__).resolve().parent.parent / "skill-bundles"
+    )
+
+
 def _slugify(name: str) -> str:
     cmd = name.lower().replace(" ", "-").replace("_", "-")
     cmd = _BUNDLE_INVALID_CHARS.sub("", cmd)
@@ -82,8 +91,7 @@ def _slugify(name: str) -> str:
     return cmd
 
 
-def _iter_bundle_files() -> List[Path]:
-    base = _bundles_dir()
+def _iter_bundle_files_in(base: Path) -> List[Path]:
     if not base.exists():
         return []
     files: List[Path] = []
@@ -92,20 +100,46 @@ def _iter_bundle_files() -> List[Path]:
     return files
 
 
-def _max_mtime(files: List[Path]) -> float:
-    """Highest mtime across the bundle files plus the dir itself.
+def _bundle_sources() -> List[Tuple[str, Path]]:
+    """Return bundle source directories in precedence order.
+
+    The user directory comes first so custom bundles override shipped defaults
+    with the same slash-command slug.
+    """
+    user_dir = _bundles_dir()
+    bundled_dir = _bundled_bundles_dir()
+    sources: List[Tuple[str, Path]] = [("user", user_dir)]
+    try:
+        same_dir = user_dir.resolve() == bundled_dir.resolve()
+    except OSError:
+        same_dir = user_dir == bundled_dir
+    if not same_dir:
+        sources.append(("bundled", bundled_dir))
+    return sources
+
+
+def _iter_bundle_files() -> List[Tuple[str, Path]]:
+    files: List[Tuple[str, Path]] = []
+    for source, base in _bundle_sources():
+        files.extend((source, path) for path in _iter_bundle_files_in(base))
+    return files
+
+
+def _max_mtime(files: List[Tuple[str, Path]]) -> float:
+    """Highest mtime across the bundle files plus their dirs.
 
     Watching the directory mtime catches deletions; watching individual
     files catches edits. Together they're a cheap freshness check.
     """
-    base = _bundles_dir()
     mtimes = []
-    if base.exists():
+    for _source, base in _bundle_sources():
+        if not base.exists():
+            continue
         try:
             mtimes.append(base.stat().st_mtime)
         except OSError:
             pass
-    for f in files:
+    for _source, f in files:
         try:
             mtimes.append(f.stat().st_mtime)
         except OSError:
@@ -175,17 +209,24 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
     global _bundles_cache, _bundles_cache_mtime
     files = _iter_bundle_files()
     out: Dict[str, Dict[str, Any]] = {}
-    for f in files:
+    for source, f in files:
         info = _load_bundle_file(f)
         if not info:
             continue
         key = f"/{info['slug']}"
         if key in out:
-            logger.warning(
-                "Duplicate bundle slug %s from %s; keeping %s",
-                key, f, out[key]["path"],
-            )
+            if source == "bundled" and out[key].get("source") == "user":
+                logger.debug(
+                    "User bundle %s overrides bundled default from %s",
+                    out[key]["path"], f,
+                )
+            else:
+                logger.warning(
+                    "Duplicate bundle slug %s from %s; keeping %s",
+                    key, f, out[key]["path"],
+                )
             continue
+        info["source"] = source
         out[key] = info
     _bundles_cache = out
     _bundles_cache_mtime = _max_mtime(files)

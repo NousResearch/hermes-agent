@@ -223,6 +223,26 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
     return get_hermes_home() / "skills"
 
 
+def get_bundled_skill_bundles_dir(default: Path | None = None) -> Path:
+    """Return the bundled skill-bundles directory for source and packaged installs.
+
+    Resolution order mirrors :func:`get_bundled_skills_dir`:
+        1. ``HERMES_BUNDLED_SKILL_BUNDLES`` env var
+        2. Wheel-installed ``<sysconfig data>/skill-bundles``
+        3. Caller-supplied ``default`` (typically the source-checkout path)
+        4. ``<HERMES_HOME>/skill-bundles`` last-resort
+    """
+    override = os.getenv("HERMES_BUNDLED_SKILL_BUNDLES", "").strip()
+    if override:
+        return Path(override)
+    packaged = _get_packaged_data_dir("skill-bundles")
+    if packaged is not None:
+        return packaged
+    if default is not None:
+        return default
+    return get_hermes_home() / "skill-bundles"
+
+
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     """Resolve a Hermes subdirectory with backward compatibility.
 

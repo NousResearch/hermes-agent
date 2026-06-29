@@ -1122,6 +1122,27 @@ def run_doctor(args):
     except Exception:
         pass
 
+    # Check for dashboard auth misconfiguration: basic plugin disabled
+    # while dashboard.basic_auth is configured (#54489).
+    try:
+        from hermes_cli.config import load_config as _ldc
+        _dc = _ldc() or {}
+        _dp = _dc.get("plugins") or {}
+        _ddis = set(_dp.get("disabled") or [])
+        _dba = (_dc.get("dashboard") or {}).get("basic_auth") or {}
+        if "basic" in _ddis and _dba.get("username"):
+            check_warn(
+                "Dashboard basic auth",
+                "configured but 'basic' plugin is in plugins.disabled — "
+                "dashboard will refuse non-loopback binds",
+            )
+            check_info(
+                "Fix: remove 'basic' from plugins.disabled in config.yaml "
+                "(or: hermes plugins enable basic)"
+            )
+    except Exception:
+        pass
+
     _section("Directory Structure")
     hermes_home = HERMES_HOME
     if hermes_home.exists():

@@ -13829,6 +13829,26 @@ def start_server(
             except Exception:
                 pass
 
+            # Detect when the basic (password) provider is explicitly
+            # disabled but dashboard.basic_auth is configured — a common
+            # misconfiguration after `hermes setup` blank-slate mode.
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _cfg = _load_cfg() or {}
+                _disabled = set(
+                    (_cfg.get("plugins") or {}).get("disabled") or []
+                )
+                _basic_auth = (_cfg.get("dashboard") or {}).get("basic_auth") or {}
+                if "basic" in _disabled and _basic_auth.get("username"):
+                    skip_reasons.append(
+                        "  • basic: plugin is disabled in plugins.disabled "
+                        "but dashboard.basic_auth is configured.\n"
+                        "    Fix: remove 'basic' from plugins.disabled in "
+                        "config.yaml (or run: hermes plugins enable basic)"
+                    )
+            except Exception:
+                pass
+
             _fix_hint = (
                 "Configure an auth provider before exposing the dashboard:\n"
                 "  • Password: set dashboard.basic_auth.username + "

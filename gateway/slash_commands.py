@@ -3135,10 +3135,14 @@ class GatewaySlashCommandsMixin:
         ):
             name = name[1:-1].strip()
 
+        current_entry = self.session_store.get_or_create_session(source)
+        current_session_id = str(current_entry.session_id)
+
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
-            return [s for s in sessions if s.get("title")][:10]
+            sessions = self._session_db.list_sessions_rich(source=user_source, limit=11)
+            return [s for s in sessions
+                    if s.get("title") and str(s.get("id")) != current_session_id][:10]
 
         if not name:
             # List recent titled sessions for this user/platform

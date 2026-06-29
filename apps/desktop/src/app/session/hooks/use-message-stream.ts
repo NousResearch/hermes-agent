@@ -37,7 +37,7 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
-import { followActiveSessionCwd } from '@/store/projects'
+import { followActiveSessionCwd, refreshProjects, refreshProjectTree } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   $currentCwd,
@@ -759,15 +759,20 @@ export function useMessageStream({
             // via the terminal). When the SAME active session's cwd actually
             // moves, follow it — refresh the project tree + scope so the sidebar
             // tracks the live thread. A fresh selection (different session id)
-            // is a switch, not a move, so it refreshes data without yanking scope.
+            // is a switch, not a move, so it should refresh the project caches
+            // without yanking scope into another project.
             const cwdMoved = payload.cwd !== $currentCwd.get()
             const sameSession = !!sessionId && sessionId === lastCwdInfoSessionRef.current
 
             lastCwdInfoSessionRef.current = sessionId
             setCurrentCwd(payload.cwd)
 
-            if (cwdMoved && sameSession) {
-              void followActiveSessionCwd(payload.cwd)
+            if (cwdMoved) {
+              if (sameSession) {
+                void followActiveSessionCwd(payload.cwd)
+              } else if (sessionId) {
+                void Promise.all([refreshProjects(), refreshProjectTree()])
+              }
             }
           }
 

@@ -581,6 +581,33 @@ def _plugin_provider_is_voice_compatible(provider: str) -> bool:
         return False
 
 
+def _has_available_plugin_tts_provider() -> bool:
+    """Return True when the configured TTS provider is a registered plugin."""
+    try:
+        tts_config = _load_tts_config()
+        provider = _get_provider(tts_config)
+        key = provider.lower().strip() if provider else ""
+        if not key or key in BUILTIN_TTS_PROVIDERS:
+            return False
+        if _resolve_command_provider_config(key, tts_config) is not None:
+            return False
+
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin_provider = get_provider(key)
+        if plugin_provider is None:
+            _ensure_plugins_discovered(force=True)
+            plugin_provider = get_provider(key)
+        if plugin_provider is None:
+            return False
+        return bool(plugin_provider.is_available())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tts plugin availability check failed: %s", exc)
+        return False
+
+
 def _iter_command_providers(tts_config: Dict[str, Any]):
     """Yield (name, config) pairs for every declared command-type provider."""
     if not isinstance(tts_config, dict):
@@ -2458,6 +2485,8 @@ def check_tts_requirements() -> bool:
     """
     # Any configured command provider counts as available.
     if _has_any_command_tts_provider():
+        return True
+    if _has_available_plugin_tts_provider():
         return True
     try:
         _import_edge_tts()

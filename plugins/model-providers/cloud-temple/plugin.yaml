@@ -1,0 +1,16 @@
+name: cloud-temple
+description: Cloud Temple Secure Inference Providers
+version: 0.1.0
+kind: model-provider
+author: Cloud Temple
+url: https://api.ai.cloud-temple.com/
+
+providers:
+  - id: cloud-temple
+    env_vars:
+      - CLOUD_TEMPLE_API_KEY
+    base_url: https://api.ai.cloud-temple.com/v1
+    default_model: qwen3.6:27b
+    fallback_models:
+      - qwen3.6:27b
+      - gemma4:31b

@@ -154,3 +154,19 @@ class TestRegisterTTSProvider:
         assert "shadows a built-in name" in caplog.text
 
         tts_registry._reset_for_tests()
+
+
+class TestBundledCloudTempleTTS:
+    def test_bundled_backend_registers_from_manifest(self):
+        from agent import tts_registry
+        from hermes_cli.plugins import PluginManager
+
+        tts_registry._reset_for_tests()
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "tts/cloud-temple" in mgr._plugins
+        assert mgr._plugins["tts/cloud-temple"].enabled is True
+        assert tts_registry.get_provider("cloud-temple") is not None
+
+        tts_registry._reset_for_tests()

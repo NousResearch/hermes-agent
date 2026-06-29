@@ -802,6 +802,39 @@ class TestGetModelContextLength:
         assert get_model_context_length("dashscope/qwen3.6-plus") == 1048576
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_cloud_temple_qwen3_6_context_length(self, mock_fetch):
+        """Cloud Temple qwen3.6 uses its 1M provider context window."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length(
+            "qwen3.6:27b",
+            base_url="https://api.ai.cloud-temple.com/v1",
+            provider="cloud-temple",
+        ) == 1048576
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_cloud_temple_gemma4_context_length(self, mock_fetch):
+        """Cloud Temple gemma4 uses its 256K provider context window."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length(
+            "gemma4:31b",
+            base_url="https://api.ai.cloud-temple.com/v1",
+            provider="cloud-temple",
+        ) == 256000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_cloud_temple_stale_cache_is_invalidated(self, mock_fetch, tmp_path):
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        base_url = "https://api.ai.cloud-temple.com/v1"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("qwen3.6:27b", base_url, 128000)
+            assert get_model_context_length(
+                "qwen3.6:27b",
+                base_url=base_url,
+                provider="cloud-temple",
+            ) == 1048576
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen_generic_context_length(self, mock_fetch):
         """Generic qwen models still get the 128K default."""
         mock_fetch.return_value = {}

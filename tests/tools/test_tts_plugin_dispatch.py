@@ -321,3 +321,16 @@ class TestVoiceCompatibleHelper:
 
         tts_registry.register_provider(_ExplodingProvider(name="cartesia"))
         assert tts_tool._plugin_provider_is_voice_compatible("cartesia") is False
+
+
+class TestPluginRequirements:
+    def test_check_tts_requirements_accepts_available_plugin(self, monkeypatch):
+        provider = _FakeTTSProvider(name="cartesia")
+        provider.is_available = lambda: True  # type: ignore[method-assign]
+        tts_registry.register_provider(provider)
+
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "cartesia"})
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(tts_tool, "_has_any_command_tts_provider", lambda: False)
+
+        assert tts_tool._has_available_plugin_tts_provider() is True

@@ -1,0 +1,7 @@
+name: cloud-temple
+version: 0.1.0
+description: "Cloud Temple image generation backend using z-image-turbo."
+author: Cloud Temple
+kind: backend
+requires_env:
+  - CLOUD_TEMPLE_API_KEY

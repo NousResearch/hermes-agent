@@ -1,0 +1,7 @@
+name: cloud-temple
+version: 0.1.0
+description: "Cloud Temple Kokoro text-to-speech backend."
+author: Cloud Temple
+kind: backend
+requires_env:
+  - CLOUD_TEMPLE_API_KEY

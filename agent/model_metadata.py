@@ -251,6 +251,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
+    "qwen3.6": 1048576,           # 1M context (Cloud Temple qwen3.6:27b)
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
@@ -1346,6 +1347,15 @@ def _model_name_suggests_grok_4_3(model: str) -> bool:
     return "grok-4.3" in model.lower()
 
 
+def _cloud_temple_catalog_context_length(model: str) -> Optional[int]:
+    normalized = (model or "").strip().lower()
+    if "qwen3.6" in normalized:
+        return DEFAULT_CONTEXT_LENGTHS["qwen3.6"]
+    if "gemma4" in normalized or "gemma-4" in normalized:
+        return 256_000
+    return None
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1812,6 +1822,17 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
+            elif _infer_provider_from_url(base_url) == "cloud-temple":
+                catalog_ctx = _cloud_temple_catalog_context_length(model)
+                if catalog_ctx and cached < catalog_ctx:
+                    logger.info(
+                        "Dropping stale Cloud Temple cache entry %s@%s -> %s; "
+                        "re-resolving via Cloud Temple catalog value %s",
+                        model, base_url, f"{cached:,}", f"{catalog_ctx:,}",
+                    )
+                    _invalidate_cached_context_length(model, base_url)
+                else:
+                    return cached
             # Nous Portal: the portal /v1/models endpoint is authoritative.
             # Bypass the persistent cache so step 5b can always reconcile
             # against it — this corrects pre-fix entries seeded from the
@@ -1970,6 +1991,10 @@ def get_model_context_length(
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if ctx is not None:
+            return ctx
+    if effective_provider == "cloud-temple":
+        ctx = _cloud_temple_catalog_context_length(model)
         if ctx is not None:
             return ctx
     # 5e. Ollama native /api/show probe — runs for ANY provider with a

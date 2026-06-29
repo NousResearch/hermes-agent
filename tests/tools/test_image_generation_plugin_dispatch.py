@@ -97,3 +97,19 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+
+class TestBundledCloudTempleImageGen:
+    def test_bundled_backend_registers_from_manifest(self):
+        from agent import image_gen_registry
+        from hermes_cli.plugins import PluginManager
+
+        image_gen_registry._reset_for_tests()
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "image_gen/cloud-temple" in mgr._plugins
+        assert mgr._plugins["image_gen/cloud-temple"].enabled is True
+        assert image_gen_registry.get_provider("cloud-temple") is not None
+
+        image_gen_registry._reset_for_tests()

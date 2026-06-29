@@ -5,9 +5,16 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import pytest
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
+
+
+@pytest.fixture(autouse=True)
+def _no_live_custom_provider_model_fetch(monkeypatch):
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *args, **kwargs: [])
 
 
 _MOCK_VALIDATION = {
@@ -327,6 +334,42 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     assert len(my_rows) == 1
     assert my_rows[0]["models"] == ["llama3", "mistral"]
     assert my_rows[0]["total_models"] == 2
+
+
+def test_custom_provider_no_key_singular_model_still_probes_live_models(monkeypatch):
+    """A singular ``model:`` is the active selection, not an explicit catalog.
+
+    No-key local endpoints such as Ollama and llama.cpp should still be probed
+    so /model matches the terminal ``hermes model`` flow.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["llama3", "mistral", "qwen3-coder"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local Ollama",
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3",
+            }
+        ],
+        max_models=50,
+    )
+
+    assert calls == [("", "http://localhost:11434/v1", {"headers": None})]
+    row = next(p for p in providers if p["name"] == "Local Ollama")
+    assert row["models"] == ["llama3", "mistral", "qwen3-coder"]
+    assert row["total_models"] == 3
 
 
 def test_list_enumerates_dict_format_models_alongside_default(monkeypatch):

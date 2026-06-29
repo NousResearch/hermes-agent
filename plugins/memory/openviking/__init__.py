@@ -399,7 +399,10 @@ SEARCH_SCHEMA = {
         "Semantic search over the OpenViking knowledge base. "
         "Returns ranked results with viking:// URIs for deeper reading. "
         "Use mode='deep' for complex queries that need reasoning across "
-        "multiple sources, 'fast' for simple lookups."
+        "multiple sources, 'fast' for simple lookups. "
+        "By default, search is scoped to the current user's namespace "
+        "(viking://user/{user}/peers/{agent}/). Pass an explicit 'scope' "
+        "(e.g. 'viking://resources/') to search elsewhere."
     ),
     "parameters": {
         "type": "object",
@@ -3379,6 +3382,36 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return False
         return None
 
+    def _compute_default_search_target_uri(self) -> Optional[str]:
+        """Return the default ``target_uri`` for an un-scoped search.
+
+        OpenViking's dev-mode retrieval hardcodes the ``default`` tenant
+        in the request context, so un-scoped searches never visit the
+        actual user's URI and return zero results. We default to the
+        user's own namespace so un-scoped calls work in the common case.
+
+        Resolution order:
+          1. ``OPENVIKING_SEARCH_DEFAULT_TARGET_URI`` env var (full override)
+          2. ``viking://user/{user}/peers/{agent}/`` derived from the
+             configured account/user/agent (the path where ``viking_remember``
+             actually stores content for the local user)
+          3. ``None`` — fall through to OpenViking's built-in default
+        """
+        env_override = os.environ.get("OPENVIKING_SEARCH_DEFAULT_TARGET_URI", "").strip()
+        if env_override:
+            return env_override
+        if not self._client:
+            return None
+        user = (self._client._user or "").strip()
+        agent = (self._client._agent or "").strip()
+        # Skip the synthetic "default" tenant — that would just put us
+        # back into the hardcoded namespace we're trying to escape.
+        if not user or user == "default":
+            return None
+        if not agent or agent == "default":
+            return f"viking://user/{user}/"
+        return f"viking://user/{user}/peers/{agent}/"
+
     def _tool_search(self, args: dict) -> str:
         query = args.get("query", "")
         if not query:
@@ -3388,6 +3421,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         mode = args.get("mode", "auto")
         if args.get("scope"):
             payload["target_uri"] = args["scope"]
+        else:
+            # When no explicit scope is provided, default to the user's own
+            # namespace. OpenViking's dev-mode retrieval otherwise hardcodes
+            # the "default" tenant and never visits the actual user's URI,
+            # which makes un-scoped searches return zero results for any
+            # real user. The default can be overridden via the
+            # OPENVIKING_SEARCH_DEFAULT_TARGET_URI env var.
+            default_target = self._compute_default_search_target_uri()
+            if default_target:
+                payload["target_uri"] = default_target
         if args.get("limit"):
             payload["limit"] = args["limit"]
 

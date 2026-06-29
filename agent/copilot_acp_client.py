@@ -106,8 +106,20 @@ def _build_subprocess_env() -> dict[str, str]:
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
+    # Copilot's OAuth/device-login state lives under the user's real HOME (for
+    # example ~/.config/github-copilot), not Hermes' per-profile HOME. The
+    # generic subprocess policy intentionally maps HOME to {HERMES_HOME}/home in
+    # container auto-mode, so apply that policy through a temporary real-home
+    # override for ACP only. Restore the caller's terminal mode afterward so the
+    # child process does not inherit a surprising global terminal policy.
+    original_home_mode = env.get("TERMINAL_HOME_MODE")
+    env["TERMINAL_HOME_MODE"] = "real"
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
+    if original_home_mode is None:
+        env.pop("TERMINAL_HOME_MODE", None)
+    else:
+        env["TERMINAL_HOME_MODE"] = original_home_mode
     return env
 
 

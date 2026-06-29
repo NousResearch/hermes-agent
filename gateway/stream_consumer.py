@@ -74,6 +74,11 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+    # Checkpoint interval for persisting incomplete streaming content to session DB.
+    # Shorter intervals increase DB writes but improve recovery granularity.
+    # Longer intervals reduce DB load but recover coarser partial responses.
+    # Default 5 seconds balances recovery quality and DB overhead.
+    checkpoint_interval: float = 5.0
 
 
 class GatewayStreamConsumer:
@@ -121,11 +126,13 @@ class GatewayStreamConsumer:
         on_new_message: Optional[callable] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
+        session_store: Optional[Any] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        self._session_store = session_store
         # Fired whenever a fresh content bubble is created on the platform
         # (first-send of a new message, commentary, overflow chunk, or
         # fallback continuation). The gateway uses this to linearize the
@@ -227,6 +234,14 @@ class GatewayStreamConsumer:
             meta["notify"] = True
         return meta or None
 
+        # Streaming checkpoint — periodically persist incomplete content to session DB
+        # to recover partial responses if the gateway crashes mid-stream.
+        self._last_checkpoint_time = time.monotonic()
+        self._checkpoint_interval = self.cfg.checkpoint_interval
+        self._checkpoint_callback = None  # Function to persist incomplete turn
+        self._session_id = metadata.get("session_id") if metadata else None
+        self._incomplete_turn_role = "assistant"  # Role for checkpointed message
+
     @property
     def already_sent(self) -> bool:
         """True if at least one message was sent or edited during the run."""
@@ -299,6 +314,71 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def set_checkpoint_callback(self, callback: Optional[callable], session_id: str) -> None:
+        """Set the callback for persisting incomplete streaming content.
+        
+        Args:
+            callback: Function(role, content) to persist incomplete turn to session DB.
+                     Called periodically during streaming to checkpoint partial responses.
+            session_id: Session ID for this streaming turn.
+        """
+        self._checkpoint_callback = callback
+        self._session_id = session_id
+
+    def _checkpoint_incomplete_turn(self) -> None:
+        """Persist the current accumulated text to session DB as an incomplete turn.
+        
+        This allows recovery of partial content if the gateway crashes during streaming.
+        The persisted content is marked incomplete so the UI can indicate recovery status.
+        """
+        if not self._checkpoint_callback or not self._session_id or not self._accumulated:
+            return
+        
+        try:
+            # Persist incomplete content with a marker indicating it's incomplete
+            self._checkpoint_callback(
+                role=self._incomplete_turn_role,
+                content=self._accumulated,
+                is_incomplete=True,
+            )
+        except Exception as e:
+            logger.debug("Failed to checkpoint incomplete turn: %s", e)
+
+    def _cleanup_incomplete_checkpoints(self) -> None:
+        """Remove all is_incomplete=True entries for this session after stream completion.
+        
+        During streaming, the consumer persists intermediate partial content to session DB
+        every N seconds as a recovery mechanism. When the stream completes successfully,
+        the final message is also persisted (without is_incomplete flag).
+        
+        This cleanup removes the intermediate incomplete entries so the transcript contains
+        only the final completed message, preventing duplicate/confusing content in the
+        conversation history or on UI recovery display.
+        """
+        if not self._session_store or not self._session_id:
+            return
+        
+        try:
+            # Load the current transcript
+            messages = self._session_store.load_transcript(self._session_id)
+            
+            # Filter out any incomplete messages
+            cleaned_messages = [
+                msg for msg in messages
+                if not msg.get("is_incomplete", False)
+            ]
+            
+            # Only rewrite if we actually removed something
+            if len(cleaned_messages) < len(messages):
+                self._session_store.rewrite_transcript(self._session_id, cleaned_messages)
+                logger.debug(
+                    "Cleaned up %d incomplete checkpoint(s) for session %s",
+                    len(messages) - len(cleaned_messages),
+                    self._session_id,
+                )
+        except Exception as e:
+            logger.debug("Failed to cleanup incomplete checkpoints: %s", e)
 
     def _notify_new_message(self) -> None:
         """Fire the on_new_message callback, swallowing any errors."""
@@ -538,6 +618,13 @@ class GatewayStreamConsumer:
                         or len(self._accumulated) >= self.cfg.buffer_threshold
                     )
 
+                # Periodic checkpoint: persist incomplete streaming content to session DB
+                # so partial responses can be recovered if the gateway crashes mid-stream
+                checkpoint_elapsed = now - self._last_checkpoint_time
+                if checkpoint_elapsed >= self._checkpoint_interval and self._accumulated:
+                    self._checkpoint_incomplete_turn()
+                    self._last_checkpoint_time = now
+
                 current_update_visible = False
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
@@ -575,6 +662,7 @@ class GatewayStreamConsumer:
                             self._final_response_sent = chunks_delivered
                             if chunks_delivered:
                                 self._final_content_delivered = True
+                            self._cleanup_incomplete_checkpoints()
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -698,6 +786,7 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                             if self._final_response_sent:
                                 self._final_content_delivered = True
+                    self._cleanup_incomplete_checkpoints()
                     return
 
                 if commentary_text is not None:
@@ -768,8 +857,12 @@ class GatewayStreamConsumer:
             if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
                 self._final_content_delivered = True
+            # Clean up incomplete checkpoints after cancellation
+            self._cleanup_incomplete_checkpoints()
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
+            # Clean up incomplete checkpoints even on error
+            self._cleanup_incomplete_checkpoints()
 
     # Strip MEDIA:<path> tags before display. Uses the shared anchored
     # MEDIA_TAG_CLEANUP_RE from gateway/platforms/base.py — only tags whose

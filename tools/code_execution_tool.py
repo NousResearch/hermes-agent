@@ -353,6 +353,9 @@ def _connect():
         Linux and macOS)
       - a string of the form ``tcp://127.0.0.1:<port>`` (Windows, where
         AF_UNIX is unreliable — the parent falls back to loopback TCP)
+    
+    The connection is reused across multiple tool calls to avoid excessive
+    TIME_WAIT sockets on Windows. (#41612)
     """
     global _sock
     if _sock is None:
@@ -371,19 +374,46 @@ def _connect():
     return _sock
 
 def _call(tool_name, args):
-    """Send a tool call to the parent process and return the parsed result."""
-    request = json.dumps({"tool": tool_name, "args": args}) + "\\n"
+    """Send a tool call to the parent process and return the parsed result.
+    
+    Reuses a persistent TCP/UDS connection across multiple tool calls
+    instead of creating a new connection for each call. On Windows, this
+    prevents accumulation of TIME_WAIT sockets (#41612).
+    """
+    request = json.dumps({"tool": tool_name, "args": args}) + "\n"
     with _call_lock:
         conn = _connect()
-        conn.sendall(request.encode())
-        buf = b""
-        while True:
-            chunk = conn.recv(65536)
-            if not chunk:
-                raise RuntimeError("Agent process disconnected")
-            buf += chunk
-            if buf.endswith(b"\\n"):
-                break
+        try:
+            conn.sendall(request.encode())
+            buf = b""
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    raise RuntimeError("Agent process disconnected")
+                buf += chunk
+                if buf.endswith(b"\n"):
+                    break
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            # Connection was broken. Reset the global socket and reconnect.
+            # This handles cases where the parent died or the connection
+            # became invalid since the last call.
+            global _sock
+            _sock = None
+            _sock = _connect()
+            # Retry the request once on the fresh connection.
+            try:
+                _sock.sendall(request.encode())
+                buf = b""
+                while True:
+                    chunk = _sock.recv(65536)
+                    if not chunk:
+                        raise RuntimeError("Agent process disconnected")
+                    buf += chunk
+                    if buf.endswith(b"\n"):
+                        break
+            except Exception:
+                # If retry also fails, propagate the error.
+                raise
     raw = buf.decode().strip()
     result = json.loads(raw)
     if isinstance(result, str):

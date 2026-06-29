@@ -15059,6 +15059,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         metadata=_thread_metadata,
                         on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=event_message_id,
+                        session_store=self.session_store,
+                    )
+                    
+                    # Set up streaming checkpoint callback to persist incomplete content
+                    # in case the gateway crashes during response generation
+                    def _checkpoint_incomplete_turn(role: str, content: str, is_incomplete: bool = False) -> None:
+                        """Persist incomplete turn content to session DB for recovery."""
+                        try:
+                            self.session_store.append_to_transcript(
+                                session_id=session_id,
+                                message={
+                                    "role": role,
+                                    "content": content,
+                                    "is_incomplete": is_incomplete,  # Mark as incomplete for UI recovery display
+                                },
+                            )
+                        except Exception as e:
+                            logger.debug("Failed to checkpoint incomplete turn: %s", e)
+                    
+                    _stream_consumer.set_checkpoint_callback(
+                        callback=_checkpoint_incomplete_turn,
+                        session_id=session_id,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -16254,6 +16276,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             ),
                             on_before_finalize=_pause_typing_before_finalize,
                             initial_reply_to_id=event_message_id,
+                            session_store=self.session_store,
+                        )
+                        
+                        # Set up streaming checkpoint callback to persist incomplete content
+                        # in case the gateway crashes during response generation
+                        def _checkpoint_incomplete_turn_2(role: str, content: str, is_incomplete: bool = False) -> None:
+                            """Persist incomplete turn content to session DB for recovery."""
+                            try:
+                                self.session_store.append_to_transcript(
+                                    session_id=session_id,
+                                    message={
+                                        "role": role,
+                                        "content": content,
+                                        "is_incomplete": is_incomplete,
+                                    },
+                                )
+                            except Exception as e:
+                                logger.debug("Failed to checkpoint incomplete turn: %s", e)
+                        
+                        _stream_consumer.set_checkpoint_callback(
+                            callback=_checkpoint_incomplete_turn_2,
+                            session_id=session_id,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:

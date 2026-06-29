@@ -297,6 +297,21 @@ def get_task_name() -> str:
         return _TASK_NAME_DEFAULT
     return f"{_TASK_NAME_DEFAULT}_{suffix}"
 
+def _get_watchdog_task_name() -> str:
+    """Per-profile name for the gateway watchdog task (respawns on crash).
+
+    Default: ``Hermes_Gateway_Watchdog``
+    Named profile X: ``Hermes_Gateway_Watchdog_<X>``
+    """
+    _assert_windows()
+    from hermes_cli.gateway import _profile_suffix
+
+    suffix = _profile_suffix()
+    if not suffix:
+        return f"{_TASK_NAME_DEFAULT}_Watchdog"
+    return f"{_TASK_NAME_DEFAULT}_Watchdog_{suffix}"
+
+
 
 def _sanitize_filename(value: str) -> str:
     """Remove characters illegal in Windows filenames."""
@@ -316,6 +331,20 @@ def get_task_script_path() -> Path:
     script_dir = Path(get_hermes_home()) / "gateway-service"
     script_dir.mkdir(parents=True, exist_ok=True)
     return script_dir / f"{_sanitize_filename(get_task_name())}.cmd"
+
+def _get_watchdog_script_path() -> Path:
+    """The generated ``gateway-watchdog.cmd`` wrapper for the watchdog task.
+
+    Lives under ``<HERMES_HOME>/gateway-service/watchdog-<task_name>.cmd``
+    so it stays scoped per profile and doesn't conflict with the main gateway task.
+    """
+    _assert_windows()
+    from hermes_cli.config import get_hermes_home
+
+    script_dir = Path(get_hermes_home()) / "gateway-service"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    return script_dir / f"watchdog-{_sanitize_filename(_get_watchdog_task_name())}.cmd"
+
 
 
 def _startup_dir() -> Path:
@@ -424,6 +453,41 @@ def _build_gateway_cmd_script(
     lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args))
     lines.append("exit /b 0")
     return "\r\n".join(lines) + "\r\n"
+
+def _build_watchdog_cmd_script(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    profile_arg: str,
+) -> str:
+    """Build the ``gateway-watchdog.cmd`` wrapper content (CRLF-terminated).
+
+    The watchdog script:
+      - cd's into the stable working directory
+      - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
+      - invokes ``pythonw -m hermes_cli.gateway_watchdog [--profile X]``
+      - runs every few minutes (1-5 min), checks if gateway is alive
+      - silently respawns gateway if it has crashed
+      - outputs to NUL (watchdog module logs to gateway-watchdog.log instead)
+
+    Uses pythonw.exe (GUI subsystem) to avoid console flashes.
+    """
+    lines = ["@echo off", f"rem {_TASK_DESCRIPTION} (Watchdog)"]
+    lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
+    lines.append(f'set "HERMES_HOME={hermes_home}"')
+    lines.append('set "PYTHONIOENCODING=utf-8"')
+    venv_dir = str(Path(python_path).resolve().parent.parent)
+    lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
+
+    pythonw_path = _derive_venv_pythonw(python_path)
+    prog_args = [pythonw_path, "-m", "hermes_cli.gateway_watchdog"]
+    if profile_arg:
+        prog_args.extend(profile_arg.split())
+    # Redirect stdout/stderr to NUL; the watchdog module writes its own log.
+    lines.append(" ".join(_quote_cmd_script_arg(a) for a in prog_args) + " >NUL 2>&1")
+    lines.append("exit /b 0")
+    return "\r\n".join(lines) + "\r\n"
+
 
 
 def _quote_vbs_string(value: str) -> str:
@@ -554,6 +618,30 @@ def _write_task_script() -> Path:
     vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
     vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
     vbs_tmp.replace(vbs_path)
+    return script_path
+
+
+def _write_watchdog_script() -> Path:
+    """Generate and write the gateway-watchdog.cmd wrapper. Return its absolute path."""
+    _assert_windows()
+    # Local imports to avoid circular-init at module load time.
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.gateway import (
+        PROJECT_ROOT,
+        _profile_arg,
+        get_python_path,
+    )
+
+    python_path = get_python_path()
+    working_dir = _stable_gateway_working_dir(PROJECT_ROOT)
+    hermes_home = str(Path(get_hermes_home()).resolve())
+    profile_arg = _profile_arg(hermes_home)
+
+    content = _build_watchdog_cmd_script(python_path, working_dir, hermes_home, profile_arg)
+    script_path = _get_watchdog_script_path()
+    tmp = script_path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8", newline="")
+    tmp.replace(script_path)
     return script_path
 
 
@@ -698,6 +786,51 @@ def _install_startup_entry(script_path: Path) -> Path:
     except OSError:
         pass
     return entry
+
+
+def _install_watchdog_task() -> tuple[bool, str]:
+    """Install the watchdog Scheduled Task (respawns gateway if crashed).
+
+    Returns (success, detail).
+
+    The watchdog runs every 2 minutes and checks if the gateway is alive.
+    If the gateway is down, it respawns it. This is a best-effort mechanism
+    to keep cron jobs running even after gateway crashes (addresses #41662).
+    """
+    watchdog_task_name = _get_watchdog_task_name()
+    watchdog_script_path = _write_watchdog_script()
+    quoted_script = _quote_schtasks_arg(str(watchdog_script_path))
+
+    # Delete the task first (same as gateway task to avoid stale settings)
+    delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", watchdog_task_name])
+    delete_detail = (delete_err or delete_out or "").strip()
+    if delete_code != 0 and delete_detail and "cannot find" not in delete_detail.lower():
+        if _is_access_denied(delete_detail):
+            return (False, f"schtasks /Delete (watchdog) failed: {delete_detail}")
+
+    # Create the new watchdog task: /SC MINUTE /MO 2 means every 2 minutes
+    # /TN specifies the task name, /TR specifies the action (command to run)
+    # /F forces creation even if task exists, /RU SYSTEM runs as SYSTEM (no user context needed)
+    user = _resolve_task_user()
+    base = [
+        "/Create",
+        "/F",
+        "/TN", watchdog_task_name,
+        "/TR", f'cmd.exe /c "{quoted_script}"',
+        "/SC", "MINUTE",
+        "/MO", "2",  # Every 2 minutes
+    ]
+    if user:
+        base.extend(["/RU", user, "/NP"])  # /NP = no password (interactive user)
+
+    # Try with explicit user context first
+    for (code, out, err) in [_exec_schtasks(base), _exec_schtasks(base[:-2])]:
+        if code == 0:
+            return (True, f"Created Scheduled Task {watchdog_task_name!r} (runs every 2 minutes)")
+        if code != 0 and ("access is denied" in (err or out or "").lower()):
+            return (False, f"schtasks /Create (watchdog) access denied: {(err or out or '').strip()}")
+
+    return (False, f"schtasks /Create (watchdog) failed: {(err or out or '').strip()}")
 
 
 def _derive_venv_pythonw(python_exe: str) -> str:
@@ -1092,6 +1225,17 @@ def install(
         else:
             print("ℹ Gateway not started now.")
             print("  Start manually with: hermes gateway start")
+        
+        # Install the watchdog task (respawns gateway on crash, addresses #41662)
+        watchdog_ok, watchdog_detail = _install_watchdog_task()
+        if watchdog_ok:
+            print(f"✓ {watchdog_detail}")
+            print("ℹ Cron jobs will continue even if the gateway crashes (watchdog respawns it).")
+        else:
+            print(f"⚠ Watchdog installation failed: {watchdog_detail}")
+            print("  The gateway will auto-start on login, but cron jobs may stop if it crashes.")
+            print("  (This is not critical; the main gateway task is working.)")
+        
         _print_next_steps()
         return
 

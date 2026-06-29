@@ -84,11 +84,15 @@ export const ja = defineLocale({
       remoteTitle: 'リモートゲートウェイへのサインインが必要です',
       remoteDescription:
         'リモートゲートウェイのセッションが期限切れです。再接続するにはもう一度サインインしてください。チャットや設定は削除されません。',
+      connectionLostTitle: 'Hermes の接続が中断されました',
+      connectionLostDescription:
+        'Hermes は起動しましたが、デスクトップとゲートウェイのライブ接続が切れました。再試行すると再インストールせずに接続し直します。チャットや設定は保持されます。',
       retry: '再試行',
       repairInstall: 'インストールを修復',
       useLocalGateway: 'ローカルゲートウェイを使用',
       openLogs: 'ログを開く',
       repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
+      connectionLostHint: '再試行は実行中のゲートウェイへ再接続します。これはインストール失敗ではなく接続中断なので、修復インストールは表示しません。',
       remoteSignInHint:
         'ゲートウェイのログインウィンドウを開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。',
       hideRecentLogs: '最近のログを非表示',

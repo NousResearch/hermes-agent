@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -16,6 +17,46 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 logger = logging.getLogger(__name__)
+_ACCOUNT_USAGE_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024
+
+
+def _close_response(response: Any) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
+def _read_json_response_limited(
+    response: Any,
+    *,
+    limit_bytes: int = _ACCOUNT_USAGE_JSON_BODY_LIMIT_BYTES,
+) -> dict[str, Any]:
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_bytes():
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8", "replace")
+        total += len(chunk)
+        if total > limit_bytes:
+            _close_response(response)
+            raise ValueError(f"account usage JSON response exceeds {limit_bytes} bytes")
+        chunks.append(chunk)
+    if not chunks:
+        return {}
+    encoding = getattr(response, "encoding", None) or "utf-8"
+    payload = json.loads(b"".join(chunks).decode(encoding, "replace"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _get_json_limited(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    with client.stream("GET", url, headers=headers) as response:
+        response.raise_for_status()
+        return _read_json_response_limited(response)
 
 
 def _utc_now() -> datetime:
@@ -449,9 +490,11 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
     with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+        payload = _get_json_limited(
+            client,
+            _resolve_codex_usage_url(creds.get("base_url", "")),
+            headers=headers,
+        )
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -503,9 +546,11 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         "User-Agent": "claude-code/2.1.0",
     }
     with httpx.Client(timeout=15.0) as client:
-        response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
+        payload = _get_json_limited(
+            client,
+            "https://api.anthropic.com/api/oauth/usage",
+            headers=headers,
+        )
     windows: list[AccountUsageWindow] = []
     mapping = (
         ("five_hour", "Current session"),
@@ -562,13 +607,9 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         "Accept": "application/json",
     }
     with httpx.Client(timeout=10.0) as client:
-        credits_resp = client.get(credits_url, headers=headers)
-        credits_resp.raise_for_status()
-        credits = (credits_resp.json() or {}).get("data") or {}
+        credits = _get_json_limited(client, credits_url, headers=headers).get("data") or {}
         try:
-            key_resp = client.get(key_url, headers=headers)
-            key_resp.raise_for_status()
-            key_data = (key_resp.json() or {}).get("data") or {}
+            key_data = _get_json_limited(client, key_url, headers=headers).get("data") or {}
         except Exception:
             key_data = {}
     total_credits = float(credits.get("total_credits") or 0.0)

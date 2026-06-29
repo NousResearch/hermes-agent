@@ -59,7 +59,12 @@ class TestConfigEnvOverrides(unittest.TestCase):
     def test_email_not_loaded_without_env(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
         config = GatewayConfig()
-        _apply_env_overrides(config)
+        # The plugin enablement pass may consult ~/.hermes/.env via get_env_value();
+        # keep this env-only override test independent from the developer's live
+        # Hermes profile.
+        with patch("hermes_cli.config.load_env", return_value={}), \
+             patch("hermes_cli.gateway.get_env_value", return_value=None):
+            _apply_env_overrides(config)
         self.assertNotIn(Platform.EMAIL, config.platforms)
 
 class TestCheckRequirements(unittest.TestCase):

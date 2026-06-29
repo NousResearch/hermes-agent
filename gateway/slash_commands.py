@@ -2943,10 +2943,20 @@ class GatewaySlashCommandsMixin:
             return t("gateway.compress.failed", error=e)
 
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
-        """Handle /topic for Telegram DM user-managed topic sessions."""
+        """Handle /topic for Telegram DM topic sessions and Feishu fresh sessions."""
         source = event.source
-        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
-            return t("gateway.topic.not_telegram_dm")
+
+        # Feishu: /topic resets the session so the next message starts fresh.
+        # Unlike Telegram, Feishu threads are managed natively by the Feishu
+        # client; users should create a new Feishu thread for topic isolation.
+        if source.platform == Platform.FEISHU:
+            session_key = build_session_key(source)
+            self.session_store.reset_session(session_key)
+            return (
+                "✅ Fresh session started.\n\n"
+                "For topic isolation, create a new thread in Feishu "
+                "and send your messages there — each thread gets its own session."
+            )
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))

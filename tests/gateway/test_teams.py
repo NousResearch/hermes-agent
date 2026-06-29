@@ -4,7 +4,7 @@ import json
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -618,6 +618,7 @@ class TestTeamsMessageHandling:
         tenant_id="tenant-789",
         activity_id="activity-001",
         attachments=None,
+        value=None,
     ):
         activity = MagicMock()
         activity.text = text
@@ -632,6 +633,7 @@ class TestTeamsMessageHandling:
         activity.conversation.name = "Test Chat"
         activity.conversation.tenant_id = tenant_id
         activity.attachments = attachments or []
+        activity.value = value
         return activity
 
     def _make_ctx(self, activity):
@@ -731,6 +733,74 @@ class TestTeamsMessageHandling:
 
         event = adapter.handle_message.call_args[0][0]
         assert event.text == "what is the weather?"
+
+    @pytest.mark.anyio
+    async def test_card_submit_value_used_when_message_text_empty(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="",
+            from_id="user-id",
+            value={"prompt": "run the report", "priority": "high"},
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "Adaptive Card submit:\nprompt: run the report\npriority: high"
+
+    @pytest.mark.anyio
+    async def test_card_submit_does_not_override_typed_text(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="manual override",
+            from_id="user-id",
+            value={"prompt": "card submit"},
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "manual override"
+
+    @pytest.mark.anyio
+    async def test_card_submit_approval_payload_resolves_without_agent_event(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "aad-456")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="",
+            from_id="user-id",
+            from_aad_id="aad-456",
+            value={
+                "session_key": "agent:main:teams:dm:19:abc",
+                "hermes_action": "approve_once",
+                "cmd": "rm -rf /tmp/demo",
+                "desc": "dangerous command",
+            },
+        )
+        with (
+            patch("tools.approval.has_blocking_approval", return_value=True),
+            patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve,
+        ):
+            await adapter._on_message(self._make_ctx(activity))
+
+        resolve.assert_called_once_with("agent:main:teams:dm:19:abc", "once")
+        adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.anyio
     async def test_deduplication(self):

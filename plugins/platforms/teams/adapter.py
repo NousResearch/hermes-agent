@@ -103,6 +103,56 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 3978
 _WEBHOOK_PATH = "/api/messages"
+_CARD_SUBMIT_INTERNAL_KEYS = {"cmd", "desc", "hermes_action", "session_key"}
+
+
+def _card_value_field(value: Any, field: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(field)
+    return getattr(value, field, None)
+
+
+def _coerce_card_submit_data(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+
+    action = _card_value_field(value, "action")
+    action_data = _card_value_field(action, "data")
+    if isinstance(action_data, dict):
+        return action_data
+
+    data = _card_value_field(value, "data")
+    if isinstance(data, dict):
+        return data
+
+    if isinstance(value, dict):
+        return value
+
+    return {}
+
+
+def _format_card_submit_value(value: Any, *, limit: int = 4000) -> str:
+    data = _coerce_card_submit_data(value)
+    visible = [
+        (str(key), item)
+        for key, item in data.items()
+        if str(key) not in _CARD_SUBMIT_INTERNAL_KEYS and not str(key).startswith("_")
+    ]
+    if not visible:
+        return ""
+
+    lines = ["Adaptive Card submit:"]
+    for key, item in visible:
+        if isinstance(item, (dict, list)):
+            rendered = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        else:
+            rendered = str(item)
+        lines.append(f"{key}: {rendered}")
+
+    text = "\n".join(lines)
+    if len(text) > limit:
+        return text[: max(0, limit - 3)] + "..."
+    return text
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -852,6 +902,11 @@ class TeamsAdapter(BasePlatformAdapter):
         if "<at>" in text:
             import re
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        if not text.strip():
+            submit_data = _coerce_card_submit_data(getattr(activity, "value", None))
+            if self._handle_card_submit_approval_fallback(activity, submit_data):
+                return
+            text = _format_card_submit_value(getattr(activity, "value", None))
 
         # Determine chat type from conversation
         conv = activity.conversation
@@ -988,6 +1043,50 @@ class TeamsAdapter(BasePlatformAdapter):
         elif self._app:
             return await self._app.send(chat_id, card)
         return None
+
+    def _handle_card_submit_approval_fallback(
+        self,
+        activity: Any,
+        data: Dict[str, Any],
+    ) -> bool:
+        """Handle Teams approval submit payloads that arrive as message activities."""
+        hermes_action = str(data.get("hermes_action") or "")
+        session_key = str(data.get("session_key") or "")
+        if not hermes_action or not session_key:
+            return False
+
+        from tools.approval import resolve_gateway_approval, has_blocking_approval
+
+        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
+        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}
+
+        if not allow_all:
+            if not allowed_csv:
+                logger.warning(
+                    "[teams] message-card approval rejected: TEAMS_ALLOWED_USERS not configured "
+                    "and TEAMS_ALLOW_ALL_USERS not set - default deny"
+                )
+                return True
+            from_account = getattr(activity, "from_", None)
+            clicker_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and clicker_id not in allowed_ids:
+                logger.warning("[teams] Unauthorized message-card action by %s - ignoring", clicker_id)
+                return True
+
+        choice_map = {
+            "approve_once": "once",
+            "approve_session": "session",
+            "approve_always": "always",
+            "deny": "deny",
+        }
+        choice = choice_map.get(hermes_action)
+        if not choice:
+            return True
+
+        if has_blocking_approval(session_key):
+            resolve_gateway_approval(session_key, choice)
+        return True
 
     async def _on_card_action(
         self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"

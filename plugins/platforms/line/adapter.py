@@ -92,7 +92,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _prefix_within_utf16_limit,
     cache_image_from_bytes,
+    utf16_len,
 )
 from gateway.config import Platform
 
@@ -112,6 +114,7 @@ LINE_PER_BUBBLE_CHARS = 5000  # Hard limit per text message object
 LINE_SAFE_BUBBLE_CHARS = 4500  # Conservative limit for chunking
 LINE_MAX_MESSAGES_PER_CALL = 5  # API rejects >5 messages per Reply/Push
 LINE_REPLY_TOKEN_TTL_SECONDS = 50  # Conservative cap below LINE's ~60s
+LINE_ELLIPSIS = "…"
 
 # Webhook hardening
 WEBHOOK_BODY_MAX_BYTES = 1_048_576  # 1 MiB — webhooks are tiny JSON
@@ -147,6 +150,19 @@ _LINE_MESSAGE_TYPES = {
     "location": MessageType.LOCATION,
     "sticker": MessageType.STICKER,
 }
+
+
+def _line_truncate_utf16(text: str, limit: int, *, ellipsis: str = "") -> str:
+    """Trim LINE payload text to a UTF-16 budget without splitting emoji."""
+    if utf16_len(text) <= limit:
+        return text
+    suffix_budget = utf16_len(ellipsis)
+    if suffix_budget >= limit:
+        return _prefix_within_utf16_limit(ellipsis, limit)
+    prefix = _prefix_within_utf16_limit(text, limit - suffix_budget)
+    if ellipsis:
+        prefix = prefix.rstrip()
+    return prefix + ellipsis
 
 # A 1×1 transparent PNG used as fallback video preview thumbnail when no
 # explicit preview is supplied — LINE requires ``previewImageUrl`` for
@@ -218,24 +234,25 @@ def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[s
     """
     if not text:
         return []
-    if len(text) <= max_chars:
+    if utf16_len(text) <= max_chars:
         return [text]
 
     chunks: List[str] = []
     remaining = text
     while remaining and len(chunks) < LINE_MAX_MESSAGES_PER_CALL:
-        if len(remaining) <= max_chars:
+        if utf16_len(remaining) <= max_chars:
             chunks.append(remaining)
             remaining = ""
             break
+        max_cp = len(_prefix_within_utf16_limit(remaining, max_chars))
         # Try to break on the latest paragraph or newline within budget.
-        cut = remaining.rfind("\n\n", 0, max_chars)
+        cut = remaining.rfind("\n\n", 0, max_cp + 1)
         if cut < int(max_chars * 0.5):
-            cut = remaining.rfind("\n", 0, max_chars)
+            cut = remaining.rfind("\n", 0, max_cp + 1)
         if cut < int(max_chars * 0.5):
-            cut = remaining.rfind(" ", 0, max_chars)
+            cut = remaining.rfind(" ", 0, max_cp + 1)
         if cut <= 0:
-            cut = max_chars
+            cut = max_cp
         chunks.append(remaining[:cut].rstrip())
         remaining = remaining[cut:].lstrip()
 
@@ -243,11 +260,19 @@ def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[s
         # Truncate gracefully — caller already burned its 5-bubble budget.
         if chunks:
             tail = chunks[-1]
-            if len(tail) > max_chars - 1:
-                tail = tail[: max_chars - 1]
-            chunks[-1] = tail.rstrip() + "…"
+            chunks[-1] = _line_truncate_utf16(
+                tail,
+                max_chars,
+                ellipsis=LINE_ELLIPSIS,
+            )
         else:
-            chunks.append(remaining[: max_chars - 1] + "…")
+            chunks.append(
+                _line_truncate_utf16(
+                    remaining,
+                    max_chars,
+                    ellipsis=LINE_ELLIPSIS,
+                )
+            )
     return chunks
 
 
@@ -534,8 +559,11 @@ class _LineClient:
 
 def _text_message(text: str) -> Dict[str, Any]:
     """Build a LINE text message object, capped to per-bubble max."""
-    if len(text) > LINE_PER_BUBBLE_CHARS:
-        text = text[: LINE_PER_BUBBLE_CHARS - 1] + "…"
+    text = _line_truncate_utf16(
+        text,
+        LINE_PER_BUBBLE_CHARS,
+        ellipsis=LINE_ELLIPSIS,
+    )
     return {"type": "text", "text": text}
 
 
@@ -574,8 +602,10 @@ def build_postback_button_message(
 
     LINE limits: ``text`` ≤ 160 chars, ``altText`` ≤ 400 chars.
     """
-    truncated = text if len(text) <= 160 else text[:157] + "..."
-    alt = text if len(text) <= 400 else text[:397] + "..."
+    truncated = _line_truncate_utf16(text, 160, ellipsis="...")
+    alt = _line_truncate_utf16(text, 400, ellipsis="...")
+    label = _line_truncate_utf16(button_label, 20) or "Get answer"
+    display_text = _line_truncate_utf16(button_label, 300) or "Get answer"
     return {
         "type": "template",
         "altText": alt,
@@ -585,11 +615,11 @@ def build_postback_button_message(
             "actions": [
                 {
                     "type": "postback",
-                    "label": button_label[:20] or "Get answer",
+                    "label": label,
                     "data": json.dumps(
                         {"action": "show_response", "request_id": request_id}
                     ),
-                    "displayText": button_label[:300] or "Get answer",
+                    "displayText": display_text,
                 }
             ],
         },

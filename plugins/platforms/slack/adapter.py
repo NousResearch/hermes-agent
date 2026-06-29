@@ -829,6 +829,51 @@ class SlackAdapter(BasePlatformAdapter):
         # Non-fatal — the user saw the initial ack already.
         return SendResult(success=True, message_id=None)
 
+    def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
+        """Nudge existing installs to reinstall when group-DM scopes are absent.
+
+        Group DMs only reach the bot when the app is subscribed to
+        ``message.mpim`` and granted ``mpim:history`` (see slack_cli.py
+        manifest). A missing event delivers *nothing* — there is no runtime
+        API error to catch — so the only place we can detect a stale install
+        is at connect time, by inspecting the ``x-oauth-scopes`` header the
+        Slack ``auth.test`` response carries. If the app clearly handles 1:1
+        DMs (``im:history`` present) but lacks ``mpim:history``, it predates
+        this fix; log exactly what to add and that a reinstall is required.
+        """
+        try:
+            # Track warned workspaces so the nudge fires once per process per
+            # team, not on every reconnect. getattr-default keeps bare
+            # object.__new__ test instances (no __init__) from crashing.
+            warned = getattr(self, "_group_dm_scope_warned", None)
+            if warned is None:
+                warned = set()
+                self._group_dm_scope_warned = warned
+            headers = getattr(auth_response, "headers", None) or {}
+            raw = headers.get("x-oauth-scopes") or headers.get("X-OAuth-Scopes") or ""
+            if not raw:
+                return  # Header absent (e.g. some proxies) — don't guess.
+            granted = {s.strip() for s in raw.split(",") if s.strip()}
+            team_key = team_name or ""
+            if team_key in warned:
+                return
+            # Only nudge real DM-capable installs; "im:history" present but
+            # "mpim:history" missing == stale manifest from before the fix.
+            if "im:history" in granted and "mpim:history" not in granted:
+                warned.add(team_key)
+                logger.warning(
+                    "[Slack] Group DMs (multi-person DMs) will not work in "
+                    "workspace %s: the app is missing the 'mpim:history' scope "
+                    "and 'message.mpim' event. Add 'mpim:history' (and "
+                    "'mpim:read') to bot scopes, add 'message.mpim' to event "
+                    "subscriptions, then REINSTALL the app to the workspace. "
+                    "Regenerating the app from `hermes slack` produces a "
+                    "manifest with these already included.",
+                    team_key or "this workspace",
+                )
+        except Exception:  # pragma: no cover - diagnostics must never break connect
+            pass
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
@@ -956,6 +1001,8 @@ class SlackAdapter(BasePlatformAdapter):
                     team_name,
                     team_id,
                 )
+
+                self._warn_if_missing_group_dm_scopes(auth_response, team_name)
 
             # Register message event handler
             @self._app.event("message")

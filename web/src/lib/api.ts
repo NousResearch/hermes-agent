@@ -1082,12 +1082,25 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
+  downloadBackup: (archive: string) =>
+    authedFetch(
+      `/api/ops/backup/download?archive=${encodeURIComponent(archive)}`,
+    ),
   runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archive, force }),
     }),
+  runImportUpload: (file: File, force = false) => {
+    const form = new FormData();
+    form.append("force", String(force));
+    form.append("file", file, file.name);
+    return fetchJSON<ActionResponse>("/api/ops/import-upload", {
+      method: "POST",
+      body: form,
+    });
+  },
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
     fetchJSON<{ ok: boolean; event: string; command: string; approved: boolean }>(
@@ -1198,11 +1211,13 @@ export interface AuthMeResponse {
 }
 
 export interface ActionResponse {
+  archive?: string;
   name: string;
   ok: boolean;
   pid: number | null;
   error?: string;
   message?: string;
+  uploaded_bytes?: number;
   update_command?: string;
 }
 

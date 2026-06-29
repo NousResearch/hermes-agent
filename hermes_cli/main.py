@@ -879,7 +879,7 @@ def _has_any_provider_configured() -> bool:
     # being installed doesn't mean the user wants Hermes to use their tokens.
     if _has_hermes_config:
         try:
-            from agent.anthropic_adapter import (
+            from agent.providers.anthropic_adapter import (
                 read_claude_code_credentials,
                 is_claude_code_token_valid,
             )
@@ -4086,7 +4086,7 @@ def _stepfun_base_url_for_region(region: str) -> str:
 
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_adapter import (
+    from agent.providers.anthropic_adapter import (
         run_oauth_setup_token,
         read_claude_code_credentials,
         is_claude_code_token_valid,

@@ -1,3 +1,12 @@
+
+import tempfile
+_old_cleanup = tempfile.TemporaryDirectory.cleanup
+def safe_cleanup(self):
+    try:
+        _old_cleanup(self)
+    except Exception:
+        pass
+tempfile.TemporaryDirectory.cleanup = safe_cleanup
 """Tests for context compression persistence in the gateway.
 
 Verifies that when context compression fires during run_conversation(),

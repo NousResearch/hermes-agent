@@ -134,7 +134,7 @@ def test_anthropic_adapter_honors_timeout_kwarg():
     """build_anthropic_client(timeout=X) overrides the 900s default read timeout."""
     pytest = __import__("pytest")
     anthropic = pytest.importorskip("anthropic")  # skip if optional SDK missing
-    from agent.anthropic_adapter import build_anthropic_client
+    from agent.providers.anthropic_adapter import build_anthropic_client
 
     c_default = build_anthropic_client("sk-ant-dummy", None)
     c_custom = build_anthropic_client("sk-ant-dummy", None, timeout=45.0)

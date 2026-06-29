@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.anthropic_adapter import (
+from agent.providers.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
     _is_oauth_token,
     _refresh_oauth_token,
@@ -1343,7 +1343,7 @@ class TestBuildAnthropicKwargs:
         # Because build_anthropic_kwargs doesn't currently accept sampling
         # params through its signature, we exercise the strip behavior by
         # calling the internal predicate directly.
-        from agent.anthropic_adapter import _forbids_sampling_params
+        from agent.providers.anthropic_adapter import _forbids_sampling_params
         assert _forbids_sampling_params("claude-opus-4-8") is True
         assert _forbids_sampling_params("claude-opus-4-8-fast") is True
         assert _forbids_sampling_params("claude-opus-4-7") is True
@@ -1359,7 +1359,7 @@ class TestBuildAnthropicKwargs:
         ``_supports_fast_mode`` (which gates the parameter) must stay
         False for both opus-4-8 and opus-4-8-fast.
         """
-        from agent.anthropic_adapter import _supports_fast_mode
+        from agent.providers.anthropic_adapter import _supports_fast_mode
         assert _supports_fast_mode("claude-opus-4-6") is True
         assert _supports_fast_mode("anthropic/claude-opus-4-6") is True
         assert _supports_fast_mode("claude-opus-4-7") is False
@@ -1376,7 +1376,7 @@ class TestBuildAnthropicKwargs:
         hypothetical future ones must all classify modern; only the explicit
         legacy list stays on the manual path.
         """
-        from agent.anthropic_adapter import (
+        from agent.providers.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
             _forbids_sampling_params,
@@ -1397,7 +1397,7 @@ class TestBuildAnthropicKwargs:
 
     def test_legacy_claude_stays_on_manual_thinking(self):
         """Older Claude families keep the legacy manual-thinking contract."""
-        from agent.anthropic_adapter import (
+        from agent.providers.anthropic_adapter import (
             _supports_adaptive_thinking,
             _forbids_sampling_params,
         )
@@ -1413,7 +1413,7 @@ class TestBuildAnthropicKwargs:
 
     def test_claude_46_is_adaptive_but_not_xhigh_or_no_sampling(self):
         """4.6 is adaptive, but predates xhigh and still accepts sampling."""
-        from agent.anthropic_adapter import (
+        from agent.providers.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
             _forbids_sampling_params,
@@ -1426,7 +1426,7 @@ class TestBuildAnthropicKwargs:
     def test_non_claude_anthropic_models_use_manual_path(self):
         """Non-Claude Anthropic-Messages models (minimax, qwen3, kimi) must not
         be misclassified as adaptive by the default-to-modern rule."""
-        from agent.anthropic_adapter import (
+        from agent.providers.anthropic_adapter import (
             _supports_adaptive_thinking,
             _supports_xhigh_effort,
             _forbids_sampling_params,
@@ -1581,36 +1581,36 @@ class TestBuildAnthropicKwargs:
 
 class TestGetAnthropicMaxOutput:
     def test_opus_4_6(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
 
     def test_opus_4_6_variant(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
 
     def test_sonnet_4_6(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
 
     def test_sonnet_4_date_stamped(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-sonnet-4-20250514") == 64_000
 
     def test_claude_3_5_sonnet(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
     def test_claude_3_opus(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-3-opus-20240229") == 4_096
 
     def test_unknown_future_model(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-ultra-5-20260101") == 128_000
 
     def test_longest_prefix_wins(self):
         """'claude-3-5-sonnet' should match before 'claude-3-5'."""
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
@@ -2180,7 +2180,7 @@ class TestToolChoice:
 # max_tokens resolver — openclaw/openclaw#66664 port
 # ---------------------------------------------------------------------------
 
-from agent.anthropic_adapter import (
+from agent.providers.anthropic_adapter import (
     _resolve_positive_anthropic_max_tokens,
     _resolve_anthropic_messages_max_tokens,
 )

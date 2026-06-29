@@ -1,3 +1,12 @@
+
+import tempfile
+_old_cleanup = tempfile.TemporaryDirectory.cleanup
+def safe_cleanup(self):
+    try:
+        _old_cleanup(self)
+    except Exception:
+        pass
+tempfile.TemporaryDirectory.cleanup = safe_cleanup
 """Test: the context engine is notified of a compression-boundary rollover.
 
 When _compress_context rotates session_id (compression split), the active

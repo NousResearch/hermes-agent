@@ -247,7 +247,7 @@ class TestBatchRunnerCallableHandling:
         importing avoids spinning up the full BatchRunner."""
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
-               / "batch_runner.py").read_text()
+               / "batch_runner.py").read_text(encoding="utf-8")
         assert "callable(self.api_key) and not isinstance(self.api_key, str)" in src, (
             "BatchRunner.api_key callable check changed — update test or "
             "verify the new predicate still routes Entra token providers "
@@ -279,7 +279,7 @@ class TestCliEnsureRuntimeCredentialsCallable:
         # ``CLIAgentSetupMixin`` (god-file decomposition Phase 4). Read the
         # module the method actually lives in now.
         src = (Path(__file__).resolve().parent.parent.parent
-               / "hermes_cli" / "cli_agent_setup_mixin.py").read_text()
+               / "hermes_cli" / "cli_agent_setup_mixin.py").read_text(encoding="utf-8")
         # The fix introduces ``_is_callable_provider`` which gates the
         # string-only check so callable token providers survive.
         assert "_is_callable_provider = callable(api_key)" in src, (
@@ -307,7 +307,7 @@ class TestInlinedDisplayMasks:
         crash ``len(api_key)``."""
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
-               / "agent" / "agent_init.py").read_text()
+               / "agent" / "agent_init.py").read_text(encoding="utf-8")
         assert src.count("is_token_provider(") >= 2, (
             "agent/agent_init.py must guard BOTH masked-banner paths "
             "(chat_completions and anthropic_messages) with "
@@ -327,7 +327,7 @@ class TestInlinedDisplayMasks:
         run_agent banners."""
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
-               / "cli.py").read_text()
+               / "cli.py").read_text(encoding="utf-8")
         assert "is_token_provider(self.api_key)" in src, (
             "cli.HermesCLI.show_config must guard self.api_key via "
             "is_token_provider so callable Entra ID providers don't "
@@ -348,7 +348,7 @@ class TestInlinedDisplayMasks:
         ``len(callable)``."""
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
-               / "run_agent.py").read_text()
+               / "run_agent.py").read_text(encoding="utf-8")
         # The function now starts with a callable check.
         assert (
             "if callable(key) and not isinstance(key, str):" in src
@@ -367,7 +367,7 @@ class TestInlinedDisplayMasks:
         Anthropic-style mode that's a callable; slicing crashes."""
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
-               / "agent" / "conversation_loop.py").read_text()
+               / "agent" / "conversation_loop.py").read_text(encoding="utf-8")
         # The Anthropic 401 block now branches on is_token_provider
         # before slicing the key.
         assert "Microsoft Entra ID (httpx event hook)" in src, (

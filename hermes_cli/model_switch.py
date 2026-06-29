@@ -1540,7 +1540,7 @@ def list_authenticated_providers(
         if slug_norm != current_norm:
             return False
         try:
-            from agent.bedrock_adapter import has_aws_credentials
+            from agent.providers.bedrock_adapter import has_aws_credentials
             return bool(has_aws_credentials())
         except Exception:
             return False
@@ -1743,7 +1743,7 @@ def list_authenticated_providers(
         # configured.
         if not has_creds and hermes_slug == "anthropic":
             try:
-                from agent.anthropic_adapter import (
+                from agent.providers.anthropic_adapter import (
                     read_claude_code_credentials,
                     read_hermes_oauth_credentials,
                 )

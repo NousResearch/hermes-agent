@@ -581,7 +581,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # a fallback/aux call lands on Gemini. The native client only reads
             # thinking_config from extra_body, so drop everything else here.
             try:
-                from agent.gemini_native_adapter import is_native_gemini_base_url
+                from agent.providers.gemini_native_adapter import is_native_gemini_base_url
                 _native_gemini = is_native_gemini_base_url(params.get("base_url"))
             except Exception:
                 _native_gemini = False

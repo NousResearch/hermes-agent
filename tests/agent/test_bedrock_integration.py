@@ -358,14 +358,14 @@ class TestBedrockModelNameNormalization:
 
     def test_global_anthropic_inference_profile_preserved(self):
         """The reporter's exact model ID."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=True
         ) == "global.anthropic.claude-opus-4-7"
 
     def test_us_anthropic_dated_inference_profile_preserved(self):
         """Regional + dated Sonnet inference profile."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
             preserve_dots=True,
@@ -373,7 +373,7 @@ class TestBedrockModelNameNormalization:
 
     def test_apac_anthropic_haiku_inference_profile_preserved(self):
         """APAC inference profile — same structural-dot shape."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "apac.anthropic.claude-haiku-4-5", preserve_dots=True
         ) == "apac.anthropic.claude-haiku-4-5"
@@ -383,7 +383,7 @@ class TestBedrockModelNameNormalization:
         always returned unmangled -- ``preserve_dots`` is irrelevant for
         these IDs because the dots are namespace separators, not version
         separators.  Regression for #12295."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
         ) == "global.anthropic.claude-opus-4-7"
@@ -393,7 +393,7 @@ class TestBedrockModelNameNormalization:
         (e.g. ``anthropic.claude-3-5-sonnet-20241022-v2:0``) use dots as
         vendor separators and must also survive intact under
         ``preserve_dots=True``."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "anthropic.claude-3-5-sonnet-20241022-v2:0",
             preserve_dots=True,
@@ -408,7 +408,7 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
     regression for the reporter's HTTP 400."""
 
     def test_bedrock_inference_profile_survives_build_kwargs(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="global.anthropic.claude-opus-4-7",
             messages=[{"role": "user", "content": "hi"}],
@@ -427,7 +427,7 @@ class TestBedrockBuildAnthropicKwargsEndToEnd:
         even without ``preserve_dots=True`` -- the prefix auto-detection
         in ``normalize_model_name`` is the load-bearing piece.
         Regression for #12295."""
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="global.anthropic.claude-opus-4-7",
             messages=[{"role": "user", "content": "hi"}],
@@ -445,47 +445,47 @@ class TestBedrockModelIdDetection:
     regardless of ``preserve_dots``.  Regression for #12295."""
 
     def test_bare_bedrock_id_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.providers.anthropic_adapter import _is_bedrock_model_id
         assert _is_bedrock_model_id("anthropic.claude-opus-4-7") is True
 
     def test_regional_us_prefix_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.providers.anthropic_adapter import _is_bedrock_model_id
         assert _is_bedrock_model_id("us.anthropic.claude-sonnet-4-5-v1:0") is True
 
     def test_regional_global_prefix_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.providers.anthropic_adapter import _is_bedrock_model_id
         assert _is_bedrock_model_id("global.anthropic.claude-opus-4-7") is True
 
     def test_regional_eu_prefix_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.providers.anthropic_adapter import _is_bedrock_model_id
         assert _is_bedrock_model_id("eu.anthropic.claude-sonnet-4-6") is True
 
     def test_openrouter_format_not_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.providers.anthropic_adapter import _is_bedrock_model_id
         assert _is_bedrock_model_id("claude-opus-4.6") is False
 
     def test_bare_claude_not_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.providers.anthropic_adapter import _is_bedrock_model_id
         assert _is_bedrock_model_id("claude-opus-4-7") is False
 
     def test_bare_bedrock_id_preserved_without_flag(self):
         """The primary bug from #12295: ``anthropic.claude-opus-4-7``
         sent to bedrock-mantle via auxiliary clients that don't pass
         ``preserve_dots=True``."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name(
             "anthropic.claude-opus-4-7", preserve_dots=False
         ) == "anthropic.claude-opus-4-7"
 
     def test_openrouter_dots_still_converted(self):
         """Non-Bedrock dotted model names must still be converted."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name("claude-opus-4.6") == "claude-opus-4-6"
 
     def test_bare_bedrock_id_survives_build_kwargs(self):
         """End-to-end: bare Bedrock ID through ``build_anthropic_kwargs``
         without ``preserve_dots=True`` -- the auxiliary client path."""
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="anthropic.claude-opus-4-7",
             messages=[{"role": "user", "content": "hi"}],

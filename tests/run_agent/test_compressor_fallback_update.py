@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
+from agent.providers.openai_adapter import is_direct_openai_url
 from agent.context_compressor import ContextCompressor
 
 

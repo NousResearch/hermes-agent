@@ -1715,7 +1715,7 @@ def resolve_provider(
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
     try:
-        from agent.bedrock_adapter import has_aws_credentials
+        from agent.providers.bedrock_adapter import has_aws_credentials
         if has_aws_credentials():
             return "bedrock"
     except ImportError:
@@ -6236,7 +6236,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
         try:
-            from agent.bedrock_adapter import has_aws_credentials
+            from agent.providers.bedrock_adapter import has_aws_credentials
             return {"logged_in": has_aws_credentials(), "provider": target}
         except ImportError:
             return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
@@ -6276,7 +6276,7 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
 
     if auth_mode == "entra_id":
         try:
-            from agent.azure_identity_adapter import (
+            from agent.providers.azure_identity_adapter import (
                 EntraIdentityConfig,
                 SCOPE_AI_AZURE_DEFAULT,
                 has_azure_identity_installed,

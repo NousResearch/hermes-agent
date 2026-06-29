@@ -14,6 +14,9 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 """
 
 from __future__ import annotations
+from agent.providers.openai_adapter import is_direct_openai_url, is_azure_openai_url, is_github_copilot_url, max_tokens_param
+from agent.providers.openrouter_adapter import is_openrouter_url
+from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
 
 import json
 import logging
@@ -28,7 +31,7 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
-from agent.gemini_native_adapter import is_native_gemini_base_url
+from agent.providers.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
@@ -241,7 +244,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 # normalize_converse_response produces an OpenAI-compatible
                 # SimpleNamespace so the rest of the agent loop can treat
                 # bedrock responses like chat_completions responses.
-                from agent.bedrock_adapter import (
+                from agent.providers.bedrock_adapter import (
                     _get_bedrock_runtime_client,
                     invalidate_runtime_client,
                     is_stale_connection_error,
@@ -699,7 +702,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     # Provider detection flags
     _is_qwen = agent._is_qwen_portal()
-    _is_or = agent._is_openrouter_url()
+    _is_or = is_openrouter_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""))
     _is_gh = (
         base_url_host_matches(agent._base_url_lower, "models.github.ai")
         or base_url_host_matches(agent._base_url_lower, "api.githubcopilot.com")
@@ -745,7 +748,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     _ant_max = None
     if (_is_or or _is_nous) and "claude" in (agent.model or "").lower():
         try:
-            from agent.anthropic_adapter import _get_anthropic_max_output
+            from agent.providers.anthropic_adapter import _get_anthropic_max_output
             _ant_max = _get_anthropic_max_output(agent.model)
         except Exception:
             pass
@@ -785,7 +788,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             timeout=agent._resolved_api_call_timeout(),
             max_tokens=agent.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
-            max_tokens_param_fn=agent._max_tokens_param,
+            max_tokens_param_fn=lambda model, val, base: max_tokens_param(model, val, base, getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", "")),
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
@@ -817,7 +820,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         timeout=agent._resolved_api_call_timeout(),
         max_tokens=agent.max_tokens,
         ephemeral_max_output_tokens=_ephemeral_out,
-        max_tokens_param_fn=agent._max_tokens_param,
+        max_tokens_param_fn=lambda model, val, base: max_tokens_param(model, val, base, getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", "")),
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),
@@ -1226,7 +1229,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Determine api_mode from provider / base URL / model
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
-        _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
+        _fb_is_azure = is_azure_openai_url(fb_base_url, getattr(agent, "_base_url_lower", ""))
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
@@ -1235,7 +1238,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
             # support the Responses API. Stay on chat_completions.
             fb_api_mode = "chat_completions"
-        elif agent._is_direct_openai_url(fb_base_url):
+        elif is_direct_openai_url(fb_base_url, getattr(agent, "_base_url_hostname", "")):
             fb_api_mode = "codex_responses"
         elif agent._provider_model_requires_responses_api(
             fb_model,
@@ -1309,7 +1312,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+            from agent.providers.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
             effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
@@ -1349,7 +1352,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (
-            agent._anthropic_prompt_cache_policy(
+            anthropic_prompt_cache_policy(agent, 
                 provider=fb_provider,
                 base_url=fb_base_url,
                 api_mode=fb_api_mode,
@@ -1519,7 +1522,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if _summary_temperature is not None:
                 summary_kwargs["temperature"] = _summary_temperature
             if agent.max_tokens is not None:
-                summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+                summary_kwargs.update(max_tokens_param(agent.model, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""), agent.max_tokens))
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
 
@@ -1536,7 +1539,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 provider_preferences["sort"] = _provider_sort
             if provider_preferences and (
                 (agent.provider or "").strip().lower() == "openrouter"
-                or agent._is_openrouter_url()
+                or is_openrouter_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""))
             ):
                 summary_extra_body["provider"] = provider_preferences
 
@@ -1547,7 +1550,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 agent.model == "openrouter/pareto-code"
                 and (
                     (agent.provider or "").strip().lower() == "openrouter"
-                    or agent._is_openrouter_url()
+                    or is_openrouter_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""))
                 )
                 and agent.openrouter_min_coding_score is not None
                 and agent.openrouter_min_coding_score != ""
@@ -1611,7 +1614,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if _summary_temperature is not None:
                     summary_kwargs["temperature"] = _summary_temperature
                 if agent.max_tokens is not None:
-                    summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+                    summary_kwargs.update(max_tokens_param(agent.model, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""), agent.max_tokens))
                 if _lm_reasoning_effort is not None:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                 if summary_extra_body:
@@ -1718,7 +1721,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         def _bedrock_call():
             try:
-                from agent.bedrock_adapter import (
+                from agent.providers.bedrock_adapter import (
                     _get_bedrock_runtime_client,
                     invalidate_runtime_client,
                     is_stale_connection_error,
@@ -2259,7 +2262,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # that can leak in under an api_mode-flip race. The Anthropic SDK
         # raises a non-retryable TypeError on them, killing the turn. See
         # #31673 / sanitize_anthropic_kwargs().
-        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+        from agent.providers.anthropic_adapter import sanitize_anthropic_kwargs
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
@@ -2600,7 +2603,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             # adapter — bedrock_adapter triggers a lazy boto3
                             # install at import time, which must not run for
                             # unrelated providers' stream errors.
-                            from agent.bedrock_adapter import (
+                            from agent.providers.bedrock_adapter import (
                                 is_streaming_access_denied_error,
                             )
                             _is_bedrock_stream_denied = (

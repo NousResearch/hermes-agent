@@ -156,7 +156,7 @@ class TestBuildAnthropicKwargsClamping:
     """
 
     def _build(self, model, max_tokens=None, context_length=None):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         return build_anthropic_kwargs(
             model=model,
             messages=[{"role": "user", "content": "hi"}],

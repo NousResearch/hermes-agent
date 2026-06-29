@@ -30,7 +30,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_credential_cache():
-    from agent.azure_identity_adapter import reset_credential_cache
+    from agent.providers.azure_identity_adapter import reset_credential_cache
     reset_credential_cache()
     yield
     reset_credential_cache()
@@ -150,7 +150,7 @@ class TestResolveAzureFoundryRuntimeEntra:
         ``cognitiveservices.azure.com`` scope is the control-plane
         audience and is rejected for inference by newer resources."""
         from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT
+        from agent.providers.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT
         _resolve_azure_foundry_runtime(
             requested_provider="azure-foundry",
             model_cfg={

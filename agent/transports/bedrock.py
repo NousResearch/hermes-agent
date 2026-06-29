@@ -21,12 +21,12 @@ class BedrockTransport(ProviderTransport):
 
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI messages to Bedrock Converse format."""
-        from agent.bedrock_adapter import convert_messages_to_converse
+        from agent.providers.bedrock_adapter import convert_messages_to_converse
         return convert_messages_to_converse(messages)
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Bedrock Converse toolConfig."""
-        from agent.bedrock_adapter import convert_tools_to_converse
+        from agent.providers.bedrock_adapter import convert_tools_to_converse
         return convert_tools_to_converse(tools)
 
     def build_kwargs(
@@ -46,7 +46,7 @@ class BedrockTransport(ProviderTransport):
             guardrail_config: dict | None — Bedrock guardrails
             region: str — AWS region (default 'us-east-1')
         """
-        from agent.bedrock_adapter import build_converse_kwargs
+        from agent.providers.bedrock_adapter import build_converse_kwargs
 
         region = params.get("region", "us-east-1")
         guardrail = params.get("guardrail_config")
@@ -71,7 +71,7 @@ class BedrockTransport(ProviderTransport):
         1. Raw boto3 dict (from direct converse() calls)
         2. Already-normalized SimpleNamespace with .choices (from dispatch site)
         """
-        from agent.bedrock_adapter import normalize_converse_response
+        from agent.providers.bedrock_adapter import normalize_converse_response
 
         # Normalize to OpenAI-compatible SimpleNamespace
         if hasattr(response, "choices") and response.choices:

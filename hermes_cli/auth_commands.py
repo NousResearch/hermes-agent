@@ -532,7 +532,7 @@ def _interactive_auth() -> None:
 
     # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
     try:
-        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        from agent.providers.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
         if has_aws_credentials():
             auth_source = resolve_aws_auth_env_var() or "unknown"
             region = resolve_bedrock_region()
@@ -560,7 +560,7 @@ def _interactive_auth() -> None:
             _cfg_provider = str(_model_cfg.get("provider") or "").strip().lower()
             _cfg_auth_mode = str(_model_cfg.get("auth_mode") or "").strip().lower()
             if _cfg_provider == "azure-foundry" and _cfg_auth_mode == "entra_id":
-                from agent.azure_identity_adapter import (
+                from agent.providers.azure_identity_adapter import (
                     EntraIdentityConfig,
                     SCOPE_AI_AZURE_DEFAULT,
                     describe_active_credential,

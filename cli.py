@@ -6470,7 +6470,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         # ``self.api_key`` may be a callable (Azure Foundry Entra ID bearer
         # provider). Never invoke it; just identify the auth surface.
-        from agent.azure_identity_adapter import is_token_provider
+        from agent.providers.azure_identity_adapter import is_token_provider
         if is_token_provider(self.api_key):
             api_key_display = "Microsoft Entra ID"
         elif isinstance(self.api_key, str) and len(self.api_key) > 12:

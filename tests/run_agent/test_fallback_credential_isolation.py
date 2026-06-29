@@ -133,10 +133,6 @@ class TestFallbackCredentialIsolation:
         agent._fallback_chain = [{"provider": "openai-codex", "model": "gpt-5.5"}]
         agent._credential_pool = _make_pool("ollama-cloud")
         agent._buffer_status = MagicMock()
-        agent._is_azure_openai_url.return_value = False
-        agent._is_direct_openai_url.return_value = False
-        agent._provider_model_requires_responses_api.return_value = False
-        agent._anthropic_prompt_cache_policy.return_value = (False, False)
         agent._ensure_lmstudio_runtime_loaded = MagicMock()
         agent._replace_primary_openai_client = MagicMock()
         agent.context_compressor = None

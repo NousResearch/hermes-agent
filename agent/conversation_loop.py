@@ -15,6 +15,7 @@ resolved through :func:`_ra` so those patches keep working.
 """
 
 from __future__ import annotations
+from agent.providers.openrouter_adapter import is_openrouter_url
 
 import json
 import logging
@@ -505,6 +506,7 @@ def run_conversation(
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    print("conversation_loop.run_conversation CALLED", flush=True)
     """
     Run a complete conversation with tool calling until completion.
 
@@ -1305,21 +1307,7 @@ def run_conversation(
                             error_details.append("response.choices is empty")
 
                 if response_invalid:
-                    agent._invoke_api_request_error_hook(
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        api_call_count=api_call_count,
-                        api_start_time=api_start_time,
-                        api_kwargs=api_kwargs,
-                        error_type="InvalidAPIResponse",
-                        error_message=", ".join(error_details) or "Invalid API response",
-                        status_code=getattr(getattr(response, "error", None), "code", None),
-                        retry_count=retry_count,
-                        max_retries=max_retries,
-                        retryable=True,
-                        reason="invalid_response",
-                    )
+                    raise RuntimeError(f"INVALID RESPONSE: {error_details}")
                     # Stop spinner silently — retry status is now buffered
                     # and only surfaced if every retry+fallback exhausts.
                     if thinking_spinner:
@@ -1837,7 +1825,7 @@ def run_conversation(
                                 # boost is harmless for the stall case.
                                 _tc_boost_base = agent.max_tokens if agent.max_tokens else 4096
                                 _tc_boost = _tc_boost_base * (truncated_tool_call_retries + 1)
-                                _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+                                _tc_requested_cap = requested_output_cap_from_api_kwargs(api_kwargs)
                                 if _tc_requested_cap is not None:
                                     _tc_boost = max(_tc_boost, _tc_requested_cap)
                                 _tc_boost_cap = max(32768, _tc_requested_cap or 0)
@@ -2555,8 +2543,8 @@ def run_conversation(
                     and not _retry.anthropic_auth_retry_attempted
                 ):
                     _retry.anthropic_auth_retry_attempted = True
-                    from agent.anthropic_adapter import _is_oauth_token
-                    from agent.azure_identity_adapter import is_token_provider
+                    from agent.providers.anthropic_adapter import _is_oauth_token
+                    from agent.providers.azure_identity_adapter import is_token_provider
                     if agent._try_refresh_anthropic_client_credentials():
                         print(f"{agent.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                         continue
@@ -2761,7 +2749,7 @@ def run_conversation(
                 # if every retry+fallback exhausts.  Avoids spamming users
                 # who recover automatically via fallback.
                 if (
-                    agent._is_openrouter_url()
+                    is_openrouter_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""))
                     and "support tool use" in error_msg
                 ):
                     agent._buffer_vprint(
@@ -3851,7 +3839,7 @@ def run_conversation(
             # not accidentally downshift to a much smaller cap.
             _boost_base = agent.max_tokens if agent.max_tokens else 4096
             _boost = _boost_base * (length_continue_retries + 1)
-            _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+            _requested_cap = requested_output_cap_from_api_kwargs(api_kwargs)
             if _requested_cap is not None:
                 _boost = max(_boost, _requested_cap)
             _boost_cap = max(32768, _requested_cap or 0)

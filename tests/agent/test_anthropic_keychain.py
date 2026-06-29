@@ -4,7 +4,7 @@ import json
 from unittest.mock import patch, MagicMock
 
 
-from agent.anthropic_adapter import (
+from agent.providers.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
     _refresh_oauth_token,

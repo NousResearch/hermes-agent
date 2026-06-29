@@ -181,7 +181,7 @@ class TestAnthropicOAuthOutgoingPrefix:
     the OAuth wire — bare names and MCP server names both land on ``mcp__``."""
 
     def _build(self, tools, is_oauth=True):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         return build_anthropic_kwargs(
             model="claude-sonnet-4-6",
             messages=[{"role": "user", "content": "Hi"}],

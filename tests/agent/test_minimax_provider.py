@@ -102,7 +102,7 @@ class TestMinimaxThinkingSupport:
     """
 
     def test_minimax_m27_gets_manual_thinking(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="MiniMax-M2.7",
             messages=[{"role": "user", "content": "hello"}],
@@ -117,7 +117,7 @@ class TestMinimaxThinkingSupport:
         assert "output_config" not in kwargs
 
     def test_minimax_m25_gets_manual_thinking(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="MiniMax-M2.5",
             messages=[{"role": "user", "content": "hello"}],
@@ -129,7 +129,7 @@ class TestMinimaxThinkingSupport:
         assert kwargs["thinking"]["type"] == "enabled"
 
     def test_thinking_still_works_for_claude(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",
             messages=[{"role": "user", "content": "hello"}],
@@ -192,7 +192,7 @@ class TestMinimaxBetaHeaders:
 
     def _build_and_get_betas(self, api_key, base_url=None):
         """Build client, return the anthropic-beta header string."""
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.providers.anthropic_adapter import build_anthropic_client
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(api_key, base_url=base_url)
             kwargs = mock_sdk.Anthropic.call_args[1]
@@ -251,26 +251,26 @@ class TestMinimaxBetaHeaders:
     # -- _common_betas_for_base_url unit tests ---------------------------
 
     def test_common_betas_none_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
+        from agent.providers.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
         assert _common_betas_for_base_url(None) == _COMMON_BETAS
 
     def test_common_betas_empty_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
+        from agent.providers.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
         assert _common_betas_for_base_url("") == _COMMON_BETAS
 
     def test_common_betas_minimax_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _TOOL_STREAMING_BETA
+        from agent.providers.anthropic_adapter import _common_betas_for_base_url, _TOOL_STREAMING_BETA
         betas = _common_betas_for_base_url("https://api.minimax.io/anthropic")
         assert _TOOL_STREAMING_BETA not in betas
         assert len(betas) > 0  # still has other betas
 
     def test_common_betas_minimax_cn_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _TOOL_STREAMING_BETA
+        from agent.providers.anthropic_adapter import _common_betas_for_base_url, _TOOL_STREAMING_BETA
         betas = _common_betas_for_base_url("https://api.minimaxi.com/anthropic")
         assert _TOOL_STREAMING_BETA not in betas
 
     def test_common_betas_regular_url(self):
-        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
+        from agent.providers.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
         assert _common_betas_for_base_url("https://api.anthropic.com") == _COMMON_BETAS
 
 
@@ -315,19 +315,19 @@ class TestMinimaxMaxOutput:
     """
 
     def test_minimax_m27_output_limit(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("MiniMax-M2.7") == 131_072
 
     def test_minimax_m25_output_limit(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("MiniMax-M2.5") == 131_072
 
     def test_minimax_m2_output_limit(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("MiniMax-M2") == 131_072
 
     def test_claude_output_unaffected(self):
-        from agent.anthropic_adapter import _get_anthropic_max_output
+        from agent.providers.anthropic_adapter import _get_anthropic_max_output
         # Sanity: Claude limits are not broken by the MiniMax entry
         assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
 
@@ -394,21 +394,21 @@ class TestMinimaxPreserveDots:
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
     def test_normalize_preserves_m25_free_dot(self):
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name("minimax-m2.5-free", preserve_dots=True) == "minimax-m2.5-free"
 
     def test_normalize_preserves_m27_dot(self):
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name("MiniMax-M2.7", preserve_dots=True) == "MiniMax-M2.7"
 
     def test_normalize_preserves_non_anthropic_dots_without_preserve(self):
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         # Non-Anthropic model families use dots as canonical version separators;
         # only Claude/Anthropic names are hyphen-normalized by default.
         assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2.7"
 
     def test_normalize_still_converts_claude_dots_without_preserve(self):
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.providers.anthropic_adapter import normalize_model_name
         assert normalize_model_name("claude-opus-4.6", preserve_dots=False) == "claude-opus-4-6"
 
 

@@ -5313,7 +5313,15 @@ class BasePlatformAdapter(ABC):
                         split_at = safe_split
 
             chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
+            # Advance past the separator we split on, but keep the next line's
+            # own leading indentation. A bare ``.lstrip()`` here strips the
+            # indentation off the first line of every continuation chunk, which
+            # silently de-indents code blocks that span more than one message.
+            # Drop a leading newline boundary (and any blank lines) when we
+            # split on a newline; drop the boundary space(s) when we split
+            # mid-line on a space; leave a hard mid-token cut untouched.
+            _next = remaining[split_at:]
+            remaining = _next.lstrip("\n") if _next[:1] == "\n" else _next.lstrip(" ")
 
             full_chunk = prefix + chunk_body
 

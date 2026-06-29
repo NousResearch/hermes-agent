@@ -1417,6 +1417,27 @@ class TestTruncateMessage:
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
 
+    def test_indented_code_block_keeps_indentation_across_chunks(self):
+        """A code block split across chunks must keep each line's indentation.
+
+        The split point advances past the boundary newline, but it must not
+        also eat the next line's leading whitespace, or the first line of every
+        continuation chunk arrives de-indented and the code no longer runs.
+        """
+        adapter = self._adapter()
+        body = "\n".join(f"    value_{i} = compute(item_{i})" for i in range(60))
+        msg = "```python\n" + body + "\n```"
+        chunks = adapter.truncate_message(msg, max_length=400)
+        assert len(chunks) > 1, "message should have split into multiple chunks"
+        for i, chunk in enumerate(chunks):
+            for line in chunk.splitlines():
+                # Every real code line is indented; a de-indented one means the
+                # boundary strip removed its leading whitespace.
+                if line.startswith("value_"):
+                    raise AssertionError(
+                        f"chunk {i} has a de-indented code line: {line!r}"
+                    )
+
     def test_each_chunk_under_max_length(self):
         adapter = self._adapter()
         msg = "word " * 500

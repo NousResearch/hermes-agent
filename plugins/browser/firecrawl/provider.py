@@ -34,6 +34,10 @@ from typing import Any, Dict
 import requests
 
 from agent.browser_provider import BrowserProvider
+from plugins.browser._response import (
+    read_browser_provider_json,
+    read_browser_provider_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,19 +95,34 @@ class FirecrawlBrowserProvider(BrowserProvider):
                 headers=self._headers(),
                 json=body,
                 timeout=30,
+                stream=True,
             )
         except requests.RequestException as exc:
             raise RuntimeError(
                 f"Firecrawl API connection failed: {exc}"
             ) from exc
 
-        if not response.ok:
-            raise RuntimeError(
-                f"Failed to create Firecrawl browser session: "
-                f"{response.status_code} {response.text}"
-            )
+        try:
+            if not response.ok:
+                try:
+                    error_text = read_browser_provider_text(
+                        response,
+                        label="Firecrawl browser session create error",
+                    )
+                except RuntimeError as exc:
+                    error_text = str(exc)
+                raise RuntimeError(
+                    f"Failed to create Firecrawl browser session: "
+                    f"{response.status_code} {error_text}"
+                )
 
-        data = response.json()
+            data = read_browser_provider_json(
+                response,
+                label="Firecrawl browser session create",
+            )
+        finally:
+            response.close()
+
         session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
 
         logger.info("Created Firecrawl browser session %s", session_name)

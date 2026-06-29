@@ -74,6 +74,41 @@ def test_lookup_routeback_cases_requires_current_thread_as_target(monkeypatch):
     assert "owner-thread" in helper.queries[0]
 
 
+def test_lookup_routeback_cases_accepts_legacy_delivery_receipt(monkeypatch):
+    rows = [
+        {
+            "event_id": "evt-source",
+            "event_type": "handoff.created",
+            "case_id": "case:bonus-product-switch",
+            "occurred_at": "2026-06-29T07:00:00Z",
+            "source": {"source_refs": {"thread_id": "plamenka-thread", "message_id": "m1"}},
+            "payload": {"summary": "requester asks for backend resolver handoff"},
+        },
+        {
+            "event_id": "evt-handoff-waiting",
+            "event_type": "handoff.waiting",
+            "case_id": "case:bonus-product-switch",
+            "occurred_at": "2026-06-29T07:10:00Z",
+            "source": {"source_refs": {"thread_id": "plamenka-thread", "message_id": "m2"}},
+            "payload": {
+                "delivery_receipt": {
+                    "chat_id": "backend-resolver-thread",
+                    "thread_id": "backend-resolver-thread",
+                    "message_id": "starter-message",
+                },
+            },
+        },
+    ]
+    helper = _enable_with_rows(monkeypatch, rows)
+
+    contexts = lookup_routeback_cases_for_thread("backend-resolver-thread")
+
+    assert len(contexts) == 1
+    assert contexts[0].case_id == "case:bonus-product-switch"
+    assert contexts[0].source_thread_id == "plamenka-thread"
+    assert "delivery_receipt" in helper.queries[0]
+
+
 def test_lookup_routeback_cases_ignores_source_only_match(monkeypatch):
     rows = [
         {
@@ -137,3 +172,5 @@ def test_prompt_tells_owner_thread_to_continue_case_and_add_next_action(monkeypa
     assert "Do not repeat the owner/resolver request" in prompt
     assert "concrete next-action artifact" in prompt
     assert "email subject/body" in prompt
+    assert "forward/notify the requester" in prompt
+    assert "not a terminal outcome" in prompt

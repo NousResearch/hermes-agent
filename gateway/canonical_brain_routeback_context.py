@@ -119,11 +119,20 @@ def _source_refs(source: Mapping[str, Any]) -> dict[str, Any]:
 
 def _route_back_target(payload: Mapping[str, Any]) -> dict[str, Any]:
     target = _nested_get(payload, "route_back", "target_ref")
+    if isinstance(target, dict):
+        return target
+    target = payload.get("target_ref")
     return target if isinstance(target, dict) else {}
 
 
 def _receipt(payload: Mapping[str, Any]) -> dict[str, Any]:
     receipt = payload.get("receipt")
+    if isinstance(receipt, dict):
+        return receipt
+    receipt = payload.get("delivery_receipt")
+    if isinstance(receipt, dict):
+        return receipt
+    receipt = _nested_get(payload, "route_back", "receipt")
     return receipt if isinstance(receipt, dict) else {}
 
 
@@ -171,6 +180,13 @@ WHERE case_id IN (
      OR payload->'route_back'->'target_ref'->>'channel_id' = {thread_sql}
      OR payload->'receipt'->>'chat_id' = {thread_sql}
      OR payload->'receipt'->>'thread_id' = {thread_sql}
+     OR payload->'receipt'->>'channel_id' = {thread_sql}
+     OR payload->'delivery_receipt'->>'chat_id' = {thread_sql}
+     OR payload->'delivery_receipt'->>'thread_id' = {thread_sql}
+     OR payload->'delivery_receipt'->>'channel_id' = {thread_sql}
+     OR payload->'route_back'->'receipt'->>'chat_id' = {thread_sql}
+     OR payload->'route_back'->'receipt'->>'thread_id' = {thread_sql}
+     OR payload->'route_back'->'receipt'->>'channel_id' = {thread_sql}
 )
 ORDER BY occurred_at DESC
 LIMIT 80;
@@ -245,6 +261,7 @@ def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> 
             "- Record the answer/status as durable case state before any requester closeout.",
             "- Notify the source/requester thread at most once, with only the actionable delta.",
             "- Record `route_back.sent` only after a real delivery receipt/message_id.",
+            "- If a resolver asks you to forward/notify the requester, either actually notify the source/requester thread and record `route_back.sent`, or record/report `route_back.blocked` with the blocker. A reply like 'noted', 'marked', or 'for forwarding' is not a terminal outcome.",
             "- Do not use cron for immediate route-back delivery; use direct Discord delivery when available. Cron is only for future reminders/watchers, and never both create+run for the same immediate message.",
             "- Do not repeat the owner/resolver request after the owner/resolver has answered.",
             "- If durable route-back recording fails after a send, do not send duplicate public corrections; record/report the state blocker separately.",

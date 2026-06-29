@@ -2933,6 +2933,9 @@ def _build_top_level_description() -> str:
         )
 
     return (
+        "\u26a0 Background children are NOT durable — if the parent session closes "
+        "or the process exits before a subagent finishes, its work is lost. "
+        "Use cronjob (action='create') for work that must outlive the process.\n\n"
         "Spawn one or more subagents to work on tasks in isolated contexts. "
         "Each subagent gets its own conversation, terminal session, and toolset. "
         "Only the final summary is returned -- intermediate tool results "

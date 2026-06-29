@@ -854,7 +854,9 @@ def cronjob(
 
 CRONJOB_SCHEMA = {
     "name": "cronjob",
-    "description": """Manage scheduled cron jobs with a single compressed tool.
+    "description": """\u26a0 In TUI/CLI, the default deliver='origin' has no live delivery channel — output is saved to disk, not surfaced to you. Pass deliver='all', deliver='telegram:...', or deliver='discord:...' to actually receive messages. In gateway/messaging contexts, deliver='origin' resolves to the connected chat/topic automatically.
+
+Manage scheduled cron jobs with a single compressed tool.
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.

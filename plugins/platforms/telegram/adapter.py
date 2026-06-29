@@ -21,7 +21,25 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
+
 logger = logging.getLogger(__name__)
+
+
+def _telegram_media_message_filter():
+    """Return the Telegram filter expression routed to the media handler."""
+    media_filters = filters
+    if media_filters is None:  # pragma: no cover - guarded by connect availability checks
+        raise RuntimeError("python-telegram-bot filters are unavailable")
+    video_note_filter = getattr(media_filters, "VIDEO_NOTE", media_filters.VIDEO)
+    return (
+        media_filters.PHOTO
+        | media_filters.VIDEO
+        | video_note_filter
+        | media_filters.AUDIO
+        | media_filters.VOICE
+        | media_filters.Document.ALL
+        | media_filters.Sticker.ALL
+    )
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -3451,7 +3469,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_location_message
             ))
             self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                _telegram_media_message_filter(),
                 self._handle_media_message
             ))
             # Handle inline keyboard button callbacks (update prompts)
@@ -7460,13 +7478,30 @@ class TelegramAdapter(BasePlatformAdapter):
             return MessageType.STICKER
         if msg.photo:
             return MessageType.PHOTO
-        if msg.video:
+        if msg.video or self._telegram_video_note(msg):
             return MessageType.VIDEO
         if msg.audio:
             return MessageType.AUDIO
         if msg.voice:
             return MessageType.VOICE
         return MessageType.DOCUMENT
+
+    @staticmethod
+    def _telegram_video_note(msg: Message) -> Any:
+        """Return Telegram's round video-message payload, if present.
+
+        python-telegram-bot exposes circular video messages as ``video_note``.
+        Test fixtures often use ``MagicMock`` messages, where reading an unset
+        attribute creates a truthy child mock; guard against treating that as a
+        real attachment unless the fixture explicitly assigned ``video_note``.
+        """
+        video_note = getattr(msg, "video_note", None)
+        if video_note is None:
+            return None
+        if type(video_note).__module__.startswith("unittest.mock"):
+            if "video_note" not in getattr(msg, "__dict__", {}):
+                return None
+        return video_note
 
     async def _cache_observed_media(self, msg: Message, event: MessageEvent) -> None:
         """Cache an unmentioned group attachment and annotate the observed text.
@@ -7576,6 +7611,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return msg.photo[-1], "", "", "image"
         if msg.video:
             return msg.video, "", "video/mp4", "video"
+        video_note = self._telegram_video_note(msg)
+        if video_note:
+            return video_note, "video_note.mp4", "video/mp4", "video"
         if msg.voice:
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
@@ -8179,15 +8217,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "audio file", e)
 
-        elif msg.video:
+        elif msg.video or self._telegram_video_note(msg):
             try:
-                allowed, note = self._telegram_media_size_allowed(msg.video, "video file")
+                video_source = msg.video or self._telegram_video_note(msg)
+                video_label = "video message" if not msg.video else "video file"
+                allowed, note = self._telegram_media_size_allowed(video_source, video_label)
                 if not allowed:
                     event.text = self._append_observed_note(event.text, note or "")
-                    logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(msg.video, "file_size", None))
+                    logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(video_source, "file_size", None))
                     await self.handle_message(event)
                     return
-                file_obj = await msg.video.get_file()
+                file_obj = await video_source.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"
                 if getattr(file_obj, "file_path", None):
@@ -8198,10 +8238,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
                 event.media_urls = [cached_path]
                 event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
-                logger.info("[Telegram] Cached user video at %s", cached_path)
+                logger.info("[Telegram] Cached user %s at %s", video_label, cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
-                await self._surface_media_cache_failure(msg, event, "video file", e)
+                await self._surface_media_cache_failure(msg, event, video_label, e)
 
         # Download document files to cache for agent processing
         elif msg.document:

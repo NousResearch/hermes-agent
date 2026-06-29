@@ -500,7 +500,9 @@ def test_normalize_codex_response_salvage_is_xai_scoped():
         "Thinking.\n<response>The answer.</response>"
     )
 
-    assistant_message, finish_reason = _normalize_codex_response(response)
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
 
     assert finish_reason == "incomplete"
     assert assistant_message.content == ""

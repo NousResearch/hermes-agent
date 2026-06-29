@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { setTuiLocale } from '../i18n/index.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -204,6 +205,10 @@ export const applyDisplay = (
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
+
+  // Drive the TUI string catalog from display.language (same setting the
+  // desktop app uses). Unknown/missing values fall back to English.
+  setTuiLocale((d as { language?: unknown }).language)
 
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we

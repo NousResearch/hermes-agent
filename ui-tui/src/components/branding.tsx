@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { useTuiText } from '../i18n/index.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -159,6 +160,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+  const tr = useTuiText()
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -258,13 +260,13 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
               {s.tools} tool{s.tools === 1 ? '' : 's'}
             </Text>
           ) : s.disabled || s.status === 'disabled' ? (
-            <Text color={t.color.muted}>disabled</Text>
+            <Text color={t.color.muted}>{tr.branding.gateway.disabled}</Text>
           ) : s.status === 'connecting' ? (
-            <Text color={t.color.warn}>connecting</Text>
+            <Text color={t.color.warn}>{tr.branding.gateway.connecting}</Text>
           ) : s.status === 'configured' ? (
-            <Text color={t.color.muted}>configured</Text>
+            <Text color={t.color.muted}>{tr.branding.gateway.configured}</Text>
           ) : (
-            <Text color={t.color.error}>failed</Text>
+            <Text color={t.color.error}>{tr.branding.gateway.failed}</Text>
           )}
         </Text>
       ))}
@@ -276,7 +278,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const systemBody = () => {
     if (sysPromptLen === 0) {
-      return <Text color={t.color.muted}>No system prompt loaded.</Text>
+      return <Text color={t.color.muted}>{tr.branding.noSystemPrompt}</Text>
     }
 
     return <Text color={t.color.muted}>{info.system_prompt}</Text>
@@ -300,7 +302,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
           {sid && (
             <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionLabel}>{tr.branding.sessionLabel}</Text>
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
           )}
@@ -329,7 +331,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             </Text>
             {sid && (
               <Text wrap="truncate-end">
-                <Text color={t.color.sessionLabel}>Session: </Text>
+                <Text color={t.color.sessionLabel}>{tr.branding.sessionLabel}</Text>
                 <Text color={t.color.sessionBorder}>{sid}</Text>
               </Text>
             )}

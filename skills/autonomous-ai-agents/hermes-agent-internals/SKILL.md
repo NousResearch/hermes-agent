@@ -1,7 +1,7 @@
 ---
 name: hermes-agent-internals
-description: "One Hermes turn: run_conversation prologue, tool loop, epilogue."
-version: 1.0.0
+description: "Use when onboarding on run_conversation's three-act turn."
+version: 1.0.1
 author: Nietzsche-Ubermensch, Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]

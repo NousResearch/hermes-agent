@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu",
+    "af", "ko", "it", "ga", "pt", "ru", "hu", "id",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -79,6 +79,11 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "russian": "ru", "русский": "ru", "ru-ru": "ru",
     # Hungarian
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
+    # Indonesian (Bahasa Indonesia) — 4th most-spoken language globally, native
+    # to 270M+ speakers. Distinct from Malay ("ms") which has its own catalog
+    # if someone adds it later. Covers "indonesian", "bahasa", "id-id", "id-id".
+    "indonesian": "id", "bahasa": "id", "bahasa-indonesia": "id",
+    "id-id": "id", "in": "id", "in-id": "id",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

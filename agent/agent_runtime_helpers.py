@@ -71,6 +71,29 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     return bool(memory_manager and memory_manager.has_tool(function_name))
 
 
+def _trajectory_content_to_str(content: Any) -> str:
+    """Flatten possibly-multimodal message content to a plain string.
+
+    ``_trajectory_normalize_msg`` preserves list-shaped multimodal content
+    (image parts already replaced by ``[screenshot]`` text parts), but the
+    text-only ShareGPT trajectory format expects ``content`` to be a string.
+    Joining the text parts here keeps multimodal user/assistant turns from
+    crashing (``.strip()``/concatenation on a list) or silently writing a
+    Python list as a record ``value``. Identity for plain strings.
+    """
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict):
+                parts.append(str(p.get("text", "")))
+            else:
+                parts.append(str(p))
+        return "".join(parts)
+    if content is None:
+        return ""
+    return content if isinstance(content, str) else str(content)
+
+
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
     """
     Convert internal message format to trajectory format for saving.
@@ -134,10 +157,11 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
                 if msg.get("reasoning") and msg["reasoning"].strip():
                     content = f"<think>\n{msg['reasoning']}\n</think>\n"
                 
-                if msg.get("content") and msg["content"].strip():
+                msg_content = _trajectory_content_to_str(msg.get("content"))
+                if msg_content and msg_content.strip():
                     # Convert any <REASONING_SCRATCHPAD> tags to <think> tags
                     # (used when native thinking is disabled and model reasons via XML)
-                    content += convert_scratchpad_to_think(msg["content"]) + "\n"
+                    content += convert_scratchpad_to_think(msg_content) + "\n"
                 
                 # Add tool calls wrapped in XML tags
                 for tool_call in msg["tool_calls"]:
@@ -218,7 +242,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
                 
                 # Convert any <REASONING_SCRATCHPAD> tags to <think> tags
                 # (used when native thinking is disabled and model reasons via XML)
-                raw_content = msg["content"] or ""
+                raw_content = _trajectory_content_to_str(msg.get("content"))
                 content += convert_scratchpad_to_think(raw_content)
                 
                 # Ensure every gpt turn has a <think> block (empty if no reasoning)
@@ -233,7 +257,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
         elif msg["role"] == "user":
             trajectory.append({
                 "from": "human",
-                "value": msg["content"]
+                "value": _trajectory_content_to_str(msg.get("content"))
             })
         
         i += 1

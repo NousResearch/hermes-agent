@@ -9,8 +9,9 @@ touched.
 
 The fork inherits the parent's live runtime (provider, model, base_url,
 credentials, cached system prompt) so it hits the same prefix cache and
-uses the same auth.  It runs with a tool whitelist limited to memory and
-skill management tools; everything else is denied at runtime.
+uses the same auth.  It runs behind a runtime tool whitelist that defaults
+to memory and skill management tools; operators can add narrowly scoped
+toolsets via ``memory.review_toolsets``.
 
 See the ``hermes-agent-dev`` skill (``references/self-improvement-loop.md``)
 for invariants and PR review criteria.
@@ -25,6 +26,45 @@ import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_REVIEW_TOOLSETS = ["memory", "skills"]
+
+
+def _normalize_review_toolsets(raw: Any) -> List[str]:
+    """Return a stable list of configured background-review toolsets."""
+    if raw is None:
+        return list(_DEFAULT_REVIEW_TOOLSETS)
+    if isinstance(raw, str):
+        items = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        return list(_DEFAULT_REVIEW_TOOLSETS)
+
+    normalized: List[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        toolset = item.strip()
+        if toolset and toolset not in normalized:
+            normalized.append(toolset)
+    return normalized
+
+
+def _resolve_background_review_toolsets() -> List[str]:
+    """Load the toolsets the self-improvement review fork may use."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        memory_cfg = cfg.get("memory") if isinstance(cfg, dict) else {}
+        if not isinstance(memory_cfg, dict):
+            memory_cfg = {}
+        raw_toolsets = memory_cfg.get("review_toolsets", _DEFAULT_REVIEW_TOOLSETS)
+    except Exception as exc:
+        logger.debug("Failed to load background-review toolset config: %s", exc)
+        raw_toolsets = _DEFAULT_REVIEW_TOOLSETS
+    return _normalize_review_toolsets(raw_toolsets)
 
 
 # ---------------------------------------------------------------------------
@@ -725,18 +765,34 @@ def _run_review_in_thread(
                 clear_thread_tool_whitelist,
             )
 
+            review_toolsets = _resolve_background_review_toolsets()
+            review_tool_defs = get_tool_definitions(
+                enabled_toolsets=review_toolsets,
+                quiet_mode=True,
+            )
+            # Include raw pre-Tool-Search schemas in the runtime whitelist too.
+            # If a configured MCP/plugin toolset is collapsed behind
+            # tool_search/tool_call, the model first calls the bridge, but the
+            # executor unwraps tool_call to the underlying tool before plugin
+            # hooks run. Whitelisting both the visible bridge schemas and the
+            # raw configured schemas keeps that legitimate path open while
+            # preserving the sandbox.
+            raw_review_tool_defs = get_tool_definitions(
+                enabled_toolsets=review_toolsets,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
             review_whitelist = {
                 t["function"]["name"]
-                for t in get_tool_definitions(
-                    enabled_toolsets=["memory", "skills"],
-                    quiet_mode=True,
-                )
+                for t in [*review_tool_defs, *raw_review_tool_defs]
             }
+            review_toolset_desc = ", ".join(review_toolsets) or "none"
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only configured background-review toolsets "
+                    f"are allowed ({review_toolset_desc})."
                 ),
             )
             try:
@@ -750,9 +806,9 @@ def _run_review_in_thread(
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
-                        "at runtime — do not attempt them."
+                        + "\n\nYou can only call tools from the configured "
+                        f"background-review toolsets ({review_toolset_desc}). "
+                        "Other tools will be denied at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,
                 )

@@ -237,3 +237,91 @@ def test_review_fork_inherits_parent_toolset_config():
         f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
         f"vs expected {agent.disabled_toolsets!r}"
     )
+
+
+def test_default_config_keeps_background_review_toolsets_safe():
+    """Background review defaults must preserve the existing memory+skills sandbox."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["memory"]["review_toolsets"] == ["memory", "skills"]
+
+
+def test_background_review_whitelist_uses_configured_review_toolsets():
+    """Operators can opt review forks into deterministic persistence toolsets."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+    tool_def_calls = []
+
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.session_start = None
+            self.session_id = None
+
+        def run_conversation(self, *args, **kwargs):
+            raise RuntimeError("stop after whitelist setup — don't call the API")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_get_tool_definitions(*, enabled_toolsets=None, quiet_mode=False, skip_tool_search_assembly=False, **kwargs):
+        tool_def_calls.append((list(enabled_toolsets or []), skip_tool_search_assembly))
+        if list(enabled_toolsets or []) == ["memory", "skills", "mcp-gbrain"]:
+            # The raw pass includes the actual MCP persistence tool; the normal
+            # pass may collapse it behind Tool Search bridge tools.
+            if skip_tool_search_assembly:
+                return [
+                    {"type": "function", "function": {"name": "memory"}},
+                    {"type": "function", "function": {"name": "skill_manage"}},
+                    {"type": "function", "function": {"name": "mcp_gbrain_put_page"}},
+                ]
+            return [
+                {"type": "function", "function": {"name": "memory"}},
+                {"type": "function", "function": {"name": "skill_manage"}},
+                {"type": "function", "function": {"name": "tool_search"}},
+                {"type": "function", "function": {"name": "tool_describe"}},
+                {"type": "function", "function": {"name": "tool_call"}},
+            ]
+        return []
+
+    def fake_set_thread_tool_whitelist(allowed, deny_msg_fmt):
+        captured["allowed"] = set(allowed)
+        captured["deny_msg_fmt"] = deny_msg_fmt
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread), \
+         patch("hermes_cli.config.load_config", return_value={
+             "memory": {"review_toolsets": ["memory", "skills", "mcp-gbrain"]}
+         }), \
+         patch("model_tools.get_tool_definitions", side_effect=fake_get_tool_definitions), \
+         patch("hermes_cli.plugins.set_thread_tool_whitelist", side_effect=fake_set_thread_tool_whitelist):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=True,
+        )
+
+    assert (["memory", "skills", "mcp-gbrain"], True) in tool_def_calls
+    assert (["memory", "skills", "mcp-gbrain"], False) in tool_def_calls
+    assert captured["allowed"] == {
+        "memory",
+        "skill_manage",
+        "mcp_gbrain_put_page",
+        "tool_search",
+        "tool_describe",
+        "tool_call",
+    }
+    assert "configured background-review toolsets" in captured["deny_msg_fmt"]

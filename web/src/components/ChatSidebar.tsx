@@ -26,6 +26,7 @@
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@nous-research/ui/ui/components/card";
+import { buildHermesWebSocketUrl } from "@hermes/shared";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
@@ -230,14 +231,17 @@ export function ChatSidebar({
     let unmounting = false;
     let ws: WebSocket | null = null;
     void (async () => {
-      const [authName, authValue] = await buildWsAuthParam();
-      if (!authValue || unmounting) {
+      const authParam = await buildWsAuthParam();
+      if (!authParam[1] || unmounting) {
         return;
       }
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const qs = new URLSearchParams({ [authName]: authValue, channel });
       ws = new WebSocket(
-        `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
+        buildHermesWebSocketUrl({
+          authParam,
+          basePath: HERMES_BASE_PATH,
+          params: { channel },
+          path: "/api/events",
+        }),
       );
 
       // `unmounting` suppresses the banner during cleanup — `ws.close()`

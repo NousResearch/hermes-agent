@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@hermes/shared": "file:../apps/shared",
     "@nous-research/ui": "0.18.2",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",

@@ -1,3 +1,5 @@
+import { buildHermesWebSocketUrl } from "@hermes/shared";
+
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
@@ -291,11 +293,12 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  const [authName, authValue] = await buildWsAuthParam();
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const qs = new URLSearchParams(params ?? {});
-  qs.set(authName, authValue);
-  return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
+  return buildHermesWebSocketUrl({
+    authParam: await buildWsAuthParam(),
+    basePath: BASE,
+    params,
+    path,
+  });
 }
 
 /** Build a ``?profile=<name>`` query suffix, or "" when unset.

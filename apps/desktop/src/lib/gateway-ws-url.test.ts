@@ -1,6 +1,5 @@
+import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { describe, expect, it, vi } from 'vitest'
-
-import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from './gateway-ws-url'
 
 const oauthConn = { authMode: 'oauth' as const, wsUrl: 'ws://host/api/ws?ticket=stale' }
 const tokenConn = { authMode: 'token' as const, wsUrl: 'ws://host/api/ws?token=abc' }

@@ -24,6 +24,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { buildHermesWebSocketUrl, type WebSocketAuthParam } from "@hermes/shared";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
@@ -42,24 +43,28 @@ import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 
 function buildWsUrl(
-  authParam: [string, string],
+  authParam: WebSocketAuthParam,
   resume: string | null,
   channel: string,
   profile: string,
   fresh: boolean,
 ): string {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   // ``authParam`` is ``["token", <session>]`` in loopback mode and
   // ``["ticket", <minted>]`` in gated mode. The server-side helper
   // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
-  const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
-  if (resume) qs.set("resume", resume);
-  if (fresh) qs.set("fresh", "1");
+  const params: Record<string, string> = { channel };
+  if (resume) params.resume = resume;
+  if (fresh) params.fresh = "1";
   // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
   // selected profile, so the conversation runs with that profile's model,
   // skills, memory, and sessions (see web_server._resolve_chat_argv).
-  if (profile) qs.set("profile", profile);
-  return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
+  if (profile) params.profile = profile;
+  return buildHermesWebSocketUrl({
+    authParam,
+    basePath: HERMES_BASE_PATH,
+    params,
+    path: "/api/pty",
+  });
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
@@ -767,7 +772,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       if (ev.code === 4404) {
         setBanner(
-          "Embedded chat is disabled on this server (start it with --tui).",
+          ev.reason
+            ? `Chat websocket unavailable: ${ev.reason}.`
+            : "Chat websocket unavailable on this server.",
         );
         return;
       }

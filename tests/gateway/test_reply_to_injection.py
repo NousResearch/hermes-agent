@@ -160,7 +160,7 @@ async def test_reply_to_document_media_gets_agent_visible_path_note():
     assert result is not None
     assert result.startswith('[Replying to: "[Attachment: lark-cli-shared-app-setup.md]"]')
     assert "The user sent a text document: 'lark-cli-shared-app-setup.md'" in result
-    assert "The file is saved at: /tmp/doc_123_lark-cli-shared-app-setup.md" in result
+    assert "The file is also saved at: /tmp/doc_123_lark-cli-shared-app-setup.md" in result
     assert result.endswith("装一下这个吧")
 
 

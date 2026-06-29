@@ -21,6 +21,8 @@
 //   - POST /send        -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "text": "...",
 //              "format": "text" | "markdown" (default "text")}
+//   - POST /send-richlink -> {"ok": true, "messageId": "..."}
+//       body: {"spaceId": "...", "url": "https://..."}
 //   - POST /send-attachment -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
@@ -243,6 +245,7 @@ let Spectrum,
   voice,
   spectrumText,
   spectrumMarkdown,
+  spectrumRichlink,
   spectrumTyping,
   spectrumPoll,
   imessageEffect;
@@ -254,6 +257,7 @@ try {
     poll: spectrumPoll,
     text: spectrumText,
     markdown: spectrumMarkdown,
+    richlink: spectrumRichlink,
     typing: spectrumTyping,
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
@@ -429,11 +433,17 @@ function reactionTargetText(target) {
   let text = null;
   if (c.type === "text") {
     text = c.text;
+  } else if (c.type === "richlink") {
+    text = c.url;
   } else if (c.type === "group") {
     for (const item of Array.isArray(c.items) ? c.items : []) {
       const ic = item && typeof item === "object" ? item.content : null;
       if (ic && ic.type === "text" && ic.text) {
         text = ic.text;
+        break;
+      }
+      if (ic && ic.type === "richlink" && ic.url) {
+        text = ic.url;
         break;
       }
     }
@@ -450,6 +460,16 @@ async function normalizeContent(content) {
   }
   if (content.type === "text") {
     return { type: "text", text: content.text || "" };
+  }
+  if (content.type === "richlink") {
+    const out = { type: "richlink", url: content.url || "" };
+    if (typeof content.title === "string") {
+      out.title = content.title;
+    }
+    if (typeof content.summary === "string") {
+      out.summary = content.summary;
+    }
+    return out;
   }
   if (content.type === "attachment" || content.type === "voice") {
     return await normalizeBinaryContent(content);
@@ -782,6 +802,16 @@ function tokenOk(header) {
   return h.length === _tokenBuf.length && crypto.timingSafeEqual(h, _tokenBuf);
 }
 
+function isHttpUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (!tokenOk(req.headers["x-hermes-sidecar-token"])) {
     return unauthorized(res);
@@ -818,6 +848,15 @@ const server = http.createServer(async (req, res) => {
       const builder =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
       const result = await space.send(builder);
+      return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/send-richlink") {
+      const { spaceId, url } = body || {};
+      if (!spaceId || !isHttpUrl(url)) {
+        return badRequest(res, "spaceId and http(s) url are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(spectrumRichlink(url.trim()));
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {

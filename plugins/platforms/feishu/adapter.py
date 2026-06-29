@@ -4540,34 +4540,28 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
+        # No reply anchor available. ``thread_id`` is NOT a valid
+        # ``receive_id_type`` for CreateMessage — the Feishu API only accepts
+        # open_id/user_id/union_id/email/chat_id, and sending with
+        # receive_id_type="thread_id" fails with [99992402] field validation
+        # failed (observed for media/file sends in topic groups, and for stale
+        # thread anchors on auto-resume). Degrade to chat_id delivery so the
+        # message still reaches the conversation instead of being dropped.
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod

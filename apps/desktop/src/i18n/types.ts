@@ -1540,6 +1540,7 @@ export interface Translations {
     terminalsAria: string
     terminalNew: string
     terminalCloseOthers: string
+    terminalCloseAll: string
     addToChat: string
   }
 

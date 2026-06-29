@@ -1887,6 +1887,7 @@ export const en: Translations = {
     terminalsAria: 'Terminals',
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
+    terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
   },
 

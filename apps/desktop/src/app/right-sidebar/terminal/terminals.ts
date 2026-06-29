@@ -110,7 +110,10 @@ export function cycleTerminal(direction: 1 | -1): void {
     return
   }
 
-  const current = Math.max(0, list.findIndex(term => term.id === $activeTerminalId.get()))
+  const current = Math.max(
+    0,
+    list.findIndex(term => term.id === $activeTerminalId.get())
+  )
 
   $activeTerminalId.set(list[(current + direction + list.length) % list.length].id)
 }
@@ -162,6 +165,16 @@ export function closeActiveTerminal(): void {
   }
 }
 
+export function closeAllTerminals(): void {
+  if ($terminals.get().length === 0) {
+    return
+  }
+
+  $terminals.set([])
+  $activeTerminalId.set(null)
+  setTerminalTakeover(false)
+}
+
 export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 
@@ -174,7 +187,9 @@ export function closeOtherTerminals(id: string): void {
 export function renameTerminal(id: string, title: string): void {
   const trimmed = title.trim()
 
-  $terminals.set($terminals.get().map(term => (term.id === id ? { ...term, title: trimmed || term.title, auto: false } : term)))
+  $terminals.set(
+    $terminals.get().map(term => (term.id === id ? { ...term, title: trimmed || term.title, auto: false } : term))
+  )
 }
 
 /** A live terminal reports its resolved shell; adopt it as the label only while

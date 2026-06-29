@@ -19,6 +19,7 @@ import { setTerminalTakeover } from '../store'
 import {
   $activeTerminalId,
   $terminals,
+  closeAllTerminals,
   closeOtherTerminals,
   closeTerminal,
   createTerminal,
@@ -167,6 +168,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
         <ContextMenuItem disabled={!canCloseOthers} onSelect={() => closeOtherTerminals(term.id)}>
           {t.rightSidebar.terminalCloseOthers}
         </ContextMenuItem>
+        <ContextMenuItem onSelect={closeAllTerminals}>{t.rightSidebar.terminalCloseAll}</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
       </ContextMenuContent>

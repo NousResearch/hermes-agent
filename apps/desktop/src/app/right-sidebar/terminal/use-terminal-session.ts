@@ -66,6 +66,14 @@ function readEscapeSequence(data: string, index: number) {
     }
   }
 
+  // Character-set and other short ESC forms are three bytes (e.g. ESC ( B).
+  // Treating only ESC+( as a sequence leaves the final selector ("B") as
+  // printable text, which disarms the initial prompt-gap stripper before it can
+  // eat the shell's leading newline.
+  if (['(', ')', '*', '+', '-', '.', '/'].includes(kind) && index + 2 < data.length) {
+    return data.slice(index, index + 3)
+  }
+
   return data.slice(index, Math.min(index + 2, data.length))
 }
 
@@ -419,18 +427,9 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
       host.removeEventListener('drop', onDrop)
     })
 
-    // A fresh prompt should sit at the top. Every resize SIGWINCHes the shell,
-    // which reprints its prompt and can leave stale blank rows above it. While
-    // the session is pristine (nothing run yet) we ask the shell to clear +
-    // redraw via Ctrl-L (\f) after the resize settles. Ctrl-L preserves
-    // multi-line prompts (term.clear() would drop all but the cursor row) and we
-    // stop the moment real output exists, so command scrollback is never wiped.
-    let promptPristine = true
-    let gapCleanupTimer = 0
-
-    // While armed, strip leading blank rows so the prompt lands at the very top
-    // (no starship `add_newline` gap). Re-armed before each Ctrl-L redraw so the
-    // resize cleanup doesn't reintroduce the blank line.
+    // While armed, strip leading blank rows so the first prompt lands at the
+    // very top (no starship `add_newline` gap). Do this only on renderer output:
+    // never inject Ctrl-L or other cleanup keystrokes into the user's shell.
     let stripLeading = true
 
     const armedWrite = (data: string) => {
@@ -459,35 +458,6 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
       term.write(next)
     }
 
-    const scheduleGapCleanup = () => {
-      if (!promptPristine) {
-        return
-      }
-
-      if (gapCleanupTimer) {
-        window.clearTimeout(gapCleanupTimer)
-      }
-
-      gapCleanupTimer = window.setTimeout(() => {
-        gapCleanupTimer = 0
-        const id = sessionIdRef.current
-
-        if (disposed || !id || !promptPristine) {
-          return
-        }
-
-        stripLeading = true
-        void terminalApi.write(id, '\f')
-        term.clearSelection()
-      }, 120)
-    }
-
-    cleanup.push(() => {
-      if (gapCleanupTimer) {
-        window.clearTimeout(gapCleanupTimer)
-      }
-    })
-
     const fitAndResize = () => {
       if (disposed || !host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
         return
@@ -504,7 +474,6 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
       if (id && (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)) {
         lastSentSize = { cols: term.cols, rows: term.rows }
         void terminalApi.resize(id, { cols: term.cols, rows: term.rows })
-        scheduleGapCleanup()
       }
     }
 
@@ -543,12 +512,6 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
       const id = sessionIdRef.current
 
       if (id) {
-        // Once the user submits a line, real output may follow — stop the
-        // pristine-prompt gap cleanup so we never clear command scrollback.
-        if (promptPristine && data.includes('\r')) {
-          promptPristine = false
-        }
-
         void terminalApi.write(id, data)
       }
     })

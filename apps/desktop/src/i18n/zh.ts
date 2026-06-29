@@ -2057,6 +2057,7 @@ export const zh: Translations = {
     terminalsAria: '终端',
     terminalNew: '新建终端',
     terminalCloseOthers: '关闭其他',
+    terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
   },
 

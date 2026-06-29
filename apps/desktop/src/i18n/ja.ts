@@ -2004,6 +2004,10 @@ export const ja = defineLocale({
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
     terminalHide: 'ターミナルを非表示',
+    terminalsAria: 'ターミナル',
+    terminalNew: '新しいターミナル',
+    terminalCloseOthers: '他を閉じる',
+    terminalCloseAll: 'すべて閉じる',
     addToChat: 'チャットに追加'
   },
 

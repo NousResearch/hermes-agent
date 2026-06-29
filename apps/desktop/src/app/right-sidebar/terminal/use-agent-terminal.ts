@@ -48,7 +48,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       letterSpacing: 0,
       lineHeight: 1.12,
       minimumContrastRatio: 4.5,
-      scrollback: 5000,
+      scrollback: 1000,
       theme: surfaceTheme()
     })
 

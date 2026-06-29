@@ -414,6 +414,8 @@ export const en: Translations = {
         off: 'Off',
         scaleTitle: 'Size',
         scaleDesc: 'Resize the floating mascot. Applies everywhere instantly.',
+        roamTitle: 'Roam',
+        roamDesc: 'Let the pet wander the window on its own while idle.',
         chooseTitle: 'Choose a pet',
         chooseDesc: 'Picking one installs it (if needed) and makes it active.',
         searchPlaceholder: 'Search pets…',

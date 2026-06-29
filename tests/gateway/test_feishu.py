@@ -21,6 +21,18 @@ except ImportError:
     _HAS_LARK_OAPI = False
 
 
+class _FakeRequestContent:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    async def readexactly(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        if len(self.body) < size:
+            raise asyncio.IncompleteReadError(self.body, size)
+        return self.body[:size]
+
+
 def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder = Mock()
     mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
@@ -1604,7 +1616,7 @@ class TestAdapterBehavior(unittest.TestCase):
             remote="127.0.0.1",
             content_length=None,
             headers={},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
 
         response = asyncio.run(adapter._handle_webhook_request(request))
@@ -1633,7 +1645,7 @@ class TestAdapterBehavior(unittest.TestCase):
             remote="203.0.113.10",
             content_length=None,
             headers={},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
 
         response = asyncio.run(adapter._handle_webhook_request(request))
@@ -3261,6 +3273,30 @@ class TestWebhookSecurity(unittest.TestCase):
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 413)
 
+    def test_webhook_request_rejects_oversized_chunked_body_while_reading(self):
+        from gateway.config import PlatformConfig
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from plugins.platforms.feishu.adapter import FeishuAdapter, _FEISHU_WEBHOOK_MAX_BODY_BYTES
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            token = set_hermes_home_override(tmpdir)
+            try:
+                adapter = FeishuAdapter(PlatformConfig())
+            finally:
+                reset_hermes_home_override(token)
+            content = _FakeRequestContent(b"A" * (_FEISHU_WEBHOOK_MAX_BODY_BYTES + 2))
+            request = SimpleNamespace(
+                remote="127.0.0.1",
+                content_length=None,
+                headers={},
+                content=content,
+            )
+
+            response = asyncio.run(adapter._handle_webhook_request(request))
+
+            self.assertEqual(response.status, 413)
+            self.assertEqual(content.read_sizes, [_FEISHU_WEBHOOK_MAX_BODY_BYTES + 1])
+
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_request_rejects_invalid_json(self):
         from gateway.config import PlatformConfig
@@ -3270,7 +3306,7 @@ class TestWebhookSecurity(unittest.TestCase):
         request = SimpleNamespace(
             remote="127.0.0.1",
             content_length=None,
-            read=AsyncMock(return_value=b"not-json"),
+            content=_FakeRequestContent(b"not-json"),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 400)
@@ -3286,7 +3322,7 @@ class TestWebhookSecurity(unittest.TestCase):
             remote="127.0.0.1",
             content_length=None,
             headers={"x-lark-request-timestamp": "123", "x-lark-request-nonce": "abc", "x-lark-signature": "bad"},
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 401)
@@ -3335,7 +3371,7 @@ class TestWebhookSecurity(unittest.TestCase):
         request = SimpleNamespace(
             remote="127.0.0.1",
             content_length=None,
-            read=AsyncMock(return_value=body),
+            content=_FakeRequestContent(body),
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 200)

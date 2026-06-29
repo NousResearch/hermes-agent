@@ -9,7 +9,16 @@ import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway,
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Bookmark, BookmarkFilled, Download, MessageCircle, Trash2 } from '@/lib/icons'
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  Bookmark,
+  BookmarkFilled,
+  Download,
+  MessageCircle,
+  Trash2
+} from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'

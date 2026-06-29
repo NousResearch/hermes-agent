@@ -191,7 +191,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // MoA reference/aggregator slots must never be the moa virtual provider —
   // that would create a recursive MoA tree (the backend rejects it on save).
   // Hide it from the slot selectors so it isn't offered as a dead choice.
-  const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
+  const moaSlotProviderOptions = providerOptions.filter(
+    provider => (provider.slug || '').toLowerCase() !== 'moa'
+  )
 
   const selectedProviderRow = useMemo(
     () => providers.find(provider => provider.slug === selectedProvider),
@@ -781,7 +783,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   ...moa,
                   default_preset: selectedMoaPreset || moa.default_preset
                 }
-
                 void saveMoa(next)
               }}
               size="sm"
@@ -799,14 +800,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 const presets = { ...moa.presets }
                 delete presets[selectedMoaPreset]
                 const fallback = Object.keys(presets)[0]
-
                 const next: MoaConfigResponse = {
                   ...moa,
                   presets,
                   default_preset: moa.default_preset === selectedMoaPreset ? fallback : moa.default_preset,
                   active_preset: moa.active_preset === selectedMoaPreset ? '' : moa.active_preset
                 }
-
                 setSelectedMoaPreset(Object.keys(moa.presets).find(name => name !== selectedMoaPreset) || '')
                 void saveMoa(next)
               }}
@@ -825,7 +824,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               disabled={!newMoaPresetName.trim() || !!moa.presets[newMoaPresetName.trim()] || applying}
               onClick={() => {
                 const name = newMoaPresetName.trim()
-
                 const next: MoaConfigResponse = {
                   ...moa,
                   presets: {
@@ -833,7 +831,6 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     [name]: { ...currentMoaPreset, reference_models: [...currentMoaPreset.reference_models] }
                   }
                 }
-
                 setSelectedMoaPreset(name)
                 setNewMoaPresetName('')
                 void saveMoa(next)

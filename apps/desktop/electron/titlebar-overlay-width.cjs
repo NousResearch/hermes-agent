@@ -14,9 +14,9 @@ const OVERLAY_FALLBACK_WIDTH = 144
  * the Electron overlay (Windows, WSLg, and plain Linux KDE/GNOME), so they all
  * reserve the fallback width.
  *
- * @param {{ isMac?: boolean }} opts
+ * @param {{ isWindows?: boolean, isWsl?: boolean, isMac?: boolean }} opts
  */
-function nativeOverlayWidth({ isMac = false } = {}) {
+function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = false } = {}) {
   if (isMac) return 0
   return OVERLAY_FALLBACK_WIDTH
 }

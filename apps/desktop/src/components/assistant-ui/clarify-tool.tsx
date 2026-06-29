@@ -280,11 +280,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   if (loading) {
     return (
-      <ClarifyShell
-        aria-label={copy.loadingQuestion}
-        className="grid min-h-12 place-items-center px-2.5 py-3"
-        role="status"
-      >
+      <ClarifyShell aria-label={copy.loadingQuestion} className="grid min-h-12 place-items-center px-2.5 py-3" role="status">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
       </ClarifyShell>
     )

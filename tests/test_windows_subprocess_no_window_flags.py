@@ -299,3 +299,65 @@ def test_local_stt_audio_prep_hides_ffmpeg_window(monkeypatch, tmp_path):
 
     assert captured[0][0][0] == "ffmpeg"
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+def test_checkpoint_manager_git_hides_windows(monkeypatch):
+    from tools import checkpoint_manager
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="clean\n")
+
+    monkeypatch.setattr(checkpoint_manager, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(checkpoint_manager.subprocess, "run", fake_run)
+
+    ok, _, _ = checkpoint_manager._run_git(["status", "--short"], Path("C:/store"), ".")
+    assert ok
+    assert captured[0][0][0] == "git"
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_skills_hub_gh_token_hides_windows(monkeypatch):
+    from tools import skills_hub
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="gho_from_cli\n")
+
+    monkeypatch.setattr(skills_hub, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(skills_hub.subprocess, "run", fake_run)
+
+    auth = skills_hub.GitHubAuth.__new__(skills_hub.GitHubAuth)
+    assert auth._try_gh_cli() == "gho_from_cli"
+    assert captured[0][0] == ["gh", "auth", "token"]
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_tui_slash_worker_hides_python_window(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+
+    class _Proc:
+        stdin = SimpleNamespace()
+        stdout = []
+        stderr = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+
+    server._SlashWorker("session-key", "model-x")
+
+    assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW

@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - non-Windows
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Tuple, Union
+from typing import Optional, Dict, List, Any, Set, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -1624,6 +1624,35 @@ def save_job_output(job_id: str, output: str):
 # =============================================================================
 # Skill reference rewriting (curator integration)
 # =============================================================================
+
+def referenced_skill_names() -> Set[str]:
+    """Return the set of skill names referenced by ANY cron job.
+
+    Includes paused and disabled jobs deliberately: a paused job never
+    fires, so its skills never get a ``bump_use`` from the scheduler, yet
+    resuming it must still find its skills present. The curator uses this
+    set to protect referenced skills from inactivity archival — a skill a
+    live job depends on is "in use" regardless of when it was last loaded.
+
+    Best-effort: a corrupt/unreadable jobs store returns an empty set
+    rather than raising, so a cron issue can never break the curator.
+    """
+    try:
+        jobs = load_jobs()
+    except Exception:
+        logger.debug("referenced_skill_names: failed to load cron jobs", exc_info=True)
+        return set()
+
+    names: Set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        for name in _normalize_skill_list(job.get("skill"), job.get("skills")):
+            cleaned = str(name).strip().lstrip("/")
+            if cleaned:
+                names.add(cleaned)
+    return names
+
 
 def rewrite_skill_refs(
     consolidated: Optional[Dict[str, str]] = None,

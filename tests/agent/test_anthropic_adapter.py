@@ -29,6 +29,19 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
+@pytest.fixture(autouse=True)
+def _no_real_keychain_writes():
+    """Hard guard: ``_write_claude_code_credentials`` now mirrors into the real
+    macOS Keychain. Tests here exercise the FILE path with patched ``Path.home``
+    and must never mutate the developer's live "Claude Code-credentials" entry.
+    Keychain behavior is covered hermetically in test_anthropic_keychain.py."""
+    with patch(
+        "agent.anthropic_adapter._write_claude_code_credentials_to_keychain",
+        return_value=False,
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------

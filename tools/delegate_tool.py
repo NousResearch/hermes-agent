@@ -3159,13 +3159,14 @@ DELEGATE_TASK_SCHEMA = {
             "background": {
                 "type": "boolean",
                 "description": (
-                    "DEPRECATED / IGNORED. Single-task delegations always run "
-                    "in the background automatically — you do not need to (and "
-                    "cannot) opt in or out. The result re-enters the "
-                    "conversation as a new message when the subagent finishes; "
-                    "just continue working in the meantime. Setting this has no "
-                    "effect; the parameter remains only for backward "
-                    "compatibility."
+                    "Optional. Top-level delegations default to background=true "
+                    "so the chat stays responsive and the result re-enters the "
+                    "conversation when the subagent finishes. Set background=false "
+                    "when the current turn must wait for the subagent result before "
+                    "finalizing, such as cron jobs or other single-turn workflows. "
+                    "Delegations from orchestrator subagents stay synchronous "
+                    "regardless, because they need worker results within their own "
+                    "turn."
                 ),
             },
             "acp_command": {
@@ -3203,17 +3204,20 @@ from tools.registry import registry, tool_error
 def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback).
 
-    Delegations from the top-level agent always run in the background — the
-    model does not choose. This applies to both a single task and a fan-out
-    batch (each task becomes its own independent background subagent). The one
-    exception is a delegation from an orchestrator subagent (depth > 0), which
-    needs its workers' results within its own turn. The live path is
-    ``run_agent._dispatch_delegate_task``; this lambda mirrors it for the rare
-    case the intercept is bypassed. Direct Python callers of ``delegate_task``
-    keep the historical synchronous default.
+    Delegations from the top-level agent default to background=True, but the
+    model may explicitly pass background=false when the current turn must wait
+    for subagent results. Delegations from an orchestrator subagent (depth > 0)
+    stay synchronous, because the orchestrator needs its workers' results within
+    its own turn. The live path is ``run_agent._dispatch_delegate_task``; this
+    lambda mirrors it for the rare case the intercept is bypassed. Direct Python
+    callers of ``delegate_task`` keep the historical synchronous default.
     """
     is_subagent = getattr(parent_agent, "_delegate_depth", 0) > 0
-    return not is_subagent
+    if is_subagent:
+        return False
+    if "background" in args and args.get("background") is not None:
+        return args.get("background")
+    return True
 
 
 registry.register(

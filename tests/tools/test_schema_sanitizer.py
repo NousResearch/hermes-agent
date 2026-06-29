@@ -700,3 +700,29 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+def test_default_and_const_values_preserved():
+    """Array/object default and const values must not be rewritten as schemas.
+
+    Regression test for #55077: _sanitize_node() was recursing into
+    'default' and 'const' values as if they were nested schemas, replacing
+    string elements with {"type": "object", "properties": {}}.
+    """
+    tools = [_tool("demo", {
+        "type": "object",
+        "properties": {
+            "perms": {"type": "array", "items": {"type": "string"},
+                      "default": ["read", "write"]},
+            "cfg":   {"type": "object", "default": {"nested": ["a", "b"]}},
+            "tier":  {"type": "string", "const": "gold"},
+        },
+        "required": ["perms"],
+    })]
+
+    sanitize_tool_schemas(tools)
+    props = tools[0]["function"]["parameters"]["properties"]
+
+    assert props["perms"]["default"] == ["read", "write"]
+    assert props["cfg"]["default"] == {"nested": ["a", "b"]}
+    assert props["tier"]["const"] == "gold"

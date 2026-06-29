@@ -434,7 +434,51 @@ def _has_codex_verifier_evidence(goal: GoalContract) -> bool:
     return bool(_codex_verifier_evidence_indices(goal))
 
 
+def _claude_code_builder_evidence_indices(goal: GoalContract) -> list[int]:
+    indices: list[int] = []
+    for index, item in enumerate(goal.evidence_log):
+        role = str(item.get("role", "")).lower()
+        executor = str(item.get("executor", item.get("agent", ""))).lower()
+        if not (
+            item.get("claude_code_builder_pass") is True
+            or ("builder" in role and executor in {"claude-code", "claude_code", "claude code"})
+        ):
+            continue
+        if item.get("pass") is False or item.get("result") == "fail":
+            continue
+        if item.get("secrets_printed") is True:
+            continue
+        if item.get("read_only_smoke") is True or item.get("read_only") is True:
+            continue
+        if not (item.get("changed_files") or item.get("files_changed") or item.get("files_inspected")):
+            continue
+        if not (item.get("commands") or item.get("builder_evidence") or item.get("summary")):
+            continue
+        indices.append(index)
+    return indices
+
+
+def _codex_reviewer_evidence_indices(goal: GoalContract) -> list[int]:
+    indices: list[int] = []
+    for index, item in enumerate(goal.evidence_log):
+        role = str(item.get("role", "")).lower()
+        executor = str(item.get("executor", item.get("agent", ""))).lower()
+        if not (item.get("codex_reviewer_pass") is True or ("review" in role and executor in {"openai-codex", "codex"})):
+            continue
+        if item.get("pass") is False or item.get("result") == "fail":
+            continue
+        if item.get("secrets_printed") is True:
+            continue
+        if not item.get("files_inspected"):
+            continue
+        if not (item.get("independent_findings") or item.get("safety_review") or item.get("review_summary")):
+            continue
+        indices.append(index)
+    return indices
+
+
 def _claude_code_reviewer_evidence_indices(goal: GoalContract) -> list[int]:
+    """Backward-compatible read-only Claude Code review lane for older evidence."""
     indices: list[int] = []
     for index, item in enumerate(goal.evidence_log):
         role = str(item.get("role", "")).lower()
@@ -458,22 +502,31 @@ def _has_claude_code_reviewer_evidence(goal: GoalContract) -> bool:
 
 
 def buidl_dual_review_gate_verdict(goal: GoalContract) -> GreenReadinessVerdict:
-    if not _is_buidl_mvp_acceptance_goal(goal):
-        return GreenReadinessVerdict("GREEN", "Dual-review gate not required for this goal.")
+    if not _is_buidl_goal(goal):
+        return GreenReadinessVerdict("GREEN", "Buidl lane gate not required for this goal.")
     missing: list[str] = []
-    codex_indices = _codex_verifier_evidence_indices(goal)
-    claude_indices = _claude_code_reviewer_evidence_indices(goal)
-    if not codex_indices:
+    claude_builder_indices = _claude_code_builder_evidence_indices(goal)
+    codex_reviewer_indices = _codex_reviewer_evidence_indices(goal)
+    codex_verifier_indices = _codex_verifier_evidence_indices(goal)
+    if not claude_builder_indices:
+        missing.append("CLAUDE_CODE_BUILDER_PASS")
+    if not codex_reviewer_indices:
+        missing.append("CODEX_REVIEWER_PASS")
+    if not codex_verifier_indices:
         missing.append("CODEX_VERIFIER_PASS")
-    if not claude_indices:
-        missing.append("CLAUDE_CODE_REVIEWER_PASS")
     if missing:
-        if "CLAUDE_CODE_REVIEWER_PASS" in missing:
-            return GreenReadinessVerdict("RED", "RED: CLAUDE_CODE_REVIEWER_NOT_ACTIVE. Buidl MVP GREEN requires " + ", ".join(missing) + ".")
-        return GreenReadinessVerdict("RED", "RED: CODEX_VERIFIER_NOT_ACTIVE. Buidl MVP GREEN requires " + ", ".join(missing) + ".")
-    if not set(codex_indices).isdisjoint(claude_indices):
-        return GreenReadinessVerdict("RED", "RED: DUAL_REVIEW_NOT_INDEPENDENT. Codex verifier and Claude Code reviewer evidence must be separate entries.")
-    return GreenReadinessVerdict("GREEN", "CODEX_VERIFIER_PASS and CLAUDE_CODE_REVIEWER_PASS are present.")
+        if "CLAUDE_CODE_BUILDER_PASS" in missing:
+            return GreenReadinessVerdict("RED", "RED: CLAUDE_CODE_BUILDER_NOT_USED. Buidl GREEN requires " + ", ".join(missing) + ".")
+        if "CODEX_REVIEWER_PASS" in missing:
+            return GreenReadinessVerdict("RED", "RED: CODEX_REVIEW_OR_VERIFY_MISSING. Buidl GREEN requires " + ", ".join(missing) + ".")
+        return GreenReadinessVerdict("RED", "RED: CODEX_VERIFIER_NOT_ACTIVE. Buidl GREEN requires " + ", ".join(missing) + ".")
+    if not set(claude_builder_indices).isdisjoint(codex_reviewer_indices):
+        return GreenReadinessVerdict("RED", "RED: DUAL_LANE_NOT_INDEPENDENT. Claude Code Builder and Codex Reviewer evidence must be separate entries.")
+    if not set(claude_builder_indices).isdisjoint(codex_verifier_indices):
+        return GreenReadinessVerdict("RED", "RED: DUAL_LANE_NOT_INDEPENDENT. Claude Code Builder and Codex Verifier evidence must be separate entries.")
+    if not set(codex_reviewer_indices).isdisjoint(codex_verifier_indices):
+        return GreenReadinessVerdict("RED", "RED: CODEX_REVIEWER_VERIFIER_NOT_SEPARATE. Codex Reviewer and Codex Verifier evidence must be separate entries.")
+    return GreenReadinessVerdict("GREEN", "CLAUDE_CODE_BUILDER_PASS, CODEX_REVIEWER_PASS and CODEX_VERIFIER_PASS are present.")
 
 
 def _has_browser_or_human_evidence(goal: GoalContract) -> bool:

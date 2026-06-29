@@ -77,6 +77,11 @@
       "note": "Official new email skill; no fork-local counterpart exists."
     },
     {
+      "pattern": "skills/research/research-paper-writing/**",
+      "action": "upstream",
+      "note": "Official research paper writing skill package; restore upstream skill body and templates."
+    },
+    {
       "pattern": ".github/workflows/*",
       "action": "upstream",
       "note": "Keep official CI and security workflow changes."

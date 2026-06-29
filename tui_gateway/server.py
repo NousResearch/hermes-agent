@@ -7396,9 +7396,22 @@ def _attachment_ref_path(session: dict, target: Path) -> str:
 
 
 def _desktop_attachment_dir(session: dict) -> Path:
-    root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    import errno as _errno
+
+    workspace_root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
+    try:
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        if os.access(workspace_root, os.W_OK):
+            return workspace_root
+    except OSError as exc:
+        if exc.errno not in {_errno.EACCES, _errno.EPERM, _errno.EROFS}:
+            raise
+
+    session_slug = _sanitize_attachment_name(str(session.get("session_key") or "session"))
+    home = Path(str(session.get("profile_home") or get_hermes_home())).expanduser()
+    fallback_root = home / "desktop-attachments" / session_slug
+    fallback_root.mkdir(parents=True, exist_ok=True)
+    return fallback_root
 
 
 def _sanitize_attachment_name(name: str) -> str:

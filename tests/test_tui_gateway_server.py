@@ -3942,6 +3942,57 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
         server._sessions.pop("sid", None)
 
 
+def test_file_attach_falls_back_to_hermes_home_when_workspace_is_read_only(
+    monkeypatch, tmp_path
+):
+    """Container case: /opt/hermes is read-only, so stage uploads in HERMES_HOME."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    workspace_upload_dir = (workspace / ".hermes" / "desktop-attachments").resolve()
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    real_access = os.access
+
+    def fake_access(path, mode):
+        if Path(path).resolve() == workspace_upload_dir and mode == os.W_OK:
+            return False
+        return real_access(path, mode)
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server.os, "access", fake_access)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+
+        stored = (home / "desktop-attachments" / "session-key" / "report.txt").resolve()
+        assert resp["result"]["attached"] is True
+        assert resp["result"]["uploaded"] is True
+        assert resp["result"]["path"] == str(stored)
+        assert resp["result"]["ref_text"] == f"@file:{stored}"
+        assert stored.read_text(encoding="utf-8") == "hello world"
+    finally:
+        server._sessions.pop("sid", None)
+        reset_hermes_home_override(token)
+
+
 def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, tmp_path):
     """Local case: gateway can see the file but it's outside the workspace → copy in."""
     workspace = tmp_path / "workspace"

@@ -262,6 +262,57 @@ class TestBlueBubblesMentionGating:
         assert response.status == 200
         assert [event.text for event in handled] == ["hello from a dm"]
 
+    @pytest.mark.asyncio
+    async def test_heic_attachment_uses_cached_media_metadata(self, monkeypatch):
+        from gateway.platforms.base import CachedMedia, MessageType
+
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_download(att_guid, att_meta):
+            assert att_guid == "att-heic"
+            assert att_meta["mimeType"] == "image/heic"
+            return CachedMedia(
+                "/tmp/IMG_4127.jpg",
+                "image/jpeg",
+                "image",
+                "IMG_4127.HEIC",
+            )
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-heic",
+                "text": "",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+                "attachments": [
+                    {
+                        "guid": "att-heic",
+                        "mimeType": "image/heic",
+                        "transferName": "IMG_4127.HEIC",
+                    }
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        event = handled[0]
+        assert event.text == "(attachment)"
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/IMG_4127.jpg"]
+        assert event.media_types == ["image/jpeg"]
+
 
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
@@ -428,14 +479,14 @@ class TestBlueBubblesGuidResolution:
 
 
 class TestBlueBubblesAttachmentDownload:
-    """Verify _download_attachment routes to the correct cache helper."""
+    """Verify _download_attachment routes through the shared media cache."""
 
-    def test_download_image_uses_image_cache(self, monkeypatch):
-        """Image MIME routes to cache_image_from_bytes."""
+    def test_download_image_uses_media_cache(self, monkeypatch):
+        """Image MIME routes to cache_media_bytes."""
         adapter = _make_adapter(monkeypatch)
         import asyncio
+        from gateway.platforms.base import CachedMedia
 
-        # Mock the HTTP client response
         class MockResponse:
             status_code = 200
             content = b"\x89PNG\r\n\x1a\n"
@@ -448,28 +499,35 @@ class TestBlueBubblesAttachmentDownload:
 
         adapter.client = type("MockClient", (), {"get": mock_get})()
 
-        cached_path = None
-
-        def mock_cache_image(data, ext):
-            nonlocal cached_path
-            cached_path = f"/tmp/test_image{ext}"
-            return cached_path
+        async def mock_cache_media(
+            data, *, filename="", mime_type="", default_kind=None, transcode_heic=False
+        ):
+            assert data == b"\x89PNG\r\n\x1a\n"
+            assert filename == "photo.png"
+            assert mime_type == "image/png"
+            assert default_kind is None
+            assert transcode_heic is True
+            return CachedMedia("/tmp/test_image.png", "image/png", "image", filename)
 
         monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_image_from_bytes",
-            mock_cache_image,
+            "gateway.platforms.bluebubbles.cache_media_bytes_async",
+            mock_cache_media,
         )
 
         att_meta = {"mimeType": "image/png", "transferName": "photo.png"}
         result = asyncio.get_event_loop().run_until_complete(
             adapter._download_attachment("att-guid-123", att_meta)
         )
-        assert result == "/tmp/test_image.png"
+        assert result is not None
+        assert result.path == "/tmp/test_image.png"
+        assert result.media_type == "image/png"
+        assert result.kind == "image"
 
-    def test_download_audio_uses_audio_cache(self, monkeypatch):
-        """Audio MIME routes to cache_audio_from_bytes."""
+    def test_download_audio_uses_media_cache(self, monkeypatch):
+        """Audio MIME routes to cache_media_bytes."""
         adapter = _make_adapter(monkeypatch)
         import asyncio
+        from gateway.platforms.base import CachedMedia
 
         class MockResponse:
             status_code = 200
@@ -483,28 +541,35 @@ class TestBlueBubblesAttachmentDownload:
 
         adapter.client = type("MockClient", (), {"get": mock_get})()
 
-        cached_path = None
-
-        def mock_cache_audio(data, ext):
-            nonlocal cached_path
-            cached_path = f"/tmp/test_audio{ext}"
-            return cached_path
+        async def mock_cache_media(
+            data, *, filename="", mime_type="", default_kind=None, transcode_heic=False
+        ):
+            assert data == b"fake-audio-data"
+            assert filename == "voice.mp3"
+            assert mime_type == "audio/mpeg"
+            assert default_kind is None
+            assert transcode_heic is True
+            return CachedMedia("/tmp/test_audio.mp3", "audio/mpeg", "audio", filename)
 
         monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_audio_from_bytes",
-            mock_cache_audio,
+            "gateway.platforms.bluebubbles.cache_media_bytes_async",
+            mock_cache_media,
         )
 
         att_meta = {"mimeType": "audio/mpeg", "transferName": "voice.mp3"}
         result = asyncio.get_event_loop().run_until_complete(
             adapter._download_attachment("att-guid-456", att_meta)
         )
-        assert result == "/tmp/test_audio.mp3"
+        assert result is not None
+        assert result.path == "/tmp/test_audio.mp3"
+        assert result.media_type == "audio/mpeg"
+        assert result.kind == "audio"
 
-    def test_download_document_uses_document_cache(self, monkeypatch):
-        """Non-image/audio MIME routes to cache_document_from_bytes."""
+    def test_download_document_uses_media_cache(self, monkeypatch):
+        """Non-image/audio MIME routes to cache_media_bytes."""
         adapter = _make_adapter(monkeypatch)
         import asyncio
+        from gateway.platforms.base import CachedMedia
 
         class MockResponse:
             status_code = 200
@@ -518,23 +583,72 @@ class TestBlueBubblesAttachmentDownload:
 
         adapter.client = type("MockClient", (), {"get": mock_get})()
 
-        cached_path = None
-
-        def mock_cache_doc(data, filename):
-            nonlocal cached_path
-            cached_path = f"/tmp/{filename}"
-            return cached_path
+        async def mock_cache_media(
+            data, *, filename="", mime_type="", default_kind=None, transcode_heic=False
+        ):
+            assert data == b"fake-doc-data"
+            assert filename == "report.pdf"
+            assert mime_type == "application/pdf"
+            assert default_kind is None
+            assert transcode_heic is True
+            return CachedMedia("/tmp/report.pdf", "application/pdf", "document", filename)
 
         monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_document_from_bytes",
-            mock_cache_doc,
+            "gateway.platforms.bluebubbles.cache_media_bytes_async",
+            mock_cache_media,
         )
 
         att_meta = {"mimeType": "application/pdf", "transferName": "report.pdf"}
         result = asyncio.get_event_loop().run_until_complete(
             adapter._download_attachment("att-guid-789", att_meta)
         )
-        assert result == "/tmp/report.pdf"
+        assert result is not None
+        assert result.path == "/tmp/report.pdf"
+        assert result.media_type == "application/pdf"
+        assert result.kind == "document"
+
+    def test_download_heic_uses_converted_media_type(self, monkeypatch):
+        """Converted iPhone photos keep cache_media_bytes' supported MIME."""
+        adapter = _make_adapter(monkeypatch)
+        import asyncio
+        from gateway.platforms.base import CachedMedia
+
+        class MockResponse:
+            status_code = 200
+            content = b"\x00\x00\x00\x18ftypheic"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(*args, **kwargs):
+            return MockResponse()
+
+        adapter.client = type("MockClient", (), {"get": mock_get})()
+
+        async def mock_cache_media(
+            data, *, filename="", mime_type="", default_kind=None, transcode_heic=False
+        ):
+            assert filename == "IMG_4127.HEIC"
+            assert mime_type == "image/heic"
+            assert transcode_heic is True
+            return CachedMedia("/tmp/IMG_4127.jpg", "image/jpeg", "image", filename)
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_media_bytes_async",
+            mock_cache_media,
+        )
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid-heic",
+                {"mimeType": "image/heic", "transferName": "IMG_4127.HEIC"},
+            )
+        )
+
+        assert result is not None
+        assert result.path == "/tmp/IMG_4127.jpg"
+        assert result.media_type == "image/jpeg"
+        assert result.kind == "image"
 
     def test_download_returns_none_without_client(self, monkeypatch):
         """No client → returns None gracefully."""

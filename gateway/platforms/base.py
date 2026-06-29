@@ -12,9 +12,11 @@ import logging
 import os
 import random
 import re
+import shutil
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -681,6 +683,96 @@ def _looks_like_image(data: bytes) -> bool:
     return False
 
 
+_HEIC_BRANDS = frozenset({
+    b"heic", b"heix", b"hevc", b"hevx",
+    b"mif1", b"msf1", b"heim", b"heis",
+})
+_HEIC_MIME_TYPES = frozenset({"image/heic", "image/heif"})
+_HEIC_EXTS = frozenset({".heic", ".heif"})
+
+
+def _looks_like_heic(data: bytes) -> bool:
+    """Return True for HEIC/HEIF ISO-BMFF image bytes."""
+    if len(data) < 12 or data[4:8] != b"ftyp":
+        return False
+    brands = {data[8:12].lower()}
+    compatible = data[16:min(len(data), 64)]
+    brands.update(
+        compatible[i:i + 4].lower()
+        for i in range(0, max(len(compatible) - 3, 0), 4)
+    )
+    return bool(brands & _HEIC_BRANDS)
+
+
+def _is_jpeg_bytes(data: bytes) -> bool:
+    return len(data) >= 3 and data[:3] == b"\xff\xd8\xff"
+
+
+def _transcode_heic_to_jpeg_with_command(data: bytes, command_builder) -> bytes | None:
+    with tempfile.TemporaryDirectory(prefix="hermes-heic-") as tmp:
+        tmp_path = Path(tmp)
+        src = tmp_path / "input.heic"
+        dst = tmp_path / "output.jpg"
+        src.write_bytes(data)
+        try:
+            result = subprocess.run(
+                command_builder(src, dst),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.debug("HEIC/HEIF transcoder failed to run: %s", exc)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "HEIC/HEIF transcoder exited %s: %s",
+                result.returncode,
+                (result.stderr or result.stdout or "").strip()[:300],
+            )
+            return None
+        try:
+            converted = dst.read_bytes()
+        except OSError as exc:
+            logger.debug("HEIC/HEIF transcoder produced no output: %s", exc)
+            return None
+        return converted if _is_jpeg_bytes(converted) else None
+
+
+def _transcode_heic_to_jpeg(data: bytes) -> bytes | None:
+    """Best-effort HEIC/HEIF to JPEG conversion using available local tools."""
+    sips = shutil.which("sips")
+    if sys.platform == "darwin" and sips:
+        converted = _transcode_heic_to_jpeg_with_command(
+            data,
+            lambda src, dst: [
+                sips,
+                "-s", "format", "jpeg",
+                str(src),
+                "--out", str(dst),
+            ],
+        )
+        if converted:
+            return converted
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        return _transcode_heic_to_jpeg_with_command(
+            data,
+            lambda src, dst: [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-i", str(src),
+                "-frames:v", "1",
+                str(dst),
+            ],
+        )
+    return None
+
+
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     """
     Save raw image bytes to the cache and return the absolute file path.
@@ -697,6 +789,8 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
             error page returned by the upstream server).
     """
     validate_inbound_media_size(len(data), media_type="image")
+    ext = ext if ext.startswith(".") else f".{ext}"
+    ext = ext.lower()
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(
@@ -1527,6 +1621,17 @@ class CachedMedia:
         return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
 
 
+_AUDIO_EXT_BY_MIME = {
+    "audio/mp3": ".mp3",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-caf": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".m4a",
+}
+
+
 def _resolve_media_ext(filename: str, mime_type: str) -> str:
     """Best-effort file extension from filename, then MIME fallback."""
     if filename:
@@ -1536,6 +1641,10 @@ def _resolve_media_ext(filename: str, mime_type: str) -> str:
     mime = (mime_type or "").lower()
     if not mime:
         return ""
+    if mime in _HEIC_MIME_TYPES:
+        return ".heic"
+    if mime in _AUDIO_EXT_BY_MIME:
+        return _AUDIO_EXT_BY_MIME[mime]
     for table in (
         SUPPORTED_IMAGE_DOCUMENT_TYPES,
         SUPPORTED_VIDEO_TYPES,
@@ -1553,6 +1662,7 @@ def cache_media_bytes(
     filename: str = "",
     mime_type: str = "",
     default_kind: Optional[str] = None,
+    transcode_heic: bool = False,
 ) -> Optional[CachedMedia]:
     """Classify and cache raw attachment bytes; return a CachedMedia or None.
 
@@ -1560,17 +1670,26 @@ def cache_media_bytes(
     when the extension/MIME are ambiguous — e.g. a Telegram native photo whose
     file has no usable name. Any non-image/video/audio file is cached as a
     document and surfaced to the agent (arbitrary types get
-    ``application/octet-stream``); only images that fail validation
-    (``cache_image_from_bytes`` raises ValueError) return None.
+    ``application/octet-stream``). When ``transcode_heic`` is true, HEIC/HEIF
+    images are converted to JPEG if local support is available; otherwise the
+    original bytes are preserved as an ``application/octet-stream`` document so
+    unsupported image media is never sent to the model. Non-HEIC images that
+    fail validation (``cache_image_from_bytes`` raises ValueError) return None.
     """
     from tools.credential_files import to_agent_visible_cache_path
 
     ext = _resolve_media_ext(filename, mime_type)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
+    input_is_heic = (
+        _looks_like_heic(data)
+        or mime in _HEIC_MIME_TYPES
+        or ext in _HEIC_EXTS
+    )
 
     is_image = (
-        mime.startswith("image/")
+        input_is_heic
+        or mime.startswith("image/")
         or ext in SUPPORTED_IMAGE_DOCUMENT_TYPES
         or default_kind == "image"
     )
@@ -1578,6 +1697,31 @@ def cache_media_bytes(
     is_audio = mime.startswith("audio/") or default_kind == "audio"
 
     if is_image:
+        if input_is_heic:
+            validate_inbound_media_size(len(data), media_type="image")
+            if transcode_heic:
+                converted = _transcode_heic_to_jpeg(data)
+                if converted is not None:
+                    try:
+                        path = cache_image_from_bytes(converted, ext=".jpg")
+                    except ValueError:
+                        path = ""
+                    if path:
+                        return CachedMedia(
+                            to_agent_visible_cache_path(path),
+                            "image/jpeg",
+                            "image",
+                            display,
+                        )
+
+            fallback_name = filename or "attachment.heic"
+            path = cache_document_from_bytes(data, fallback_name)
+            return CachedMedia(
+                to_agent_visible_cache_path(path),
+                "application/octet-stream",
+                "document",
+                display or fallback_name,
+            )
         img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
         try:
             path = cache_image_from_bytes(data, ext=img_ext)
@@ -1611,6 +1755,25 @@ def cache_media_bytes(
     else:
         out_mime = mime if mime else "application/octet-stream"
     return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+
+
+async def cache_media_bytes_async(
+    data: bytes,
+    *,
+    filename: str = "",
+    mime_type: str = "",
+    default_kind: Optional[str] = None,
+    transcode_heic: bool = False,
+) -> Optional[CachedMedia]:
+    """Async wrapper for cache_media_bytes; HEIC conversion can run subprocesses."""
+    return await asyncio.to_thread(
+        cache_media_bytes,
+        data,
+        filename=filename,
+        mime_type=mime_type,
+        default_kind=default_kind,
+        transcode_heic=transcode_heic,
+    )
 
 
 class MessageType(Enum):

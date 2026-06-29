@@ -24,9 +24,12 @@ from gateway.platforms.base import (
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point the module-level DOCUMENT_CACHE_DIR to a fresh tmp_path."""
+    """Point cache directories to a fresh tmp_path."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
     )
 
 
@@ -177,6 +180,8 @@ _PNG_1PX = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
     "890000000d49444154789c6360000002000154a24f5f0000000049454e44ae426082"
 )
+_HEIC_STUB = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32
+_JPEG_STUB = b"\xff\xd8\xff\xe0" + b"converted-jpeg" + b"\xff\xd9"
 
 
 class TestCacheMediaBytes:
@@ -197,6 +202,103 @@ class TestCacheMediaBytes:
         assert result.kind == "image"
         assert result.media_type == "image/png"
         assert os.path.exists(result.path)
+
+    def test_heic_routes_to_converted_jpeg_image(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(
+            base,
+            "_transcode_heic_to_jpeg",
+            lambda data: _JPEG_STUB if data == _HEIC_STUB else None,
+        )
+
+        result = base.cache_media_bytes(
+            _HEIC_STUB,
+            filename="IMG_4127.HEIC",
+            mime_type="image/heic",
+            transcode_heic=True,
+        )
+
+        assert result is not None
+        assert result.kind == "image"
+        assert result.media_type == "image/jpeg"
+        assert result.path.endswith(".jpg")
+        assert os.path.exists(result.path)
+        with open(result.path, "rb") as fh:
+            assert fh.read() == _JPEG_STUB
+
+    def test_unconverted_heic_falls_back_to_document(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg", lambda data: None)
+
+        result = base.cache_media_bytes(
+            _HEIC_STUB,
+            filename="IMG_4127.HEIC",
+            mime_type="image/heic",
+            transcode_heic=True,
+        )
+
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/octet-stream"
+        assert os.path.exists(result.path)
+        with open(result.path, "rb") as fh:
+            assert fh.read() == _HEIC_STUB
+
+    def test_malformed_heic_conversion_falls_back_to_document(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg", lambda data: b"not-jpeg")
+
+        result = base.cache_media_bytes(
+            _HEIC_STUB,
+            filename="IMG_4127.HEIC",
+            mime_type="image/heic",
+            transcode_heic=True,
+        )
+
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/octet-stream"
+        assert os.path.exists(result.path)
+        with open(result.path, "rb") as fh:
+            assert fh.read() == _HEIC_STUB
+
+    def test_heic_without_transcode_opt_in_falls_back_to_document(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        def fail_if_called(data):
+            raise AssertionError("HEIC transcode should be opt-in")
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg", fail_if_called)
+
+        result = base.cache_media_bytes(
+            _HEIC_STUB,
+            filename="IMG_4127.HEIC",
+            mime_type="image/heic",
+        )
+
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/octet-stream"
+
+    def test_oversized_heic_rejected_before_transcode(self, monkeypatch):
+        import gateway.platforms.base as base
+
+        def fail_if_called(data):
+            raise AssertionError("Oversized HEIC should not reach transcoder")
+
+        monkeypatch.setattr(base, "_transcode_heic_to_jpeg", fail_if_called)
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 8)
+
+        with pytest.raises(ValueError, match="too large"):
+            base.cache_media_bytes(
+                _HEIC_STUB,
+                filename="IMG_4127.HEIC",
+                mime_type="image/heic",
+                transcode_heic=True,
+            )
 
     def test_native_photo_without_filename_uses_default_kind(self):
         from gateway.platforms.base import cache_media_bytes

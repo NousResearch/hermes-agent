@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     # site type-checks cleanly. The runtime fallback below keeps the optional
     # dependency truly optional (each use site is guarded by HTTPX_AVAILABLE).
     import httpx
+    from gateway.platforms.base import CachedMedia
     HTTPX_AVAILABLE = True
 else:
     try:
@@ -588,22 +589,22 @@ class PhotonAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
 
-        def _normalize_binary_payload(
+        async def _normalize_binary_payload(
             payload: Dict[str, Any]
         ) -> tuple[str, MessageType, List[str], List[str]]:
             is_voice = payload.get("type") == "voice"
             name = payload.get("name") or ("voice" if is_voice else "(unnamed)")
             mime = payload.get("mimeType") or ""
             mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
-            cached = _cache_inbound_attachment(
+            cached = await _cache_inbound_attachment(
                 payload, name, mime, force_audio=is_voice
             )
             if cached:
                 return (
                     "(voice)" if is_voice else "(attachment)",
-                    mtype,
-                    [cached],
-                    [mime or ("audio/mp4" if is_voice else "application/octet-stream")],
+                    MessageType.VOICE if is_voice else _message_type_for_cached_media(cached),
+                    [cached.path],
+                    [cached.media_type],
                 )
             label = "voice" if is_voice else "attachment"
             duration = payload.get("duration")
@@ -673,7 +674,7 @@ class PhotonAdapter(BasePlatformAdapter):
             text = content.get("text") or ""
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
-            text, mtype, media_urls, media_types = _normalize_binary_payload(content)
+            text, mtype, media_urls, media_types = await _normalize_binary_payload(content)
         elif ctype == "group":
             text_parts: List[str] = []
             mtype = MessageType.TEXT
@@ -690,7 +691,7 @@ class PhotonAdapter(BasePlatformAdapter):
                         text_parts.append(item_text)
                     continue
                 if item_type in {"attachment", "voice"}:
-                    marker, item_mtype, item_urls, item_types = _normalize_binary_payload(
+                    marker, item_mtype, item_urls, item_types = await _normalize_binary_payload(
                         item_content
                     )
                     if mtype == MessageType.TEXT:
@@ -1487,43 +1488,31 @@ def _attachment_message_type(mime: str) -> MessageType:
     return MessageType.DOCUMENT
 
 
-# MIME → file-extension maps for caching inbound attachment bytes. These mirror
-# the BlueBubbles iMessage channel so both adapters name cached media the same.
-_IMAGE_EXT_BY_MIME = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/gif": ".gif",
-    "image/webp": ".webp",
-    "image/heic": ".jpg",
-    "image/heif": ".jpg",
-    "image/tiff": ".jpg",
-}
-_AUDIO_EXT_BY_MIME = {
-    "audio/mp3": ".mp3",
-    "audio/mpeg": ".mp3",
-    "audio/ogg": ".ogg",
-    "audio/wav": ".wav",
-    "audio/x-caf": ".mp3",
-    "audio/mp4": ".m4a",
-    "audio/aac": ".m4a",
-}
+def _message_type_for_cached_media(cached: "CachedMedia") -> MessageType:
+    if cached.kind == "image":
+        return MessageType.PHOTO
+    if cached.kind == "video":
+        return MessageType.VIDEO
+    if cached.kind == "audio":
+        return MessageType.AUDIO
+    return MessageType.DOCUMENT
 
 
-def _cache_inbound_attachment(
+async def _cache_inbound_attachment(
     content: Dict[str, Any],
     name: str,
     mime: str,
     *,
     force_audio: bool = False,
-) -> Optional[str]:
+) -> Optional["CachedMedia"]:
     """Decode a base64-inlined inbound attachment and cache it locally.
 
     The sidecar inlines the attachment bytes as ``content["data"]`` (base64).
     We decode them and route to the shared media cache by MIME type, returning
-    the cached absolute path so the caller can populate ``media_urls`` (which
-    the gateway then hands to the model). Returns ``None`` when there are no
-    bytes (over the sidecar's inline cap or a failed read) or when caching
-    fails, so the caller can fall back to a text marker.
+    cached media metadata so the caller can populate ``media_urls`` /
+    ``media_types``. Returns ``None`` when there are no bytes (over the
+    sidecar's inline cap or a failed read) or when caching fails, so the caller
+    can fall back to a text marker.
     """
     data_b64 = content.get("data")
     if not data_b64:
@@ -1534,31 +1523,17 @@ def _cache_inbound_attachment(
         logger.warning("[photon] failed to decode inbound attachment bytes: %s", exc)
         return None
 
-    from gateway.platforms.base import (
-        cache_audio_from_bytes,
-        cache_document_from_bytes,
-        cache_image_from_bytes,
-    )
+    from gateway.platforms.base import cache_media_bytes_async
 
     mime = (mime or "").lower()
-    # Prefer the real extension from the filename; fall back to the MIME map.
-    suffix = Path(name).suffix if name else ""
     try:
-        if mime.startswith("image/"):
-            ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
-            try:
-                return cache_image_from_bytes(raw, ext)
-            except ValueError:
-                # Bytes don't look like a supported image (e.g. HEIC magic) —
-                # still deliver them as a document rather than dropping them.
-                return cache_document_from_bytes(raw, name)
-        if force_audio or mime.startswith("audio/"):
-            ext = suffix or _AUDIO_EXT_BY_MIME.get(
-                mime, ".m4a" if force_audio else ".mp3"
-            )
-            return cache_audio_from_bytes(raw, ext)
-        # Video, application/*, and everything else → document cache.
-        return cache_document_from_bytes(raw, name)
+        return await cache_media_bytes_async(
+            raw,
+            filename=name,
+            mime_type=mime,
+            default_kind="audio" if force_audio else None,
+            transcode_heic=True,
+        )
     except Exception as exc:
         logger.warning("[photon] failed to cache inbound attachment %s: %s", name, exc)
         return None

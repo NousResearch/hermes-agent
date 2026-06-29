@@ -8,6 +8,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Kbd, KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 import {
+  composerReadonlyKeybinds,
   KEYBIND_ACTIONS,
   KEYBIND_CATEGORIES,
   KEYBIND_PANEL_ACTION,
@@ -17,6 +18,7 @@ import {
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
+import { $composerEnterSends } from '@/store/composer-prefs'
 import {
   $bindings,
   $capture,
@@ -34,6 +36,7 @@ export function KeybindPanel() {
   const { t } = useI18n()
   const open = useStore($keybindPanelOpen)
   const bindings = useStore($bindings)
+  const enterSends = useStore($composerEnterSends)
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
 
@@ -78,7 +81,8 @@ export function KeybindPanel() {
                 action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
               )
 
-              const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
+              const readonlySource = category === 'composer' ? composerReadonlyKeybinds(enterSends) : KEYBIND_READONLY
+              const readonly = readonlySource.filter(shortcut => shortcut.category === category)
 
               if (actions.length === 0 && readonly.length === 0) {
                 return null

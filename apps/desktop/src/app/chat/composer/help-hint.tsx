@@ -1,14 +1,16 @@
+import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
+import { $composerEnterSends } from '@/store/composer-prefs'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMAND_KEYS = ['/help', '/clear', '/resume', '/details', '/copy', '/quit']
 
 /** Stable ids → i18n `hotkeyDescs` keys. Combos resolve mod labels per OS. */
-const COMPOSER_HOTKEY_ROWS = [
+const DEFAULT_COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.mention', combos: ['@'] },
   { id: 'composer.slash', combos: ['/'] },
   { id: 'composer.help', combos: ['?'] },
@@ -19,9 +21,24 @@ const COMPOSER_HOTKEY_ROWS = [
   { id: 'composer.history', combos: ['up', 'down'] }
 ] as const
 
+const MULTILINE_COMPOSER_HOTKEY_ROWS = [
+  { id: 'composer.mention', combos: ['@'] },
+  { id: 'composer.slash', combos: ['/'] },
+  { id: 'composer.help', combos: ['?'] },
+  { id: 'composer.newline', combos: ['enter'] },
+  { id: 'composer.send', combos: ['mod+enter'] },
+  { id: 'composer.steer', combos: ['shift+enter'] },
+  { id: 'composer.sendQueued', combos: ['mod+shift+k'] },
+  { id: 'keybinds.openPanel', combos: ['mod+/'] },
+  { id: 'composer.cancel', combos: ['escape'] },
+  { id: 'composer.history', combos: ['up', 'down'] }
+] as const
+
 export function HelpHint() {
   const { t } = useI18n()
+  const enterSends = useStore($composerEnterSends)
   const c = t.composer
+  const hotkeyRows = enterSends ? DEFAULT_COMPOSER_HOTKEY_ROWS : MULTILINE_COMPOSER_HOTKEY_ROWS
 
   return (
     <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
@@ -32,8 +49,12 @@ export function HelpHint() {
       </Section>
 
       <Section title={c.hotkeys}>
-        {COMPOSER_HOTKEY_ROWS.map(row => (
-          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
+        {hotkeyRows.map(row => (
+          <HotkeyRow
+            combos={[...row.combos]}
+            description={c.hotkeyDescs[row.id] ?? t.keybinds.actions[row.id] ?? ''}
+            key={row.id}
+          />
         ))}
       </Section>
 

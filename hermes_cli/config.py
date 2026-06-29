@@ -2997,6 +2997,12 @@ DEFAULT_CONFIG = {
     # Hermes Desktop (Electron app) launch options. These only affect
     # `hermes desktop`; they do not touch the CLI/gateway.
     "desktop": {
+        "composer": {
+            # When true (default), Enter submits and Shift+Enter inserts a
+            # newline. When false, Enter inserts a newline, Ctrl/Cmd+Enter
+            # submits/queues, and Shift+Enter steers a running turn when possible.
+            "enter_sends": True,
+        },
         # Extra Electron command-line flags appended to every desktop launch,
         # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
         # explicit ozone backend, or GPU workaround flags. A list of strings;

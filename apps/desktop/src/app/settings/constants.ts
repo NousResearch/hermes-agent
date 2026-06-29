@@ -272,6 +272,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
   },
+  desktop: {
+    composer: {
+      enterSends: 'Enter Sends Message'
+    }
+  },
   agent: {
     maxTurns: 'Max Agent Steps',
     imageInputMode: 'Image Attachments',
@@ -423,6 +428,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
+  desktop: {
+    composer: {
+      enterSends:
+        'Turn off for multiline-first input: Enter inserts a newline, Ctrl/Cmd+Enter sends or queues, and Shift+Enter steers a running turn.'
+    }
+  },
   timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
@@ -497,7 +508,13 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: [
+      'desktop.composer.enter_sends',
+      'display.personality',
+      'timezone',
+      'display.show_reasoning',
+      'agent.image_input_mode'
+    ]
   },
   {
     id: 'appearance',

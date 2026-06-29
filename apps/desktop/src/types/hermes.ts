@@ -212,6 +212,11 @@ export interface HermesConfig {
     personalities?: Record<string, unknown>
     service_tier?: string
   }
+  desktop?: {
+    composer?: {
+      enter_sends?: boolean
+    }
+  }
   display?: {
     personality?: string
     skin?: string

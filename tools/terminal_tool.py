@@ -1729,8 +1729,142 @@ def _strip_quotes(command: str) -> str:
     return result
 
 
-_LONG_LIVED_FOREGROUND_PATTERNS = (
-    re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b", re.IGNORECASE),
+# ------------------------------------------------------------------
+# Windows GUI .exe detection and launch helpers (issue #54201)
+# ------------------------------------------------------------------
+
+def _is_windows_gui_exe(path: str) -> bool:
+    """Check if a Windows executable is a GUI program by reading the PE Subsystem field.
+
+    Returns True for SubSystem=2 (WINDOWS_GUI), False for SubSystem=3 (CONSOLE).
+    Returns None if the file cannot be read or is not a valid PE binary, in which
+    case the caller should fall back to normal execution rather than wrapping.
+    """
+    import struct
+
+    try:
+        with open(path, "rb") as f:
+            dos = f.read(64)
+            if len(dos) < 64 or dos[0:2] != b"MZ":
+                return None
+
+            pe_offset = struct.unpack("<I", dos[0x3C:0x40])[0]
+            f.seek(pe_offset)
+            if f.read(4) != b"PE\x00\x00":
+                return None
+
+            coff = f.read(20)
+            optional_hdr_size = struct.unpack("<H", coff[16:18])[0]
+            opt = f.read(optional_hdr_size)
+            magic = struct.unpack("<H", opt[0:2])[0]
+
+            # PE32  (magic=0x10B): Subsystem at offset 0x5C from Optional Header start
+            # PE32+ (magic=0x20B): Subsystem at offset 0x44 from Optional Header start
+            if magic == 0x10B:
+                ss_offset = 0x5C
+            elif magic == 0x20B:
+                ss_offset = 0x44
+            else:
+                return None
+
+            subsystem = struct.unpack("<H", opt[ss_offset:ss_offset + 2])[0]
+            return subsystem == 2  # WINDOWS_GUI
+    except Exception:
+        return None
+
+
+def _msys_to_windows_path(msys_path: str) -> str | None:
+    """Convert an MSYS/Git-Bash style path to a Windows native path.
+
+    Examples:
+        /g/Software/app.exe  →  G:\\Software\\app.exe
+        /c/Users/foo.txt     →  C:\\Users\\foo.txt
+    Returns None if the path does not look like an MSYS path.
+    """
+    if msys_path.startswith("/"):
+        parts = msys_path.split("/", 2)
+        drive = parts[1].upper() + ":"
+        rest = parts[2] if len(parts) > 2 else ""
+        return f"{drive}\\{rest}"
+    return None
+
+
+def _wrap_windows_gui_exe(command: str) -> str | None:
+    """Wrap a Windows GUI .exe invocation so it does not hang the terminal session.
+
+    On Windows, launching a GUI .exe directly through bash causes the session to
+    hang because the GUI process inherits the stdout pipe and never closes it,
+    blocking the drain thread in _wait_for_process indefinitely (issue #54201).
+
+    This function detects GUI executables by reading the PE SubSystem field and
+    wraps them with ``powershell -Command "Start-Process '...'"`` which launches
+    the program without inheriting the pipe, returning immediately.
+
+    Returns a wrapped command string, or None if no wrapping is needed.
+    """
+    import shlex
+
+    # Only apply on Windows
+    if platform.system() != "Windows":
+        return None
+
+    # Strip quoted content to avoid false positives
+    unquoted = _strip_quotes(command)
+
+    # Extract the executable path — handle both quoted and bare paths
+    exe_path = None
+    stripped = unquoted.strip()
+
+    # Try quoted path first (e.g. "C:\path\to\prog.exe" --flag)
+    for quote in ('"', "'"):
+        if stripped.startswith(quote):
+            end = stripped.index(quote, 1)
+            exe_path = stripped[1:end]
+            break
+
+    # If not quoted, try to find a bare .exe path
+    if exe_path is None:
+        # Check if the whole command is just an exe path
+        if ".exe" in stripped.lower():
+            # Rejoin tokens until we find one ending with .exe
+            tokens = stripped.split()
+            partial = ""
+            for token in tokens:
+                partial = partial + (" " if partial else "") + token
+                if ".exe" in partial.lower():
+                    exe_path = partial
+                    break
+
+    if exe_path is None:
+        return None
+
+    # Resolve to absolute path (handle relative paths)
+    import os
+    try:
+        resolved = os.path.abspath(exe_path)
+    except Exception:
+        resolved = exe_path
+
+    if not resolved.lower().endswith(".exe"):
+        return None
+
+    # Check if it's a GUI executable via PE header
+    is_gui = _is_windows_gui_exe(resolved)
+    if is_gui is None:
+        # Cannot determine — fall back to normal execution
+        return None
+    if not is_gui:
+        # Console program — execute normally
+        return None
+
+    # It's a GUI exe — wrap with Start-Process
+    # Convert MSYS path if needed (Git Bash on Windows uses /c/... style)
+    win_path = _msys_to_windows_path(exe_path) or resolved
+    escaped = win_path.replace("\\", "\\\\").replace("'", "''")
+    return f'powershell -Command "Start-Process \'{escaped}\''
+
+
+    _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
     re.compile(r"\bnext\s+dev\b", re.IGNORECASE),
     re.compile(r"\bvite(?:\s|$)", re.IGNORECASE),

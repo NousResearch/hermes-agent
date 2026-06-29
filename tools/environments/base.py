@@ -890,6 +890,11 @@ class BaseEnvironment(ABC):
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
         """Transform sudo commands if SUDO_PASSWORD is available."""
-        from tools.terminal_tool import _transform_sudo_command
+        from tools.terminal_tool import _transform_sudo_command, _wrap_windows_gui_exe
+
+        # Wrap Windows GUI .exe programs to prevent terminal hang (issue #54201)
+        wrapped = _wrap_windows_gui_exe(command)
+        if wrapped is not None:
+            command = wrapped
 
         return _transform_sudo_command(command)

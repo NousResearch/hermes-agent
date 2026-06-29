@@ -26,6 +26,7 @@ from hermes_cli.config import cfg_get
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 _SUBSCRIPTIONS_FILE_MODE = 0o600
+_WEBHOOK_TEST_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
 
 
 def _hermes_home() -> Path:
@@ -134,6 +135,15 @@ def _require_webhook_enabled() -> bool:
         return True
     print(_setup_hint())
     return False
+
+
+def _read_webhook_test_response(resp) -> tuple[str, bool]:
+    """Return a bounded response preview and whether it was truncated."""
+    raw = resp.read(_WEBHOOK_TEST_RESPONSE_BODY_MAX_BYTES + 1)
+    truncated = len(raw) > _WEBHOOK_TEST_RESPONSE_BODY_MAX_BYTES
+    if truncated:
+        raw = raw[:_WEBHOOK_TEST_RESPONSE_BODY_MAX_BYTES]
+    return raw.decode("utf-8", errors="replace"), truncated
 
 
 def webhook_command(args):
@@ -291,8 +301,13 @@ def _cmd_test(args):
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode()
-            print(f"  Response ({resp.status}): {body}")
+            body, truncated = _read_webhook_test_response(resp)
+            suffix = (
+                f" (truncated after {_WEBHOOK_TEST_RESPONSE_BODY_MAX_BYTES} bytes)"
+                if truncated
+                else ""
+            )
+            print(f"  Response ({resp.status}){suffix}: {body}")
     except Exception as e:
         print(f"  Error: {e}")
         print("  Is the gateway running? (hermes gateway run)")

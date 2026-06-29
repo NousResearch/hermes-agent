@@ -488,7 +488,19 @@ class FakeDoHClient:
     def _make_response(status, body, url):
         """Build an httpx.Response with a request attached (needed for raise_for_status)."""
         request = httpx.Request("GET", url)
+        if isinstance(body, bytes):
+            return httpx.Response(status, content=body, request=request)
         return httpx.Response(status, json=body, request=request)
+
+    class _Stream:
+        def __init__(self, response):
+            self.response = response
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, *args):
+            await self.response.aclose()
 
     async def get(self, url, *, params=None, headers=None, **kwargs):
         self.requests_made.append({"url": url, "params": params, "headers": headers})
@@ -499,6 +511,21 @@ class FakeDoHClient:
                 status, body = action
                 return self._make_response(status, body, url)
         return self._make_response(200, {}, url)
+
+    def stream(self, method, url, *, params=None, headers=None, **kwargs):
+        self.requests_made.append({
+            "method": method,
+            "url": url,
+            "params": params,
+            "headers": headers,
+        })
+        for prefix, action in self._responses.items():
+            if url.startswith(prefix):
+                if isinstance(action, Exception):
+                    raise action
+                status, body = action
+                return self._Stream(self._make_response(status, body, url))
+        return self._Stream(self._make_response(200, {}, url))
 
     async def __aenter__(self):
         return self
@@ -590,6 +617,23 @@ class TestDiscoverFallbackIps:
 
         ips = await tnet.discover_fallback_ips()
         assert ips == tnet._SEED_FALLBACK_IPS
+
+    @pytest.mark.asyncio
+    async def test_oversized_doh_json_is_ignored(self, monkeypatch):
+        oversized = (
+            b'{"Answer":['
+            + b'{"type":1,"data":"149.154.167.220"},' * 80_000
+            + b'{"type":1,"data":"149.154.167.221"}]}'
+        )
+        assert len(oversized) > tnet._DOH_JSON_MAX_BYTES
+
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, oversized),
+            "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.222")),
+        }, system_dns_ips=["149.154.166.110"])
+
+        ips = await tnet.discover_fallback_ips()
+        assert ips == ["149.154.167.222"]
 
     @pytest.mark.asyncio
     async def test_one_provider_fails_other_succeeds(self, monkeypatch):

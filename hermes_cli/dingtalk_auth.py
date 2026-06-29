@@ -17,6 +17,7 @@ import os
 import sys
 import time
 import logging
+import json
 from typing import Optional, Tuple
 
 import requests
@@ -30,6 +31,7 @@ REGISTRATION_BASE_URL = os.environ.get(
 ).rstrip("/")
 
 REGISTRATION_SOURCE = os.environ.get("DINGTALK_REGISTRATION_SOURCE", "openClaw")
+REGISTRATION_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
 
 
 # ── API helpers ────────────────────────────────────────────────────────────
@@ -38,15 +40,37 @@ class RegistrationError(Exception):
     """Raised when a DingTalk registration API call fails."""
 
 
+class RegistrationResponseTooLarge(ValueError):
+    """Raised when a DingTalk registration response exceeds its read cap."""
+
+
+def _read_limited_json_response(resp: requests.Response) -> dict:
+    body = resp.raw.read(
+        REGISTRATION_RESPONSE_BODY_MAX_BYTES + 1,
+        decode_content=True,
+    )
+    if len(body) > REGISTRATION_RESPONSE_BODY_MAX_BYTES:
+        raise RegistrationResponseTooLarge(
+            f"registration response body exceeded {REGISTRATION_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(body.decode("utf-8"))
+
+
 def _api_post(path: str, payload: dict) -> dict:
     """POST to the registration API and return the parsed JSON body."""
     url = f"{REGISTRATION_BASE_URL}{path}"
+    resp: Optional[requests.Response] = None
     try:
-        resp = requests.post(url, json=payload, timeout=15)
+        resp = requests.post(url, json=payload, timeout=15, stream=True)
         resp.raise_for_status()
-        data = resp.json()
+        data = _read_limited_json_response(resp)
     except requests.RequestException as exc:
         raise RegistrationError(f"Network error calling {url}: {exc}") from exc
+    except RegistrationResponseTooLarge as exc:
+        raise RegistrationError(f"Response too large calling {url}: {exc}") from exc
+    finally:
+        if resp is not None:
+            resp.close()
 
     errcode = data.get("errcode", -1)
     if errcode != 0:

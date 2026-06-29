@@ -187,12 +187,19 @@ def clarify_tool(
         )
 
     user_response_text = str(user_response).strip()
+    selected_choices = _selected_choices_from_response(user_response_text, choices)
+    if multi_select and choices and selected_choices:
+        if len(selected_choices) < min_selections:
+            return tool_error(f"Select at least {min_selections} choices.")
+        if max_selections is not None and len(selected_choices) > max_selections:
+            return tool_error(f"Select at most {max_selections} choices.")
+
     return json.dumps({
         "question": question,
         "choices_offered": choices,
         "selection_mode": "multi" if multi_select else "single",
         "user_response": user_response_text,
-        "selected_choices": _selected_choices_from_response(user_response_text, choices),
+        "selected_choices": selected_choices,
     }, ensure_ascii=False)
 
 

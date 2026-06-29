@@ -321,6 +321,19 @@ class TestClarifyMultiSelect:
 
         assert result["selected_choices"] == ["A"]
 
+    def test_multi_select_result_enforces_min_after_callback(self):
+        result = json.loads(clarify_tool(
+            "Pick at least two",
+            choices=["Alpha", "Beta", "Gamma"],
+            callback=lambda q, c, **kw: "Alpha",
+            multi_select=True,
+            min_selections=2,
+            allow_other=False,
+        ))
+
+        assert "error" in result
+        assert "Select at least 2 choices" in result["error"]
+
 
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""

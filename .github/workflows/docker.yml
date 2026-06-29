@@ -159,8 +159,10 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       # Log in to ghcr.io so the registry-backed build cache below can be
-      # read (cache-from) on every event and written (cache-to) on
-      # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
+      # read (cache-from) on every event.  The cache is only WRITTEN
+      # (cache-to) on push-to-main / release — PR runs (and forks) lack
+      # ghcr.io org-package write, so the write is gated on the build step
+      # below.  Uses the workflow's GITHUB_TOKEN, which is valid for
       # the whole job — unlike the gha cache backend's short-lived Azure SAS
       # token, which expired mid-build on slow cold-cache arm64 runs and
       # crashed the build before the tests ran (the reason the gha cache
@@ -191,7 +193,12 @@ jobs:
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
-          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+          # Only WRITE the registry cache on push-to-main / release.  PR runs
+          # (especially fork PRs) get a GITHUB_TOKEN capped at packages:read,
+          # so a cache-to export 403s with "installation not allowed to Write
+          # organization package" and fails the whole build.  An empty cache-to
+          # makes buildkit skip the export; PRs still build warm via cache-from.
+          cache-to: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release') && 'type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max' || '' }}
 
       - name: Install uv for docker tests
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0

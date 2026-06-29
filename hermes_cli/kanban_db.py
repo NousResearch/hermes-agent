@@ -5432,9 +5432,13 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
 
 
 def _resolve_worktree_workspace(
-    task: Task, *, board: Optional[str] = None
+    task: Task, *, board: Optional[str] = None, materialize: bool = True
 ) -> tuple[Path, str]:
-    """Resolve + materialize a linked git worktree for ``task``.
+    """Resolve (and, when ``materialize``, create) a linked git worktree for ``task``.
+
+    With ``materialize=False`` the target path and branch are computed using
+    read-only git queries but no worktree is added — used by the dispatcher's
+    protected-workspace preflight so a refused task never touches the checkout.
 
     When ``task.workspace_path`` is unset, the anchor is the board's
     ``default_workdir`` (a persistent project checkout). This keeps every
@@ -5471,7 +5475,8 @@ def _resolve_worktree_workspace(
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        if materialize:
+            _ensure_git_worktree(repo_root, target, branch_name)
         return target, branch_name
 
     requested = Path(task.workspace_path).expanduser()
@@ -5489,7 +5494,8 @@ def _resolve_worktree_workspace(
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        if materialize:
+            _ensure_git_worktree(repo_root, target, branch_name)
         return target, branch_name
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
@@ -5498,11 +5504,205 @@ def _resolve_worktree_workspace(
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    if materialize:
+        _ensure_git_worktree(repo_root, requested, branch_name)
     return requested, branch_name
 
 
-def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+# ---------------------------------------------------------------------------
+# Protected-workspace guard (crypto-bot-platform-service)
+# ---------------------------------------------------------------------------
+# A *mutating* worker (coder / reviewer) must NOT be spawned directly against
+# the live crypto-bot-platform-service checkouts: an agent editing the
+# canonical working tree can clobber uncommitted state, fight a human's branch,
+# or corrupt the shared checkout. Such work must run in an isolated git
+# worktree (``<root>/.worktrees/<task>``) instead. Inspection-only roles
+# (architect / research) may still *read* these checkouts, so the guard is
+# scoped by role, not applied blanket.
+#
+# These are module-level so tests can monkeypatch them onto fake paths without
+# touching the real checkouts.
+
+# Paths that are protected *exactly* — the path itself, but NOT its
+# descendants. This is deliberate: the sanctioned ``<root>/.worktrees/<task>``
+# worktree lives under the work root and must stay allowed.
+PROTECTED_WORKSPACE_EXACT: tuple[str, ...] = (
+    "/Users/rwest/work/crypto-bot-platform-service",
+)
+# Subtrees that are protected at the root AND everything under it.
+PROTECTED_WORKSPACE_TREES: tuple[str, ...] = (
+    "/Users/rwest/service-checkouts/crypto-bot-platform-service",
+)
+# Roles permitted to run against a protected checkout without an isolated
+# worktree (read-only inspection). Matched token-wise against the assignee, so
+# ``crypto-research`` / ``platform-architect`` still classify correctly.
+INSPECTION_ONLY_ROLES: frozenset[str] = frozenset(
+    {"architect", "research", "researcher", "planner"}
+)
+# Mutating implementation/review roles guarded on the ready lane. The review
+# lane is always treated as mutating even if the assignee has a custom name.
+PROTECTED_WORKSPACE_MUTATING_ROLES: frozenset[str] = frozenset({"coder", "reviewer"})
+
+
+class ProtectedWorkspaceError(ValueError):
+    """A guarded (coder/reviewer) task would run in a protected checkout."""
+
+
+def _normalize_workspace_path(path: Path | str) -> str:
+    """Absolute, trailing-slash-free path for protected-workspace comparison.
+
+    ``realpath`` resolves existing symlink components without creating anything,
+    so aliases to a protected checkout are guarded too. On case-insensitive
+    platforms (macOS default / Windows), casefold the comparison key so spelling
+    variants of the same checkout do not bypass the guard.
+    """
+    normalized = os.path.realpath(os.path.abspath(os.path.expanduser(str(path))))
+    normalized = os.path.normpath(normalized)
+    if sys.platform == "darwin" or os.name == "nt":
+        normalized = normalized.casefold()
+    return normalized
+
+
+def workspace_is_protected(path: Path | str) -> bool:
+    """True when ``path`` is a protected crypto-bot-platform-service checkout.
+
+    Protected means: exactly one of :data:`PROTECTED_WORKSPACE_EXACT` (the
+    path itself, descendants excluded), or at/under one of
+    :data:`PROTECTED_WORKSPACE_TREES`.
+    """
+    candidate = _normalize_workspace_path(path)
+    for exact in PROTECTED_WORKSPACE_EXACT:
+        if candidate == _normalize_workspace_path(exact):
+            return True
+    for tree in PROTECTED_WORKSPACE_TREES:
+        root = _normalize_workspace_path(tree)
+        # ``root + os.sep`` prevents a sibling sharing the string prefix
+        # (``...-service-staging``) from being treated as "under" the tree.
+        if candidate == root or candidate.startswith(root + os.sep):
+            return True
+    return False
+
+
+def _assignee_tokens(assignee: Optional[str]) -> set[str]:
+    label = (assignee or "").strip().lower()
+    if not label:
+        return set()
+    return set(re.split(r"[^a-z0-9]+", label))
+
+
+def role_is_inspection_only(assignee: Optional[str], *, lane: str = "ready") -> bool:
+    """Inspection-only roles (architect / research) may read protected checkouts.
+
+    The ``review`` lane is never inspection-only — a reviewer mutates (merges,
+    pushes fixes). On the ``ready`` lane the role is inferred from the assignee
+    tokens.
+    """
+    if lane == "review":
+        return False
+    return bool(_assignee_tokens(assignee) & INSPECTION_ONLY_ROLES)
+
+
+def role_requires_isolated_workspace(
+    assignee: Optional[str], *, lane: str = "ready"
+) -> bool:
+    """True for mutating coder/reviewer lanes guarded by this preflight."""
+    if lane == "review":
+        return True
+    tokens = _assignee_tokens(assignee)
+    if tokens & PROTECTED_WORKSPACE_MUTATING_ROLES:
+        return True
+    return False
+
+
+def check_protected_workspace(
+    *,
+    task_id: str,
+    assignee: Optional[str],
+    workspace: Path | str,
+    lane: str = "ready",
+) -> Optional[str]:
+    """Return a clear refusal message when a guarded (coder/reviewer) task
+    would run in a protected crypto-bot-platform-service checkout; else ``None``.
+
+    Inspection-only roles (architect / research) are allowed through. Isolated
+    worktrees under the protected work root (``<root>/.worktrees/<task>``) are
+    allowed because only the work-root path itself is protected, not its
+    descendants.
+    """
+    if not role_requires_isolated_workspace(assignee, lane=lane):
+        return None
+    if not workspace_is_protected(workspace):
+        return None
+    role = "reviewer" if lane == "review" else "coder"
+    sanctioned = f"/Users/rwest/work/crypto-bot-platform-service/.worktrees/{task_id}"
+    return (
+        f"refusing to dispatch {role} task {task_id!r}: resolved workspace "
+        f"{_normalize_workspace_path(workspace)} is a protected "
+        f"crypto-bot-platform-service checkout. {role.capitalize()} work must "
+        f"run in an isolated git worktree, e.g. {sanctioned} (or another "
+        f"isolated worktree outside the protected checkout). Re-create the task "
+        f"with --workspace worktree:/Users/rwest/work/crypto-bot-platform-service "
+        f"so Hermes materializes a per-task worktree under .worktrees/."
+    )
+
+
+def _preview_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+    """Resolve a task workspace without creating directories or worktrees."""
+    if task.workspace_kind == "worktree":
+        workspace, _branch_name = _resolve_worktree_workspace(
+            task, board=board, materialize=False
+        )
+        return workspace
+    return resolve_workspace(task, board=board, materialize=False)
+
+
+def _enforce_protected_workspace(
+    conn: sqlite3.Connection,
+    task: Task,
+    *,
+    board: Optional[str] = None,
+    lane: str = "ready",
+    result: Optional[DispatchResult] = None,
+) -> bool:
+    """Block ``task`` and return True when its preview workspace is protected.
+
+    The preview is intentionally side-effect-free, so a refused ``dir`` task
+    never even creates the protected directory and a refused ``worktree`` task
+    never runs ``git worktree add``. If preview resolution fails, this function
+    returns False so the existing dispatch path records the normal workspace
+    spawn failure instead of aborting the whole tick.
+    """
+    if not role_requires_isolated_workspace(task.assignee, lane=lane):
+        return False
+    try:
+        workspace = _preview_workspace(task, board=board)
+    except Exception:
+        # Preserve the pre-existing dispatch behavior for malformed workspaces:
+        # the surrounding resolution path records a workspace spawn failure.
+        return False
+    reason = check_protected_workspace(
+        task_id=task.id,
+        assignee=task.assignee,
+        workspace=workspace,
+        lane=lane,
+    )
+    if reason is None:
+        return False
+    block_task(
+        conn,
+        task.id,
+        reason=reason,
+        kind="capability",
+        expected_run_id=task.current_run_id,
+    )
+    if result is not None:
+        result.skipped_protected_workspace.append((task.id, str(workspace)))
+    return True
+
+
+def resolve_workspace(
+    task: Task, *, board: Optional[str] = None, materialize: bool = True
+) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
     - ``scratch``: a fresh dir under ``<board-root>/workspaces/<id>/``,
@@ -5542,7 +5742,8 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 )
         else:
             p = workspaces_root(board=board) / task.id
-        p.mkdir(parents=True, exist_ok=True)
+        if materialize:
+            p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "dir":
         if not task.workspace_path:
@@ -5556,10 +5757,13 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"{task.workspace_path!r}; use an absolute path "
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
-        p.mkdir(parents=True, exist_ok=True)
+        if materialize:
+            p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        p, _branch_name = _resolve_worktree_workspace(task, board=board)
+        p, _branch_name = _resolve_worktree_workspace(
+            task, board=board, materialize=materialize
+        )
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -5738,6 +5942,13 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    skipped_protected_workspace: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks refused because a *mutating* coder/reviewer's resolved workspace is
+    a protected crypto-bot-platform-service checkout. Each entry is
+    ``(task_id, resolved_workspace_path)``. The task is routed to ``blocked``
+    (kind ``capability``) with an instruction to use an isolated worktree;
+    inspection-only roles (architect/research) are never bucketed here. The
+    protected checkout is never materialized for a refused task."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -7255,6 +7466,14 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # Protected-workspace preflight (crypto-bot-platform-service): refuse to
+        # spawn a mutating coder directly into the live checkout — it must use
+        # an isolated worktree. Preview the resolved path WITHOUT materializing
+        # so a refused task never creates/touches the protected checkout.
+        if _enforce_protected_workspace(
+            conn, claimed, board=board, lane="ready", result=result
+        ):
+            continue
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7346,6 +7565,13 @@ def _dispatch_once_locked(
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            continue
+        # Protected-workspace preflight (crypto-bot-platform-service): refuse to
+        # spawn a review agent directly into runtime/main checkouts — review work
+        # is mutating and must use an isolated worktree too.
+        if _enforce_protected_workspace(
+            conn, claimed, board=board, lane="review", result=result
+        ):
             continue
         try:
             resolved_branch_name = None

@@ -14,6 +14,24 @@ from unittest.mock import patch
 from hermes_cli import security_audit as sa
 
 
+class _FakeHTTPResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> "_FakeHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        if size is None or size < 0:
+            return self.body
+        return self.body[:size]
+
+
 # ─── Parsers ──────────────────────────────────────────────────────────────────
 
 
@@ -156,6 +174,52 @@ class TestSeverityExtraction:
 
 
 # ─── End-to-end orchestration with mocked OSV ─────────────────────────────────
+
+
+class TestHTTPJson:
+    def test_http_get_json_bounds_response_read(self, monkeypatch):
+        response = _FakeHTTPResponse(b'{"ok": true}')
+        captured = []
+
+        def _urlopen(req, timeout):
+            captured.append((req, timeout))
+            return response
+
+        monkeypatch.setattr(sa.urllib.request, "urlopen", _urlopen)
+
+        assert sa._http_get_json("https://api.osv.dev/v1/vulns/X") == {"ok": True}
+        assert response.read_sizes == [
+            sa._HTTP_JSON_RESPONSE_BODY_MAX_BYTES + 1
+        ]
+        assert captured[0][0].full_url == "https://api.osv.dev/v1/vulns/X"
+        assert captured[0][1] == sa.HTTP_TIMEOUT
+
+    def test_osv_batch_wraps_oversized_response_as_runtime_error(self, monkeypatch):
+        response = _FakeHTTPResponse(
+            b"x" * (sa._HTTP_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+        )
+        monkeypatch.setattr(
+            sa.urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: response,
+        )
+        component = sa.Component(
+            name="pkg",
+            version="1.0",
+            ecosystem="PyPI",
+            source="venv",
+        )
+
+        try:
+            sa._osv_query_batch([component])
+        except RuntimeError as exc:
+            assert "OSV batch query failed" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError")
+
+        assert response.read_sizes == [
+            sa._HTTP_JSON_RESPONSE_BODY_MAX_BYTES + 1
+        ]
 
 
 class TestRunAudit:

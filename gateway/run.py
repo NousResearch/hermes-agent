@@ -14915,6 +14915,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Agent cache idle-TTL evict: session=%s (idle=%.0fs)",
                 key, now - getattr(agent, "_last_activity_ts", now),
             )
+            # Remove from sessions.json so the stale entry doesn't route
+            # messages into an ended session until gateway restart.
+            try:
+                self.session_store.remove(key)
+            except Exception:
+                logger.debug("Failed to remove stale session entry for %s", key, exc_info=True)
             threading.Thread(
                 target=self._release_evicted_agent_soft,
                 args=(agent,),

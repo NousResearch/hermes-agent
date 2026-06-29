@@ -1615,6 +1615,22 @@ class SessionStore:
 
         return new_entry
 
+    def remove(self, session_key: str) -> bool:
+        """Remove a session key from the routing index.
+
+        Called after idle-TTL eviction to prevent sessions.json from holding
+        stale entries that route messages into ended sessions.
+
+        Returns True if the key was present and removed, False otherwise.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key not in self._entries:
+                return False
+            del self._entries[session_key]
+            self._save()
+            return True
+
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         with self._lock:

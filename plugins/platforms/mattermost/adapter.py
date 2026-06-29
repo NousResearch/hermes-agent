@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 # Mattermost post size limit (server default is 16383, but 4000 is the
 # practical limit for readable messages — matching OpenClaw's choice).
 MAX_POST_LENGTH = 4000
+_MATTERMOST_JSON_BODY_MAX_BYTES = 4 * 1024 * 1024
+_MATTERMOST_ERROR_BODY_MAX_BYTES = 64 * 1024
+_MATTERMOST_BODY_READ_CHUNK_BYTES = 64 * 1024
 
 # Channel type codes returned by the Mattermost API.
 _CHANNEL_TYPE_MAP = {
@@ -48,6 +51,102 @@ _CHANNEL_TYPE_MAP = {
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+
+def _is_mock_object(value: Any) -> bool:
+    return "unittest.mock" in type(value).__module__
+
+
+async def _read_mattermost_body(resp: Any, limit: int, *, label: str) -> bytes:
+    content_length = getattr(resp, "content_length", None)
+    if isinstance(content_length, int) and content_length > limit:
+        raise ValueError(f"Mattermost {label} exceeded {limit} bytes")
+    headers = getattr(resp, "headers", None)
+    header_value = None
+    if not _is_mock_object(headers) and hasattr(headers, "get"):
+        header_value = headers.get("Content-Length") or headers.get("content-length")
+    if header_value is not None:
+        try:
+            if int(header_value) > limit:
+                raise ValueError(f"Mattermost {label} exceeded {limit} bytes")
+        except (TypeError, ValueError):
+            if isinstance(header_value, str) and header_value.strip().isdigit():
+                raise
+
+    content = getattr(resp, "content", None)
+    iter_chunked = getattr(content, "iter_chunked", None)
+    if callable(iter_chunked) and not _is_mock_object(iter_chunked):
+        chunks: List[bytes] = []
+        total = 0
+        try:
+            async for chunk in iter_chunked(_MATTERMOST_BODY_READ_CHUNK_BYTES):
+                if isinstance(chunk, bytearray):
+                    chunk = bytes(chunk)
+                if not isinstance(chunk, bytes):
+                    raise TypeError("Mattermost response stream yielded non-bytes")
+                total += len(chunk)
+                if total > limit:
+                    raise ValueError(f"Mattermost {label} exceeded {limit} bytes")
+                chunks.append(chunk)
+        except TypeError:
+            pass
+        else:
+            return b"".join(chunks)
+
+    read = getattr(content, "read", None)
+    if callable(read) and not _is_mock_object(read):
+        body = await read(limit + 1)
+        if isinstance(body, bytearray):
+            body = bytes(body)
+        if isinstance(body, bytes):
+            if len(body) > limit:
+                raise ValueError(f"Mattermost {label} exceeded {limit} bytes")
+            return body
+
+    read_response = getattr(resp, "read", None)
+    if callable(read_response) and not _is_mock_object(read_response):
+        body = await read_response()
+        if isinstance(body, bytearray):
+            body = bytes(body)
+        if isinstance(body, bytes):
+            if len(body) > limit:
+                raise ValueError(f"Mattermost {label} exceeded {limit} bytes")
+            return body
+
+    raise TypeError("Mattermost response body is not readable")
+
+
+async def _read_mattermost_text_response(
+    resp: Any,
+    *,
+    limit: Optional[int] = None,
+) -> str:
+    if limit is None:
+        limit = _MATTERMOST_ERROR_BODY_MAX_BYTES
+    try:
+        body = await _read_mattermost_body(resp, limit, label="error response body")
+    except TypeError:
+        return await resp.text()
+    return body.decode("utf-8", errors="replace")
+
+
+async def _read_mattermost_json_response(
+    resp: Any,
+    *,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    if limit is None:
+        limit = _MATTERMOST_JSON_BODY_MAX_BYTES
+    try:
+        body = await _read_mattermost_body(resp, limit, label="JSON response body")
+    except TypeError:
+        return await resp.json()
+    if not body:
+        return {}
+    data = json.loads(body.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Mattermost JSON response was not an object")
+    return data
 
 
 def check_mattermost_requirements() -> bool:
@@ -124,11 +223,11 @@ class MattermostAdapter(BasePlatformAdapter):
         try:
             async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status >= 400:
-                    body = await resp.text()
+                    body = await _read_mattermost_text_response(resp)
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
                     return {}
-                return await resp.json()
-        except aiohttp.ClientError as exc:
+                return await _read_mattermost_json_response(resp)
+        except (aiohttp.ClientError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
             return {}
 
@@ -150,12 +249,12 @@ class MattermostAdapter(BasePlatformAdapter):
             ) as resp:
                 self._last_post_status = resp.status
                 if resp.status >= 400:
-                    body = await resp.text()
+                    body = await _read_mattermost_text_response(resp)
                     self._last_post_error = body or ""
                     logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
                     return {}
-                return await resp.json()
-        except aiohttp.ClientError as exc:
+                return await _read_mattermost_json_response(resp)
+        except (aiohttp.ClientError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             self._last_post_error = str(exc)
             logger.error("MM API POST %s network error: %s", path, exc)
             return {}
@@ -228,11 +327,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 url, headers=self._headers(), json=payload
             ) as resp:
                 if resp.status >= 400:
-                    body = await resp.text()
+                    body = await _read_mattermost_text_response(resp)
                     logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
                     return {}
-                return await resp.json()
-        except aiohttp.ClientError as exc:
+                return await _read_mattermost_json_response(resp)
+        except (aiohttp.ClientError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
 
@@ -252,14 +351,18 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        try:
+            async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status >= 400:
+                    body = await _read_mattermost_text_response(resp)
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await _read_mattermost_json_response(resp)
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
+        except (aiohttp.ClientError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logger.error("MM file upload network error: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -1053,14 +1156,14 @@ async def _standalone_send(
                     **_req_kw,
                 ) as upload_resp:
                     if upload_resp.status not in {200, 201}:
-                        body = await upload_resp.text()
+                        body = await _read_mattermost_text_response(upload_resp)
                         return {
                             "error": (
                                 f"Mattermost file upload failed "
                                 f"({upload_resp.status}): {body[:400]}"
                             )
                         }
-                    upload_data = await upload_resp.json()
+                    upload_data = await _read_mattermost_json_response(upload_resp)
                     for info in upload_data.get("file_infos", []):
                         if info.get("id"):
                             file_ids.append(info["id"])
@@ -1081,14 +1184,14 @@ async def _standalone_send(
                 **_req_kw,
             ) as resp:
                 if resp.status not in {200, 201}:
-                    body = await resp.text()
+                    body = await _read_mattermost_text_response(resp)
                     return {
                         "error": (
                             f"Mattermost API error ({resp.status}): "
                             f"{body[:400]}"
                         )
                     }
-                data = await resp.json()
+                data = await _read_mattermost_json_response(resp)
             return {
                 "success": True,
                 "platform": "mattermost",

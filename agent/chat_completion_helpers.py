@@ -34,6 +34,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
+from agent.pii_redaction import maybe_redact_api_kwargs
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -591,6 +592,14 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    def _finalize(api_kwargs: dict) -> dict:
+        redacted, stats = maybe_redact_api_kwargs(
+            api_kwargs,
+            base_url=getattr(agent, "base_url", None),
+        )
+        agent._last_pii_redaction_stats = stats
+        return redacted
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
@@ -599,7 +608,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
         if ephemeral_out is not None:
             agent._ephemeral_max_output_tokens = None  # consume immediately
-        return _transport.build_kwargs(
+        return _finalize(_transport.build_kwargs(
             model=agent.model,
             messages=anthropic_messages,
             tools=tools_for_api,
@@ -611,7 +620,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
-        )
+        ))
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.
@@ -619,14 +628,14 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _bt = agent._get_transport()
         region = getattr(agent, "_bedrock_region", None) or "us-east-1"
         guardrail = getattr(agent, "_bedrock_guardrail_config", None)
-        return _bt.build_kwargs(
+        return _finalize(_bt.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
             max_tokens=agent.max_tokens or 4096,
             region=region,
             guardrail_config=guardrail,
-        )
+        ))
 
     if agent.api_mode == "codex_responses":
         _ct = agent._get_transport()
@@ -676,7 +685,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                     getattr(agent, "log_prefix", ""), exc,
                 )
 
-        return _ct.build_kwargs(
+        return _finalize(_ct.build_kwargs(
             model=agent.model,
             messages=_msgs_for_codex,
             tools=tools_for_api,
@@ -692,7 +701,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             replay_encrypted_reasoning=bool(
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
             ),
-        )
+        ))
 
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()
@@ -777,7 +786,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
+        return _finalize(_ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
@@ -797,7 +806,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
-        )
+        ))
 
     # ── Legacy flag path ────────────────────────────────────────────
     # Reached only when get_provider_profile() returns None — i.e. a
@@ -809,7 +818,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
+    return _finalize(_ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
@@ -844,7 +853,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
-    )
+    ))
 
 
 
@@ -1570,10 +1579,18 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                is_oauth=agent._is_anthropic_oauth,
                                preserve_dots=agent._anthropic_preserve_dots())
+                _ant_kw, agent._last_pii_redaction_stats = maybe_redact_api_kwargs(
+                    _ant_kw,
+                    base_url=getattr(agent, "base_url", None),
+                )
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
+                summary_kwargs, agent._last_pii_redaction_stats = maybe_redact_api_kwargs(
+                    summary_kwargs,
+                    base_url=getattr(agent, "base_url", None),
+                )
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
@@ -1600,6 +1617,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                                 is_oauth=agent._is_anthropic_oauth,
                                 max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                 preserve_dots=agent._anthropic_preserve_dots())
+                _ant_kw2, agent._last_pii_redaction_stats = maybe_redact_api_kwargs(
+                    _ant_kw2,
+                    base_url=getattr(agent, "base_url", None),
+                )
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()
@@ -1617,6 +1638,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 
+                summary_kwargs, agent._last_pii_redaction_stats = maybe_redact_api_kwargs(
+                    summary_kwargs,
+                    base_url=getattr(agent, "base_url", None),
+                )
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
                 _retry_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_retry_result.content or "").strip()

@@ -11928,7 +11928,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
-        "send", "sessions", "setup",
+        "redact", "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
@@ -12500,6 +12500,13 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # redact command — local PII redaction
+    # =========================================================================
+    from hermes_cli.redact_cmd import register_redact_parser
+
+    register_redact_parser(subparsers)
 
     # =========================================================================
     # secrets command — external secret managers (currently: Bitwarden)

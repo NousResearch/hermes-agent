@@ -337,6 +337,22 @@ terminal:
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds
 #   tirith_fail_open: true      # Allow commands if tirith unavailable
+#
+# Optional local PII redaction before hosted LLM calls. Disabled by default.
+# Run `hermes redact setup --enable` to install the pinned Rampart backend into
+# this Hermes profile, then adjust settings with `hermes redact config`.
+#
+# security:
+#   pii_redaction:
+#     enabled: false
+#     provider: "rampart"
+#     hosted_only: true         # Skip local endpoints such as Ollama/vLLM
+#     fail_closed: true         # Block hosted calls if redaction fails
+#     timeout_seconds: 10
+#     rampart:
+#       command: ""             # Written by `hermes redact setup`
+#       model: "nationaldesignstudio/rampart"
+#       heuristics_only: false
 
 # =============================================================================
 # Browser Tool Configuration

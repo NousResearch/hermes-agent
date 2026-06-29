@@ -2422,6 +2422,18 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+        "pii_redaction": {
+            "enabled": False,
+            "provider": "rampart",
+            "hosted_only": True,
+            "fail_closed": True,
+            "timeout_seconds": 10,
+            "rampart": {
+                "command": "",
+                "model": "nationaldesignstudio/rampart",
+                "heuristics_only": False,
+            },
+        },
         # Acknowledged supply-chain security advisories. Each entry is the
         # ID of an advisory the user has read and acted on (uninstalled the
         # compromised package, rotated credentials). Acked advisories no

@@ -287,9 +287,19 @@ def run_codex_app_server_turn(
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
+    outbound_user_message = user_message
+    try:
+        from agent.pii_redaction import redact_text_for_llm
+
+        outbound_user_message, agent._last_pii_redaction_stats = redact_text_for_llm(
+            user_message,
+            base_url=getattr(agent, "base_url", None),
+        )
+    except Exception:
+        raise
 
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(user_input=outbound_user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

@@ -53,6 +53,9 @@ def _make_codex_agent():
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
+    from hermes_constants import get_hermes_home
+
+    run_agent._hermes_home = get_hermes_home()
     return run_agent.AIAgent(
         api_key="stub",
         base_url="https://stub.invalid",
@@ -158,6 +161,43 @@ class TestRunConversationCodexPath:
 
         agent._memory_manager.sync_all.assert_called_once()
         assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
+
+    def test_codex_app_server_redacts_outbound_input_only(self, monkeypatch):
+        captured = {}
+
+        def fake_redact_text(text, **kwargs):
+            captured["redact_input"] = text
+            captured["redact_kwargs"] = kwargs
+            return text.replace("alice@example.com", "[EMAIL]"), {
+                "redacted": True,
+                "texts_changed": 1,
+            }
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured["codex_input"] = user_input
+            return TurnResult(
+                final_text=f"echo: {user_input}",
+                projected_messages=[{"role": "assistant", "content": f"echo: {user_input}"}],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="turn-redacted",
+                thread_id="thread-redacted",
+            )
+
+        monkeypatch.setattr("agent.pii_redaction.redact_text_for_llm", fake_redact_text)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-redacted")
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("Email alice@example.com")
+
+        assert captured["redact_input"] == "Email alice@example.com"
+        assert captured["codex_input"] == "Email [EMAIL]"
+        assert result["messages"][0]["content"] == "Email alice@example.com"
+        assert result["final_response"] == "echo: Email [EMAIL]"
+        assert agent._last_pii_redaction_stats["texts_changed"] == 1
 
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across
@@ -588,4 +628,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

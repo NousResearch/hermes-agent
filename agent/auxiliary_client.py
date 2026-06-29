@@ -102,6 +102,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.pii_redaction import maybe_redact_api_kwargs
 from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -3051,6 +3052,7 @@ def _retry_same_provider_sync(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    retry_kwargs = _maybe_redact_aux_kwargs(retry_kwargs, retry_base or resolved_base_url)
     return _validate_llm_response(
         retry_client.chat.completions.create(**retry_kwargs), task,
     )
@@ -3064,6 +3066,7 @@ async def _retry_same_provider_async(
     resolved_base_url: Optional[str],
     resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str],
+    main_runtime: Optional[Dict[str, Any]],
     final_model: Optional[str],
     messages: list,
     temperature: Optional[float],
@@ -3088,6 +3091,7 @@ async def _retry_same_provider_async(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
     if retry_client is None:
         raise RuntimeError(
@@ -3108,6 +3112,7 @@ async def _retry_same_provider_async(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    retry_kwargs = _maybe_redact_aux_kwargs(retry_kwargs, retry_base or resolved_base_url)
     return _validate_llm_response(
         await retry_client.chat.completions.create(**retry_kwargs), task,
     )
@@ -5541,6 +5546,11 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _maybe_redact_aux_kwargs(kwargs: dict, base_url: Optional[str]) -> dict:
+    redacted, _stats = maybe_redact_api_kwargs(kwargs, base_url=base_url)
+    return redacted
+
+
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -5766,6 +5776,7 @@ def call_llm(
     _client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+    kwargs = _maybe_redact_aux_kwargs(kwargs, _client_base or resolved_base_url)
 
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
@@ -6115,12 +6126,16 @@ def call_llm(
                         resolved_provider, task, reason=reason)
 
             if fb_client is not None:
+                fb_base = str(getattr(fb_client, "base_url", "") or "")
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    base_url=fb_base)
+                if _is_anthropic_compat_endpoint(fb_label, fb_base):
+                    fb_kwargs["messages"] = _convert_openai_images_to_anthropic(fb_kwargs["messages"])
+                fb_kwargs = _maybe_redact_aux_kwargs(fb_kwargs, fb_base)
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — emit a single user-visible
@@ -6299,6 +6314,7 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+    kwargs = _maybe_redact_aux_kwargs(kwargs, _client_base or resolved_base_url)
 
     try:
         # Retry ONCE on the same provider for a transient transport blip
@@ -6467,6 +6483,7 @@ async def async_call_llm(
                     resolved_base_url=resolved_base_url,
                     resolved_api_key=resolved_api_key,
                     resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
                     final_model=final_model,
                     messages=messages,
                     temperature=temperature,
@@ -6504,6 +6521,7 @@ async def async_call_llm(
                         resolved_base_url=resolved_base_url,
                         resolved_api_key=resolved_api_key,
                         resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
                         final_model=final_model,
                         messages=messages,
                         temperature=temperature,
@@ -6590,18 +6608,23 @@ async def async_call_llm(
                         resolved_provider, task, reason=reason)
 
             if fb_client is not None:
+                fb_base = str(getattr(fb_client, "base_url", "") or "")
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
-                    base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    base_url=fb_base)
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(
                     fb_client, fb_model or "", is_vision=(task == "vision")
                 )
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):
                     fb_kwargs["model"] = async_fb_model
+                async_fb_base = str(getattr(async_fb, "base_url", "") or fb_base)
+                if _is_anthropic_compat_endpoint(fb_label, async_fb_base):
+                    fb_kwargs["messages"] = _convert_openai_images_to_anthropic(fb_kwargs["messages"])
+                fb_kwargs = _maybe_redact_aux_kwargs(fb_kwargs, async_fb_base)
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — warn before re-raising. (#26882)

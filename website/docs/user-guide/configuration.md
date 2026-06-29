@@ -1829,6 +1829,16 @@ Pre-execution security scanning and secret redaction:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  pii_redaction:                 # Optional local PII redaction before hosted LLM calls
+    enabled: false
+    provider: rampart
+    hosted_only: true
+    fail_closed: true
+    timeout_seconds: 10
+    rampart:
+      command: ""                # Written by `hermes redact setup`
+      model: nationaldesignstudio/rampart
+      heuristics_only: false
   tirith_enabled: true           # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
@@ -1840,10 +1850,60 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development.
+- `pii_redaction` — optional local redaction for outbound LLM request payloads. It is **off by default** and intended for users who want to reduce accidental exposure of common PII before using hosted model providers.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
 - `tirith_fail_open` — when `true` (default), commands are allowed to execute if tirith is unavailable or fails. Set to `false` to block commands when tirith cannot verify them.
+
+### Local PII Redaction
+
+`security.pii_redaction` redacts text fields in model request payloads before Hermes sends them to an LLM provider. The default backend uses [Rampart](https://huggingface.co/nationaldesignstudio/rampart), installed locally and invoked as a subprocess.
+
+This feature is opt-in:
+
+```bash
+hermes redact setup --enable
+```
+
+`setup` requires `node` and `npm` on `PATH`. It installs exact-pinned npm packages under the active Hermes home (`support/pii-redaction/rampart`) rather than adding them to the base Python environment. The first model-backed run may fetch and cache the Rampart model from Hugging Face. For fully offline use after setup, make sure the model has already been cached locally, or use heuristics-only mode.
+
+Try the configured backend without sending anything to a provider:
+
+```bash
+hermes redact run --text "Call Alice at 415-555-1212"
+```
+
+Example output:
+
+```text
+Call [GIVEN_NAME_1] at [PHONE_1]
+```
+
+Common configuration commands:
+
+```bash
+hermes redact config --enable
+hermes redact config --disable
+hermes redact config --hosted-only       # default: skip local endpoints
+hermes redact config --all-endpoints     # also redact local inference requests
+hermes redact config --fail-closed       # default: block if redaction fails
+hermes redact config --fail-open         # allow unredacted send if redaction fails
+hermes redact config --heuristics-only   # no model load; less contextual coverage
+```
+
+Behavior summary:
+
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `enabled` | `false` | No PII redaction runs until explicitly enabled. |
+| `hosted_only` | `true` | Hosted provider calls are redacted; local endpoints such as Ollama or vLLM are skipped. |
+| `fail_closed` | `true` | If redaction fails, Hermes refuses to send the unredacted hosted request. |
+| `rampart.heuristics_only` | `false` | Uses Rampart's model-backed detector plus heuristics. Set to `true` to avoid model loading. |
+
+The redactor scans ordinary text fields in structured LLM requests, including messages and text inputs. It deliberately skips opaque or protocol-sensitive fields such as model names, provider metadata, tool call IDs, file IDs, URLs, base64 media payloads, encrypted content, and reasoning metadata so requests remain valid.
+
+Treat this as a privacy exposure-reduction layer, not a security boundary. PII detection is probabilistic and can miss uncommon formats or context-dependent identifiers. Keep using local inference for maximum privacy, and avoid sending highly sensitive material to hosted providers when policy or compliance requires stronger guarantees.
 
 ## Website Blocklist
 

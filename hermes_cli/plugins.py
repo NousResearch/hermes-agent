@@ -517,6 +517,40 @@ class PluginContext:
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
+    def register_reaction(
+        self,
+        emoji: str,
+        handler: Callable,
+        description: str = "",
+    ) -> None:
+        """Register a handler for an inbound message reaction emoji.
+
+        When a user reacts to one of the bot's messages with ``emoji`` on a
+        platform that supports inbound reactions (currently Telegram), the
+        adapter invokes ``handler`` instead of synthesizing a config-driven
+        agent turn. The handler signature is
+        ``fn(ctx: dict) -> None | Awaitable`` where ``ctx`` carries
+        ``emoji``, ``chat_id``, ``message_id`` and ``user_id``. It may be sync
+        or async.
+
+        This mirrors :meth:`register_command` and gives plugins a real
+        extension seam for reactions (the callback dispatcher has none).
+        Platforms that lack inbound-reaction support simply never call it.
+        """
+        clean = (emoji or "").strip()
+        if not clean:
+            logger.warning(
+                "Plugin '%s' tried to register a reaction with an empty emoji.",
+                self.manifest.name,
+            )
+            return
+        self._manager._plugin_reactions[clean] = {
+            "handler": handler,
+            "description": description or "Plugin reaction",
+            "plugin": self.manifest.name,
+        }
+        logger.debug("Plugin %s registered reaction: %s", self.manifest.name, clean)
+
     # -- tool dispatch -------------------------------------------------------
 
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
@@ -1147,6 +1181,7 @@ class PluginManager:
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
+        self._plugin_reactions: Dict[str, dict] = {}  # Inbound reaction emoji → handler
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
@@ -1191,6 +1226,7 @@ class PluginManager:
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
+            self._plugin_reactions.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
@@ -2106,6 +2142,16 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_reactions() -> Dict[str, dict]:
+    """Return the full plugin reactions dict (emoji → {handler, description, plugin}).
+
+    Triggers idempotent plugin discovery so adapters can resolve reaction
+    handlers before any explicit discover_plugins() call. Empty when no plugin
+    registered a reaction, so inbound-reaction handling stays config-driven.
+    """
+    return _ensure_plugins_discovered()._plugin_reactions
 
 
 def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:

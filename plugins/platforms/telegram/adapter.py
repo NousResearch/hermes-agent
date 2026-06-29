@@ -31,6 +31,7 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        MessageReactionHandler as TelegramMessageReactionHandler,
         ContextTypes,
         filters,
     )
@@ -49,6 +50,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    TelegramMessageReactionHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -2636,7 +2638,12 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+            # Handle inbound message reactions (user long-press → emoji → action).
+            # Inert unless telegram.extra.reaction_actions (or a plugin-registered
+            # reaction) maps the emoji. message_reaction is already in
+            # allowed_updates=ALL_TYPES below, so no polling change is needed.
+            self._app.add_handler(TelegramMessageReactionHandler(self._handle_message_reaction))
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -6797,6 +6804,143 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
         event = self._apply_telegram_group_observe_attribution(event)
+        await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Inbound message reactions (user long-press → emoji → agent action)
+    # ------------------------------------------------------------------
+
+    def _reaction_actions_map(self) -> dict:
+        """Return the configured ``emoji -> action label`` map.
+
+        Source: ``platforms.telegram.extra.reaction_actions`` (via
+        ``self.config.extra``). An empty/absent map disables inbound reaction
+        handling entirely, so this feature is backward-compatible by default.
+        """
+        try:
+            raw = self.config.extra.get("reaction_actions") if self.config and self.config.extra else None
+        except Exception:
+            raw = None
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): str(v) for k, v in raw.items() if str(k).strip() and str(v).strip()}
+
+    def _should_process_reaction(self, chat) -> bool:
+        """Gate inbound reactions. DMs always pass (mirrors message handling);
+        groups/supergroups require the ``allowed_chats`` whitelist; channels and
+        unknown chat types are ignored."""
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        if chat_type in ("private", ""):
+            return True
+        if chat_type in ("group", "supergroup"):
+            allowed = self._telegram_allowed_chats()
+            return bool(allowed) and str(getattr(chat, "id", "")) in allowed
+        return False
+
+    async def _handle_message_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Turn a recognized inbound reaction into a synthetic agent turn.
+
+        Only newly-*added* emoji (diff of new vs old reaction) are considered.
+        An emoji counts as recognized if it is in ``reaction_actions`` config or
+        a plugin registered it via ``ctx.register_reaction``. Removed reactions
+        and unmapped emoji are ignored. Inert when nothing is configured.
+        """
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            return
+
+        def _emojis(seq) -> list:
+            out = []
+            for r in (seq or ()):
+                emoji = getattr(r, "emoji", None)
+                if emoji:
+                    out.append(emoji)
+            return out
+
+        old = set(_emojis(getattr(mr, "old_reaction", None)))
+        added = [e for e in _emojis(getattr(mr, "new_reaction", None)) if e not in old]
+        if not added:
+            return  # reaction removed, or no genuinely new emoji
+
+        actions = self._reaction_actions_map()
+        plugin_reactions: dict = {}
+        try:
+            from hermes_cli.plugins import get_plugin_reactions
+            plugin_reactions = get_plugin_reactions() or {}
+        except Exception:
+            plugin_reactions = {}
+
+        matched = next((e for e in added if e in actions or e in plugin_reactions), None)
+        if matched is None:
+            return  # unrecognized emoji — ignore
+
+        chat = getattr(mr, "chat", None)
+        if chat is None or not self._should_process_reaction(chat):
+            return
+        user = getattr(mr, "user", None)
+
+        # A plugin-registered handler takes precedence (programmatic control).
+        if matched in plugin_reactions:
+            try:
+                handler = plugin_reactions[matched].get("handler")
+                if handler is not None:
+                    result = handler({
+                        "emoji": matched,
+                        "chat_id": str(chat.id),
+                        "message_id": str(mr.message_id),
+                        "user_id": str(user.id) if user else None,
+                    })
+                    if asyncio.iscoroutine(result):
+                        await result
+                    return
+            except Exception as e:
+                logger.warning("[%s] plugin reaction handler for %s failed: %s", self.name, matched, e)
+                return
+
+        chat_type_raw = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        chat_type = "group" if chat_type_raw in ("group", "supergroup") else (
+            "channel" if chat_type_raw == "channel" else "dm"
+        )
+        source = self.build_source(
+            chat_id=str(chat.id),
+            chat_name=getattr(chat, "title", None) or (getattr(chat, "full_name", None) if chat_type == "dm" else None),
+            chat_type=chat_type,
+            user_id=str(user.id) if user else str(chat.id),
+            user_name=(getattr(user, "full_name", None) if user else None),
+            message_id=str(mr.message_id),
+        )
+
+        # Recover what the bot said in the reacted-to message for context.
+        reacted_text = None
+        try:
+            from gateway import rich_sent_store
+            reacted_text = rich_sent_store.lookup(str(chat.id), str(mr.message_id))
+        except Exception:
+            reacted_text = None
+
+        action = actions.get(matched, "act on this reaction")
+        parts = [
+            f"[The user reacted {matched} to your earlier message "
+            f"(message id {mr.message_id}). In this context {matched} means: {action}.]"
+        ]
+        if reacted_text:
+            snippet = " ".join(reacted_text.split())
+            if len(snippet) > 280:
+                snippet = snippet[:280] + "…"
+            parts.append(f'The message they reacted to said: "{snippet}"')
+        parts.append(
+            "Take the appropriate action with your tools (e.g. complete/snooze/"
+            "escalate the relevant task). Reply with at most one short line, or "
+            "stay silent if nothing needs saying."
+        )
+
+        event = MessageEvent(
+            text="\n".join(parts),
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=str(mr.message_id),
+            timestamp=getattr(mr, "date", None),
+        )
         await self.handle_message(event)
 
     # ------------------------------------------------------------------

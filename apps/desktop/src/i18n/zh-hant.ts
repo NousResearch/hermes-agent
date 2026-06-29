@@ -279,7 +279,8 @@ export const zhHant = defineLocale({
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       embedsTitle: '內嵌預覽',
-      embedsDesc: '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
+      embedsDesc:
+        '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
       embedsAsk: '詢問',
       embedsAlways: '一律',
       embedsOff: '關閉',
@@ -1126,6 +1127,7 @@ export const zhHant = defineLocale({
     nameHint: '小寫字母、數字、連字號和底線。必須以字母或數字開頭。',
     title: '設定檔',
     count: count => `${count} 個設定檔`,
+    search: '搜尋設定檔…',
     loading: '正在載入設定檔…',
     newProfile: '新增設定檔',
     allProfiles: '全部設定檔',
@@ -1198,6 +1200,8 @@ export const zhHant = defineLocale({
 
   cron: {
     close: '關閉排程',
+    title: '排程工作',
+    count: count => `${count} 個工作`,
     search: '搜尋排程工作…',
     loading: '正在載入排程工作…',
     states: {

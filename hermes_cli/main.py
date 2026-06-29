@@ -828,6 +828,8 @@ def _has_any_provider_configured() -> bool:
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
                     continue
+                if line.startswith("export "):
+                    line = line[7:]
                 key, _, val = line.partition("=")
                 val = val.strip().strip("'\"")
                 if key.strip() in provider_env_vars and val:
@@ -11147,13 +11149,19 @@ def cmd_profile(args):
         remove = getattr(args, "remove", False)
         custom_name = getattr(args, "alias_name", None)
 
-        from hermes_cli.profiles import profile_exists
+        from hermes_cli.profiles import profile_exists, validate_alias_name
 
         if not profile_exists(name):
             print(f"Error: Profile '{name}' does not exist.")
             sys.exit(1)
 
         alias_name = custom_name or name
+
+        try:
+            validate_alias_name(alias_name)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
         if remove:
             if remove_wrapper_script(alias_name):

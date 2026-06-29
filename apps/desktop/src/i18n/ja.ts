@@ -1171,6 +1171,7 @@ export const ja = defineLocale({
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',
     title: 'プロファイル',
     count: count => `${count} プロファイル`,
+    search: 'プロファイルを検索...',
     loading: 'プロファイルを読み込み中...',
     newProfile: '新しいプロファイル',
     allProfiles: 'すべてのプロファイル',
@@ -1244,6 +1245,8 @@ export const ja = defineLocale({
 
   cron: {
     close: 'Cron を閉じる',
+    title: 'スケジュール済みジョブ',
+    count: count => `${count} 件のジョブ`,
     search: 'Cron ジョブを検索...',
     loading: 'Cron ジョブを読み込み中...',
     states: {

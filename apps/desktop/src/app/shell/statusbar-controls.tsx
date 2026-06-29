@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -34,7 +34,8 @@ export interface StatusbarItem {
   href?: string
   menuAlign?: 'center' | 'end' | 'start'
   menuClassName?: string
-  menuContent?: ReactNode
+  // A render fn receives a `close()` to dismiss the popover from inside the content.
+  menuContent?: ((close: () => void) => ReactNode) | ReactNode
   menuItems?: readonly StatusbarMenuItem[]
   onSelect?: (modifiers: StatusbarSelectModifiers) => void
   title?: string
@@ -88,6 +89,8 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 }
 
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+
   const content = (
     <>
       {item.icon}
@@ -99,7 +102,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   if (item.variant === 'menu' && (item.menuContent || (item.menuItems && item.menuItems.length > 0))) {
     return (
       <Tip label={item.title}>
-        <DropdownMenu>
+        <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
           <DropdownMenuTrigger asChild>
             <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
               {content}
@@ -112,7 +115,9 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
             sideOffset={8}
           >
             {item.menuContent
-              ? item.menuContent
+              ? typeof item.menuContent === 'function'
+                ? item.menuContent(() => setMenuOpen(false))
+                : item.menuContent
               : (item.menuItems ?? [])
                   .filter(menuItem => !menuItem.hidden)
                   .map(menuItem => (

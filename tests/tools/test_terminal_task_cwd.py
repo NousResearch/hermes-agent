@@ -34,7 +34,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -61,7 +61,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(
@@ -98,7 +98,7 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
 
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
@@ -136,7 +136,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     monkeypatch.setattr(
         terminal_tool,
         "_check_all_guards",
-        lambda command, env_type: {"approved": True},
+        lambda command, env_type, **kwargs: {"approved": True},
     )
     monkeypatch.setattr(process_registry_mod, "process_registry", registry)
 

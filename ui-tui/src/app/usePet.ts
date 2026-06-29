@@ -80,6 +80,8 @@ type CacheEntry =
 
 const FRAME_MS = 160
 const POLL_MS = 2500
+/** Stop polling after this many consecutive RPC failures (e.g. backend missing the pet module). */
+const MAX_CONSECUTIVE_FAILURES = 3
 
 // Only the standalone TUI owns a real terminal it can splat image escapes into;
 // when piped (or running under the dashboard PTY the gateway resolves to
@@ -119,6 +121,7 @@ export function usePet(): PetRender {
   const imageIdRef = useRef(0)
   const stateRef = useRef<PetState>('idle')
   const frameRef = useRef(0)
+  const failCountRef = useRef(0)
 
   const [petState, setPetState] = useState<PetState>('idle')
 
@@ -193,12 +196,23 @@ export function usePet(): PetRender {
   // config, so its `slug`/`enabled` are the source of truth.
   const sync = useCallback(
     async (state: PetState) => {
+      // Back off after consecutive failures — the backend may not have the
+      // pet module loaded (crash recovery, missing dependency) and retrying
+      // every POLL_MS just floods the activity feed with RPC errors.
+      if (failCountRef.current >= MAX_CONSECUTIVE_FAILURES) {
+        return
+      }
+
       try {
         const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
 
         if (!res) {
+          failCountRef.current += 1
           return
         }
+
+        // Success — reset the failure counter.
+        failCountRef.current = 0
 
         if (!res.enabled) {
           releaseKitty()

@@ -304,8 +304,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
         host = self.webhook_host
-        if host in {"0.0.0.0", "127.0.0.1", "localhost", "::"}:
-            host = "localhost"
+        # Wildcard bind addresses aren't routable as a destination, so map them
+        # to an explicit loopback. Use 127.0.0.1 (IPv4) rather than "localhost":
+        # on modern macOS "localhost" resolves to IPv6 ::1 first, but the
+        # webhook listener (web.TCPSite, see _start) binds the IPv4 loopback by
+        # default — so a "localhost" registration makes BlueBubbles POST to
+        # ::1 and get ECONNREFUSED. Registering the IPv4 literal keeps the
+        # destination in lockstep with the bind address.
+        if host in {"0.0.0.0", "::", "localhost"}:
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property

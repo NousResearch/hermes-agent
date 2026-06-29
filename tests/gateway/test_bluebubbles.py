@@ -554,19 +554,28 @@ class TestBlueBubblesAttachmentDownload:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url property normalises local hosts to the IPv4 loopback.
+
+    Must register 127.0.0.1 rather than "localhost": the webhook listener
+    binds the IPv4 loopback (web.TCPSite default), but on modern macOS
+    "localhost" resolves to IPv6 ::1 first, so a "localhost" registration
+    makes BlueBubbles POST to ::1 and get ECONNREFUSED.
+    """
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 0.0.0.0 → normalized to 127.0.0.1 (IPv4)
+        assert "127.0.0.1" in adapter._webhook_url
+        assert "localhost" not in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
     @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
     def test_local_hosts_normalized(self, monkeypatch, host):
         adapter = _make_adapter(monkeypatch, webhook_host=host)
-        assert adapter._webhook_url.startswith("http://localhost:")
+        # All loopback/wildcard hosts must register as the IPv4 literal so the
+        # registered destination matches the IPv4 bind (no IPv6 ::1 mismatch).
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
 
     def test_custom_host_preserved(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")

@@ -58,6 +58,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
@@ -901,6 +902,7 @@ function SidebarSystemActions({
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
     useSystemActions();
   const canUpdateHermes = status?.can_update_hermes === true;
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
 
   const items: SystemActionItem[] = [
     {
@@ -923,12 +925,24 @@ function SidebarSystemActions({
 
   const handleClick = (action: SystemAction) => {
     if (isBusy) return;
+    if (action === "restart") {
+      setRestartConfirmOpen(true);
+      return;
+    }
     void runAction(action);
     navigate("/sessions");
     onNavigate();
   };
 
+  const confirmRestart = () => {
+    setRestartConfirmOpen(false);
+    void runAction("restart");
+    navigate("/sessions");
+    onNavigate();
+  };
+
   return (
+    <>
     <div
       className={cn(
         "shrink-0 flex flex-col",
@@ -967,6 +981,23 @@ function SidebarSystemActions({
         ))}
       </ul>
     </div>
+
+    <ConfirmDialog
+      cancelLabel={t.common.cancel}
+      confirmLabel={t.status.restartGateway}
+      description={
+        t.status.restartGatewayConfirmMessage ??
+        "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward."
+      }
+      loading={pendingAction === "restart"}
+      onCancel={() => setRestartConfirmOpen(false)}
+      onConfirm={confirmRestart}
+      open={restartConfirmOpen}
+      title={
+        t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`
+      }
+    />
+    </>
   );
 }
 

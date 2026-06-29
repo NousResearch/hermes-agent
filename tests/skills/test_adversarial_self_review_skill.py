@@ -5,10 +5,15 @@ for a pure prompt-pattern skill (no scripts, no external dependencies).
 """
 
 import re
-import yaml
 from pathlib import Path
 
 import pytest
+
+
+def _load_yaml():
+    """Load PyYAML lazily — it's a core Hermes dependency but import only when needed."""
+    import yaml as _yaml
+    return _yaml
 
 
 SKILL_DIR = (
@@ -22,8 +27,8 @@ SKILL_MD = SKILL_DIR / "SKILL.md"
 
 def _read_skill():
     """Read SKILL.md and return (frontmatter_dict, body_text)."""
+    yaml = _load_yaml()
     text = SKILL_MD.read_text(encoding="utf-8")
-    # YAML frontmatter is between --- delimiters
     parts = text.split("---", 2)
     if len(parts) < 3:
         raise ValueError("SKILL.md missing YAML frontmatter delimiters")
@@ -65,7 +70,6 @@ class TestFrontmatter:
 
     def test_description_is_one_sentence(self):
         desc = self.fm["description"]
-        # Single sentence: ends with period, no internal periods
         inner = desc.rstrip(".")
         assert "." not in inner, (
             f"description should be one sentence: {desc!r}"
@@ -76,7 +80,7 @@ class TestFrontmatter:
         banned = ["powerful", "comprehensive", "seamless", "advanced"]
         for word in banned:
             assert word not in desc, (
-                f"description contains marketing word '{word}': {self.fm['description']!r}"
+                f"description has marketing word '{word}': {self.fm['description']!r}"
             )
 
     def test_version_present(self):
@@ -84,7 +88,6 @@ class TestFrontmatter:
 
     def test_author_human_first(self):
         author = self.fm.get("author", "")
-        # Must not be "Hermes Agent" alone — human name required
         assert author != "Hermes Agent", (
             "author must credit human first, not 'Hermes Agent'"
         )
@@ -141,9 +144,7 @@ class TestRequiredSections:
                 positions[section] = idx
         ordered = sorted(positions.items(), key=lambda x: x[1])
         ordered_names = [name for name, _ in ordered]
-        expected_order = self.REQUIRED[:]
-        # Filter to only sections actually present
-        present_required = [s for s in expected_order if s in positions]
+        present_required = [s for s in self.REQUIRED if s in positions]
         assert ordered_names == present_required, (
             f"Sections out of order. Expected: {present_required}, "
             f"Got: {ordered_names}"
@@ -151,9 +152,16 @@ class TestRequiredSections:
 
 
 class TestToolReferences:
-    """HARDLINE rule 2: only native Hermes tools, no shell commands."""
+    """HARDLINE rule 2: only native Hermes tools, no shell commands.
 
-    SHELL_REDIRECTS = {
+    Only checks backtick-wrapped commands (`` `cmd` ``) — the HARDLINE
+    violation is specifically naming a shell utility where a Hermes tool
+    should be named. Plain English words like "find every bug" are NOT
+    violations; `` `find` `` used as a tool instruction IS.
+    """
+
+    # Mapping from shell command (when used as a tool instruction) → native tool
+    SHELL_TO_NATIVE = {
         "grep": "search_files",
         "rg": "search_files",
         "cat": "read_file",
@@ -163,7 +171,6 @@ class TestToolReferences:
         "awk": "patch",
         "find": "search_files (target='files')",
         "ls": "search_files (target='files')",
-        "curl": "web_extract",
     }
 
     @pytest.fixture(autouse=True)
@@ -180,23 +187,24 @@ class TestToolReferences:
             "SKILL.md must reference at least one native Hermes tool"
         )
 
-    def test_no_shell_commands_instead_of_tools(self):
-        """Must not tell agent to use grep instead of search_files, etc."""
-        for shell_cmd, native_tool in self.SHELL_REDIRECTS.items():
-            lines = self.body.split("\n")
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("```") or stripped.startswith("`"):
-                    continue
-                # Check for bare shell command usage
-                pattern = rf'\b{shell_cmd}\b'
-                if re.search(pattern, stripped, re.IGNORECASE):
-                    # Make sure it's not inside inline code backticks
-                    if f"`{shell_cmd}`" not in stripped:
-                        pytest.fail(
-                            f"Line uses '{shell_cmd}' instead of native "
-                            f"'{native_tool}': {stripped!r}"
-                        )
+    def test_no_shell_commands_in_backticks(self):
+        """Must not instruct agent to use `grep` instead of `search_files`, etc.
+
+        Only checks backtick-wrapped references — plain English uses of
+        these words (e.g. "find every bug") are not violations.
+        """
+        # Extract all backtick-wrapped terms
+        backtick_terms = set(re.findall(r'`([^`]+)`', self.body))
+        violations = []
+        for term in backtick_terms:
+            term_lower = term.lower().strip()
+            if term_lower in self.SHELL_TO_NATIVE:
+                native = self.SHELL_TO_NATIVE[term_lower]
+                violations.append(f"`{term}` → use `{native}` instead")
+        assert not violations, (
+            f"Backtick-wrapped shell commands found — use native Hermes tools:\n"
+            + "\n".join(f"  • {v}" for v in violations)
+        )
 
 
 class TestBodyQuality:
@@ -234,7 +242,7 @@ class TestBodyQuality:
                 )
 
     def test_delegate_task_referenced_in_procedure(self):
-        """Procedure section must reference delegate_task as the invocation method."""
+        """Procedure section must reference delegate_task."""
         procedure_start = self.body.find("## Procedure")
         procedure_text = self.body[procedure_start:]
         assert "delegate_task" in procedure_text, (

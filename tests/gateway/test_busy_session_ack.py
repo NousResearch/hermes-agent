@@ -359,6 +359,36 @@ class TestBusySessionAck:
         assert sk not in adapter._pending_messages
 
     @pytest.mark.asyncio
+    async def test_busy_ack_debounce_skips_steer_ack_config_load(self, monkeypatch):
+        """Rapid follow-ups should not reload display config when ack is debounced."""
+        import gateway.run as _gr
+
+        def _boom():
+            raise AssertionError("config should not be loaded inside ack cooldown")
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", _boom)
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="rapid steer")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+        runner._busy_ack_ts[sk] = time.time()
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.steer.assert_called_once_with("rapid steer")
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
         """If agent.steer() returns False, fall back to queue behavior."""
         runner, sentinel = _make_runner()

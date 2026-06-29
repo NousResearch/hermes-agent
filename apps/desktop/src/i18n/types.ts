@@ -331,6 +331,8 @@ export interface Translations {
         off: string
         scaleTitle: string
         scaleDesc: string
+        roamTitle: string
+        roamDesc: string
         chooseTitle: string
         chooseDesc: string
         searchPlaceholder: string

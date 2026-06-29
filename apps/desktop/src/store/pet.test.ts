@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { $petActivity, $petState, derivePetState, flashPetActivity, setPetActivity } from './pet'
+import {
+  $petActivity,
+  $petAtRest,
+  $petMotion,
+  $petState,
+  derivePetState,
+  flashPetActivity,
+  setPetActivity
+} from './pet'
 
 describe('derivePetState', () => {
   it('rests at idle by default and uses waiting when awaiting input', () => {
@@ -29,6 +37,41 @@ describe('derivePetState', () => {
     expect(derivePetState({ error: true, celebrate: true, busy: true })).toBe('failed')
     expect(derivePetState({ celebrate: true, justCompleted: true, toolRunning: true })).toBe('jump')
     expect(derivePetState({ justCompleted: true, toolRunning: true })).toBe('wave')
+  })
+})
+
+describe('roam motion', () => {
+  it('only reports at-rest when the agent-driven state is plain idle', () => {
+    $petActivity.set({})
+    expect($petAtRest.get()).toBe(true)
+
+    $petActivity.set({ busy: true })
+    expect($petAtRest.get()).toBe(false)
+
+    $petActivity.set({})
+    expect($petAtRest.get()).toBe(true)
+  })
+
+  it('shows the roam pose while wandering, but never overrides real activity', () => {
+    $petActivity.set({})
+    $petMotion.set('run')
+    expect($petState.get()).toBe('run')
+
+    // Hops surface the jump pose.
+    $petMotion.set('jump')
+    expect($petState.get()).toBe('jump')
+
+    // Activity wins over a wander in progress.
+    $petActivity.set({ reasoning: true, busy: true })
+    expect($petState.get()).toBe('review')
+
+    // Back at rest, the wander resumes its pose; clearing it returns to idle.
+    $petActivity.set({})
+    expect($petState.get()).toBe('jump')
+    $petMotion.set(null)
+    expect($petState.get()).toBe('idle')
+
+    $petActivity.set({})
   })
 })
 

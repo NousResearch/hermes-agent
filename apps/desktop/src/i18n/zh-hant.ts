@@ -308,6 +308,8 @@ export const zhHant = defineLocale({
         restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
         scaleTitle: '大小',
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
+        roamTitle: '漫遊',
+        roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
         on: '開啟',
         off: '關閉',
         chooseTitle: '選擇寵物',

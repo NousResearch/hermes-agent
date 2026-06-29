@@ -4,6 +4,30 @@ import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
 import { $userThemes, installUserTheme, isUserTheme, listAllThemes, removeUserTheme, resolveTheme } from './user-themes'
 import { convertVscodeColorTheme } from './vscode'
 
+// jsdom in this environment does not provide a working localStorage.clear()
+// (pre-existing baseline issue). Install a full mock so storage-backed code
+// paths (user theme persistence) work in tests.
+function installStorageMock() {
+  let store: Record<string, string> = {}
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => {
+        store = {}
+      },
+      getItem: (key: string) => store[key] ?? null,
+      key: (index: number) => Object.keys(store)[index] ?? null,
+      removeItem: (key: string) => {
+        delete store[key]
+      },
+      setItem: (key: string, value: string) => {
+        store[key] = String(value)
+      }
+    }
+  })
+}
+
 const makeTheme = (label: string) =>
   convertVscodeColorTheme({
     name: label,
@@ -13,7 +37,7 @@ const makeTheme = (label: string) =>
 
 describe('user theme registry', () => {
   beforeEach(() => {
-    window.localStorage.clear()
+    installStorageMock()
     $userThemes.set({})
   })
 

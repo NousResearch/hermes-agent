@@ -17,23 +17,23 @@ import { persistString, persistStringRecord, storedString, storedStringRecord } 
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { hexToRgb, mix, readableOn } from './color'
-import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, resolveAlias } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
 // installs are unaffected.
-const SKIN_KEY = 'hermes-desktop-theme-v2'
+export const SKIN_KEY = 'hermes-desktop-theme-v2'
 const MODE_KEY = 'hermes-desktop-mode-v1'
 // Per-profile skin + light/dark mode assignments: { [profileKey]: value }. A
 // profile inherits the global default until it's given its own appearance.
-const PROFILE_SKINS_KEY = 'hermes-desktop-profile-themes-v1'
+export const PROFILE_SKINS_KEY = 'hermes-desktop-profile-themes-v1'
 const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
-const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
+const RETIRED_SKINS = new Set(['nous', 'nous-light', 'default', 'gold', 'hermes'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -42,8 +42,43 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
-const normalizeSkin = (name: string | null): string =>
-  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+export const normalizeSkin = (name: string | null): string => {
+  const resolved = name ? resolveAlias(name) : DEFAULT_SKIN_NAME
+  const canonical = resolveTheme(resolved) && !RETIRED_SKINS.has(resolved) ? resolved : DEFAULT_SKIN_NAME
+
+  // Persist the canonical name back to localStorage when a migration applies
+  // so legacy storage gets cleaned on first read, not just shadowed at runtime.
+  // Writes both the legacy global slot (hermes-desktop-theme-v2) and any
+  // per-profile entries (PROFILE_SKINS_KEY JSON map) that still hold a
+  // retired/alias name. One-way safe: idempotent, never invents user data.
+  if (name && name !== canonical) {
+    try {
+      persistString(SKIN_KEY, canonical)
+      const profiles = storedStringRecord(PROFILE_SKINS_KEY)
+      let mutated = false
+
+      for (const [key, value] of Object.entries(profiles)) {
+        const entryResolved = value ? resolveAlias(value) : DEFAULT_SKIN_NAME
+
+        const entryCanonical =
+          resolveTheme(entryResolved) && !RETIRED_SKINS.has(entryResolved) ? entryResolved : DEFAULT_SKIN_NAME
+
+        if (value !== entryCanonical) {
+          profiles[key] = entryCanonical
+          mutated = true
+        }
+      }
+
+      if (mutated) {
+        persistStringRecord(PROFILE_SKINS_KEY, profiles)
+      }
+    } catch {
+      // Storage may be unavailable (private mode / quota); migration is best-effort.
+    }
+  }
+
+  return canonical
+}
 
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
@@ -123,7 +158,7 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
   return seed.darkColors ? seed.colors : synthLightColors(seed)
 }
 
-function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
+export function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
   const seed = resolveTheme(skinName) ?? nousTheme
 
   return {
@@ -171,7 +206,7 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
-function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
+export function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   if (typeof document === 'undefined') {
     return
   }
@@ -253,6 +288,133 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     link.dataset.hermesThemeFont = 'true'
     document.head.appendChild(link)
     INJECTED_FONT_URLS.add(typo.fontUrl)
+  }
+
+  // Theme-specific CSS overlays (e.g., Deluxe Dark animations, special effects)
+  const overlayId = `hermes-theme-overlay-${skinName}`
+  const existingOverlay = document.getElementById(overlayId)
+
+  if (skinName === 'bubblegum') {
+    if (!existingOverlay) {
+      const style = document.createElement('style')
+      style.id = overlayId
+      style.textContent = `
+/* ── Animations ────────────────────────────────────────────── */
+@keyframes bubblegum-shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+@keyframes bubblegum-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,20,147,.55), 0 0 24px rgba(255,77,154,.35), 0 0 48px rgba(0,229,255,.15); }
+  50% { box-shadow: 0 0 0 6px rgba(255,20,147,0), 0 0 36px rgba(255,77,154,.55), 0 0 64px rgba(0,229,255,.3); }
+}
+@keyframes bubblegum-float {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  50% { transform: translateY(-2px) rotate(.5deg); }
+}
+@keyframes bubblegum-sparkle-drift {
+  0% { background-position: 0% 0%, 0% 0%, 0% 0%; }
+  100% { background-position: 100% 100%, -100% 50%, 50% -100%; }
+}
+
+/* ── Light Mode ─────────────────────────────────────────── */
+[data-hermes-theme="bubblegum"][data-hermes-mode="light"] {
+  background-color: #FFF0F8 !important;
+  background-image:
+    radial-gradient(1.5px 1.5px at 20% 30%, rgba(255,105,180,.6), transparent 50%),
+    radial-gradient(1px 1px at 70% 80%, rgba(255,77,154,.5), transparent 50%),
+    radial-gradient(1.5px 1.5px at 40% 70%, rgba(0,229,255,.4), transparent 50%),
+    radial-gradient(1px 1px at 85% 20%, rgba(255,20,147,.5), transparent 50%),
+    radial-gradient(2px 2px at 10% 90%, rgba(255,255,255,.3), transparent 50%),
+    linear-gradient(135deg, #FFF0F8 0%, #FFE6F0 25%, #FFCCE0 50%, #FFE6F0 75%, #FFF0F8 100%) !important;
+  background-size: 400px 400px, 350px 350px, 300px 300px, 280px 280px, 260px 260px, 400% 400% !important;
+  animation: bubblegum-shimmer 18s ease infinite, bubblegum-sparkle-drift 60s linear infinite !important;
+  color: #3A0F26 !important;
+}
+
+/* ── Dark Mode ──────────────────────────────────────────── */
+[data-hermes-theme="bubblegum"][data-hermes-mode="dark"] {
+  background-color: #2D0E1B !important;
+  background-image:
+    radial-gradient(1.5px 1.5px at 20% 30%, rgba(255,105,180,.6), transparent 50%),
+    radial-gradient(1px 1px at 70% 80%, rgba(255,77,154,.5), transparent 50%),
+    radial-gradient(1.5px 1.5px at 40% 70%, rgba(0,229,255,.4), transparent 50%),
+    radial-gradient(1px 1px at 85% 20%, rgba(255,20,147,.5), transparent 50%),
+    radial-gradient(2px 2px at 10% 90%, rgba(255,255,255,.2), transparent 50%),
+    radial-gradient(1.5px 1.5px at 50% 50%, rgba(255,105,180,.3), transparent 50%),
+    linear-gradient(135deg, #2D0E1B 0%, #3D1228 25%, #4D1635 50%, #3D1228 75%, #2D0E1B 100%) !important;
+  background-size: 400px 400px, 350px 350px, 300px 300px, 280px 280px, 260px 260px, 200px 200px, 400% 400% !important;
+  background-attachment: fixed !important;
+  animation: bubblegum-shimmer 18s ease infinite, bubblegum-sparkle-drift 60s linear infinite !important;
+  color: #FFE4F1 !important;
+}
+
+/* ── Card & UI elements ─────────────────────────────────── */
+[data-hermes-theme="bubblegum"] .rounded-md.border:not(button):not(input):not(textarea),
+[data-hermes-theme="bubblegum"] .card {
+  background: rgba(255, 248, 252, 0.7) !important;
+  backdrop-filter: blur(14px) saturate(1.4) !important;
+  border-color: rgba(255, 46, 131, 0.4) !important;
+}
+[data-hermes-theme="bubblegum"][data-hermes-mode="dark"] .rounded-md.border:not(button):not(input):not(textarea),
+[data-hermes-theme="bubblegum"][data-hermes-mode="dark"] .card {
+  background: rgba(61, 18, 40, 0.7) !important;
+}
+
+/* ── Buttons ────────────────────────────────────────────── */
+[data-hermes-theme="bubblegum"] button[class*="bg-primary"],
+[data-hermes-theme="bubblegum"] button[data-variant="default"]:not([disabled]) {
+  background: linear-gradient(135deg, #FF2E83 0%, #FF66BB 50%, #00E5FF 100%) !important;
+  background-size: 200% 100% !important;
+  color: white !important;
+  box-shadow: 0 4px 18px rgba(255, 20, 147, 0.45) !important;
+  transition: all .25s ease !important;
+}
+[data-hermes-theme="bubblegum"] button[class*="bg-primary"]:hover,
+[data-hermes-theme="bubblegum"] button[data-variant="default"]:not([disabled]):hover {
+  background-position: 100% 50% !important;
+  transform: translateY(-2px) scale(1.02) !important;
+  box-shadow: 0 8px 28px rgba(255, 20, 147, 0.65) !important;
+}
+
+/* ── Input focus ───────────────────────────────────────── */
+[data-hermes-theme="bubblegum"] input:focus,
+[data-hermes-theme="bubblegum"] textarea:focus {
+  border-color: #FF2E83 !important;
+  box-shadow: 0 0 0 3px rgba(255, 20, 147, 0.4) !important;
+}
+
+/* ── Text selection ─────────────────────────────────────── */
+[data-hermes-theme="bubblegum"] ::selection {
+  background: rgba(255, 20, 147, 0.4) !important;
+  color: #FFFFFF !important;
+}
+
+/* ── Title gradient ───────────────────────────────────── */
+[data-hermes-theme="bubblegum"] h1[class*="title"],
+[data-hermes-theme="bubblegum"] [class*="brand"] {
+  background: linear-gradient(135deg, #FF2E83 0%, #FF66BB 40%, #00E5FF 80%, #FF2E83 100%) !important;
+  background-size: 200% 100% !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  animation: bubblegum-shimmer 6s ease infinite !important;
+}
+
+/* ── Scrollbar ────────────────────────────────────────── */
+[data-hermes-theme="bubblegum"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+[data-hermes-theme="bubblegum"] ::-webkit-scrollbar-track { background: rgba(255, 20, 147, 0.15) !important; border-radius: 8px; }
+[data-hermes-theme="bubblegum"] ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #FF2E83, #FF66BB, #00E5FF) !important;
+  border-radius: 8px !important;
+}
+`
+      document.head.appendChild(style)
+    }
+  } else {
+    // Remove the bubblegum overlay when switching away from the canonical skin
+    // so decorative effects (gradient, sparkles, pink scrollbar) don't linger.
+    document.getElementById('hermes-theme-overlay-bubblegum')?.remove()
   }
 }
 

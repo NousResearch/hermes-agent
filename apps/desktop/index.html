@@ -18,11 +18,33 @@
       try {
         let bg = localStorage.getItem('hermes-boot-background')
         let scheme = localStorage.getItem('hermes-boot-color-scheme')
+        let rawTheme = localStorage.getItem('hermes-desktop-theme-v2') || 'bubblegum'
+        let mode = localStorage.getItem('hermes-desktop-mode-v1') || 'system'
+
+        // Resolve legacy/retired skin names to the canonical 'bubblegum' so the
+        // boot paint never flashes a different theme. Mirrors THEME_ALIASES in
+        // src/themes/presets.ts; normalizeSkin persists the migration once the
+        // renderer loads. Keep this list in sync with THEME_ALIASES.
+        var THEME_ALIASES = {
+          'bubblegum-pink': 'bubblegum',
+          'bubblegum': 'bubblegum',
+          'nous': 'bubblegum',
+          'nous-light': 'bubblegum',
+          'default': 'bubblegum',
+          'gold': 'bubblegum',
+          'hermes': 'bubblegum'
+        }
+        var theme = THEME_ALIASES[rawTheme] || rawTheme
+
         if (!bg) {
           const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
           bg = dark ? '#111111' : '#f7f7f7'
           scheme = dark ? 'dark' : 'light'
         }
+
+        // Set data attributes for CSS theme overlays (bubblegum needs these)
+        document.documentElement.setAttribute('data-hermes-theme', theme)
+        document.documentElement.setAttribute('data-hermes-mode', scheme)
         document.documentElement.style.backgroundColor = bg
         if (scheme === 'dark' || scheme === 'light') {
           document.documentElement.style.colorScheme = scheme

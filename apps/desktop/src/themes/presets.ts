@@ -27,6 +27,67 @@ const PSYCHE_WARM = '#FFE6CB'
 const nousTint = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, #FFFFFF)`
 const nousTintTransparent = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, transparent)`
 
+/** Bubblegum Pink — vibrant (pink + cyan + gold), no deep-purple bias. */
+export const bubblegumPinkTheme: DesktopTheme = {
+  name: 'bubblegum',
+  label: 'Bubblegum Pink',
+  description: 'Vibrant pink with cyan/gold contrast',
+  colors: {
+    background: '#FFB3DF',
+    foreground: '#B0005A',
+    card: '#FFC6E8',
+    cardForeground: '#9D0052',
+    muted: '#FF8FCC',
+    mutedForeground: '#00A7C2',
+    popover: '#FFC6E8',
+    popoverForeground: '#9D0052',
+    primary: '#FF1F73',
+    primaryForeground: '#FFFFFF',
+    secondary: '#00E8FF',
+    secondaryForeground: '#003B45',
+    accent: '#FF66B3',
+    accentForeground: '#3A0820',
+    border: '#FF67B0',
+    input: '#FFCAE9',
+    ring: '#FF1F73',
+    midground: '#00E8FF',
+    composerRing: '#FF1F73',
+    destructive: '#FF3E83',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#FFA9DA',
+    sidebarBorder: '#FF1F73',
+    userBubble: '#FFCAE9',
+    userBubbleBorder: '#00E8FF'
+  },
+  darkColors: {
+    background: '#3B1629',
+    foreground: '#FFE6F0',
+    card: '#4D1A35',
+    cardForeground: '#FFE6F0',
+    muted: '#331225',
+    mutedForeground: '#FF9DC8',
+    popover: '#52223A',
+    popoverForeground: '#FFE6F0',
+    primary: '#FF0080',
+    primaryForeground: '#FFFFFF',
+    secondary: '#00FFFF',
+    secondaryForeground: '#000000',
+    accent: '#FF66B3',
+    accentForeground: '#1A0010',
+    border: '#FF4D9A',
+    input: '#4D1A35',
+    ring: '#FF4D9A',
+    midground: '#FF0080',
+    composerRing: '#FF0080',
+    destructive: '#FF0040',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#331225',
+    sidebarBorder: '#FF0080',
+    userBubble: '#4D1A35',
+    userBubbleBorder: '#FF4D9A'
+  }
+}
+
 /**
  * Nous — canonical Hermes desktop identity. The palette keeps the current
  * glass geometry neutral, then lets the old bb/gui blue and psyche cream
@@ -277,7 +338,70 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Neon Candy — OLED-optimized cyber-candy with coral/orange accents */
+export const neonCandyTheme: DesktopTheme = {
+  name: 'neon-candy',
+  label: 'Neon Candy',
+  description: 'Cyber-candy neon with coral & orange',
+  colors: {
+    background: '#FFE5F5',
+    foreground: '#2D0020',
+    card: '#FFF0FA',
+    cardForeground: '#2D0020',
+    muted: '#FFB8E6',
+    mutedForeground: '#006680',
+    popover: '#FFF0FA',
+    popoverForeground: '#2D0020',
+    primary: '#FF0099',
+    primaryForeground: '#FFFFFF',
+    secondary: '#00CCFF',
+    secondaryForeground: '#001A20',
+    accent: '#FF6B35',
+    accentForeground: '#FFFFFF',
+    border: '#FF66CC',
+    input: '#FFD6F0',
+    ring: '#FF0099',
+    midground: '#00CCFF',
+    composerRing: '#FF0099',
+    destructive: '#FF1744',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#FFD6F0',
+    sidebarBorder: '#FF0099',
+    userBubble: '#FFF0FA',
+    userBubbleBorder: '#00CCFF'
+  },
+  darkColors: {
+    background: '#000000',
+    foreground: '#FFCCF0',
+    card: '#0F0010',
+    cardForeground: '#FFCCF0',
+    muted: '#FF0099',
+    mutedForeground: '#00FFFF',
+    popover: '#0F0010',
+    popoverForeground: '#FFCCF0',
+    primary: '#FF0099',
+    primaryForeground: '#FFFFFF',
+    secondary: '#00DDFF',
+    secondaryForeground: '#000000',
+    accent: '#FF6B35',
+    accentForeground: '#000000',
+    border: '#FF66CC',
+    input: '#1A0015',
+    ring: '#00FFFF',
+    midground: '#00FF88',
+    composerRing: '#FF0099',
+    destructive: '#FF1744',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#000000',
+    sidebarBorder: '#00DDFF',
+    userBubble: '#1A0015',
+    userBubbleBorder: '#FF6B35'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
+  bubblegum: bubblegumPinkTheme,
+  'neon-candy': neonCandyTheme,
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
@@ -289,4 +413,23 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'bubblegum'
+
+// Keep legacy stored skin names resolvable without breaking startup.
+export const THEME_ALIASES: Record<string, string> = {
+  'nous': 'bubblegum',
+  'nous-light': 'bubblegum',
+  'default': 'bubblegum',
+  'gold': 'bubblegum',
+  'hermes': 'bubblegum',
+  'bubblegum-pink': 'bubblegum',
+  'bubblegum': 'bubblegum'
+}
+
+export const resolveAlias = (name: string | null): string => {
+  if (!name) {
+    return DEFAULT_SKIN_NAME
+  }
+
+  return THEME_ALIASES[name] ?? name
+}

@@ -3,6 +3,30 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { modePref, skinPref } from './context'
 import { DEFAULT_SKIN_NAME } from './presets'
 
+// jsdom in this environment does not provide a working localStorage.clear()
+// (pre-existing baseline issue). Install a full mock so storage-backed code
+// paths (skinPref.assign/resolve, normalizeSkin write-back) work in tests.
+function installStorageMock() {
+  let store: Record<string, string> = {}
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: {
+      clear: () => {
+        store = {}
+      },
+      getItem: (key: string) => store[key] ?? null,
+      key: (index: number) => Object.keys(store)[index] ?? null,
+      removeItem: (key: string) => {
+        delete store[key]
+      },
+      setItem: (key: string, value: string) => {
+        store[key] = String(value)
+      }
+    }
+  })
+}
+
 // Skin and mode share one per-profile contract, so assert it once over both.
 interface Pref {
   resolve: (profile: string) => string
@@ -22,7 +46,7 @@ const cases = [
 ]
 
 describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
-  beforeEach(() => window.localStorage.clear())
+  beforeEach(() => installStorageMock())
 
   it('falls back to the default when unassigned', () => {
     expect(pref.resolve('default')).toBe(fallback)

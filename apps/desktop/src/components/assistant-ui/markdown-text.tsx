@@ -464,10 +464,10 @@ const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
   'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
   'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
-  'prose-headings:text-foreground prose-strong:text-foreground',
-  'prose-a:break-words prose-p:[overflow-wrap:anywhere]',
-  'prose-li:marker:text-muted-foreground/70',
-  'prose-code:rounded-[0.25rem] prose-code:px-[0.1875rem] prose-code:py-px prose-code:font-mono prose-code:text-[0.9em] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none',
+  'prose-headings:text-primary prose-h1:text-primary prose-h2:text-primary prose-h3:text-secondary prose-h4:text-secondary prose-strong:text-accent',
+  'prose-a:text-secondary prose-a:break-words prose-p:[overflow-wrap:anywhere]',
+  'prose-li:marker:text-secondary/85',
+  'prose-code:rounded-[0.25rem] prose-code:px-[0.1875rem] prose-code:py-px prose-code:font-mono prose-code:text-[0.9em] prose-code:font-normal prose-code:text-accent prose-code:before:content-none prose-code:after:content-none',
   '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>*+*]:mt-(--paragraph-gap)'
 )
 
@@ -511,22 +511,50 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
     () =>
       ({
         h1: ({ className, ...props }: ComponentProps<'h1'>) => (
-          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} />
+          <h1
+            className={cn(
+              'my-1 font-semibold bg-linear-to-r from-primary via-accent to-secondary bg-clip-text text-transparent',
+              HEADING_SIZES.h1,
+              className
+            )}
+            {...props}
+          />
         ),
         h2: ({ className, ...props }: ComponentProps<'h2'>) => (
-          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props} />
+          <h2
+            className={cn(
+              'my-1 font-semibold bg-linear-to-r from-primary to-secondary bg-clip-text text-transparent',
+              HEADING_SIZES.h2,
+              className
+            )}
+            {...props}
+          />
         ),
         h3: ({ className, ...props }: ComponentProps<'h3'>) => (
-          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props} />
+          <h3
+            className={cn(
+              'my-1 font-semibold bg-linear-to-r from-secondary to-accent bg-clip-text text-transparent',
+              HEADING_SIZES.h3,
+              className
+            )}
+            {...props}
+          />
         ),
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
-          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
+          <h4
+            className={cn(
+              'my-1 font-semibold text-accent',
+              HEADING_SIZES.h4,
+              className
+            )}
+            {...props}
+          />
         ),
         p: ({ className, ...props }: ComponentProps<'p'>) => (
           // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
           // must out-specify Tailwind Typography's `prose` margins — so no
           // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
+          <p className={cn('wrap-anywhere leading-(--dt-line-height) text-secondary/95 font-medium', className)} {...props} />
         ),
         a: MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
@@ -574,7 +602,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
         li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
+          <li className={cn('leading-(--dt-line-height) text-primary/95 font-medium', className)} {...props} />
         ),
         table: ({ className, ...props }: ComponentProps<'table'>) => (
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">

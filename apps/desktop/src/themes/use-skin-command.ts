@@ -2,13 +2,18 @@ import { useCallback } from 'react'
 
 import { useTheme } from './context'
 
-// Retired skin names land on the canonical Nous skin so old muscle memory works.
+// Retired/legacy skin names collapse onto the canonical skin so old muscle
+// memory keeps working. Every retired name and 'bubblegum-pink' map to the
+// canonical 'bubblegum'; 'ares' is the old CLI label for the Ember theme.
+// Keep in sync with THEME_ALIASES in presets.ts.
 const ALIASES: Record<string, string> = {
+  'bubblegum-pink': 'bubblegum',
   ares: 'ember',
-  default: 'nous',
-  gold: 'nous',
-  hermes: 'nous',
-  'nous-light': 'nous'
+  default: 'bubblegum',
+  gold: 'bubblegum',
+  hermes: 'bubblegum',
+  nous: 'bubblegum',
+  'nous-light': 'bubblegum'
 }
 
 export function useSkinCommand() {

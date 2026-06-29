@@ -346,7 +346,7 @@ const AssistantMessage: FC<{
       ref={enterRef}
     >
       <div
-        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
+        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-secondary/95"
         data-slot="aui_assistant-message-content"
       >
         {/* Todos render in the composer status stack now, not inline. */}
@@ -394,7 +394,7 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
   <div
     aria-label={label}
     aria-live="polite"
-    className={cn('flex max-w-full items-center gap-2 self-start text-sm text-muted-foreground/70', className)}
+    className={cn('flex max-w-full items-center gap-2 self-start text-sm text-secondary/90', className)}
     role="status"
     {...rest}
   >
@@ -406,7 +406,7 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 const COMPACTION_LABEL = 'Summarizing thread'
 
 const CompactionHint: FC = () => (
-  <span className="shimmer min-w-0 truncate text-muted-foreground/55">{COMPACTION_LABEL}</span>
+  <span className="shimmer min-w-0 truncate text-secondary/80">{COMPACTION_LABEL}</span>
 )
 
 const ResponseLoadingIndicator: FC = () => {
@@ -446,11 +446,11 @@ const BackgroundResumeNotice: FC = () => {
   return (
     <div
       aria-live="polite"
-      className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55"
+      className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-secondary/85"
       data-slot="aui_background-resume"
       role="status"
     >
-      <Codicon className="text-muted-foreground/55" name="sync" size="0.75rem" />
+      <Codicon className="text-secondary/85" name="sync" size="0.75rem" />
       <span className="shimmer min-w-0 truncate">{label}</span>
     </div>
   )
@@ -687,7 +687,7 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
 
   return (
     <MarkdownTextContent
-      containerClassName="text-xs leading-snug text-muted-foreground/85"
+      containerClassName="text-xs leading-snug text-primary/90"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       isRunning={isRunning}
       text={displayText}
@@ -941,18 +941,18 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   const detail = newline === -1 ? '' : body.slice(newline + 1).trim()
 
   return (
-    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-secondary/95">
       <span className="flex items-center gap-1.5">
-        <Codicon className="shrink-0 text-muted-foreground/55" name="terminal" size="0.75rem" />
-        <span className="wrap-anywhere">{headline}</span>
+        <Codicon className="shrink-0 text-primary" name="terminal" size="0.75rem" />
+        <span className="wrap-anywhere bg-linear-to-r from-primary via-accent to-secondary bg-clip-text text-transparent">{headline}</span>
       </span>
       {detail && (
         <details className="pl-[1.3125rem]">
-          <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
+          <summary className="cursor-pointer select-none text-accent/90 hover:text-accent">
             output
           </summary>
           <pre
-            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
+            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-secondary/90"
             data-selectable-text="true"
           >
             {detail}
@@ -1213,14 +1213,14 @@ const SystemMessage: FC = () => {
   if (steerNote?.groups) {
     return (
       <MessagePrimitive.Root
-        className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+        className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-secondary/95"
         data-role="system"
         data-slot="aui_system-message-root"
       >
-        <Codicon className="text-muted-foreground/55" name="compass" size="0.75rem" />
-        <span className="text-muted-foreground/55">steered</span>
-        <span className="text-muted-foreground/35">·</span>
-        <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span>
+        <Codicon className="text-primary" name="compass" size="0.75rem" />
+        <span className="bg-linear-to-r from-primary via-accent to-secondary bg-clip-text text-transparent">steered</span>
+        <span className="text-accent">·</span>
+        <span className="whitespace-pre-wrap text-secondary">{steerNote.groups.text.trim()}</span>
       </MessagePrimitive.Root>
     )
   }
@@ -1237,19 +1237,19 @@ const SystemMessage: FC = () => {
     return (
       <MessagePrimitive.Root
         className={cn(
-          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-secondary/95',
           multiline ? 'text-left' : 'text-center'
         )}
         data-role="system"
         data-slot="aui_system-message-root"
       >
-        <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
+        <span className="font-mono bg-linear-to-r from-primary to-secondary bg-clip-text text-transparent">{slashStatus.groups.command}</span>
         {multiline ? (
-          <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+          <LinkifiedText className="mt-0.5 block whitespace-pre-wrap text-secondary/95" explicitOnly pretty={false} text={output} />
         ) : (
           <>
-            <span className="mx-1.5 text-muted-foreground/35">·</span>
-            <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+            <span className="mx-1.5 text-accent/80">·</span>
+            <LinkifiedText className="whitespace-pre-wrap text-secondary/95" explicitOnly pretty={false} text={output} />
           </>
         )}
       </MessagePrimitive.Root>
@@ -1261,13 +1261,13 @@ const SystemMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       className={cn(
-        'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55',
+        'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-secondary/90',
         multiline ? 'text-left' : 'text-center'
       )}
       data-role="system"
       data-slot="aui_system-message-root"
     >
-      <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={text} />
+      <LinkifiedText className="whitespace-pre-wrap text-secondary/90" explicitOnly pretty={false} text={text} />
     </MessagePrimitive.Root>
   )
 }

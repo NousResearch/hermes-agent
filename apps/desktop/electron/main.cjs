@@ -213,6 +213,17 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 
+// Expose Chromium remote debugging (CDP) for dev/test automation (agent-browser
+// attaches via connect <port>). Gated on HERMES_DESKTOP_DEBUG_PORT AND
+// !app.isPackaged so a packaged build never opens a debugging endpoint.
+// Must run before app `ready` — appendSwitch only applies pre-launch.
+const DEBUG_PORT = process.env.HERMES_DESKTOP_DEBUG_PORT
+if (DEBUG_PORT && !app.isPackaged) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(DEBUG_PORT))
+  app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
+  console.log(`[hermes] remote debugging exposed on 127.0.0.1:${DEBUG_PORT} (dev only)`)
+}
+
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
 // Build-time install stamp -- the git ref this .exe was built against.

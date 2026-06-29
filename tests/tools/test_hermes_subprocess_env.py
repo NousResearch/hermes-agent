@@ -14,6 +14,8 @@ full credential environment. Two tiers:
 import os
 from unittest.mock import patch
 
+import pytest
+
 from tools.environments.local import (
     hermes_subprocess_env,
     _ALWAYS_STRIP_KEYS,
@@ -149,3 +151,92 @@ class TestBrowserPassthroughPattern:
         # Provider + gateway secrets must NOT come back.
         assert "ANTHROPIC_API_KEY" not in env
         assert "TELEGRAM_BOT_TOKEN" not in env
+
+
+class TestHermesInternalDynamicSecrets:
+    """AUXILIARY_<TASK>_* and GATEWAY_RELAY_* internal secrets are stripped in
+    BOTH inherit_credentials modes.
+
+    These credentials are injected into ``os.environ`` at runtime by the
+    gateway and CLI but match no static ``PROVIDER_REGISTRY`` name, so they
+    survive both Tier 1 (``_ALWAYS_STRIP_KEYS``) and Tier 2
+    (``_HERMES_PROVIDER_ENV_BLOCKLIST``) unless the dynamic-secret predicate
+    (:func:`_is_hermes_internal_secret`) strips them.  They are Tier-1
+    gateway-managed secrets — not LLM provider credentials — so they must be
+    stripped regardless of ``inherit_credentials``: even a user-blessed
+    ``claude`` / ``codex`` CLI executor never legitimately needs a side-LLM
+    key or relay-auth material.
+    """
+
+    _INTERNAL_SECRETS = {
+        "AUXILIARY_VISION_API_KEY": "sk-aux-vision-secret-1234567890",
+        "AUXILIARY_VISION_BASE_URL": "https://private-vision.example.com",
+        "GATEWAY_RELAY_SECRET": "relay-shared-secret-value",
+        "GATEWAY_RELAY_DELIVERY_KEY": "relay-delivery-key-value",
+    }
+    _NON_SECRET_AUXILIARY = {
+        "AUXILIARY_VISION_MODEL": "gpt-4o",
+        "AUXILIARY_VISION_PROVIDER": "openai",
+    }
+
+    def _run(self, *, inherit_credentials):
+        env = {**_SAFE_SAMPLE, **self._INTERNAL_SECRETS, **self._NON_SECRET_AUXILIARY}
+        with patch.dict(os.environ, env, clear=True):
+            return hermes_subprocess_env(inherit_credentials=inherit_credentials)
+
+    def test_auxiliary_api_key_stripped_when_not_inheriting(self):
+        result = self._run(inherit_credentials=False)
+        assert "AUXILIARY_VISION_API_KEY" not in result, (
+            "AUXILIARY_*_API_KEY must be stripped with inherit_credentials=False"
+        )
+
+    def test_auxiliary_base_url_stripped_when_not_inheriting(self):
+        result = self._run(inherit_credentials=False)
+        assert "AUXILIARY_VISION_BASE_URL" not in result, (
+            "AUXILIARY_*_BASE_URL must be stripped with inherit_credentials=False"
+        )
+
+    def test_gateway_relay_secret_stripped_when_not_inheriting(self):
+        result = self._run(inherit_credentials=False)
+        assert "GATEWAY_RELAY_SECRET" not in result, (
+            "GATEWAY_RELAY_SECRET must be stripped with inherit_credentials=False"
+        )
+
+    def test_auxiliary_api_key_stripped_even_when_inheriting(self):
+        result = self._run(inherit_credentials=True)
+        assert "AUXILIARY_VISION_API_KEY" not in result, (
+            "AUXILIARY_*_API_KEY is a Tier-1 internal secret and must be "
+            "stripped even with inherit_credentials=True"
+        )
+
+    def test_auxiliary_base_url_stripped_even_when_inheriting(self):
+        result = self._run(inherit_credentials=True)
+        assert "AUXILIARY_VISION_BASE_URL" not in result, (
+            "AUXILIARY_*_BASE_URL is a Tier-1 internal secret and must be "
+            "stripped even with inherit_credentials=True"
+        )
+
+    def test_gateway_relay_secret_stripped_even_when_inheriting(self):
+        result = self._run(inherit_credentials=True)
+        assert "GATEWAY_RELAY_SECRET" not in result, (
+            "GATEWAY_RELAY_SECRET is a Tier-1 gateway secret and must be "
+            "stripped even with inherit_credentials=True — a model-driving "
+            "CLI never needs relay-auth material"
+        )
+
+    def test_gateway_relay_delivery_key_stripped_even_when_inheriting(self):
+        result = self._run(inherit_credentials=True)
+        assert "GATEWAY_RELAY_DELIVERY_KEY" not in result
+
+    @pytest.mark.parametrize("inherit_credentials", [False, True])
+    def test_non_secret_auxiliary_vars_preserved(self, inherit_credentials):
+        """Non-secret auxiliary model/provider selection survives in BOTH
+        modes — they are config, not credentials, and a child reading the
+        configured auxiliary model legitimately depends on them."""
+        result = self._run(inherit_credentials=inherit_credentials)
+        assert result.get("AUXILIARY_VISION_MODEL") == "gpt-4o", (
+            "AUXILIARY_*_MODEL is non-secret config and must survive"
+        )
+        assert result.get("AUXILIARY_VISION_PROVIDER") == "openai", (
+            "AUXILIARY_*_PROVIDER is non-secret config and must survive"
+        )

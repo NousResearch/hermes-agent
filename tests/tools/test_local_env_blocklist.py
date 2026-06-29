@@ -675,8 +675,15 @@ class TestAuxiliarySecretStripping:
         assert _is_hermes_internal_secret("AUXILIARY_VISION_API_KEY")
         assert _is_hermes_internal_secret("AUXILIARY_VISION_BASE_URL")
         assert _is_hermes_internal_secret("auxiliary_title_api_key")
+        # GATEWAY_RELAY_* secret-like values are also Tier-1 internal secrets.
+        assert _is_hermes_internal_secret("GATEWAY_RELAY_SECRET")
+        assert _is_hermes_internal_secret("GATEWAY_RELAY_DELIVERY_KEY")
+        assert _is_hermes_internal_secret("gateway_relay_foo_token")
         assert not _is_hermes_internal_secret("AUXILIARY_VISION_MODEL")
         assert not _is_hermes_internal_secret("AUXILIARY_VISION_PROVIDER")
+        # Non-secret GATEWAY_RELAY_* routing hints must NOT be matched.
+        assert not _is_hermes_internal_secret("GATEWAY_RELAY_URL")
+        assert not _is_hermes_internal_secret("GATEWAY_RELAY_PLATFORMS")
         assert not _is_hermes_internal_secret("PATH")
         assert not _is_hermes_internal_secret("HOME")
 

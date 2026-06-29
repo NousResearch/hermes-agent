@@ -221,16 +221,36 @@ def _is_hermes_internal_secret(key: str) -> bool:
       web-extract, etc.) that must never reach model-authored shell commands.
     - ``AUXILIARY_<TASK>_BASE_URL`` — paired base URLs that can point at
       private endpoints.
+    - ``GATEWAY_RELAY_<X>_SECRET`` / ``GATEWAY_RELAY_<X>_KEY`` /
+      ``GATEWAY_RELAY_<X>_TOKEN`` — relay-auth credentials provisioned by the
+      gateway (``GATEWAY_RELAY_SECRET``, ``GATEWAY_RELAY_DELIVERY_KEY``).
+      These are Tier-1 gateway secrets (like the messaging bot tokens in
+      ``_ALWAYS_STRIP_KEYS``) and must be stripped unconditionally, even when
+      a caller passes ``inherit_credentials=True`` — a model-driving CLI never
+      legitimately needs relay-auth material.  Non-secret ``GATEWAY_RELAY_*``
+      routing hints (``GATEWAY_RELAY_URL``, ``GATEWAY_RELAY_PLATFORMS`` ...)
+      are NOT matched and remain visible.
 
     The code-execution sandbox (``code_execution_tool.py``) catches these via
     substring matching on ``KEY``/``SECRET``/``TOKEN``. The terminal backend
     uses a narrower name-based blocklist and would inherit these vars unless
     they are explicitly registered in ``PROVIDER_REGISTRY`` (they are not —
     they are task-level overrides, not primary provider credentials).
+
+    This predicate is the single source of truth for "Hermes-internal secret"
+    across every spawn path: the terminal ``_make_run_env`` /
+    ``_sanitize_subprocess_env`` filters and the non-terminal
+    :func:`hermes_subprocess_env` helper all call it so the dynamic patterns
+    are stripped uniformly regardless of skill-passthrough registration or
+    ``inherit_credentials``.
     """
     upper = key.upper()
     if upper.startswith("AUXILIARY_") and (
         upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    ):
+        return True
+    if upper.startswith("GATEWAY_RELAY_") and (
+        upper.endswith("_SECRET") or upper.endswith("_KEY") or upper.endswith("_TOKEN")
     ):
         return True
     return False
@@ -335,6 +355,13 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     * **Tier 1 (always):** ``_ALWAYS_STRIP_KEYS`` — gateway bot tokens, GitHub
       auth, and remote-compute secrets are removed regardless of
       ``inherit_credentials``.  No child Hermes spawns legitimately needs them.
+      This tier also unconditionally strips Hermes-internal **dynamic** secrets
+      that match no static registry name: ``AUXILIARY_<TASK>_API_KEY`` /
+      ``AUXILIARY_<TASK>_BASE_URL`` (side-LLM credentials injected from
+      ``config.yaml[auxiliary]``) and ``GATEWAY_RELAY_*_SECRET`` /
+      ``GATEWAY_RELAY_*_KEY`` relay-auth material.  These are gateway-managed
+      Tier-1 secrets, not LLM provider credentials — see
+      :func:`_is_hermes_internal_secret`.
     * **Tier 2 (conditional):** the rest of ``_HERMES_PROVIDER_ENV_BLOCKLIST``
       (LLM provider API keys, tool secrets) is removed unless the caller passes
       ``inherit_credentials=True``.
@@ -358,6 +385,18 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # Internal routing hints must never reach a child.
     for key in list(env):
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+
+    # Hermes-internal dynamic secrets — always stripped, regardless of
+    # ``inherit_credentials``.  These are gateway/CLI-managed credentials
+    # (``AUXILIARY_<TASK>_API_KEY`` / ``AUXILIARY_<TASK>_BASE_URL`` side-LLM
+    # keys, ``GATEWAY_RELAY_*_SECRET`` / ``GATEWAY_RELAY_*_KEY`` relay-auth
+    # material) that match no static registry name, so neither Tier 1 nor the
+    # Tier 2 blocklist catch them.  A model-driving CLI never legitimately
+    # needs them, so they are unconditionally removed even when the caller
+    # inherits provider credentials.  See :func:`_is_hermes_internal_secret`.
+    for key in list(env):
+        if _is_hermes_internal_secret(key):
             env.pop(key, None)
 
     if not inherit_credentials:

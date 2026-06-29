@@ -147,6 +147,23 @@ def test_write_disabled_compartment_rejects_conclude_without_primary_fallback():
     assert provider._compartment_managers["ops"].calls == []
 
 
+def test_agent_allowlist_rejects_disallowed_compartment_without_primary_fallback():
+    provider = _provider_with_ready_managers()
+    provider._agent_identity = "echo"
+    provider._config.agent_compartments = {"echo": ["personal"]}
+
+    result = json.loads(
+        provider.handle_tool_call(
+            "honcho_search",
+            {"query": "ports", "compartment": "ops"},
+        )
+    )
+
+    assert result["error"] == "Honcho compartment 'ops' is not allowed for agent 'echo'."
+    assert provider._manager.calls == []
+    assert provider._compartment_managers["ops"].calls == []
+
+
 def test_honcho_tool_lazily_initializes_configured_compartment_manager(monkeypatch):
     provider = HonchoMemoryProvider()
     provider._session_initialized = True

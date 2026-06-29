@@ -269,6 +269,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
+        self._agent_identity = ""
 
     @property
     def name(self) -> str:
@@ -340,6 +341,12 @@ class HonchoMemoryProvider(MemoryProvider):
                 return
 
             self._config = cfg
+            self._agent_identity = str(
+                kwargs.get("agent_identity")
+                or getattr(cfg, "ai_peer", None)
+                or getattr(cfg, "host", None)
+                or ""
+            ).strip()
 
             # ----- B1: recall_mode from config -----
             self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
@@ -1352,6 +1359,14 @@ class HonchoMemoryProvider(MemoryProvider):
         cfg = self._config.compartments.get(name)
         if cfg is None:
             return None
+
+        allowlists = getattr(self._config, "agent_compartments", {}) or {}
+        if allowlists:
+            agent_id = (self._agent_identity or self._config.ai_peer or self._config.host or "").strip()
+            allowed = allowlists.get(agent_id)
+            if not agent_id or allowed is None or name not in allowed:
+                display_agent = agent_id or "unknown"
+                return f"Honcho compartment '{name}' is not allowed for agent '{display_agent}'."
 
         is_write = tool_name == "honcho_conclude" or (
             tool_name == "honcho_profile" and bool(args.get("card"))

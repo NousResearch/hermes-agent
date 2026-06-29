@@ -28,7 +28,10 @@ const PERCH_SELECTORS = ['[data-slot="composer-surface"]', '[data-slot="profile-
 // the bar rather than covering it.
 const FLOOR_BAR_SELECTOR = '[data-slot="statusbar"]'
 
-const WALK_SPEED_PX_S = 58
+// Foot-sync: advance this many body-widths per animation loop so the walk reads
+// as steps, not a glide. Actual px/s is derived from the sprite's loop duration
+// and on-screen size (see `walkSpeedPxS`).
+const STRIDE_PER_LOOP = 0.8
 // Downward acceleration for falls between ledges — fast enough to read as a drop.
 const GRAVITY_PX_S2 = 5200
 // Time to spring up onto a higher ledge.
@@ -44,6 +47,9 @@ const HOP_CHANCE = 0.45
 // ledge (or this many px, whichever is larger), up to the room available.
 const STROLL_MIN_FRACTION = 0.45
 const STROLL_MIN_PX = 110
+// Sprites carry a few px of transparent padding below the feet; sink the pet by
+// this much so the visible feet meet the surface instead of hovering above it.
+const FEET_DROP_PX = 4
 // Snap distances: "on this ledge" / arrived at a walk target.
 const GROUND_EPS = 2
 const ARRIVE_EPS = 1.5
@@ -118,6 +124,8 @@ interface PetRoamOptions {
   isInteracting: () => boolean
   petW: number
   petH: number
+  /** Sprite animation loop duration (ms) — paces the walk to the leg cadence. */
+  loopMs: number
   /** Persist the resting position back to React state when the loop settles. */
   commit: (point: Point) => void
 }
@@ -143,7 +151,7 @@ interface PetRoamOptions {
  * the shared `$petState`, and `$petRoamDir` (-1/0/1) lets the floating pet pick
  * the directional run row + mirror for the travel direction.
  */
-export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, commit }: PetRoamOptions): void {
+export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, loopMs, commit }: PetRoamOptions): void {
   useEffect(() => {
     if (!enabled) {
       $petMotion.set(null)
@@ -158,7 +166,10 @@ export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, c
       return
     }
 
-    const groundTop = (ledge: Ledge): number => ledge.y - petH
+    // Pace the stride to the sprite: one body-width per animation loop.
+    const walkSpeedPxS = (petW * STRIDE_PER_LOOP) / (loopMs / 1000)
+
+    const groundTop = (ledge: Ledge): number => ledge.y - petH + FEET_DROP_PX
 
     // A stroll destination on `ledge` that actually goes somewhere: lean toward
     // the side with more room (so the pet crosses the app rather than shuffling
@@ -330,7 +341,7 @@ export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, c
 
         case 'walk': {
           const remaining = walkTargetX - cur.x
-          const stepDist = WALK_SPEED_PX_S * dt
+          const stepDist = walkSpeedPxS * dt
 
           if (Math.abs(remaining) <= Math.max(ARRIVE_EPS, stepDist)) {
             cur.x = walkTargetX
@@ -403,5 +414,5 @@ export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, c
       // the loop stops re-asserting it.
       commit({ ...cur })
     }
-  }, [enabled, petW, petH, containerRef, isInteracting, commit])
+  }, [enabled, petW, petH, loopMs, containerRef, isInteracting, commit])
 }

@@ -390,6 +390,7 @@ export function FloatingPet() {
     containerRef,
     enabled: roamEnabled && active && !overlayActive && atRest,
     isInteracting: isDragging,
+    loopMs: info.loopMs ?? 1100,
     petH,
     petW
   })

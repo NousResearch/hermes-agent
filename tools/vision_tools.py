@@ -29,6 +29,8 @@ Usage:
 """
 
 import base64
+import contextlib
+import asyncio
 import json
 import logging
 import os
@@ -72,6 +74,91 @@ _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 # Hard cap on downloaded image file size (50 MB). Prevents OOM from
 # attacker-hosted multi-gigabyte files or decompression bombs.
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# Fan-out concurrency cap
+# ---------------------------------------------------------------------------
+# A single agent turn can fan out N vision_analyze calls at once (the classic
+# trigger is "analyze every frame of this video" — ffmpeg explodes a clip into
+# dozens of frames, the model then calls vision_analyze on each). Every call
+# does a CPU-heavy base64-encode/resize burst AND holds a long-lived LLM stream
+# open. The tool executor runs concurrent tool calls on a ThreadPoolExecutor
+# (agent.tool_executor._MAX_TOOL_WORKERS = 8) PER SESSION, and several agent
+# sessions share one process (the dashboard runs the agent in-process). With no
+# global ceiling, a video-frame fan-out across one or more sessions pins a
+# worker thread at ~100% CPU and starves the shared asyncio event loop that also
+# serves the dashboard's /api/status liveness probe — so the instance flaps to
+# UNHEALTHY even though nothing has actually crashed (observed in prod, June
+# 2026).
+#
+# This semaphore bounds the number of vision analyses running concurrently
+# across the WHOLE process, regardless of how many sessions or worker threads
+# issue them. It is a threading.Semaphore (NOT asyncio.Semaphore): each vision
+# call is dispatched through model_tools._run_async on a PER-THREAD event loop,
+# so an asyncio primitive bound to one loop cannot coordinate across them. A
+# threading semaphore is loop- and thread-agnostic, which is exactly what we
+# need here.
+#
+# Default: min(host CPU count, 4), floored at 1 — "respect the host's
+# concurrency, or lower". 4 is a conservative ceiling: vision work is a mix of
+# CPU (encode/resize) and network (LLM stream), and we would rather under-
+# subscribe than let a frame storm wedge the loop. Override with
+# HERMES_VISION_MAX_CONCURRENCY (env) or auxiliary.vision.max_concurrency
+# (config.yaml). 0 / negative / unparseable falls back to the default.
+import threading
+
+
+def _detect_host_cpus() -> int:
+    """Best-effort host CPU count, honoring cgroup/affinity limits when set.
+
+    Prefers ``os.sched_getaffinity`` (the CPUs this process may actually run
+    on — respects container/cpuset pinning) and falls back to
+    ``os.cpu_count()``. Returns at least 1.
+    """
+    try:
+        return max(1, len(os.sched_getaffinity(0)))  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return max(1, os.cpu_count() or 1)
+
+
+# Absolute ceiling for the default (not for explicit overrides): even on a
+# many-core host, more than this many simultaneous in-process vision analyses
+# is rarely worth the event-loop pressure.
+_VISION_DEFAULT_CONCURRENCY_CEILING = 4
+
+
+def _resolve_vision_max_concurrency() -> int:
+    """Resolve the max concurrent vision analyses for this process.
+
+    Resolution order: HERMES_VISION_MAX_CONCURRENCY env → config.yaml
+    auxiliary.vision.max_concurrency → default ``min(host_cpus, 4)``. Any
+    value that parses to < 1 is ignored in favor of the next source so the
+    cap can never be disabled into an unbounded fan-out.
+    """
+    env_val = os.getenv("HERMES_VISION_MAX_CONCURRENCY", "").strip()
+    if env_val:
+        try:
+            parsed = int(env_val)
+            if parsed >= 1:
+                return parsed
+        except ValueError:
+            pass
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        cfg = load_config()
+        val = cfg_get(cfg, "auxiliary", "vision", "max_concurrency")
+        if val is not None:
+            parsed = int(val)
+            if parsed >= 1:
+                return parsed
+    except Exception:
+        pass
+    return max(1, min(_detect_host_cpus(), _VISION_DEFAULT_CONCURRENCY_CEILING))
+
+
+_VISION_MAX_CONCURRENCY = _resolve_vision_max_concurrency()
+_vision_concurrency_semaphore = threading.BoundedSemaphore(_VISION_MAX_CONCURRENCY)
 
 
 def _image_url_shape_ok(url: str) -> bool:
@@ -685,6 +772,26 @@ def _build_native_vision_tool_result(
     }
 
 
+@contextlib.asynccontextmanager
+async def _vision_concurrency_slot():
+    """Hold one process-global vision-concurrency slot for the duration.
+
+    Acquires :data:`_vision_concurrency_semaphore` before yielding and always
+    releases it on exit. The blocking acquire is offloaded to a worker thread
+    via ``run_in_executor`` so that waiting for a slot never blocks the calling
+    event loop (callers run on per-thread loops; blocking the acquire on the
+    loop thread would freeze that loop's other tasks while we wait). The
+    semaphore is a ``BoundedSemaphore`` so a double-release would raise rather
+    than silently inflate the limit.
+    """
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _vision_concurrency_semaphore.acquire)
+    try:
+        yield
+    finally:
+        _vision_concurrency_semaphore.release()
+
+
 async def _vision_analyze_native(
     image_url: str,
     question: str,
@@ -1194,27 +1301,36 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
 
-    # Fast path: when native image routing is in effect for the active main
-    # model (provider accepts images in tool results, or the user set the
-    # model.supports_vision override), short-circuit the auxiliary LLM and
-    # return the image bytes as a multimodal tool-result envelope. The main
-    # model sees the pixels directly on its next turn — no aux call, no
-    # information loss, no extra latency.
-    if _should_use_native_vision_fast_path():
-        logger.info("vision_analyze: native fast path")
-        return _vision_analyze_native(image_url, question)
+    # Bound process-wide vision fan-out: a single turn (or several concurrent
+    # sessions sharing this process) can launch dozens of vision_analyze calls
+    # at once — e.g. "analyze every frame of this video". Each one is a
+    # CPU-heavy encode/resize plus a long LLM stream; unbounded, they pin a
+    # worker thread and starve the shared event loop that serves /api/status,
+    # flapping the instance to UNHEALTHY. The slot is held across the WHOLE
+    # analysis (image load + encode + LLM call), and acquiring it waits off the
+    # event loop, so excess calls queue instead of piling on simultaneously.
+    async with _vision_concurrency_slot():
+        # Fast path: when native image routing is in effect for the active main
+        # model (provider accepts images in tool results, or the user set the
+        # model.supports_vision override), short-circuit the auxiliary LLM and
+        # return the image bytes as a multimodal tool-result envelope. The main
+        # model sees the pixels directly on its next turn — no aux call, no
+        # information loss, no extra latency.
+        if _should_use_native_vision_fast_path():
+            logger.info("vision_analyze: native fast path")
+            return await _vision_analyze_native(image_url, question)
 
-    # Legacy path: aux LLM describes the image and we return its text.
-    full_prompt = (
-        "Fully describe and explain everything about this image, then answer the "
-        f"following question:\n\n{question}"
-    )
-    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-    return vision_analyze_tool(image_url, full_prompt, model)
+        # Legacy path: aux LLM describes the image and we return its text.
+        full_prompt = (
+            "Fully describe and explain everything about this image, then answer the "
+            f"following question:\n\n{question}"
+        )
+        model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+        return await vision_analyze_tool(image_url, full_prompt, model)
 
 
 registry.register(

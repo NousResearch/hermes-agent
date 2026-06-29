@@ -131,5 +131,9 @@ def test_prompt_tells_owner_thread_to_continue_case_and_add_next_action(monkeypa
     assert "`case:video-mp4`" in prompt
     assert "`plamenka-thread`" in prompt
     assert "do not create a new duplicate case" in prompt
+    assert "durable case state before any requester closeout" in prompt
+    assert "at most once" in prompt
+    assert "Do not use cron for immediate route-back delivery" in prompt
+    assert "Do not repeat the owner/resolver request" in prompt
     assert "concrete next-action artifact" in prompt
     assert "email subject/body" in prompt

@@ -242,8 +242,12 @@ def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> 
             "",
             "If this turn contains an owner/resolver answer, delivery result, or status update:",
             "- Continue the same `case_id`; do not create a new duplicate case.",
-            "- Record the answer/status as durable case state, then notify the source/requester thread.",
+            "- Record the answer/status as durable case state before any requester closeout.",
+            "- Notify the source/requester thread at most once, with only the actionable delta.",
             "- Record `route_back.sent` only after a real delivery receipt/message_id.",
+            "- Do not use cron for immediate route-back delivery; use direct Discord delivery when available. Cron is only for future reminders/watchers, and never both create+run for the same immediate message.",
+            "- Do not repeat the owner/resolver request after the owner/resolver has answered.",
+            "- If durable route-back recording fails after a send, do not send duplicate public corrections; record/report the state blocker separately.",
             "- Include a concrete next-action artifact for the requester when useful: email subject/body, code snippet, checklist, decision options, or precise next steps. Do not only forward content.",
         ]
     )

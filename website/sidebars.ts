@@ -647,6 +647,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/homeassistant',
             'user-guide/messaging/mattermost',
             'user-guide/messaging/matrix',
+            'user-guide/messaging/zulip',
             'user-guide/messaging/bluebubbles',
             'user-guide/messaging/photon',
             'user-guide/messaging/google_chat',

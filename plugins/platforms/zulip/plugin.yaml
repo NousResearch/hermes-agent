@@ -1,0 +1,64 @@
+name: zulip-platform
+label: Zulip
+kind: platform
+version: 1.0.0
+description: >
+  Zulip gateway adapter for Hermes Agent. Connects to a self-hosted or cloud
+  Zulip organization through the official REST event queue, keeps replies in
+  the active Zulip topic, remembers topics where the bot was mentioned for
+  follow-up replies, and supports reaction-based command approvals.
+author: NousResearch
+requires_env:
+  - name: ZULIP_URL
+    description: "Zulip server URL (e.g. https://chat.example.com)"
+    prompt: "Zulip server URL"
+    password: false
+  - name: ZULIP_BOT_EMAIL
+    description: "Bot email address"
+    prompt: "Zulip bot email"
+    password: false
+  - name: ZULIP_API_KEY
+    description: "Bot API key"
+    prompt: "Zulip bot API key"
+    password: true
+optional_env:
+  - name: ZULIP_ALLOWED_USERS
+    description: "Comma-separated Zulip user IDs or emails allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: ZULIP_ALLOWED_GROUPS
+    description: "Comma-separated Zulip user group names or IDs whose members may talk to the bot"
+    prompt: "Allowed user groups (comma-separated)"
+    password: false
+  - name: ZULIP_ALLOW_ALL_USERS
+    description: "Allow any Zulip user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ZULIP_HOME_CHANNEL
+    description: "Default Zulip stream/channel name for cron and notifications"
+    prompt: "Home channel name"
+    password: false
+  - name: ZULIP_HOME_TOPIC
+    description: "Default Zulip topic for cron and notifications"
+    prompt: "Home topic"
+    password: false
+  - name: ZULIP_REQUIRE_MENTION
+    description: "Require @bot mention in channels (default true). Set false for free-response everywhere."
+    prompt: "Require @mention? (true/false)"
+    password: false
+  - name: ZULIP_FREE_RESPONSE_CHANNELS
+    description: "Comma-separated stream/channel names where @mention is not required."
+    prompt: "Free-response channel names (comma-separated)"
+    password: false
+  - name: ZULIP_ALLOWED_CHANNELS
+    description: "If set, the bot only responds in these stream/channel names."
+    prompt: "Allowed channel names (comma-separated)"
+    password: false
+  - name: ZULIP_APPROVAL_REQUIRE_SENDER
+    description: "Only allow the requester to resolve approval reactions (default true)."
+    prompt: "Require requester approval? (true/false)"
+    password: false
+  - name: ZULIP_CA_CERT
+    description: "Optional CA certificate path for self-hosted Zulip HTTPS."
+    prompt: "CA certificate path"
+    password: false

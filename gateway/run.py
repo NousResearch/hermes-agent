@@ -6013,16 +6013,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
         )
-        # Also pick up plugin-registered platforms — each entry can declare
-        # its own allowed_users_env / allow_all_env, so the warning stays
-        # accurate as plugins like IRC come online.
+        # Also pick up plugin-registered platforms -- each entry can declare
+        # its own allowed_users_env / allow_all_env, plus adapter-owned
+        # allowlist envs such as verified role/group lists.
         _plugin_allowed_vars: tuple = ()
         _plugin_allow_all_vars: tuple = ()
         try:
             from gateway.platform_registry import platform_registry
             _plugin_allowed_vars = tuple(
-                e.allowed_users_env for e in platform_registry.plugin_entries()
-                if e.allowed_users_env
+                var
+                for e in platform_registry.plugin_entries()
+                for var in ([e.allowed_users_env] + list(e.allowlist_envs))
+                if var
             )
             _plugin_allow_all_vars = tuple(
                 e.allow_all_env for e in platform_registry.plugin_entries()

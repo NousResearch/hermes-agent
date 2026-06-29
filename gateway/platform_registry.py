@@ -88,6 +88,9 @@ class PlatformEntry:
     allowed_users_env: str = ""
     # E.g. "IRC_ALLOW_ALL_USERS" — if truthy, all users authorized.
     allow_all_env: str = ""
+    # Additional env vars that configure adapter-owned allowlists, such as
+    # role or group allowlists verified by the adapter before dispatch.
+    allowlist_envs: list = field(default_factory=list)
 
     # ── Message limits ──
     # Max message length for smart-chunking.  0 = no limit.

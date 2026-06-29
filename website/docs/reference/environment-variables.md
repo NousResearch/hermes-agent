@@ -433,6 +433,20 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `ZULIP_URL` | Zulip server URL (e.g. `https://chat.example.com`) |
+| `ZULIP_BOT_EMAIL` | Zulip bot email address |
+| `ZULIP_API_KEY` | Zulip bot API key |
+| `ZULIP_ALLOWED_USERS` | Comma-separated Zulip user IDs or emails allowed to message the bot |
+| `ZULIP_ALLOWED_GROUPS` | Comma-separated Zulip user group names or IDs whose members may message the bot |
+| `ZULIP_ALLOW_ALL_USERS` | Allow any Zulip user to trigger the bot (dev only). |
+| `ZULIP_REQUIRE_MENTION` | Require `@mention` in streams/topics (default: `true`). |
+| `ZULIP_FREE_RESPONSE_CHANNELS` | Comma-separated stream names where bot responds without `@mention` |
+| `ZULIP_ALLOWED_CHANNELS` | If set, the bot only responds in these stream names |
+| `ZULIP_HOME_CHANNEL` | Stream name for cron/proactive delivery |
+| `ZULIP_HOME_TOPIC` | Topic for cron/proactive delivery |
+| `ZULIP_APPROVAL_REQUIRE_SENDER` | Require approval reactions to come from the original requester when known (default: `true`) |
+| `ZULIP_APPROVAL_TIMEOUT_SECONDS` | Timeout for Zulip reaction approval prompts (default: `300`) |
+| `ZULIP_CA_CERT` | Optional CA bundle path for self-hosted/internal Zulip HTTPS |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |

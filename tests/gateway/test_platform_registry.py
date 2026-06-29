@@ -300,6 +300,7 @@ class TestPlatformEntryExtendedFields:
         )
         assert entry.allowed_users_env == ""
         assert entry.allow_all_env == ""
+        assert entry.allowlist_envs == []
         assert entry.max_message_length == 0
         assert entry.pii_safe is False
         assert entry.emoji == "🔌"
@@ -313,12 +314,14 @@ class TestPlatformEntryExtendedFields:
             check_fn=lambda: True,
             allowed_users_env="IRC_ALLOWED_USERS",
             allow_all_env="IRC_ALLOW_ALL_USERS",
+            allowlist_envs=["IRC_ALLOWED_ROLES"],
             max_message_length=450,
             pii_safe=False,
             emoji="💬",
         )
         assert entry.allowed_users_env == "IRC_ALLOWED_USERS"
         assert entry.allow_all_env == "IRC_ALLOW_ALL_USERS"
+        assert entry.allowlist_envs == ["IRC_ALLOWED_ROLES"]
         assert entry.max_message_length == 450
         assert entry.emoji == "💬"
 

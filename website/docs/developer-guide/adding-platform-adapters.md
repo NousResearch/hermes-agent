@@ -135,6 +135,8 @@ def register(ctx):
         # Per-platform user authorization env vars
         allowed_users_env="MY_PLATFORM_ALLOWED_USERS",
         allow_all_env="MY_PLATFORM_ALLOW_ALL_USERS",
+        # Optional adapter-verified role/group allowlists
+        allowlist_envs=["MY_PLATFORM_ALLOWED_ROLES"],
         # Message length limit for smart chunking (0 = no limit)
         max_message_length=4000,
         # LLM guidance injected into system prompt

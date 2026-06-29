@@ -3831,7 +3831,30 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 all_current,
                 force_fresh=True,
             )
-            if new_enabled != all_current:
+            selected_to_configure = [
+                ts_key for ts_key in sorted(new_enabled)
+                if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+                and _toolset_needs_configuration_prompt(
+                    ts_key,
+                    config,
+                    force_fresh=True,
+                )
+            ]
+
+            selected_to_configure_set = set(selected_to_configure)
+
+            if selected_to_configure:
+                print()
+                print(color(f"  Configuring {len(selected_to_configure)} selected tool(s):", Colors.YELLOW))
+                for ts_key in selected_to_configure:
+                    label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts_key), ts_key)
+                    print(color(f"    • {label}", Colors.DIM))
+                print(color("  You can skip any tool you don't need right now.", Colors.DIM))
+                print()
+                for ts_key in selected_to_configure:
+                    _configure_toolset(ts_key, config)
+
+            if new_enabled != all_current or selected_to_configure:
                 for pk in platform_keys:
                     prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
                     # Scope the printed diff to the checklist's universe (see
@@ -3849,8 +3872,13 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                         for ts in sorted(removed):
                             label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
                             print(color(f"    - {label}", Colors.RED))
-                    # Configure API keys for newly enabled tools
-                    for ts_key in sorted(added):
+                    # Configure API keys for newly enabled tools not already
+                    # handled by the global selected-tool pass above. This
+                    # preserves the old per-platform enable flow but avoids
+                    # dropping users back to the main menu when a selected tool
+                    # was already enabled globally and only lacked provider
+                    # configuration.
+                    for ts_key in sorted(added - selected_to_configure_set):
                         if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
                             if _toolset_needs_configuration_prompt(
                                 ts_key,

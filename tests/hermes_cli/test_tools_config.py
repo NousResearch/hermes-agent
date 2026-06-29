@@ -818,6 +818,52 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
     assert configured == ["web"]
 
 
+def test_configure_all_platforms_configures_selected_tool_missing_provider(monkeypatch):
+    """Regression: `hermes tools` → Configure all platforms → Web Search
+    must enter provider/API-key setup even when Web was already enabled on all
+    configured platforms, so the checklist selection itself has no diff.
+    """
+    config = {"platform_toolsets": {"cli": ["web"], "telegram": ["web"]}}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli", "telegram"],
+    )
+
+    menu_calls = 0
+
+    def choose_by_label(_question, choices, default=0):
+        nonlocal menu_calls
+        menu_calls += 1
+        wanted = "Configure all platforms" if menu_calls == 1 else "Done"
+        for idx, choice in enumerate(choices):
+            if wanted in choice:
+                return idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", choose_by_label)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"web"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_needs_configuration_prompt",
+        lambda ts_key, config, **kwargs: ts_key == "web",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config, **kwargs: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    tools_command(first_install=False, config=config)
+
+    assert configured == ["web"]
+    assert config["platform_toolsets"]["cli"] == ["web"]
+    assert config["platform_toolsets"]["telegram"] == ["web"]
+
+
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {

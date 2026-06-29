@@ -119,6 +119,9 @@ COPY package.json package-lock.json ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+# apps/shared/ is copied IN FULL because web/package.json references it as a
+# `file:` workspace dependency (same pattern as hermes-ink above).
+COPY apps/shared/ apps/shared/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks instead of copies.  This is the default since npm 10+, which is
@@ -184,6 +187,7 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 # invalidate the (relatively slow) web + ui-tui build layer.
 COPY web/ web/
 COPY ui-tui/ ui-tui/
+COPY apps/shared/ apps/shared/
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
 

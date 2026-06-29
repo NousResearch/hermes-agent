@@ -315,6 +315,7 @@ function appendProfileParam(url: string, profile?: string): string {
 }
 
 export const api = {
+  buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).

@@ -35,10 +35,6 @@ export class GatewayClient extends JsonRpcGatewayClient {
     });
   }
 
-  get state(): ConnectionState {
-    return this.connectionState;
-  }
-
   async connect(token?: string): Promise<void> {
     if (this.connectionState === "open" || this.connectionState === "connecting") {
       return;

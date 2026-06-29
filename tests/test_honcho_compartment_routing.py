@@ -115,6 +115,38 @@ def test_unknown_honcho_compartment_returns_tool_error_without_primary_fallback(
     assert provider._compartment_managers["ops"].calls == []
 
 
+def test_read_disabled_compartment_rejects_read_tools_without_primary_fallback():
+    provider = _provider_with_ready_managers()
+    provider._config.compartments["ops"].read = False
+
+    result = json.loads(
+        provider.handle_tool_call(
+            "honcho_search",
+            {"query": "ports", "compartment": "ops"},
+        )
+    )
+
+    assert result["error"] == "Honcho compartment 'ops' is not readable."
+    assert provider._manager.calls == []
+    assert provider._compartment_managers["ops"].calls == []
+
+
+def test_write_disabled_compartment_rejects_conclude_without_primary_fallback():
+    provider = _provider_with_ready_managers()
+    provider._config.compartments["ops"].write = False
+
+    result = json.loads(
+        provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "do not write", "compartment": "ops"},
+        )
+    )
+
+    assert result["error"] == "Honcho compartment 'ops' is not writable."
+    assert provider._manager.calls == []
+    assert provider._compartment_managers["ops"].calls == []
+
+
 def test_honcho_tool_lazily_initializes_configured_compartment_manager(monkeypatch):
     provider = HonchoMemoryProvider()
     provider._session_initialized = True

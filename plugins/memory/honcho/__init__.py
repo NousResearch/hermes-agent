@@ -1339,6 +1339,31 @@ class HonchoMemoryProvider(MemoryProvider):
             return []
         return list(ALL_TOOL_SCHEMAS)
 
+    def _compartment_access_error(
+        self,
+        tool_name: str,
+        args: dict,
+        compartment: str | None,
+    ) -> str | None:
+        """Return an access error when a named compartment disallows a tool."""
+        name = (compartment or "").strip()
+        if not name or not self._config:
+            return None
+        cfg = self._config.compartments.get(name)
+        if cfg is None:
+            return None
+
+        is_write = tool_name == "honcho_conclude" or (
+            tool_name == "honcho_profile" and bool(args.get("card"))
+        )
+        if is_write:
+            if not cfg.write:
+                return f"Honcho compartment '{name}' is not writable."
+            return None
+        if not cfg.read:
+            return f"Honcho compartment '{name}' is not readable."
+        return None
+
     def _tool_route(self, compartment: str | None) -> tuple[Any | None, str, str | None]:
         """Resolve a Honcho manager/session for an optional compartment.
 
@@ -1403,6 +1428,14 @@ class HonchoMemoryProvider(MemoryProvider):
 
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")
+
+        access_error = self._compartment_access_error(
+            tool_name,
+            args,
+            args.get("compartment"),
+        )
+        if access_error:
+            return tool_error(access_error)
 
         manager, route_session_key, route_error = self._tool_route(args.get("compartment"))
         if route_error:

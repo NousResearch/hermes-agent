@@ -279,6 +279,25 @@ class TestConvertMessagesToConverse:
         assert tr["toolResult"]["toolUseId"] == "call_1"
         assert tr["toolResult"]["content"][0]["text"] == "file contents here"
 
+    def test_empty_tool_result_gets_placeholder(self):
+        """A tool that returns an empty string must not produce an empty text
+        block — Bedrock Converse rejects those with "text content blocks must
+        be non-empty", the same guard already applied to user/assistant
+        content (issue #9486)."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": "Run it"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "run", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": ""},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        tr = [b for m in msgs for b in m["content"] if "toolResult" in b][0]
+        text = tr["toolResult"]["content"][0]["text"]
+        assert text != "", "empty tool result must not yield an empty text block"
+
     def test_merges_consecutive_user_messages(self):
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [

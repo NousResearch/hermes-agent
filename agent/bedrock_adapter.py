@@ -584,6 +584,14 @@ def convert_messages_to_converse(
             # Tool result messages → merge into the preceding user turn
             tool_call_id = msg.get("tool_call_id", "")
             result_content = content if isinstance(content, str) else json.dumps(content)
+            # Bedrock Converse rejects empty text blocks (ValidationException:
+            # "text content blocks must be non-empty"), the same constraint
+            # _convert_content_to_converse already guards for user/assistant
+            # content (issue #9486). A tool that returns an empty string would
+            # otherwise 400 the entire request with no retry path, since the
+            # empty block is baked into every replay of the history.
+            if not result_content.strip():
+                result_content = " "
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,

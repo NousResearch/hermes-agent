@@ -500,19 +500,31 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return float(default)
         return parsed
 
-    @staticmethod
-    def _has_approval_gate(text: str) -> bool:
+    @classmethod
+    def _has_approval_gate(cls, text: str) -> bool:
         """Return True for explicit approval/control prompts that must stay intact."""
+        command = r"`?/(approve|deny|reject|confirm|cancel|stop|new|reset|always)\b"
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or cls._looks_list_like_line(stripped):
+                continue
+            if re.search(rf"(^|\b(reply|respond|type|send)\s+){command}", stripped, re.IGNORECASE):
+                return True
+        return False
+
+    @staticmethod
+    def _looks_list_like_line(text: str) -> bool:
+        """Return True for markdown/WhatsApp-style list item lines."""
+        stripped = text.strip().lstrip("\u200b\u200c\u200d\u2060\ufeff")
         return bool(
-            re.search(
-                r"`?/(approve|deny|reject|confirm|cancel|stop|new|reset|always)\b",
-                text,
-                re.IGNORECASE,
+            re.match(
+                r"^(?:[-*+•‣◦]\s|[-*+•‣◦][\u200b\u200c\u200d\u2060\ufeff]+\s*|\d+[.)]\s+)",
+                stripped,
             )
         )
 
-    @staticmethod
-    def _looks_structured_outbound(text: str) -> bool:
+    @classmethod
+    def _looks_structured_outbound(cls, text: str) -> bool:
         """Return True for reports/artifacts that should not be split mid-body."""
         structured_lines = 0
         artifact_lines = 0
@@ -520,14 +532,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             stripped = line.strip()
             if not stripped:
                 continue
-            if re.match(r"^(#{1,6}\s+|[*_-]{3,}$|[-*+]\s+|\d+[.)]\s+|>\s+|\|.*\|$)", stripped):
+            if re.match(r"^(#{1,6}\s+|[*_-]{3,}$|>\s+|\|.*\|$)", stripped) or cls._looks_list_like_line(stripped):
                 structured_lines += 1
             if re.match(
-                r"^(\{\s*$|\}\s*,?$|\[\s*$|\]\s*,?$|[\"']?[A-Za-z0-9_.-]+[\"']?\s*[:=]\s*.+$|[-+]{3}\s|@@\s|[+!]\s|\$\s+|(?:sudo\s+)?(?:git|gh|npm|pnpm|yarn|python\d*|pip|uv|docker|kubectl|helm|curl|ssh|scp|rsync|systemctl|journalctl)\b|(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL)\b|Traceback \(most recent call last\):|File \".+\", line \d+|[A-Za-z_][\w.]*Error:|[-*+]\s+\[[ xX]\]\s+)",
+                r"^(\{\s*$|\}\s*,?$|\[\s*$|\]\s*,?$|[\"']?[A-Za-z0-9_.-]+[\"']?\s*[:=]\s*.+$|[-+]{3}\s|@@\s|[+!]\s|\$\s+|(?:sudo\s+)?(?:git|gh|npm|pnpm|yarn|python\d*|pip|uv|docker|kubectl|helm|curl|ssh|scp|rsync|systemctl|journalctl)\b|(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL)\b|Traceback \(most recent call last\):|File \".+\", line \d+|[A-Za-z_][\w.]*Error:|[-*+•‣◦]\s+\[[ xX]\]\s+)",
                 stripped,
             ):
                 artifact_lines += 1
-        if structured_lines >= 3:
+        if structured_lines >= 2:
             return True
         return artifact_lines >= 3
 
@@ -551,7 +563,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         stripped = paragraph.strip()
         if self._looks_structured_outbound(stripped):
             return False
-        if len(stripped) < self._human_cascade_min_lead_chars:
+        min_lead_chars = self._human_cascade_min_lead_chars
+        if min_lead_chars <= 0:
+            return bool(stripped)
+        if len(stripped) < min_lead_chars:
             return False
         return self._word_count(stripped) >= 6
 
@@ -562,6 +577,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         min_total = self._human_cascade_min_total_chars
         if min_total > 0 and len(text) < min_total:
             return False
+        if len(paragraphs) > 1 and any(self._looks_list_like_line(line) for line in paragraphs[0].splitlines()):
+            return True
         return self._is_substantive_cascade_lead(paragraphs[0])
 
     @staticmethod
@@ -573,37 +590,104 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _contains_active_prompt(text: str) -> bool:
-        """Return True for user-response prompts that should stay at the end."""
+        """Return True for direct user-response prompts that should stay atomic."""
         stripped = text.strip()
-        if "?" in stripped:
-            return True
         return bool(
             re.search(
-                r"\b(reply|respond|choose|pick|select|confirm|approve|deny|send me|tell me|want me to|should i)\b",
+                r"\b(reply|respond|choose|pick|select|confirm this|approve this|deny this|send me|tell me|want me to|should i|do you want me to)\b",
                 stripped,
                 re.IGNORECASE,
             )
         )
 
-    def _protect_high_stakes_tail(self, paragraphs: list[str]) -> list[str] | None:
-        """Keep questions/actions last and keep links with immediate context."""
+    @staticmethod
+    def _split_cascade_paragraphs(text: str) -> list[str]:
+        """Split on blank lines while preserving fenced code blocks."""
+        paragraphs: list[str] = []
+        current: list[str] = []
+        in_fence = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                current.append(line)
+                in_fence = not in_fence
+                continue
+            if not stripped and not in_fence:
+                if current:
+                    paragraphs.append("\n".join(current).strip())
+                    current = []
+                continue
+            current.append(line)
+        if current:
+            paragraphs.append("\n".join(current).strip())
+        return [paragraph for paragraph in paragraphs if paragraph]
+
+    def _is_action_context_paragraph(self, paragraph: str) -> bool:
+        """Return True when a paragraph should travel with an action prompt."""
+        stripped = paragraph.strip()
+        if not stripped:
+            return False
+        if "```" in stripped:
+            return True
+        if self._has_approval_gate(stripped) or self._contains_outbound_link(stripped):
+            return True
+        if re.match(r"^(risk|command|target|branch|commit|diff|verify|verified|tests?|scope)\s*:", stripped, re.IGNORECASE):
+            return True
+        return self._looks_structured_outbound(stripped)
+
+    def _protect_atomic_sections(self, paragraphs: list[str]) -> list[str]:
+        """Keep code/action/link/copy-sensitive sections atomic without disabling cascade globally."""
         if len(paragraphs) < 2:
             return paragraphs
 
-        for idx, paragraph in enumerate(paragraphs[:-1]):
-            if self._contains_active_prompt(paragraph):
-                return None
+        protected: list[str] = []
+        idx = 0
+        while idx < len(paragraphs):
+            paragraph = paragraphs[idx]
 
-        link_indices = [idx for idx, paragraph in enumerate(paragraphs) if self._contains_outbound_link(paragraph)]
-        if not link_indices:
-            return paragraphs
+            paragraph_has_own_context = "\n" in paragraph and not paragraph.lstrip().startswith("```")
+            if (
+                ("```" in paragraph or self._contains_outbound_link(paragraph))
+                and protected
+                and not paragraph_has_own_context
+            ):
+                protected[-1] = f"{protected[-1]}\n\n{paragraph}".strip()
+                idx += 1
+                continue
 
-        first_link = link_indices[0]
-        if first_link == 0:
-            return None
-        merge_start = max(0, first_link - 1)
-        protected_tail = "\n\n".join(paragraphs[merge_start:]).strip()
-        return [*paragraphs[:merge_start], protected_tail]
+            starts_action = (
+                self._has_approval_gate(paragraph)
+                or self._contains_active_prompt(paragraph)
+                or self._has_copy_sensitive_outbound(paragraph)
+            )
+            if starts_action:
+                block = [paragraph]
+                idx += 1
+                copy_sensitive = self._has_copy_sensitive_outbound(paragraph)
+                if copy_sensitive and idx < len(paragraphs):
+                    block.append(paragraphs[idx])
+                    idx += 1
+                while idx < len(paragraphs) and self._is_action_context_paragraph(paragraphs[idx]):
+                    block.append(paragraphs[idx])
+                    idx += 1
+                protected.append("\n\n".join(block).strip())
+                continue
+
+            protected.append(paragraph)
+            idx += 1
+        return protected
+
+    def _merge_list_paragraphs_with_context(self, paragraphs: list[str]) -> list[str]:
+        """Attach bare list paragraphs to their immediate lead-in without collapsing later prose."""
+        merged: list[str] = []
+        for paragraph in paragraphs:
+            lines = [line for line in paragraph.splitlines() if line.strip()]
+            starts_with_list = bool(lines and self._looks_list_like_line(lines[0]))
+            if starts_with_list and merged:
+                merged[-1] = f"{merged[-1]}\n{paragraph}".strip()
+            else:
+                merged.append(paragraph)
+        return merged
 
     def _merge_structured_tail(self, paragraphs: list[str], max_bubbles: int) -> list[str] | None:
         """Return lead paragraphs + glued structured tail, or None if not worth cascading."""
@@ -642,16 +726,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if style in {"single", "off", "none"}:
             return self.truncate_message(formatted, limit), False
         is_group = bool(chat_id and str(chat_id).lower().endswith("@g.us"))
-        if (
-            not self._human_cascade_messages
-            or "```" in formatted
-            or self._has_copy_sensitive_outbound(text)
-        ):
+        if not self._human_cascade_messages:
             return self.truncate_message(formatted, limit), False
 
         force_cascade = style in {"cascade", "human_cascade", "human-cascade"}
-        if self._has_approval_gate(text):
-            return self.truncate_message(formatted, limit), False
         if not force_cascade and is_group and not self._human_cascade_groups:
             return self.truncate_message(formatted, limit), False
 
@@ -663,22 +741,27 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not force_cascade and max_total > 0 and len(text) > max_total:
             return self.truncate_message(formatted, limit), False
 
-        paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+        paragraphs = self._split_cascade_paragraphs(text)
         if len(paragraphs) < 2:
             return self.truncate_message(formatted, limit), False
-        if not force_cascade:
-            protected = self._protect_high_stakes_tail(paragraphs)
-            if protected is None or len(protected) < 2:
-                return self.truncate_message(formatted, limit), False
-            paragraphs = protected
 
-        max_bubbles = self._human_cascade_max_bubbles
+        paragraphs = self._merge_list_paragraphs_with_context(paragraphs)
+        paragraphs = self._protect_atomic_sections(paragraphs)
+        if len(paragraphs) < 2:
+            return self.truncate_message(paragraphs[0], limit), False
+
+        max_bubbles_config = self._human_cascade_max_bubbles
+        max_bubbles = len(paragraphs) if max_bubbles_config == 0 else max_bubbles_config
         if max_bubbles <= 1:
             return self.truncate_message(formatted, limit), False
         if not self._should_human_cascade(text, paragraphs, force=force_cascade):
             return self.truncate_message(formatted, limit), False
 
-        if not force_cascade and self._looks_structured_outbound(text):
+        has_list_paragraph = any(
+            any(self._looks_list_like_line(line) for line in paragraph.splitlines())
+            for paragraph in paragraphs
+        )
+        if not force_cascade and not has_list_paragraph and self._looks_structured_outbound(text):
             merged = self._merge_structured_tail(paragraphs, max_bubbles)
             if merged is None:
                 return self.truncate_message(formatted, limit), False

@@ -320,7 +320,10 @@ class TestSendChunking:
             metadata={"delivery_style": "cascade"},
         )
 
-        assert adapter._http_session.post.call_count == 3
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == "done\n- one\n- two\n- three"
+        assert payloads[1]["message"] == "next"
 
     @pytest.mark.asyncio
     async def test_machine_artifacts_do_not_human_cascade(self):
@@ -384,18 +387,118 @@ class TestSendChunking:
         assert "Reply `/approve`" in payload["message"]
 
     @pytest.mark.asyncio
-    async def test_approval_gates_ignore_forced_cascade(self):
+    async def test_approval_gates_keep_action_block_atomic_when_forced_cascade(self):
         adapter = _make_adapter()
-        resp = MagicMock(status=200)
-        resp.json = AsyncMock(return_value={"messageId": "msg1"})
-        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
 
         content = "I can restart the gateway.\n\nReply /always to keep approving restarts.\n\nRisk: brief downtime."
         await adapter.send("chat1", content, metadata={"delivery_style": "cascade"})
 
-        assert adapter._http_session.post.call_count == 1
-        payload = adapter._http_session.post.call_args.kwargs["json"]
-        assert payload["message"] == content
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == "I can restart the gateway."
+        assert payloads[1]["message"] == "Reply /always to keep approving restarts.\n\nRisk: brief downtime."
+
+    @pytest.mark.asyncio
+    async def test_question_mark_explainer_with_lists_still_cascades(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3", "msg4", "msg5"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        bubble1 = "it decides “is this safe/natural to split into multiple WhatsApp bubbles, or should it stay one atomic message?”"
+        bubble2 = "roughly:\n•\u2060  WhatsApp DM, not group by default\n•\u2060  cascade is enabled"
+        bubble3 = "stays one bubble when:\n•\u2060  approval/control gate: /approve, /deny, /always, /stop, etc\n•\u2060  code block: triple backticks"
+        bubble4 = "then list handling sits in the middle:\n•\u2060  heading+list becomes one bubble\n•\u2060  multiple heading+list sections become separate bubbles"
+        bubble5 = "for your approval message, the action block stays atomic, but earlier prose can still bubble separately."
+        await adapter.send("chat1", "\n\n".join([bubble1, bubble2, bubble3, bubble4, bubble5]))
+
+        assert adapter._http_session.post.call_count == 5
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [bubble1, bubble2, bubble3, bubble4, bubble5]
+
+    @pytest.mark.asyncio
+    async def test_code_block_keeps_only_its_section_atomic(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        intro = "plain intro can still be its own bubble"
+        code = "run this:\n\n```bash\necho hi\n\necho bye\n```"
+        tail = "plain tail can still be its own bubble"
+        await adapter.send("chat1", "\n\n".join([intro, code, tail]))
+
+        assert adapter._http_session.post.call_count == 3
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == intro
+        assert payloads[1]["message"] == code
+        assert payloads[2]["message"] == tail
+
+    @pytest.mark.asyncio
+    async def test_link_command_with_own_heading_does_not_merge_with_previous_list(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        state = "PR state:\n•\u2060  local PR worktree updated\n•\u2060  amended commit ready: 9c81f3971\n•\u2060  not pushed yet"
+        command = "push command waiting on you:\ngit push https://github.com/devatnull/hermes-agent.git HEAD:feat/whatsapp-cascade-delivery"
+        await adapter.send("chat1", "\n\n".join([state, command]))
+
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == state
+        assert payloads[1]["message"] == command
+
+    @pytest.mark.asyncio
+    async def test_group_chats_can_human_cascade_when_configured(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_groups = True
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        await adapter.send("120363001234567890@g.us", "first\n\nsecond")
+
+        assert adapter._http_session.post.call_count == 2
 
     @pytest.mark.asyncio
     async def test_oversized_merged_tail_stays_single(self):
@@ -417,14 +520,11 @@ class TestSendChunking:
         assert payload["message"] == content
 
     @pytest.mark.asyncio
-    async def test_substantive_structured_tail_cascades_plain_lead_in_only(self):
+    async def test_intro_before_structured_tail_stays_single(self):
         adapter = _make_adapter()
-        responses = []
-        for msg_id in ("msg1", "msg2"):
-            resp = MagicMock(status=200)
-            resp.json = AsyncMock(return_value={"messageId": msg_id})
-            responses.append(_AsyncCM(resp))
-        adapter._http_session.post = MagicMock(side_effect=responses)
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         lead = "Here’s the useful summary before the list, with enough context to deserve its own bubble."
         tail = "\n".join([
@@ -433,12 +533,13 @@ class TestSendChunking:
             "- kept approval prompts, code blocks, and group chats conservative so safety/copyability still wins",
             "- ran the focused gateway suite after the heuristic change to catch regressions",
         ])
-        await adapter.send("chat1", lead + "\n\n" + tail)
+        content = lead + "\n\n" + tail
+        await adapter.send("chat1", content)
 
-        assert adapter._http_session.post.call_count == 2
-        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
-        assert payloads[0]["message"] == lead
-        assert payloads[1]["message"] == tail
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        expected = lead + "\n" + tail
+        assert payload["message"] == expected
 
     @pytest.mark.asyncio
     async def test_short_opener_before_structured_tail_stays_single(self):
@@ -453,6 +554,99 @@ class TestSendChunking:
         assert adapter._http_session.post.call_count == 1
         payload = adapter._http_session.post.call_args.kwargs["json"]
         assert payload["message"] == content
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_bullet_tail_stays_single(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "but we only know two things for sure right now:\n\n•\u2060  gateway restarted after the code/config changes\n•\u2060  live config + imported adapter code both show the new behavior"
+        expected = "but we only know two things for sure right now:\n•\u2060  gateway restarted after the code/config changes\n•\u2060  live config + imported adapter code both show the new behavior"
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == expected
+
+    @pytest.mark.asyncio
+    async def test_intro_list_then_later_prose_cascades_after_list_block(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        first = "settings now are:\n•\u2060  split: prose blank lines cascade\n•\u2060  lists/code/logs/config/status stay together\n•\u2060  delay: ~170–310ms between bubbles"
+        second = "if it still feels weird after one real message, we tune by like 50ms, not keep throwing spaghetti at it"
+        await adapter.send("chat1", "settings now are:\n\n•\u2060  split: prose blank lines cascade\n•\u2060  lists/code/logs/config/status stay together\n•\u2060  delay: ~170–310ms between bubbles" + "\n\n" + second)
+
+        assert adapter._http_session.post.call_count == 2
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert payloads[0]["message"] == first
+        assert payloads[1]["message"] == second
+
+    @pytest.mark.asyncio
+    async def test_multiple_intro_list_sections_cascade_as_separate_blocks(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3", "msg4"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        bubble1 = "yeah — after my “don’t split lists” fix, it was too blunt"
+        bubble2 = "previous behavior:\n•\u2060  if any later paragraph had bullet/list lines, it returned the whole message as one bubble\n•\u2060  so intro + bullets + final prose all stayed glued together\n•\u2060  that’s why your “settings now are…” message didn’t cascade"
+        bubble3 = "new behavior:\n•\u2060  intro + bullets stays glued together\n•\u2060  later normal prose after another blank line can split into the next bubble"
+        bubble4 = "so the list is protected, but it doesn’t nuke the whole cascade anymore"
+        await adapter.send("chat1", "\n\n".join([bubble1, bubble2, bubble3, bubble4]))
+
+        assert adapter._http_session.post.call_count == 4
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [bubble1, bubble2, bubble3, bubble4]
+
+    @pytest.mark.asyncio
+    async def test_plain_paragraph_between_list_sections_stays_separate(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_bubbles = 0
+        adapter._human_cascade_max_total_chars = 0
+        adapter._human_cascade_max_bubble_chars = 0
+        adapter._human_cascade_max_merged_bubble_chars = 0
+        adapter._human_cascade_min_total_chars = 0
+        adapter._human_cascade_min_lead_chars = 0
+        responses = []
+        for msg_id in ("msg1", "msg2", "msg3", "msg4", "msg5"):
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": msg_id})
+            responses.append(_AsyncCM(resp))
+        adapter._http_session.post = MagicMock(side_effect=responses)
+
+        bubble1 = "yep, working now — but slightly too greedy on list sections"
+        bubble2 = "what happened:\n•\u2060  first prose bubble split correctly\n•\u2060  all three list sections got merged into one big protected list bubble\n•\u2060  delay/prose split correctly after that\n•\u2060  final prose split correctly too"
+        bubble3 = "so the remaining bug is: consecutive heading+list sections are being treated as one list block instead of separate blocks"
+        bubble4 = "expected should be:\n•\u2060  prose bubble\n•\u2060  previous behavior + bullets\n•\u2060  new behavior + bullets\n•\u2060  delay prose\n•\u2060  final prose"
+        bubble5 = "I’ll adjust the merge so a new non-list heading after a list starts a new section, not part of the previous protected block."
+        await adapter.send("chat1", "\n\n".join([bubble1, bubble2, bubble3, bubble4, bubble5]))
+
+        assert adapter._http_session.post.call_count == 5
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [bubble1, bubble2, bubble3, bubble4, bubble5]
 
     @pytest.mark.asyncio
     async def test_report_heading_before_structured_tail_stays_single(self):

@@ -552,7 +552,11 @@ def compress_context(
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
         # focus_topic / force — fall back to calling without them.
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+        try:
+            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+        except BaseException:
+            _release_lock()
+            raise
     except BaseException:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.
@@ -565,19 +569,21 @@ def compress_context(
     # session has logically ended), and let auto-compress callers detect
     # the no-op via len(returned) == len(input).
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
-        _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
-        if getattr(agent, "_last_compression_summary_warning", None) != _err:
-            agent._last_compression_summary_warning = _err
-            agent._emit_warning(
-                f"⚠ Compression aborted: {_err}. "
-                "No messages were dropped — conversation continues unchanged. "
-                "Run /compress to retry, or /new to start a fresh session."
-            )
-        _existing_sp = getattr(agent, "_cached_system_prompt", None)
-        if not _existing_sp:
-            _existing_sp = agent._build_system_prompt(system_message)
-        _release_lock()  # compression aborted — no rotation will happen
-        return messages, _existing_sp
+        try:
+            _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+            if getattr(agent, "_last_compression_summary_warning", None) != _err:
+                agent._last_compression_summary_warning = _err
+                agent._emit_warning(
+                    f"⚠ Compression aborted: {_err}. "
+                    "No messages were dropped — conversation continues unchanged. "
+                    "Run /compress to retry, or /new to start a fresh session."
+                )
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+        finally:
+            _release_lock()
 
     try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)

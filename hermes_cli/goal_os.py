@@ -28,6 +28,8 @@ AGENT_ROLES = (
     "Builder Agent",
     "Reviewer Agent",
     "Verifier Agent",
+    "Claude Code Reviewer Agent",
+    "Codex Verifier Agent",
     "Ops Agent",
     "Product QA Agent",
     "Memory Agent",
@@ -401,6 +403,79 @@ def _is_buidl_goal(goal: GoalContract) -> bool:
     return "buidl" in haystack
 
 
+def _is_buidl_mvp_acceptance_goal(goal: GoalContract) -> bool:
+    haystack = " ".join([goal.title, goal.business_outcome, *(goal.acceptance_criteria or [])]).lower()
+    return "buidl" in haystack and any(
+        term in haystack
+        for term in ("mvp", "release-candidate", "release candidate", "acceptance", "green", "working demo", "visible demo")
+    )
+
+
+def _codex_verifier_evidence_indices(goal: GoalContract) -> list[int]:
+    indices: list[int] = []
+    for index, item in enumerate(goal.evidence_log):
+        role = str(item.get("role", "")).lower()
+        executor = str(item.get("executor", item.get("agent", ""))).lower()
+        if not (item.get("codex_verifier_pass") is True or "codex" in role or executor in {"openai-codex", "codex"}):
+            continue
+        if item.get("pass") is False or item.get("result") == "fail":
+            continue
+        if item.get("secrets_printed") is True:
+            continue
+        if not item.get("commands"):
+            continue
+        if not (item.get("files_inspected") or item.get("changed_files")):
+            continue
+        indices.append(index)
+    return indices
+
+
+def _has_codex_verifier_evidence(goal: GoalContract) -> bool:
+    return bool(_codex_verifier_evidence_indices(goal))
+
+
+def _claude_code_reviewer_evidence_indices(goal: GoalContract) -> list[int]:
+    indices: list[int] = []
+    for index, item in enumerate(goal.evidence_log):
+        role = str(item.get("role", "")).lower()
+        executor = str(item.get("executor", item.get("agent", ""))).lower()
+        if not (item.get("claude_code_reviewer_pass") is True or "claude code" in role or executor in {"claude-code", "claude_code", "claude code"}):
+            continue
+        if item.get("pass") is False or item.get("result") == "fail":
+            continue
+        if not item.get("files_inspected"):
+            continue
+        if not (item.get("independent_findings") or item.get("safety_review") or item.get("review_summary")):
+            continue
+        if item.get("secrets_printed") is True:
+            continue
+        indices.append(index)
+    return indices
+
+
+def _has_claude_code_reviewer_evidence(goal: GoalContract) -> bool:
+    return bool(_claude_code_reviewer_evidence_indices(goal))
+
+
+def buidl_dual_review_gate_verdict(goal: GoalContract) -> GreenReadinessVerdict:
+    if not _is_buidl_mvp_acceptance_goal(goal):
+        return GreenReadinessVerdict("GREEN", "Dual-review gate not required for this goal.")
+    missing: list[str] = []
+    codex_indices = _codex_verifier_evidence_indices(goal)
+    claude_indices = _claude_code_reviewer_evidence_indices(goal)
+    if not codex_indices:
+        missing.append("CODEX_VERIFIER_PASS")
+    if not claude_indices:
+        missing.append("CLAUDE_CODE_REVIEWER_PASS")
+    if missing:
+        if "CLAUDE_CODE_REVIEWER_PASS" in missing:
+            return GreenReadinessVerdict("RED", "RED: CLAUDE_CODE_REVIEWER_NOT_ACTIVE. Buidl MVP GREEN requires " + ", ".join(missing) + ".")
+        return GreenReadinessVerdict("RED", "RED: CODEX_VERIFIER_NOT_ACTIVE. Buidl MVP GREEN requires " + ", ".join(missing) + ".")
+    if not set(codex_indices).isdisjoint(claude_indices):
+        return GreenReadinessVerdict("RED", "RED: DUAL_REVIEW_NOT_INDEPENDENT. Codex verifier and Claude Code reviewer evidence must be separate entries.")
+    return GreenReadinessVerdict("GREEN", "CODEX_VERIFIER_PASS and CLAUDE_CODE_REVIEWER_PASS are present.")
+
+
 def _has_browser_or_human_evidence(goal: GoalContract) -> bool:
     return any(item.get("browser_evidence") or item.get("human_browser_report") for item in goal.evidence_log)
 
@@ -425,6 +500,9 @@ def evaluate_goal_report_readiness(goal: GoalContract, *, requested_label: str) 
             required_missing.append("Memory Agent evidence")
     if required_missing:
         return GreenReadinessVerdict("RED", "GREEN for Buidl work requires " + ", ".join(required_missing) + ".")
+    dual_review_verdict = buidl_dual_review_gate_verdict(goal)
+    if dual_review_verdict.classification != "GREEN":
+        return dual_review_verdict
     if _is_ui_or_browser_work(goal):
         missing = []
         if not _has_product_qa_evidence(goal):
@@ -884,6 +962,9 @@ class GoalOSManager:
         unfinished = [card for card in goal.cards if card.status not in {"done", "cancelled"}]
         if unfinished:
             return GoalOSReport("RED", f"RED: /ship refused. {len(unfinished)} card(s) are not done.", goal)
+        dual_review_verdict = buidl_dual_review_gate_verdict(goal)
+        if dual_review_verdict.classification != "GREEN":
+            return GoalOSReport("RED", dual_review_verdict.reason, goal)
         goal.status = "achieved"
         goal.next_action = "Report final evidence. Do not deploy without separate approval."
         goal.evidence_log.append({"role": "Clio Orchestrator", "summary": "/ship accepted with verifier evidence", "at": time.time()})

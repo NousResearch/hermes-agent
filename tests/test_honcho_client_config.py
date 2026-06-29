@@ -207,6 +207,41 @@ class TestHonchoClientConfigAutoEnable:
         assert ops_cfg.api_key == "host-key"
         assert ops_cfg.api_key_explicit is False
 
+    def test_compartment_manual_session_strategy_overrides_host_strategy(self, tmp_path, monkeypatch):
+        """CLI-persisted compartment manual sessions must affect routing."""
+        key_file = tmp_path / "host.jwt"
+        key_file.write_text("host-key\n")
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text(json.dumps({
+            "baseUrl": "https://honcho.example.test",
+            "hosts": {
+                "hermes": {
+                    "workspace": "personal-prod",
+                    "apiKeyFile": "host.jwt",
+                    "sessionStrategy": "per-directory",
+                    "compartments": {
+                        "ops": {
+                            "workspace": "ops-prod",
+                            "sessionStrategy": "manual",
+                            "manualSessionName": "ops-shared-session",
+                        },
+                    },
+                }
+            },
+        }))
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        ops_cfg = cfg.for_compartment("ops")
+
+        assert cfg.session_strategy == "per-directory"
+        assert ops_cfg.session_strategy == "manual"
+        assert ops_cfg.resolve_session_name(
+            cwd="/tmp/hermes-agent",
+            session_title="Compartment Test",
+            session_id="session-123",
+        ) == "ops-shared-session"
+
 
 def test_honcho_config_schema_documents_file_backed_compartments():
     provider = HonchoMemoryProvider()

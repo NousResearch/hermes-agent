@@ -363,6 +363,8 @@ class HonchoCompartmentConfig:
     timeout: float | None = None
     read: bool = True
     write: bool = True
+    session_strategy: str | None = None
+    manual_session_name: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
     api_key_explicit: bool = False
 
@@ -449,6 +451,7 @@ class HonchoClientConfig:
     ai_observe_others: bool = True
     # Session resolution
     session_strategy: str = "per-directory"
+    manual_session_name: str | None = None
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
@@ -575,6 +578,10 @@ class HonchoClientConfig:
             host_block.get("sessionStrategy")
             or raw.get("sessionStrategy", "per-directory")
         )
+        manual_session_name = (
+            host_block.get("manualSessionName")
+            or raw.get("manualSessionName")
+        )
         host_prefix = host_block.get("sessionPeerPrefix")
         session_peer_prefix = (
             host_prefix if host_prefix is not None
@@ -637,6 +644,8 @@ class HonchoClientConfig:
                     timeout=comp_timeout,
                     read=bool(raw_block.get("read", True)),
                     write=bool(raw_block.get("write", True)),
+                    session_strategy=raw_block.get("sessionStrategy"),
+                    manual_session_name=raw_block.get("manualSessionName"),
                     raw=raw_block,
                     api_key_explicit=comp_key_explicit,
                 )
@@ -757,6 +766,7 @@ class HonchoClientConfig:
                 host_block.get("observation") or raw.get("observation"),
             ),
             session_strategy=session_strategy,
+            manual_session_name=manual_session_name,
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
             raw=raw,
@@ -783,6 +793,8 @@ class HonchoClientConfig:
             base_url=compartment.base_url,
             timeout=compartment.timeout,
             enabled=bool(compartment.api_key or compartment.base_url),
+            session_strategy=compartment.session_strategy or self.session_strategy,
+            manual_session_name=compartment.manual_session_name or self.manual_session_name,
             compartments={},
             agent_compartments={},
             api_key_explicit=compartment.api_key_explicit,
@@ -850,13 +862,14 @@ class HonchoClientConfig:
 
         Resolution order:
           1. Gateway session key (stable per-chat identifier from gateway platforms)
-          2. per-session strategy — Hermes session_id ({timestamp}_{hex}); authoritative,
+          2. Manual strategy override
+          3. per-session strategy — Hermes session_id ({timestamp}_{hex}); authoritative,
              so a generated title never remaps a live conversation
-          3. Manual directory override from sessions map
-          4. Hermes session title (from /title command; non-per-session)
-          5. per-repo strategy — git repo root directory name
-          6. per-directory strategy — directory basename
-          7. global strategy — workspace name
+          4. Manual directory override from sessions map
+          5. Hermes session title (from /title command; non-per-session)
+          6. per-repo strategy — git repo root directory name
+          7. per-directory strategy — directory basename
+          8. global strategy — workspace name
         """
         import re
 
@@ -869,6 +882,11 @@ class HonchoClientConfig:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
             if sanitized:
                 return self._enforce_session_id_limit(sanitized, gateway_session_key)
+
+        # Manual compartment override: the CLI can pin a compartment to a
+        # specific Honcho session while the host keeps another strategy.
+        if self.session_strategy == "manual" and self.manual_session_name:
+            return self.manual_session_name
 
         # per-session: the run's session_id IS the identity — resolve before the
         # cwd map / title so an auto-generated title can't remap a live

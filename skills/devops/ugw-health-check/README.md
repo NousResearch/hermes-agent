@@ -2,6 +2,30 @@
 
 A standalone health check script for the Hermes Unified Gateway (UGW).
 
+## After Install
+
+Hermes automatically syncs this skill to `~/.hermes/skills/devops/ugw-health-check/` on next startup. To activate it for the UGW Health Monitor cron job, copy or symlink the script:
+
+```bash
+# Copy (simple)
+cp ~/.hermes/skills/devops/ugw-health-check/ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
+
+# Or symlink (stays up to date with skill updates)
+ln -sf ~/.hermes/skills/devops/ugw-health-check/ugw-health-check.py ~/.hermes/scripts/ugw-health-check.py
+```
+
+Then verify it works:
+```bash
+python3 ~/.hermes/scripts/ugw-health-check.py
+```
+
+Expected output when gateway is running:
+```
+🟢 Unified Gateway OK
+Status: RUNNING
+...
+```
+
 ## Problem
 
 The original `~/.hermes/scripts/ugw-health-check.py` fails with `report parse failed`

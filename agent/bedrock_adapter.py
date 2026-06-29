@@ -583,11 +583,21 @@ def convert_messages_to_converse(
         if role == "tool":
             # Tool result messages → merge into the preceding user turn
             tool_call_id = msg.get("tool_call_id", "")
-            result_content = content if isinstance(content, str) else json.dumps(content)
+            if isinstance(content, list):
+                # Multimodal tool results (computer-use screenshots, image
+                # tools, vision results) carry image parts. Converse
+                # toolResult.content accepts image blocks, so convert them the
+                # same way as user/assistant content. Flattening to a single
+                # text block via json.dumps instead hides the image from the
+                # model and inlines the raw base64 as text, bloating the
+                # request toward the size limit.
+                tr_content = _convert_content_to_converse(content)
+            else:
+                tr_content = [{"text": content if isinstance(content, str) else json.dumps(content)}]
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
-                    "content": [{"text": result_content}],
+                    "content": tr_content,
                 }
             }
             # In Converse, tool results go in a "user" role message

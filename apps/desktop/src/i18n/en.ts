@@ -234,7 +234,11 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.showFiles': 'Show file browser',
-      'view.showTerminal': 'Show terminal',
+      'view.showTerminal': 'Toggle terminal',
+      'view.newTerminal': 'New terminal',
+      'view.nextTerminal': 'Next terminal',
+      'view.prevTerminal': 'Previous terminal',
+      'view.closeTerminal': 'Close terminal',
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',
@@ -1049,6 +1053,7 @@ export const en: Translations = {
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
     title: 'Profiles',
     count: count => `${count} ${count === 1 ? 'profile' : 'profiles'}`,
+    search: 'Search profiles...',
     loading: 'Loading profiles...',
     newProfile: 'New profile',
     allProfiles: 'All profiles',
@@ -1121,6 +1126,8 @@ export const en: Translations = {
 
   cron: {
     close: 'Close cron',
+    title: 'Scheduled jobs',
+    count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     search: 'Search cron jobs...',
     loading: 'Loading cron jobs...',
     states: {
@@ -1837,6 +1844,24 @@ export const en: Translations = {
       turnRunning: 'Running',
       currentTurnElapsed: 'Current turn elapsed',
       contextUsage: 'Context usage',
+      contextUsagePanel: {
+        categories: {
+          conversation: 'Conversation',
+          mcp: 'MCP',
+          memory: 'Memory',
+          rules: 'Rules',
+          skills: 'Skills',
+          subagent_definitions: 'Subagent definitions',
+          system_prompt: 'System prompt',
+          tool_definitions: 'Tool definitions'
+        },
+        empty: 'No context data yet',
+        loading: 'Loading breakdown…',
+        percentFull: percent => `${percent}% Full`,
+        title: 'Context Usage',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: 'Open context usage breakdown',
       session: 'Session',
       runtimeSessionElapsed: 'Runtime session elapsed',
       yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
@@ -1880,6 +1905,10 @@ export const en: Translations = {
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
     terminalHide: 'Hide terminal',
+    terminalsAria: 'Terminals',
+    terminalNew: 'New terminal',
+    terminalCloseOthers: 'Close others',
+    terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
   },
 
@@ -1999,6 +2028,7 @@ export const en: Translations = {
       stopReading: 'Stop reading',
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
+      expandMessage: 'Expand message',
       scrollToBottom: 'Scroll to bottom',
       stop: 'Stop',
       restorePrevious: 'Restore previous checkpoint',

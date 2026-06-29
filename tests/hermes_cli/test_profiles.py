@@ -26,6 +26,9 @@ from hermes_cli.profiles import (
     get_active_profile_name,
     resolve_profile_env,
     check_alias_collision,
+    create_wrapper_script,
+    remove_wrapper_script,
+    validate_alias_name,
     rename_profile,
     export_profile,
     import_profile,
@@ -769,6 +772,14 @@ class TestAliasCollision:
             result = check_alias_collision("mybot")
         assert result is None  # our own wrapper, safe to overwrite
 
+    def test_traversal_alias_rejected_before_path_lookup(self, profile_env):
+        """A path-traversal alias is rejected without ever shelling out to which/where."""
+        with patch("subprocess.run") as mock_run:
+            result = check_alias_collision("../../.bashrc")
+        assert result is not None
+        assert "invalid alias name" in result.lower()
+        mock_run.assert_not_called()
+
 
 # ===================================================================
 # TestWrapperScript
@@ -848,6 +859,53 @@ class TestWrapperScript:
         assert "hermes -p redqueen" in content
         assert "%*" in content
         assert "#!/bin/sh" not in content
+
+
+# ===================================================================
+# TestWrapperScriptSecurity — path-traversal hardening
+# ===================================================================
+
+class TestWrapperScriptSecurity:
+    """A crafted alias name must not escape the wrapper directory."""
+
+    def test_validate_alias_name_rejects_traversal(self):
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            validate_alias_name("../../.bashrc")
+
+    def test_validate_alias_name_rejects_absolute_path(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            validate_alias_name(str(tmp_path / "evil"))
+
+    def test_validate_alias_name_accepts_safe_identifier(self):
+        validate_alias_name("mybot")  # does not raise
+
+    def test_create_wrapper_rejects_traversal(self, profile_env):
+        sentinel = profile_env / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script("../../.bashrc", target="coder")
+        # The traversal target was not touched.
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_create_wrapper_rejects_absolute_path(self, profile_env, tmp_path):
+        target = tmp_path / "abs-wrapper"
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script(str(target))
+        assert not target.exists()
+
+    def test_remove_wrapper_rejects_traversal(self, profile_env):
+        sentinel = profile_env / ".bashrc"
+        sentinel.write_text("keep", encoding="utf-8")
+        assert remove_wrapper_script("../../.bashrc") is False
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+
+    def test_legit_alias_stays_inside_wrapper_dir(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir
+        wrapper = create_wrapper_script("mybot", target="coder")
+        assert wrapper is not None
+        assert wrapper.resolve().is_relative_to(_get_wrapper_dir().resolve())
+        assert 'hermes -p coder "$@"' in wrapper.read_text()
 
 
 # ===================================================================

@@ -2110,7 +2110,11 @@ export const en: Translations = {
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
       skip: 'Skip',
-      continueLabel: 'Continue'
+      continueLabel: 'Continue',
+      selected: 'Selected',
+      selectedCount: count => `${count} selected`,
+      multiSelectHint: 'Multi-select: use the circle on the right to stage choices, then press Select selected.',
+      selectSelected: 'Select selected'
     },
     tool: {
       code: 'Code',

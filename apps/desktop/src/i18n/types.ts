@@ -1752,6 +1752,10 @@ export interface Translations {
       placeholder: string
       skip: string
       continueLabel: string
+      selected: string
+      selectedCount: (count: number) => string
+      multiSelectHint: string
+      selectSelected: string
     }
     tool: {
       code: string

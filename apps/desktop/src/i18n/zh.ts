@@ -2274,7 +2274,11 @@ export const zh: Translations = {
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
       skip: '跳过',
-      continueLabel: '继续'
+      continueLabel: '继续',
+      selected: '已选择',
+      selectedCount: count => `已选择 ${count} 项`,
+      multiSelectHint: '多选：使用右侧圆点暂存选项，然后点击“提交已选择”。',
+      selectSelected: '提交已选择'
     },
     tool: {
       code: '代码',

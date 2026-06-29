@@ -261,7 +261,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const selectedSummary = selectedChoices.join(', ')
   const customSummary = trimmedDraft ? `${copy.other}: ${trimmedDraft}` : ''
   const selectionSummary = selectedSummary || selectedChoice || customSummary
-  const canSubmitSelected = multiSelect && selectedChoices.length > 0 && selectedChoices.length >= minSelections
+  const selectedChoiceCount = selectedChoices.length
+  const canSubmitSelected = multiSelect && selectedChoiceCount > 0 && selectedChoiceCount >= minSelections
 
   const selectChoice = useCallback(
     (choice: string) => {
@@ -348,12 +349,18 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       {selectionSummary && (
         <div className="rounded-[0.25rem] border border-primary/20 bg-primary/5 px-2 py-1 text-xs" role="status">
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium text-primary">Selected</span>
-            {selectedChoices.length > 0 && (
-              <span className="text-(--ui-text-tertiary)">{selectedChoices.length} selected</span>
+            <span className="font-medium text-primary">{copy.selected}</span>
+            {selectedChoiceCount > 0 && (
+              <span className="text-(--ui-text-tertiary)">{copy.selectedCount(selectedChoiceCount)}</span>
             )}
           </div>
           <div className="mt-0.5 wrap-anywhere text-(--ui-text-secondary)">{selectionSummary}</div>
+        </div>
+      )}
+
+      {hasChoices && multiSelect && (
+        <div className="rounded-[0.25rem] bg-(--chrome-action-hover) px-2 py-1 text-xs text-(--ui-text-secondary)" role="note">
+          {copy.multiSelectHint}
         </div>
       )}
 
@@ -448,9 +455,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        {multiSelect && selectedChoices.length > 0 ? (
+        {multiSelect && !trimmedDraft ? (
           <Button disabled={submitting || !canSubmitSelected} onClick={submitSelected} size="xs" type="button">
-            {submitting ? <Loader2 className="size-3" /> : 'Send selected'}
+            {submitting ? <Loader2 className="size-3" /> : copy.selectSelected}
           </Button>
         ) : (
           <Button disabled={submitting || !trimmedDraft} onClick={submitDraft} size="xs" type="button">

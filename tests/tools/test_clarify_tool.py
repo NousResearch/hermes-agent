@@ -354,6 +354,13 @@ class TestClarifySchema:
         assert properties["max_selections"]["type"] == ["integer", "null"]
         assert properties["allow_other"]["type"] == "boolean"
 
+    def test_schema_warns_against_dead_select_blocks_for_next_actions(self):
+        description = CLARIFY_SCHEMA["description"]
+        assert "next-action section" in description
+        assert "Markdown lists" in description
+        assert "```select" in description
+        assert "multi_select=true" in description
+
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4

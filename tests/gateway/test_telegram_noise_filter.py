@@ -167,6 +167,18 @@ def test_runtime_notices_default_remains_enabled_for_whatsapp_backcompat():
     assert resolve_display_setting({}, "whatsapp", "runtime_notices") is True
 
 
+@pytest.mark.parametrize("platform", ["local", "api_server", "webhook", "msgraph_webhook"])
+def test_runtime_notices_default_remains_enabled_for_raw_surfaces(platform):
+    """Raw/programmatic surfaces keep diagnostics unless explicitly opted out."""
+    assert resolve_display_setting({}, platform, "runtime_notices") is True
+
+
+@pytest.mark.parametrize("platform", ["signal", "sms", "email", "homeassistant"])
+def test_quiet_tiers_keep_runtime_notices_enabled_for_backcompat(platform):
+    """Quiet display tiers still preserve runtime notices by default."""
+    assert resolve_display_setting({}, platform, "runtime_notices") is True
+
+
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
 def test_chat_gateways_keep_normal_answers(platform):
     """Normal assistant content must pass through unchanged on chat surfaces."""

@@ -97,7 +97,9 @@ _TIER_LOW = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
-    "runtime_notices": False,
+    # Keep lifecycle notices default-enabled for back-compat even on quiet
+    # platforms; public/customer-facing agents opt out explicitly per profile.
+    "runtime_notices": True,
 }
 
 _TIER_MINIMAL = {
@@ -108,7 +110,9 @@ _TIER_MINIMAL = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
-    "runtime_notices": False,
+    # Programmatic/raw surfaces such as webhooks must keep diagnostics unless
+    # a profile explicitly disables runtime_notices.
+    "runtime_notices": True,
 }
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {

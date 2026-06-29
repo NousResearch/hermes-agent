@@ -278,7 +278,7 @@ def _safe_command_timeout() -> int:
 
 def _get_open_command_timeout(*, first_open: bool = False) -> int:
     """Timeout for agent-browser ``open`` (navigation / daemon cold start)."""
-    base = _get_command_timeout()
+    base = _safe_command_timeout()
     floor = MIN_FIRST_OPEN_TIMEOUT if first_open else MIN_OPEN_TIMEOUT
     return max(base, floor)
 

@@ -5304,6 +5304,28 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
+        # Early auth check: reject unauthorized users before any API calls
+        # (auto-thread creation, channel history backfill, file downloads).
+        # Pattern matches Telegram fix #54164 — gate at the adapter level
+        # BEFORE event construction consumes resources.
+        if message.author and not role_authorized:
+            _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+            _auth_fn = getattr(_runner, "_is_user_authorized", None)
+            if callable(_auth_fn):
+                _is_dm = isinstance(message.channel, discord.DMChannel)
+                _source = self.build_source(
+                    chat_id=str(message.channel.id), chat_name="",
+                    chat_type="dm" if _is_dm else "group",
+                    user_id=str(message.author.id),
+                    user_name=getattr(message.author, "display_name", "") or "",
+                )
+                if not _auth_fn(_source):
+                    logger.warning(
+                        "[Discord] Early reject of unauthorized user %s in channel %s",
+                        message.author.id, message.channel.id,
+                    )
+                    return
+
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.

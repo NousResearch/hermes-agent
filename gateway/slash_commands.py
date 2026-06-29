@@ -808,6 +808,8 @@ class GatewaySlashCommandsMixin:
         row_chat = str(row.get("chat_id") or "")
         caller_thread = str(getattr(source, "thread_id", "") or "")
         row_thread = str(row.get("thread_id") or "")
+        chat_type = (getattr(source, "chat_type", "") or "").lower()
+        caller_is_dm = chat_type in {"dm", "direct", "private", ""}
         if caller_uid:
             # Identity-bearing caller: allow only when the row PROVES the same
             # owner AND the same platform/origin AND the same chat/thread. A row
@@ -822,13 +824,25 @@ class GatewaySlashCommandsMixin:
             # persisted session by id/title. (Legacy NULL-owner/blank-source/
             # NULL-chat rows are intentionally not resumable this way; use a
             # live session or an explicit admin override.)
-            return (
+            base_ok = (
                 bool(row_uid) and row_uid == caller_uid
                 and bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
-                and row_chat == caller_chat
                 and row_thread == caller_thread
             )
+            if not base_ok:
+                return False
+            if caller_is_dm:
+                # DMs are keyed on user_id; chat_id is legitimately absent on
+                # both sides for a no-chat_id DM (already scoped by user_id
+                # above). Still reject a mismatching chat_id when present.
+                return row_chat == caller_chat
+            # Non-DM (group/channel/forum/thread): build_session_key includes
+            # chat_id, so a row (or caller) with NO chat provenance cannot prove
+            # same-chat. Require both sides non-blank and equal — a legacy
+            # NULL-chat row (or a caller missing its chat_id) fails closed even
+            # when both normalize to "". (CWE-639)
+            return bool(row_chat) and bool(caller_chat) and row_chat == caller_chat
         # No caller identity: the persisted row carries only source + user_id
         # (the sessions table has no chat_id), so a same-platform row can belong
         # to a DIFFERENT chat or user. Same-platform alone is therefore NOT

@@ -1165,6 +1165,11 @@ class TestBedrockErrorClassification:
 class TestBedrockContextLength:
     """Test Bedrock model context length lookup."""
 
+    def test_claude_opus_4_8(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Opus 4.8 exposes the 1M window on Bedrock (matches native Anthropic).
+        assert get_bedrock_context_length("anthropic.claude-opus-4-8-20250514-v1:0") == 1_000_000
+
     def test_claude_opus_4_7(self):
         from agent.bedrock_adapter import get_bedrock_context_length
         # Opus 4.7 has 1M context generally available (no beta header required)
@@ -1186,11 +1191,12 @@ class TestBedrockContextLength:
         # Sonnet 4.5's 1M beta was retired on April 30, 2026;
         # it is now standard 200K.
         # https://platform.claude.com/docs/en/release-notes/overview
-        assert get_bedrock_context_length("anthropic.claude-sonnet-4-5") == 200_000
+        assert get_bedrock_context_length("anthropic.claude-sonnet-4-5-20250514-v1:0") == 200_000
 
     def test_claude_haiku_4_5_is_200k(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        # Haiku 4.5 is a 200K-context model per the Anthropic models overview.
+        # Haiku 4.5 has no 1M window — must stay at the 200K Bedrock limit and
+        # not get swept up by the opus/sonnet bump.
         assert get_bedrock_context_length("anthropic.claude-haiku-4-5-20251001-v1:0") == 200_000
 
     def test_nova_pro(self):

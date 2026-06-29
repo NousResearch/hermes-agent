@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -241,14 +241,70 @@ class HolographicMemoryProvider(MemoryProvider):
             return
         self._auto_extract_facts(messages)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
-            try:
-                category = "user_pref" if target == "user" else "general"
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory writes as facts.
+
+        Handles all three mutating actions forwarded by the bridge
+        (MemoryManager.notify_memory_tool_write):
+
+        - ``add``    → mirror as a new fact.
+        - ``replace``→ find the existing fact by ``old_text`` (from metadata)
+          and update its content; fall back to ``add`` if not found.
+        - ``remove`` → find the existing fact by ``old_text`` and delete it;
+          silent no-op if not found (idempotent).
+
+        ``metadata`` carries ``old_text`` for replace/remove, supplied by the
+        bridge from the built-in memory tool's ``old_text`` argument.
+        """
+        if not self._store:
+            return
+
+        category = "user_pref" if target == "user" else "general"
+        old_text = (metadata or {}).get("old_text", "")
+
+        try:
+            if action == "add" and content:
                 self._store.add_fact(content, category=category)
-            except Exception as e:
-                logger.debug("Holographic memory_write mirror failed: %s", e)
+
+            elif action == "replace" and content:
+                fact_id = self._find_fact_by_content(old_text or content)
+                if fact_id is not None:
+                    self._store.update_fact(fact_id, content=content)
+                else:
+                    # Fact not found in holographic store — mirror as new add
+                    # rather than dropping the write silently.
+                    self._store.add_fact(content, category=category)
+
+            elif action == "remove":
+                fact_id = self._find_fact_by_content(old_text)
+                if fact_id is not None:
+                    self._store.remove_fact(fact_id)
+                # No match → idempotent no-op
+
+        except Exception as e:
+            logger.warning("Holographic memory_write mirror failed: %s", e)
+
+    def _find_fact_by_content(self, content: str) -> Optional[int]:
+        """Find a fact by exact content match via FTS5 search.
+
+        Returns the fact_id of the first exact match, or None.
+        """
+        if not content or not self._store:
+            return None
+        try:
+            matches = self._store.search_facts(content, min_trust=0.0, limit=10)
+            for m in matches:
+                if m.get("content", "") == content:
+                    return m.get("fact_id")
+        except Exception:
+            pass
+        return None
 
     def shutdown(self) -> None:
         # Close the SQLite connection deterministically instead of leaking it

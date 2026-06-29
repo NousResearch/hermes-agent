@@ -71,18 +71,31 @@ def test_is_available_false_without_api_key(monkeypatch):
     assert p.is_available() is False
 
 
-def test_is_available_false_when_import_missing(monkeypatch):
+def test_is_available_true_when_import_missing_but_key_set(monkeypatch):
+    # Regression: is_available() must NOT gate on the supermemory SDK being
+    # importable. The SDK is lazy-installed at client construction (see
+    # _SupermemoryClient.__init__ -> tools.lazy_deps.ensure). Gating here is a
+    # chicken-and-egg trap: on a sealed Docker venv the package isn't present
+    # until ensure() runs, but ensure() only runs once the provider loads —
+    # which this gates. So with the key set and the SDK absent, the provider
+    # must still report available. Mirrors honcho/mem0 (config-presence only).
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
 
     import builtins
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name == "supermemory":
+        if name == "supermemory" or name.startswith("supermemory."):
             raise ImportError("missing")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
+    p = SupermemoryMemoryProvider()
+    assert p.is_available() is True
+
+
+def test_is_available_false_without_key(monkeypatch):
+    monkeypatch.delenv("SUPERMEMORY_API_KEY", raising=False)
     p = SupermemoryMemoryProvider()
     assert p.is_available() is False
 

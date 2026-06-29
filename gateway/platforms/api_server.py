@@ -3052,7 +3052,30 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
-            conversation_history = conversation_history[-100:]
+            # Preserve leading context-compaction handoff messages so the model
+            # does not lose the compaction instructions.  Scan from the start
+            # for consecutive messages whose string content contains the
+            # compaction marker "[CONTEXT COMPACTION".  (Issue #55224)
+            leading_compactions = []
+            for msg in conversation_history:
+                content = msg.get("content", "")
+                if isinstance(content, str) and "[CONTEXT COMPACTION" in content:
+                    leading_compactions.append(msg)
+                else:
+                    break  # stop at the first non-compaction message
+
+            remaining_slots = 100 - len(leading_compactions)
+            if remaining_slots > 0:
+                # Take the most recent remaining_slots messages from the
+                # tail, excluding those already captured as leading.
+                tail_cut = max(
+                    len(leading_compactions),
+                    len(conversation_history) - remaining_slots,
+                )
+                conversation_history = leading_compactions + conversation_history[tail_cut:]
+            else:
+                # All 100 slots consumed by compactions — just take last 100.
+                conversation_history = conversation_history[-100:]
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.

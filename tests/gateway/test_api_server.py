@@ -2981,6 +2981,195 @@ class TestTruncation:
         call_kwargs = mock_run.call_args.kwargs
         assert len(call_kwargs["conversation_history"]) == 150
 
+    @pytest.mark.asyncio
+    async def test_truncation_preserves_leading_compaction_summaries(self, adapter):
+        """Leading [CONTEXT COMPACTION] messages are preserved after truncation."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        # Build history: 5 leading compaction messages + 145 regular messages
+        long_history = []
+        for i in range(5):
+            long_history.append({"role": "system", "content": f"[CONTEXT COMPACTION] summary {i}"})
+        for i in range(145):
+            long_history.append({"role": "user", "content": f"msg {i}"})
+
+        assert len(long_history) == 150
+
+        adapter._response_store.put("resp_comp_lead", {
+            "response": {"id": "resp_comp_lead", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_comp_lead",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        hist = call_kwargs["conversation_history"]
+        # Total should be <= 100
+        assert len(hist) <= 100
+        # Leading compaction messages must be preserved at start
+        assert hist[0]["content"] == "[CONTEXT COMPACTION] summary 0"
+        assert hist[1]["content"] == "[CONTEXT COMPACTION] summary 1"
+        assert hist[2]["content"] == "[CONTEXT COMPACTION] summary 2"
+        assert hist[3]["content"] == "[CONTEXT COMPACTION] summary 3"
+        assert hist[4]["content"] == "[CONTEXT COMPACTION] summary 4"
+        # Most recent regular messages should be at the tail
+        assert "msg 144" in hist[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_truncation_exactly_100_with_compactions(self, adapter):
+        """When leading compactions + tail exactly fill 100, no messages are dropped from tail."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        # Build history: 10 leading compaction messages + 140 regular messages (total 150)
+        long_history = []
+        for i in range(10):
+            long_history.append({"role": "system", "content": f"[CONTEXT COMPACTION] summary {i}"})
+        for i in range(140):
+            long_history.append({"role": "user", "content": f"msg {i}"})
+
+        adapter._response_store.put("resp_comp_exact", {
+            "response": {"id": "resp_comp_exact", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_comp_exact",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        hist = call_kwargs["conversation_history"]
+        # Exactly 100: 10 compactions + 90 tail messages
+        assert len(hist) == 100
+        # Compactions are preserved at start
+        for i in range(10):
+            assert f"[CONTEXT COMPACTION] summary {i}" in hist[i]["content"]
+        # Tail should have the last 90 messages (msg 50 through msg 139)
+        assert hist[10]["content"] == "msg 50"
+        assert hist[-1]["content"] == "msg 139"
+
+    @pytest.mark.asyncio
+    async def test_truncation_compactions_exceed_100(self, adapter):
+        """When leading compactions >= 100, just keep the last 100 messages."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        # Build history: 110 compaction messages + 40 regular messages
+        long_history = []
+        for i in range(110):
+            long_history.append({"role": "system", "content": f"[CONTEXT COMPACTION] summary {i}"})
+        for i in range(40):
+            long_history.append({"role": "user", "content": f"msg {i}"})
+
+        adapter._response_store.put("resp_comp_over", {
+            "response": {"id": "resp_comp_over", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_comp_over",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        hist = call_kwargs["conversation_history"]
+        assert len(hist) == 100
+        # Leading compactions >= 100 → fallback to last 100 messages.
+        # 150 messages: indices 50-149 = compactions 50-109 + msg 0-39
+        assert hist[0]["content"] == "[CONTEXT COMPACTION] summary 50"
+        assert hist[59]["content"] == "[CONTEXT COMPACTION] summary 109"
+        assert hist[60]["content"] == "msg 0"
+        assert hist[-1]["content"] == "msg 39"
+
+    @pytest.mark.asyncio
+    async def test_truncation_skips_mid_end_compactions(self, adapter):
+        """Compaction messages in the middle/end are NOT specially preserved."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        # Build: 5 leading compaction + 5 regular + 5 middle compaction + 140 regular
+        # Total = 155, after truncation with auto: keep 5 leading + 95 tail
+        # Middle compactions should be lost
+        long_history = []
+        for i in range(5):
+            long_history.append({"role": "system", "content": f"[CONTEXT COMPACTION] leading {i}"})
+        for i in range(5):
+            long_history.append({"role": "user", "content": f"pre-msg {i}"})
+        for i in range(5):
+            long_history.append({"role": "system", "content": f"[CONTEXT COMPACTION] middle {i}"})
+        for i in range(140):
+            long_history.append({"role": "user", "content": f"msg {i}"})
+
+        assert len(long_history) == 155
+
+        adapter._response_store.put("resp_comp_mid", {
+            "response": {"id": "resp_comp_mid", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_comp_mid",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        call_kwargs = mock_run.call_args.kwargs
+        hist = call_kwargs["conversation_history"]
+        assert len(hist) == 100
+        # Leading compaction messages preserved
+        assert hist[0]["content"] == "[CONTEXT COMPACTION] leading 0"
+        assert hist[4]["content"] == "[CONTEXT COMPACTION] leading 4"
+        # Middle compaction messages should have been dropped
+        middle_compactions = [m for m in hist if "middle" in m.get("content", "")]
+        assert len(middle_compactions) == 0
+        # Only 5 leading compactions, so 95 tail messages
+        assert hist[5]["content"] == "msg 45"  # tail starts at index 60, which is msg 45
+        assert hist[-1]["content"] == "msg 139"
+
 
 # ---------------------------------------------------------------------------
 # Response-side truncation / failure handling (issue #22496)

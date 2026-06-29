@@ -81,6 +81,9 @@ type CacheEntry =
 const FRAME_MS = 160
 const POLL_MS = 2500
 
+export const isPetCellsUnsupportedError = (err: unknown): boolean =>
+  err instanceof Error && /unknown method:\s*pet\.cells/i.test(err.message)
+
 // Only the standalone TUI owns a real terminal it can splat image escapes into;
 // when piped (or running under the dashboard PTY the gateway resolves to
 // half-blocks anyway) we never ask for graphics.
@@ -119,6 +122,7 @@ export function usePet(): PetRender {
   const imageIdRef = useRef(0)
   const stateRef = useRef<PetState>('idle')
   const frameRef = useRef(0)
+  const unsupportedRef = useRef(false)
 
   const [petState, setPetState] = useState<PetState>('idle')
 
@@ -193,6 +197,10 @@ export function usePet(): PetRender {
   // config, so its `slug`/`enabled` are the source of truth.
   const sync = useCallback(
     async (state: PetState) => {
+      if (unsupportedRef.current) {
+        return
+      }
+
       try {
         const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
 
@@ -243,7 +251,20 @@ export function usePet(): PetRender {
         }
 
         setEnabled(true)
-      } catch {
+      } catch (err) {
+        if (isPetCellsUnsupportedError(err)) {
+          // Version-skew guard: a freshly built TUI can run against an older
+          // dashboard / sidecar gateway that does not know the pet RPCs yet.
+          // The pet is cosmetic, so disable it for this process instead of
+          // polling every 2.5s and surfacing repeated "unknown method" errors.
+          unsupportedRef.current = true
+          releaseKitty()
+          slugRef.current = ''
+          cache.current.clear()
+          setGrid(null)
+          setKitty(null)
+          setEnabled(false)
+        }
         // cosmetic — ignore RPC failures
       }
     },

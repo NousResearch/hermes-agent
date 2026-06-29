@@ -925,6 +925,26 @@ def test_create_rejects_no_assignee(worker_env):
     assert json.loads(kt._handle_create({"title": "t"})).get("error")
 
 
+def test_create_triage_allows_missing_assignee(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "needs routing",
+        "triage": True,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert task.status == "triage"
+        assert task.assignee is None
+    finally:
+        conn.close()
+
+
 def test_create_rejects_non_list_parents(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({"title": "t", "assignee": "a", "parents": 42})

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.homeassistant.adapter import HomeAssistantAdapter
 from tests.fakes.fake_ha_server import FakeHAServer, ENTITY_STATES
-from tools.homeassistant_tool import (
+from plugins.homeassistant import (
     _async_call_service,
     _async_get_state,
     _async_list_entities,

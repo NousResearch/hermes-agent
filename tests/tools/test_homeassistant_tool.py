@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.homeassistant_tool import (
+from plugins.homeassistant import (
     _check_ha_available,
     _filter_and_summarize,
     _build_service_payload,

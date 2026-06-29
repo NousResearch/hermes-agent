@@ -85,7 +85,7 @@ nebius_token_factory = NebiusTokenFactoryProfile(
         "NEBIUS_BASE_URL",
     ),
     base_url="https://api.tokenfactory.nebius.com/v1",
-    models_url="https://api.tokenfactory.nebius.com/v1/models",
+    models_url="https://api.tokenfactory.nebius.com/v1/models?verbose=true",
     auth_type="api_key",
     default_aux_model="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
     fallback_models=(

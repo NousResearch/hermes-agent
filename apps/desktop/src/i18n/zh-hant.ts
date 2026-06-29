@@ -308,6 +308,8 @@ export const zhHant = defineLocale({
         restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
         scaleTitle: '大小',
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
+        roamTitle: '漫遊',
+        roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
         on: '開啟',
         off: '關閉',
         chooseTitle: '選擇寵物',
@@ -1903,6 +1905,24 @@ export const zhHant = defineLocale({
       turnRunning: '執行中',
       currentTurnElapsed: '目前回合已用時間',
       contextUsage: '上下文使用量',
+      contextUsagePanel: {
+        categories: {
+          conversation: '對話',
+          mcp: 'MCP',
+          memory: '記憶',
+          rules: '規則',
+          skills: '技能',
+          subagent_definitions: '子代理定義',
+          system_prompt: '系統提示詞',
+          tool_definitions: '工具定義'
+        },
+        empty: '尚無上下文資料',
+        loading: '正在載入明細…',
+        percentFull: percent => `已用 ${percent}%`,
+        title: '上下文使用量',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: '開啟上下文使用量明細',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',

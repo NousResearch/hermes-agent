@@ -270,6 +270,31 @@ class TestWebServerEndpoints:
         assert drain_control.drain_requested() is True
         drain_control.clear_drain_request()
 
+    def test_gateway_drain_suppress_notification_passthrough(self):
+        from gateway import drain_control
+
+        resp = self.client.post(
+            "/api/gateway/drain",
+            json={"action": "drain", "suppress_notification": True},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["suppress_notification"] is True
+        # The flag landed on the marker the gateway reads at shutdown.
+        body = drain_control.read_drain_request()
+        assert body is not None and body["suppress_notification"] is True
+        assert drain_control.drain_notification_suppressed() is True
+        drain_control.clear_drain_request()
+
+    def test_gateway_drain_suppress_defaults_false(self):
+        from gateway import drain_control
+
+        resp = self.client.post("/api/gateway/drain", json={"action": "drain"})
+        assert resp.status_code == 200
+        assert resp.json()["suppress_notification"] is False
+        assert drain_control.drain_notification_suppressed() is False
+        drain_control.clear_drain_request()
+
     def test_gateway_drain_cancel_removes_marker(self):
         from gateway import drain_control
 

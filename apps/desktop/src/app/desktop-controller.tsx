@@ -297,10 +297,12 @@ export function DesktopController() {
 
   useEffect(() => {
     startUpdatePoller()
-    const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
+    const unsubUpdates = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
+    const unsubSettings = window.hermesDesktop?.onOpenSettingsRequested?.(() => openSettings())
 
     return () => {
-      unsubscribe?.()
+      unsubUpdates?.()
+      unsubSettings?.()
       stopUpdatePoller()
     }
   }, [])

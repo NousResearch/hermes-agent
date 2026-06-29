@@ -131,6 +131,7 @@ export interface Translations {
       repairInstall: string
       useLocalGateway: string
       openLogs: string
+      openSettings: string
       repairHint: string
       remoteSignInHint: string
       hideRecentLogs: string

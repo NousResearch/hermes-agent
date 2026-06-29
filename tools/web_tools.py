@@ -792,6 +792,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     with multiple backends (Parallel or Firecrawl).
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
+    Some backends may also return extra structured metadata such as image results.
     Use web_extract_tool to get full content from specific URLs.
     
     Args:
@@ -809,6 +810,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                              "url": str,
                              "description": str,
                              "position": int
+                         },
+                         ...
+                     ],
+                     "images": [  # optional, backend-specific
+                         {
+                             "title": str,
+                             "url": str,
+                             "description": str,
+                             "position": int,
+                             "source_url": str
                          },
                          ...
                      ]

@@ -5,7 +5,7 @@ Covers:
 - search() — JSON happy path, annotation fallback, citations fallback, empty results
 - search() error paths — HTTP error, request error, missing creds, mutually-exclusive domain filters,
   200-OK error envelope
-- Request payload shape — model, tools list, allowed_domains/excluded_domains filters
+- Request payload shape — model, tools list, image search flag, allowed_domains/excluded_domains filters
 - OAuth credential resolution end-to-end through tools.xai_http
 - _is_backend_available("xai") integration with tools.web_tools
 - _get_backend() accepts "xai" as a configured backend
@@ -357,6 +357,44 @@ class TestXAIProviderRequestShape:
 
         assert captured["json"]["model"] == "grok-4.3-fast"
 
+    def test_enable_image_search_passes_through_as_tool_flag(self):
+        from plugins.web.xai import provider as xai_provider
+
+        captured: dict = {}
+
+        def fake_post(url, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return _mock_resp(_responses_payload(json.dumps({"results": []})))
+
+        cfg = {"enable_image_search": True}
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value=cfg), \
+             patch("httpx.post", side_effect=fake_post):
+            xai_provider.XAIWebSearchProvider().search("show me launch pad photos", limit=5)
+
+        assert captured["json"]["tools"] == [{
+            "type": "web_search",
+            "enable_image_search": True,
+        }]
+        assert '"images": [' in captured["json"]["input"][0]["content"]
+
+    def test_enable_image_search_accepts_string_true(self):
+        from plugins.web.xai import provider as xai_provider
+
+        captured: dict = {}
+
+        def fake_post(url, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return _mock_resp(_responses_payload(json.dumps({"results": []})))
+
+        cfg = {"enable_image_search": "true"}
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value=cfg), \
+             patch("httpx.post", side_effect=fake_post):
+            xai_provider.XAIWebSearchProvider().search("q", limit=5)
+
+        assert captured["json"]["tools"][0]["enable_image_search"] is True
+
     def test_allowed_domains_passes_through_as_filters(self):
         from plugins.web.xai import provider as xai_provider
 
@@ -417,6 +455,86 @@ class TestXAIProviderRequestShape:
 
         domains = captured["json"]["tools"][0]["filters"]["allowed_domains"]
         assert len(domains) == 5
+
+    def test_enable_image_search_combines_with_domain_filters(self):
+        from plugins.web.xai import provider as xai_provider
+
+        captured: dict = {}
+
+        def fake_post(url, **kwargs):
+            captured["json"] = kwargs.get("json", {})
+            return _mock_resp(_responses_payload(json.dumps({"results": []})))
+
+        cfg = {"enable_image_search": True, "allowed_domains": ["x.ai"]}
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value=cfg), \
+             patch("httpx.post", side_effect=fake_post):
+            xai_provider.XAIWebSearchProvider().search("xai homepage images", limit=5)
+
+        assert captured["json"]["tools"] == [{
+            "type": "web_search",
+            "enable_image_search": True,
+            "filters": {"allowed_domains": ["x.ai"]},
+        }]
+
+    def test_enable_image_search_returns_structured_images(self):
+        from plugins.web.xai import provider as xai_provider
+
+        payload = _responses_payload(json.dumps({
+            "results": [
+                {
+                    "title": "Starship launch pad",
+                    "url": "https://example.com/article",
+                    "description": "Launch pad article.",
+                }
+            ],
+            "images": [
+                {
+                    "title": "Starship on the pad",
+                    "url": "https://images.example/starship.jpg",
+                    "description": "Starship standing on the launch mount.",
+                    "source_url": "https://example.com/article",
+                }
+            ],
+        }))
+        cfg = {"enable_image_search": True}
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value=cfg), \
+             patch("httpx.post", return_value=_mock_resp(payload)):
+            result = xai_provider.XAIWebSearchProvider().search("starship images", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"][0]["url"] == "https://example.com/article"
+        assert result["data"]["images"] == [{
+            "title": "Starship on the pad",
+            "url": "https://images.example/starship.jpg",
+            "description": "Starship standing on the launch mount.",
+            "position": 1,
+            "source_url": "https://example.com/article",
+        }]
+
+    def test_enable_image_search_falls_back_to_markdown_image_embeds(self):
+        from plugins.web.xai import provider as xai_provider
+
+        payload = _responses_payload(
+            "![Starship on pad](https://images.example/starship.jpg)\n"
+            "Here is a relevant launch-pad image.",
+            citations=[],
+        )
+        cfg = {"enable_image_search": True}
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value=cfg), \
+             patch("httpx.post", return_value=_mock_resp(payload)):
+            result = xai_provider.XAIWebSearchProvider().search("starship images", limit=5)
+
+        assert result["success"] is True
+        assert result["data"]["web"] == []
+        assert result["data"]["images"] == [{
+            "title": "Starship on pad",
+            "url": "https://images.example/starship.jpg",
+            "description": "Starship on pad",
+            "position": 1,
+        }]
 
 
 # ---------------------------------------------------------------------------

@@ -73,8 +73,12 @@ and you've spent model calls to learn that), or when you just want a single mode
 The logic is in `scripts/`; run it with the terminal tool. Skill dir: `${HERMES_SKILL_DIR}`.
 
 ```bash
-# Markdown report (default)
+# Markdown report (default = focus mode: the prioritized top few)
 python3 ${HERMES_SKILL_DIR}/scripts/infogain.py "Build a service to sync USAW events into our calendar"
+
+# Breadth mode: wider coverage (more questions + more rounds; the avoid-list drives
+# each round to new dimensions). Heavier/slower — pair with a fast judge if needed.
+python3 ${HERMES_SKILL_DIR}/scripts/infogain.py "<problem>" --mode breadth
 
 # Structured JSON for programmatic use (read the bucket back into your reasoning)
 python3 ${HERMES_SKILL_DIR}/scripts/infogain.py -p "Add SSO to the admin portal" --json
@@ -115,6 +119,11 @@ well-specified.
 Full rationale + citations: `references/methodology.md`. Prompt contracts: `references/prompts.md`.
 
 ## Tuning
+
+**Mode presets:** `--mode focus` (default — prioritized top few) or `--mode breadth` (wider
+coverage: more questions/rounds, bigger bucket, lower keep floor — the avoid-list drives each round
+to new dimensions). Resolution order is `DEFAULTS ← mode preset ← INFOGAIN_* env ← CLI flag`, so a
+preset sets the baseline and any explicit flag/env still wins.
 
 Defaults live as module constants in `scripts/infogain.py`, overridable by `INFOGAIN_*` env vars
 or CLI flags (e.g. `--min-bucket-size 5`, `--discard-threshold 0.5`, `--answer-model qwen`). Model

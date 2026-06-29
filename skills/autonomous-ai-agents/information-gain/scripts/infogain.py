@@ -53,15 +53,38 @@ DEFAULTS = {
 _INT = {"min_bucket_size", "target_bucket_size", "hard_cap", "questions_per_round",
         "answers_per_question", "max_rounds", "plan_timeout", "gen_timeout",
         "answer_timeout", "judge_timeout"}
+_MODEL_KEYS = ("plan_model", "question_gen_model", "answer_model", "value_judge_model")
+
+# Named presets over the breadth knobs. "focus" = the (research-grounded) prioritized
+# top-few default; "breadth" = wider coverage via more questions and more rounds, a
+# bigger bucket, and a lower keep floor. Breadth needs no new generation logic — each
+# round's "avoid the already-asked questions" instruction drives it toward new
+# dimensions. Resolution order: DEFAULTS ← mode preset ← INFOGAIN_* env ← CLI flag.
+MODES = {
+    "focus": {},
+    "breadth": {
+        "questions_per_round": 10,
+        "max_rounds": 4,
+        "target_bucket_size": 14,
+        "hard_cap": 18,
+        "discard_threshold": 0.30,
+        "refill_floor": 0.25,
+        "answers_per_question": 4,
+    },
+}
+
+
+def _cast(key, val):
+    if key in _INT:
+        return int(val)
+    if key in _MODEL_KEYS:
+        return val
+    return float(val)
 
 
 def _env_default(key):
     val = os.environ.get("INFOGAIN_" + key.upper())
-    if val is None:
-        return DEFAULTS[key]
-    return int(val) if key in _INT else (float(val) if key not in (
-        "plan_model", "question_gen_model", "answer_model", "value_judge_model"
-    ) else val)
+    return DEFAULTS[key] if val is None else _cast(key, val)
 
 
 # ── orchestration ─────────────────────────────────────────────────────────────
@@ -275,7 +298,8 @@ def render_markdown(result):
                  f"{result['rounds_used']} round(s). This usually means the problem "
                  f"is already fairly well-specified.")
 
-    meta = (f"_models: plan={result['config']['question_gen_model']}, "
+    meta = (f"_mode={result['config'].get('mode', 'focus')} · "
+            f"models: plan={result['config']['question_gen_model']}, "
             f"answers={result['config']['answer_model']}, "
             f"judge={result['config']['value_judge_model']} · "
             f"rounds={result['rounds_used']} · "
@@ -430,6 +454,10 @@ def build_parser():
                         "the per-question scoring arithmetic, then print the full trace.")
     p.add_argument("-o", "--output", help="Write the report to this file.")
     p.add_argument("--quiet", action="store_true", help="Suppress progress logging on stderr.")
+    p.add_argument("--mode", choices=list(MODES), default=None,
+                   help="Preset over the breadth knobs: 'focus' (default — prioritized top few) "
+                        "or 'breadth' (wider coverage: more questions/rounds, bigger bucket). "
+                        "Individual flags and INFOGAIN_* env vars override the preset.")
     # tunable overrides
     for key in DEFAULTS:
         flag = "--" + key.replace("_", "-")
@@ -443,10 +471,20 @@ def build_parser():
 
 
 def resolve_config(args):
-    cfg = {}
+    mode = getattr(args, "mode", None) or os.environ.get("INFOGAIN_MODE") or "focus"
+    overrides = MODES.get(mode, {})
+    cfg = {"mode": mode}
     for key in DEFAULTS:
         cli = getattr(args, key, None)
-        cfg[key] = cli if cli is not None else _env_default(key)
+        env = os.environ.get("INFOGAIN_" + key.upper())
+        if cli is not None:
+            cfg[key] = cli
+        elif env is not None:
+            cfg[key] = _cast(key, env)
+        elif key in overrides:
+            cfg[key] = overrides[key]
+        else:
+            cfg[key] = DEFAULTS[key]
     return cfg
 
 

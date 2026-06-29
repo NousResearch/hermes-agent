@@ -297,6 +297,30 @@ class TestOrchestrationMocked(unittest.TestCase):
 
 
 @unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
+class TestModeConfig(unittest.TestCase):
+    def _cfg(self, argv):
+        return infogain.resolve_config(infogain.build_parser().parse_args(argv))
+
+    def test_focus_default_matches_defaults(self):
+        cfg = self._cfg(["a problem"])
+        self.assertEqual(cfg["mode"], "focus")
+        self.assertEqual(cfg["questions_per_round"], infogain.DEFAULTS["questions_per_round"])
+        self.assertEqual(cfg["target_bucket_size"], infogain.DEFAULTS["target_bucket_size"])
+
+    def test_breadth_preset_applied(self):
+        cfg = self._cfg(["--mode", "breadth", "a problem"])
+        self.assertEqual(cfg["mode"], "breadth")
+        self.assertEqual(cfg["questions_per_round"],
+                         infogain.MODES["breadth"]["questions_per_round"])
+        self.assertEqual(cfg["discard_threshold"], 0.30)
+        self.assertEqual(cfg["hard_cap"], 18)
+
+    def test_cli_flag_overrides_mode(self):
+        cfg = self._cfg(["--mode", "breadth", "--questions-per-round", "3", "a problem"])
+        self.assertEqual(cfg["questions_per_round"], 3)
+
+
+@unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")
 class TestLive(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

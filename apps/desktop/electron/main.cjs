@@ -3989,13 +3989,15 @@ function closePreviewWatchers() {
   }
 }
 
+const BACKEND_READY_TIMEOUT_MS = 45_000
+
 async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+  const deadline = Date.now() + BACKEND_READY_TIMEOUT_MS
   let lastError = null
 
   while (Date.now() < deadline) {
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: BACKEND_READY_TIMEOUT_MS })
       return
     } catch (error) {
       lastError = error

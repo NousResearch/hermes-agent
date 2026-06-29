@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import os
+import random
 import html as _html
 import re
 from datetime import datetime, timezone
@@ -195,6 +196,67 @@ def _strip_mdv2(text: str) -> str:
     # Remove MarkdownV2 spoiler markers (||text|| → text)
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
     return cleaned
+
+
+# Find MarkdownV2 reserved characters that appear *unescaped* and *outside*
+# any protected region (code block, inline code, link text, link URL).
+# This is a best-effort static pre-flight; it does NOT replicate the full
+# Telegram parser, but catches the most common parse failures cheaply so
+# we can skip the doomed API call and fall through to plain text without
+# burning a round-trip + a flood-window second edit.
+_MDV2_PROTECTED_RE = re.compile(
+    r'```[\s\S]*?```'                              # fenced code block
+    r'|\\\`[^`\\]*(?:\\.[^`\\]*)*\\\`'             # escaped inline code: \`…\`
+    r'|`[^`\n]+`'                                  # raw inline code: `…`
+    r'|\[[^\]\n]*\]\(\S+'                          # link text [..]( …  URL prefix
+)
+_MDV2_RESERVED = set(r'_*[]()~`>#+\-=|{}.!\\')
+
+
+def _validate_markdown_v2(text: str) -> Optional[str]:
+    """Best-effort MarkdownV2 syntax check.
+
+    Returns ``None`` when ``text`` looks well-formed, or a short reason
+    string describing the first violation found (used in logs and to
+    skip the doomed API call). Heuristic only — Telegram's parser is
+    stricter than this and may still reject text we accept.
+    """
+    if not text:
+        return None
+    # Mask out protected regions so we only inspect "naked" text.
+    masked = _MDV2_PROTECTED_RE.sub(lambda m: ' ' * len(m.group(0)), text)
+    # Also mask out runs of backslashes that escape the next character —
+    # those are valid escapes, not violations.
+    masked = re.sub(r'\\.', '  ', masked)
+    # Find the first unescaped reserved character.
+    for i, ch in enumerate(masked):
+        if ch in _MDV2_RESERVED:
+            # Allow '(' / ')' / '[' / ']' only when they form part of a
+            # link body (the protected-region regex above already caught
+            # well-formed links; any leftovers here are orphan brackets).
+            return f"unescaped {ch!r} at offset {i}"
+    return None
+
+
+@dataclasses.dataclass
+class _PendingEdit:
+    """Per-chat pending edit for the streaming-edit coalescer.
+
+    Tracks the latest content for a chat plus the asyncio task that
+    will flush it after the coalesce window.  Lives only on the
+    adapter instance — there is no cross-process state involved.
+    """
+    message_id: str
+    content: str
+    metadata: Optional[Dict[str, Any]]
+    future: "asyncio.Future[SendResult]"
+    task: Optional["asyncio.Task[None]"]
+
+    # __post_init__ ensures the mutable defaults are per-instance (Python
+    # dataclasses already give per-instance field storage, but documenting
+    # intent here for future readers).
+    def __post_init__(self) -> None:  # pragma: no cover - trivial
+        return
 
 
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
@@ -484,6 +546,25 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Per-chat edit coalescer (fix 1+2 in t_dbcec280): collapses rapid
+        # streaming ``edit_message`` calls within a short window into a single
+        # outbound ``editMessageText`` carrying the latest content. The
+        # gateway's progress loop already throttles to ~1.5s, but multiple
+        # adapters / consumers racing the same chat, or one consumer's
+        # post-finialize touches, can still pile up. Finalize edits bypass
+        # the coalescer (they MUST land immediately so the user sees the
+        # finished response, and the rich/MarkdownV2 finalize chain has its
+        # own backoff in the outer handler).
+        self._edit_coalesce_window_seconds: float = self._env_float_clamped(
+            "HERMES_TELEGRAM_EDIT_COALESCE_WINDOW_SECONDS",
+            1.0,
+            min_value=0.0,
+            max_value=5.0,
+        )
+        # chat_id -> PendingEdit (latest content + the asyncio task that
+        # will flush it). A single coalescer task per chat means bursts
+        # collapse to one outbound edit, no matter how many callers race.
+        self._pending_edits: Dict[str, "_PendingEdit"] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1331,6 +1412,180 @@ class TelegramAdapter(BasePlatformAdapter):
             success=True,
             message_id=str(message_id) if message_id is not None else None,
         )
+
+    # ------------------------------------------------------------------
+    # Edit coalescer (fix 1+2 in t_dbcec280)
+    # ------------------------------------------------------------------
+    # Streaming replies call ``edit_message`` many times in quick
+    # succession.  Each call would otherwise issue its own ``editMessageText``
+    # — wasteful in the best case, flood-control territory in the worst
+    # case.  The coalescer holds the latest content for a chat in a single
+    # pending task and flushes it after a short quiescent window, so a
+    # burst of N edits collapses to 1 outbound API call carrying the
+    # final content.  Finalize edits bypass the coalescer (the user must
+    # see the finished reply immediately) and rich pre-flight edits go
+    # through the coalescer because they are still streaming.
+
+    async def _coalesced_edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Queue a streaming edit behind the per-chat coalescer.
+
+        The caller awaits a SendResult that reflects the actual outbound
+        edit (after the window has elapsed and no further content
+        superseded this one).  If a NEWER call for the same
+        (chat_id, message_id) comes in during the window, this call's
+        content is dropped — only the latest wins, which is exactly the
+        user-visible behavior we want for a streaming preview.
+        """
+        key = str(chat_id)
+        pending = self._pending_edits.get(key)
+        window = self._edit_coalesce_window_seconds
+        # Fast path: window disabled → behave like a direct call.
+        if window <= 0:
+            return await self._flush_pending_edit(
+                chat_id, message_id, content, metadata,
+            )
+        # Always record the latest content/metadata; create the flush
+        # task on the first request or when the previous one finished.
+        if pending is None or pending.message_id != str(message_id):
+            fut: asyncio.Future = asyncio.get_event_loop().create_future()
+            pending = _PendingEdit(
+                message_id=str(message_id),
+                content=content,
+                metadata=metadata,
+                future=fut,
+                task=None,
+            )
+            self._pending_edits[key] = pending
+        else:
+            pending.content = content
+            pending.metadata = metadata
+        # (Re)arm the window: cancel any in-flight flush task and start
+        # a fresh one.  Cancelling is safe — the task awaits sleep, so
+        # CancelledError wakes it immediately.
+        if pending.task is not None and not pending.task.done():
+            pending.task.cancel()
+        pending.task = asyncio.create_task(
+            self._coalescer_flush(key, window),
+            name=f"telegram-edit-coalescer:{key}",
+        )
+        # Await the future the flush task will resolve with the real
+        # SendResult.  ``asyncio.shield`` keeps the future from being
+        # cancelled when the caller's wait is cancelled.
+        try:
+            return await asyncio.shield(pending.future)
+        except asyncio.CancelledError:
+            return SendResult(success=True, message_id=message_id)
+
+    async def _coalescer_flush(self, chat_id_key: str, window: float) -> None:
+        """Wait ``window`` seconds, then flush the pending edit (if still current)."""
+        try:
+            await asyncio.sleep(window)
+        except asyncio.CancelledError:
+            return
+        pending = self._pending_edits.get(chat_id_key)
+        if pending is None:
+            return
+        # Only flush if the recorded task still matches — a newer
+        # _coalesced_edit_message call may have re-armed us.
+        if pending.task is not asyncio.current_task():
+            return
+        # Snapshot and clear before issuing the API call so a new
+        # coalesced call during the API round-trip starts a fresh
+        # window rather than chaining on this one.
+        self._pending_edits.pop(chat_id_key, None)
+        try:
+            result = await self._flush_pending_edit(
+                chat_id_key, pending.message_id, pending.content,
+                metadata=pending.metadata,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "[%s] coalescer flush raised (will not retry): %s",
+                self.name, exc,
+            )
+            if not pending.future.done():
+                pending.future.set_result(
+                    SendResult(success=False, error=str(exc))
+                )
+            return
+        if not pending.future.done():
+            pending.future.set_result(result)
+
+    async def _flush_pending_edit(
+        self,
+        chat_id,
+        message_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Issue a single non-coalesced streaming edit (used by the coalescer)."""
+        return await self._edit_message_streaming(
+            chat_id, message_id, content, metadata=metadata,
+        )
+
+    async def _edit_message_streaming(
+        self,
+        chat_id,
+        message_id: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Streaming-edit path: plain text, no MarkdownV2 / rich.
+
+        Lifted out of :meth:`edit_message` so the coalescer can issue
+        exactly one API call per coalesced batch.  Mirrors the legacy
+        ``if not finalize:`` branch that lived at adapter.py:3006-3012
+        and the streaming-overflow fallback at 3057-3062.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        # Overflow pre-flight (same rule as the streaming branch in
+        # edit_message): truncate, never split, to avoid the duplicate
+        # final-message loop (#48648).
+        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+            content = self._truncate_stream_overflow_preview(content)
+        try:
+            await self._bot.edit_message_text(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                message_id=int(message_id),
+                text=content,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "not modified" in err_str:
+                return SendResult(success=True, message_id=message_id)
+            if "message_too_long" in err_str or "too long" in err_str:
+                # Streaming-time overflow fallback: truncate, not split.
+                truncated = self._truncate_stream_overflow_preview(content)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        message_id=int(message_id),
+                        text=truncated,
+                    )
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as e2:
+                    return SendResult(success=False, error=str(e2))
+            # Flood / transient — surface as retryable so the stream
+            # consumer can keep streaming; the next coalesced window
+            # will pick up fresh content.
+            retry_after = getattr(e, "retry_after", None)
+            if retry_after is not None or "retry after" in err_str:
+                return SendResult(
+                    success=False,
+                    error=f"flood_control:{retry_after or 1.0}",
+                    retryable=True,
+                )
+            return SendResult(success=False, error=str(e), retryable=True)
 
     async def _try_edit_rich(
         self,
@@ -2971,6 +3226,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        # Streaming-edit coalescer (fix 1+2 in t_dbcec280).  Streaming
+        # replies fire many ``edit_message`` calls in quick succession;
+        # the coalescer collapses them into a single outbound edit per
+        # chat carrying the latest content.  ``finalize=True`` edits
+        # bypass the coalescer so the user sees the completed reply
+        # immediately (the rich/MarkdownV2 finalize chain has its own
+        # backoff in the outer handler).
+        if not finalize and self._edit_coalesce_window_seconds > 0:
+            return await self._coalesced_edit_message(
+                chat_id, message_id, content, metadata=metadata,
+            )
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -3012,6 +3279,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=message_id)
 
             formatted = self.format_message(content)
+            # MarkdownV2 pre-flight (fix 3a in t_dbcec280).  Skip the
+            # doomed API call when static analysis can detect an unescaped
+            # reserved character; fall through directly to the plain-text
+            # edit rather than edit-retry-storming on a parse failure.
+            mdv2_violation = _validate_markdown_v2(formatted)
+            if mdv2_violation is not None:
+                logger.warning(
+                    "[%s] MarkdownV2 pre-flight rejected edit (%s); "
+                    "sending plain text directly",
+                    self.name, mdv2_violation,
+                )
+                _plain = _strip_mdv2(content) if content else content
+                await self._bot.edit_message_text(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    message_id=int(message_id),
+                    text=_plain,
+                )
+                return SendResult(success=True, message_id=message_id)
             try:
                 await self._bot.edit_message_text(
                     chat_id=normalize_telegram_chat_id(chat_id),
@@ -3020,21 +3305,35 @@ class TelegramAdapter(BasePlatformAdapter):
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
             except Exception as fmt_err:
+                # Catch-boundary split (fix 3b in t_dbcec280).  ``BadRequest``
+                # parse failures fall back to plain text; transient /
+                # flood-control errors re-raise so the outer handler
+                # (below) can sleep + retry with the existing
+                # ``retry_after`` branch.
+                try:
+                    from telegram.error import BadRequest as _BadReq
+                except ImportError:
+                    _BadReq = None  # type: ignore[assignment]
+                err_str = str(fmt_err).lower()
                 # "Message is not modified" is a no-op, not an error
-                if "not modified" in str(fmt_err).lower():
+                if "not modified" in err_str:
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: strip MarkdownV2 escapes and retry as clean plain text
-                logger.warning(
-                    "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
-                    self.name,
-                    fmt_err,
-                )
-                _plain = _strip_mdv2(content) if content else content
-                await self._bot.edit_message_text(
-                    chat_id=normalize_telegram_chat_id(chat_id),
-                    message_id=int(message_id),
-                    text=_plain,
-                )
+                if _BadReq is not None and isinstance(fmt_err, _BadReq):
+                    # Real parse failure → fallback to plain text.
+                    logger.warning(
+                        "[%s] MarkdownV2 edit failed (%s), falling back to plain text: %s",
+                        self.name, type(fmt_err).__name__, fmt_err,
+                    )
+                    _plain = _strip_mdv2(content) if content else content
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        message_id=int(message_id),
+                        text=_plain,
+                    )
+                    return SendResult(success=True, message_id=message_id)
+                # Transient / flood / unknown — bubble up so the outer
+                # handler at line ~3293+ can apply backoff.
+                raise
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -3066,10 +3365,22 @@ class TelegramAdapter(BasePlatformAdapter):
             # to a normal final send instead of leaving a truncated partial.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
-                wait = retry_after if retry_after else 1.0
+                base_wait = float(retry_after) if retry_after is not None else 1.0
+                # Add ±10% jitter (fix 4 in t_dbcec280) to avoid
+                # synchronized re-fire when many chats/edits were
+                # flooded at the same instant — Telegram's retry-after
+                # windows are global-per-chat, not per-connection, so a
+                # shared wall-clock deadline causes a thundering herd on
+                # recovery.  Clamp the floor so we never sleep less
+                # than 100ms (and never less than `base_wait`).
+                jitter = base_wait * 0.1
+                wait = max(
+                    base_wait,
+                    base_wait + random.uniform(-jitter, jitter),
+                )
                 logger.warning(
-                    "[%s] Telegram flood control, waiting %.1fs",
-                    self.name, wait,
+                    "[%s] Telegram flood control, waiting %.2fs (retry_after=%.2fs)",
+                    self.name, wait, base_wait,
                 )
                 if wait > 5.0:
                     return SendResult(success=False, error=f"flood_control:{wait}")

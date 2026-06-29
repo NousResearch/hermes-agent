@@ -196,6 +196,42 @@ class TestGenerate:
 
         assert fake_client.images.generate.call_args.kwargs["size"] == expected_size
 
+    def test_custom_size_passed_to_text_generation(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", aspect_ratio="square", size="1280x1024")
+
+        assert result["success"] is True
+        assert result["size"] == "1280x1024"
+        assert fake_client.images.generate.call_args.kwargs["size"] == "1280x1024"
+
+    def test_invalid_custom_size_rejected_before_api_call(self, provider):
+        fake_client = MagicMock()
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", size="1000x1000")
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        fake_client.images.generate.assert_not_called()
+        fake_client.images.edit.assert_not_called()
+
+    def test_custom_size_passed_to_edit(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+        data_url = f"data:image/png;base64,{_b64_png()}"
+
+        with _patched_openai(fake_client):
+            result = provider.generate("make it cinematic", image_url=data_url, size="1280x1024")
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["size"] == "1280x1024"
+        assert fake_client.images.edit.call_args.kwargs["size"] == "1280x1024"
+        fake_client.images.generate.assert_not_called()
+
     def test_revised_prompt_passed_through(self, provider):
         fake_client = MagicMock()
         fake_client.images.generate.return_value = _fake_response(

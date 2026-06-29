@@ -102,6 +102,24 @@ class TestImageSizePresetFamily:
         p = image_tool._build_fal_payload("fal-ai/flux-2/klein/9b", "hello", "portrait")
         assert p["image_size"] == "portrait_16_9"
 
+    def test_klein_explicit_size_must_be_declared_preset(self, image_tool):
+        p = image_tool._build_fal_payload(
+            "fal-ai/flux-2/klein/9b",
+            "hello",
+            "square",
+            size="landscape_16_9",
+        )
+        assert p["image_size"] == "landscape_16_9"
+
+    def test_klein_rejects_unknown_explicit_size_preset(self, image_tool):
+        with pytest.raises(ValueError, match="Invalid size"):
+            image_tool._build_fal_payload(
+                "fal-ai/flux-2/klein/9b",
+                "hello",
+                "square",
+                size="not-a-real-preset",
+            )
+
 
 class TestAspectRatioFamily:
     """Nano-banana uses aspect_ratio enum, NOT image_size."""
@@ -119,6 +137,34 @@ class TestAspectRatioFamily:
         p = image_tool._build_fal_payload("fal-ai/nano-banana-pro", "hello", "portrait")
         assert p["aspect_ratio"] == "9:16"
 
+    def test_nano_banana_explicit_resolution_preserves_aspect_ratio(self, image_tool):
+        p = image_tool._build_fal_payload(
+            "fal-ai/nano-banana-pro",
+            "hello",
+            "portrait",
+            size="2K",
+        )
+        assert p["resolution"] == "2K"
+        assert p["aspect_ratio"] == "9:16"
+
+    def test_nano_banana_accepts_declared_native_ratio_size(self, image_tool):
+        p = image_tool._build_fal_payload(
+            "fal-ai/nano-banana-pro",
+            "hello",
+            "landscape",
+            size="1:1",
+        )
+        assert p["aspect_ratio"] == "1:1"
+
+    def test_nano_banana_rejects_unknown_resolution_token(self, image_tool):
+        with pytest.raises(ValueError, match="Invalid size"):
+            image_tool._build_fal_payload(
+                "fal-ai/nano-banana-pro",
+                "hello",
+                "landscape",
+                size="8K",
+            )
+
 
 class TestGptLiteralFamily:
     """GPT-Image 1.5 uses literal size strings."""
@@ -134,6 +180,24 @@ class TestGptLiteralFamily:
     def test_gpt_portrait_is_literal(self, image_tool):
         p = image_tool._build_fal_payload("fal-ai/gpt-image-1.5", "hello", "portrait")
         assert p["image_size"] == "1024x1536"
+
+    def test_gpt_literal_accepts_valid_explicit_literal_size(self, image_tool):
+        p = image_tool._build_fal_payload(
+            "fal-ai/gpt-image-1.5",
+            "hello",
+            "square",
+            size="1536x1024",
+        )
+        assert p["image_size"] == "1536x1024"
+
+    def test_gpt_literal_rejects_invalid_explicit_literal_size(self, image_tool):
+        with pytest.raises(ValueError, match="Invalid size"):
+            image_tool._build_fal_payload(
+                "fal-ai/gpt-image-1.5",
+                "hello",
+                "square",
+                size="123x456",
+            )
 
 
 class TestGptImage2Presets:
@@ -177,6 +241,33 @@ class TestGptImage2Presets:
         # seed isn't in the GPT Image 2 API surface either.
         p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square", seed=42)
         assert "seed" not in p
+
+    def test_gpt2_explicit_size_must_be_declared_preset(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square", size="landscape_4_3")
+        assert p["image_size"] == "landscape_4_3"
+
+    def test_gpt2_rejects_literal_size_for_preset_model(self, image_tool):
+        with pytest.raises(ValueError, match="Invalid size"):
+            image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square", size="123x456")
+
+    def test_edit_endpoint_rejects_size_when_native_key_unsupported(self, image_tool):
+        with pytest.raises(ValueError, match="size is not supported"):
+            image_tool._build_fal_edit_payload(
+                "fal-ai/gpt-image-2",
+                "edit it",
+                ["https://example.com/base.png"],
+                size="1536x1024",
+            )
+
+    def test_edit_endpoint_accepts_resolution_when_supported(self, image_tool):
+        p = image_tool._build_fal_edit_payload(
+            "fal-ai/nano-banana-pro",
+            "edit it",
+            ["https://example.com/base.png"],
+            size="2K",
+        )
+        assert p["resolution"] == "2K"
+        assert p["aspect_ratio"] == "16:9"
 
 
 # ---------------------------------------------------------------------------
@@ -370,13 +461,62 @@ class TestRegistryIntegration:
         config choice, never an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {
-            "prompt", "aspect_ratio", "image_url", "reference_image_urls",
+            "prompt", "aspect_ratio", "image_url", "reference_image_urls", "size",
         }
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}
+
+    def test_plugin_dispatch_forwards_size_when_supported(self, image_tool, monkeypatch):
+        captured = {}
+
+        class Provider:
+            name = "mock"
+            display_name = "Mock"
+
+            def default_model(self):
+                return "mock-model"
+
+            def capabilities(self):
+                return {"modalities": ["text", "image"], "supports_size": True, "supports_image_to_image_size": True}
+
+            def generate(self, **kwargs):
+                captured.update(kwargs)
+                return {"success": True, "image": "https://example.com/out.png"}
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "mock")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **kw: None)
+        monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: Provider())
+
+        raw = image_tool._dispatch_to_plugin_provider("hi", "square", size="1024x1024")
+        assert raw is not None
+        assert captured["size"] == "1024x1024"
+
+    def test_plugin_dispatch_rejects_size_when_unsupported(self, image_tool, monkeypatch):
+        class Provider:
+            name = "mock"
+            display_name = "Mock"
+
+            def default_model(self):
+                return "mock-model"
+
+            def capabilities(self):
+                return {"modalities": ["text"], "supports_size": False}
+
+            def generate(self, **kwargs):  # pragma: no cover - should not be called
+                raise AssertionError("provider should not be called")
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "mock")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **kw: None)
+        monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: Provider())
+
+        raw = image_tool._dispatch_to_plugin_provider("hi", "square", size="1024x1024")
+        assert raw is not None
+        assert "size_unsupported" in raw
 
 
 # ---------------------------------------------------------------------------

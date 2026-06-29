@@ -81,6 +81,42 @@ _SIZES = {
 }
 
 
+def _resolve_size(aspect: str, requested: Any = None) -> Tuple[Optional[str], Optional[str]]:
+    """Return (size, error) for gpt-image-2 per-call sizes.
+
+    OpenAI accepts ``auto`` or literal ``<width>x<height>`` strings for
+    gpt-image-2. Keep validation client-side so invalid explicit sizes do not
+    make an API call.
+    """
+    if requested is None or (isinstance(requested, str) and not requested.strip()):
+        return _SIZES.get(aspect, _SIZES["square"]), None
+    if not isinstance(requested, str):
+        return None, "size must be a string like '1024x1024' or 'auto'"
+
+    value = requested.strip().lower()
+    if value == "auto":
+        return "auto", None
+    if "x" not in value:
+        return None, "size must be 'auto' or '<width>x<height>'"
+    left, right = value.split("x", 1)
+    if not (left.isdigit() and right.isdigit()):
+        return None, "size width and height must be positive integers"
+    width = int(left)
+    height = int(right)
+    if width <= 0 or height <= 0:
+        return None, "size width and height must be positive"
+    if width % 16 != 0 or height % 16 != 0:
+        return None, "size width and height must be multiples of 16"
+    if max(width, height) >= 3840:
+        return None, "size max edge must be less than 3840"
+    if max(width, height) / min(width, height) > 3:
+        return None, "size aspect ratio must be <= 3:1"
+    pixels = width * height
+    if pixels < 655_360 or pixels > 8_294_400:
+        return None, "size total pixels must be between 655360 and 8294400"
+    return f"{width}x{height}", None
+
+
 def _load_openai_config() -> Dict[str, Any]:
     """Read ``image_gen`` from config.yaml (returns {} on any failure)."""
     try:
@@ -210,7 +246,14 @@ class OpenAIImageGenProvider(ImageGenProvider):
     def capabilities(self) -> Dict[str, Any]:
         # gpt-image-2 supports editing via images.edit() with up to 16 source
         # images.
-        return {"modalities": ["text", "image"], "max_reference_images": 16}
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 16,
+            "supports_size": True,
+            "supports_image_to_image_size": True,
+            "supported_sizes": list(_SIZES.values()) + ["auto", "<width>x<height>"],
+            "size_description": "'auto' or '<width>x<height>'; dimensions must be positive multiples of 16, max edge <3840, aspect ratio <=3:1, pixels 655360–8294400.",
+        }
 
     def generate(
         self,
@@ -255,7 +298,17 @@ class OpenAIImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        size, size_error = _resolve_size(aspect, kwargs.get("size"))
+        if size_error:
+            return error_response(
+                error=size_error,
+                error_type="invalid_argument",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        assert size is not None
 
         # Collect source images (primary + references) for image-to-image.
         sources: List[str] = []

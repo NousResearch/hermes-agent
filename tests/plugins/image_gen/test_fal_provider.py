@@ -179,6 +179,28 @@ class TestFalImageGenProviderGenerate:
         assert "guidance_scale" not in seen
         assert seen.get("num_images") == 2
 
+    def test_generate_passthrough_includes_explicit_size(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from plugins.image_gen.fal import FalImageGenProvider
+
+        seen = {}
+
+        def fake(prompt, aspect_ratio, **kwargs):
+            seen.update(kwargs)
+            return json.dumps({"success": True, "image": "x"})
+
+        monkeypatch.setattr(image_tool, "image_generate_tool", fake)
+        monkeypatch.setattr(image_tool, "_resolve_fal_model",
+                            lambda: ("fal-ai/flux-2/klein/9b", {}))
+
+        FalImageGenProvider().generate(
+            "p",
+            aspect_ratio="landscape",
+            size="landscape_16_9",
+        )
+
+        assert seen["size"] == "landscape_16_9"
+
     def test_generate_catches_exception_from_legacy(self, monkeypatch):
         import tools.image_generation_tool as image_tool
         from plugins.image_gen.fal import FalImageGenProvider

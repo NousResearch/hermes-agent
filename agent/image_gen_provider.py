@@ -148,6 +148,9 @@ class ImageGenProvider(abc.ABC):
             {
                 "modalities": ["text", "image"],   # which inputs the backend accepts
                 "max_reference_images": 9,          # cap for reference_image_urls
+                "supports_size": False,             # explicit per-call size for text-to-image
+                "supports_image_to_image_size": False,  # explicit per-call size for edits
+                "size_description": "...",          # human-readable accepted values
             }
 
         ``modalities`` declares whether the active backend/model supports
@@ -160,6 +163,8 @@ class ImageGenProvider(abc.ABC):
         return {
             "modalities": ["text"],
             "max_reference_images": 0,
+            "supports_size": False,
+            "supports_image_to_image_size": False,
         }
 
     @abc.abstractmethod

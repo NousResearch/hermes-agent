@@ -160,6 +160,37 @@ class TestGenerate:
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
 
+    def test_generate_passes_requested_size(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality):
+            captured["size"] = size
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat", size="1152x2496")
+        assert result["success"] is True
+        assert captured["size"] == "1152x2496"
+        assert result["size"] == "1152x2496"
+
+    def test_invalid_size_fails_before_stream(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        called = False
+
+        def _collect(*args, **kwargs):
+            nonlocal called
+            called = True
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate("a cat", size="123x456")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert called is False
+
     def test_partial_image_event_used_when_done_missing(self):
         """If output_item.done is missing, partial_image_b64 is accepted."""
         payload = {

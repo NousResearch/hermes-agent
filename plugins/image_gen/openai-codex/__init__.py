@@ -70,6 +70,37 @@ _SIZES = {
     "portrait": "1024x1536",
 }
 
+
+def _resolve_size(aspect: str, requested: Any = None) -> Tuple[Optional[str], Optional[str]]:
+    """Return (size, error) for gpt-image-2 per-call sizes."""
+    if requested is None or (isinstance(requested, str) and not requested.strip()):
+        return _SIZES.get(aspect, _SIZES["square"]), None
+    if not isinstance(requested, str):
+        return None, "size must be a string like '1024x1024' or 'auto'"
+
+    value = requested.strip().lower()
+    if value == "auto":
+        return "auto", None
+    if "x" not in value:
+        return None, "size must be 'auto' or '<width>x<height>'"
+    left, right = value.split("x", 1)
+    if not (left.isdigit() and right.isdigit()):
+        return None, "size width and height must be positive integers"
+    width = int(left)
+    height = int(right)
+    if width <= 0 or height <= 0:
+        return None, "size width and height must be positive"
+    if width % 16 != 0 or height % 16 != 0:
+        return None, "size width and height must be multiples of 16"
+    if max(width, height) >= 3840:
+        return None, "size max edge must be less than 3840"
+    if max(width, height) / min(width, height) > 3:
+        return None, "size aspect ratio must be <= 3:1"
+    pixels = width * height
+    if pixels < 655_360 or pixels > 8_294_400:
+        return None, "size total pixels must be between 655360 and 8294400"
+    return f"{width}x{height}", None
+
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
 # done by ``API_MODEL``.
@@ -333,7 +364,14 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         # users who need editing should use the `openai` (API key), `fal`, or
         # `xai` backends. Declaring text-only keeps the dynamic tool schema
         # honest so the model doesn't attempt an unsupported edit.
-        return {"modalities": ["text"], "max_reference_images": 0}
+        return {
+            "modalities": ["text"],
+            "max_reference_images": 0,
+            "supports_size": True,
+            "supports_image_to_image_size": False,
+            "supported_sizes": list(_SIZES.values()) + ["auto", "<width>x<height>"],
+            "size_description": "'auto' or '<width>x<height>'; dimensions must be positive multiples of 16, max edge <3840, aspect ratio <=3:1, pixels 655360–8294400.",
+        }
 
     def generate(
         self,
@@ -392,7 +430,17 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        size, size_error = _resolve_size(aspect, kwargs.get("size"))
+        if size_error:
+            return error_response(
+                error=size_error,
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        assert size is not None
 
         token = _read_codex_access_token()
         if not token:

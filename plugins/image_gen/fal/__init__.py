@@ -109,11 +109,21 @@ class FalImageGenProvider(ImageGenProvider):
         except Exception:  # noqa: BLE001
             return {"modalities": ["text"], "max_reference_images": 0}
         if meta.get("edit_endpoint"):
+            edit_supports = meta.get("edit_supports") or set()
             return {
                 "modalities": ["text", "image"],
                 "max_reference_images": int(meta.get("max_reference_images") or 1),
+                "supports_size": any(k in meta.get("supports", set()) for k in ("image_size", "resolution", "aspect_ratio")),
+                "supports_image_to_image_size": any(k in edit_supports for k in ("image_size", "resolution", "aspect_ratio")),
+                "size_description": "Native FAL size key only when the active model supports image_size, resolution, or aspect_ratio.",
             }
-        return {"modalities": ["text"], "max_reference_images": 0}
+        return {
+            "modalities": ["text"],
+            "max_reference_images": 0,
+            "supports_size": any(k in meta.get("supports", set()) for k in ("image_size", "resolution", "aspect_ratio")),
+            "supports_image_to_image_size": False,
+            "size_description": "Native FAL size key only when the active model supports image_size, resolution, or aspect_ratio.",
+        }
 
     def generate(
         self,
@@ -143,6 +153,7 @@ class FalImageGenProvider(ImageGenProvider):
                 "num_images",
                 "output_format",
                 "seed",
+                "size",
             )
             if key in kwargs and kwargs[key] is not None
         }

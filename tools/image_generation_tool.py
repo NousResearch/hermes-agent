@@ -562,12 +562,67 @@ def _resolve_fal_model() -> tuple:
     return model_id, FAL_MODELS[model_id]
 
 
+def _validate_fal_explicit_size(
+    model_id: str,
+    meta: Dict[str, Any],
+    supports: set,
+    size: str,
+) -> tuple[str, str]:
+    """Validate an explicit FAL ``size`` and return the native payload key/value."""
+    size_style = meta["size_style"]
+    declared_values = {str(value) for value in meta.get("sizes", {}).values()}
+    explicit = size.strip()
+    resolution = explicit.upper()
+
+    if size_style == "image_size_preset":
+        if "image_size" not in supports:
+            raise ValueError(f"size is not supported by FAL model '{model_id}'")
+        if explicit not in declared_values:
+            allowed = ", ".join(sorted(declared_values))
+            raise ValueError(
+                f"Invalid size for FAL model '{model_id}': {explicit!r}. "
+                f"Allowed values: {allowed}"
+            )
+        return "image_size", explicit
+
+    if size_style == "gpt_literal":
+        if "image_size" not in supports:
+            raise ValueError(f"size is not supported by FAL model '{model_id}'")
+        from plugins.image_gen.openai import _resolve_size as _resolve_openai_size
+
+        resolved, error = _resolve_openai_size("square", explicit)
+        if error or resolved is None:
+            raise ValueError(
+                f"Invalid size for FAL model '{model_id}': {explicit!r}. {error}"
+            )
+        return "image_size", resolved
+
+    if size_style == "aspect_ratio":
+        if resolution in {"1K", "2K", "4K"} and "resolution" in supports:
+            return "resolution", resolution
+        if explicit in declared_values and "aspect_ratio" in supports:
+            return "aspect_ratio", explicit
+        allowed = set()
+        if "resolution" in supports:
+            allowed.update({"1K", "2K", "4K"})
+        if "aspect_ratio" in supports:
+            allowed.update(declared_values)
+        allowed_text = ", ".join(sorted(allowed)) or "none"
+        raise ValueError(
+            f"Invalid size for FAL model '{model_id}': {explicit!r}. "
+            f"Allowed values: {allowed_text}"
+        )
+
+    raise ValueError(f"Unknown size_style: {size_style!r}")
+
+
 def _build_fal_payload(
     model_id: str,
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     seed: Optional[int] = None,
     overrides: Optional[Dict[str, Any]] = None,
+    size: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a FAL request payload for `model_id` from unified inputs.
 
@@ -586,7 +641,19 @@ def _build_fal_payload(
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
 
-    if size_style in {"image_size_preset", "gpt_literal"}:
+    explicit_size = size.strip() if isinstance(size, str) and size.strip() else None
+    if explicit_size:
+        native_key, native_value = _validate_fal_explicit_size(
+            model_id,
+            meta,
+            meta["supports"],
+            explicit_size,
+        )
+        payload[native_key] = native_value
+        if native_key == "resolution":
+            if "aspect_ratio" in meta["supports"] and size_style == "aspect_ratio":
+                payload["aspect_ratio"] = sizes[aspect]
+    elif size_style in {"image_size_preset", "gpt_literal"}:
         payload["image_size"] = sizes[aspect]
     elif size_style == "aspect_ratio":
         payload["aspect_ratio"] = sizes[aspect]
@@ -618,6 +685,7 @@ def _build_fal_edit_payload(
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     seed: Optional[int] = None,
     overrides: Optional[Dict[str, Any]] = None,
+    size: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a FAL *edit* request payload (image-to-image) from unified inputs.
 
@@ -641,10 +709,25 @@ def _build_fal_edit_payload(
     payload["prompt"] = (prompt or "").strip()
     payload["image_urls"] = list(image_urls)
 
+    explicit_size = size.strip() if isinstance(size, str) and size.strip() else None
+    if explicit_size:
+        native_key, native_value = _validate_fal_explicit_size(
+            model_id,
+            meta,
+            edit_supports,
+            explicit_size,
+        )
+        payload[native_key] = native_value
+        if native_key == "resolution":
+            if "aspect_ratio" in edit_supports and size_style == "aspect_ratio":
+                payload["aspect_ratio"] = sizes[aspect]
+
     # Only express output size when the edit endpoint advertises the key.
     # gpt-image-2 edit auto-infers size from the input, so `image_size` is
     # intentionally absent from its edit_supports whitelist.
-    if size_style in {"image_size_preset", "gpt_literal"} and "image_size" in edit_supports:
+    if explicit_size:
+        pass
+    elif size_style in {"image_size_preset", "gpt_literal"} and "image_size" in edit_supports:
         payload["image_size"] = sizes[aspect]
     elif size_style == "aspect_ratio" and "aspect_ratio" in edit_supports:
         payload["aspect_ratio"] = sizes[aspect]
@@ -845,6 +928,7 @@ def image_generate_tool(
     seed: Optional[int] = None,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    size: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt, or edit a source image, via FAL.
 
@@ -886,6 +970,7 @@ def image_generate_tool(
             "num_images": num_images,
             "output_format": output_format,
             "seed": seed,
+            "size": size,
             "modality": modality,
             "source_images": len(source_images),
         },
@@ -939,7 +1024,7 @@ def image_generate_tool(
             clamped_sources = source_images[:max_refs] if max_refs > 0 else source_images
             arguments = _build_fal_edit_payload(
                 model_id, prompt, clamped_sources, aspect_lc,
-                seed=seed, overrides=overrides,
+                seed=seed, overrides=overrides, size=size,
             )
             endpoint = edit_endpoint
             logger.info(
@@ -949,7 +1034,7 @@ def image_generate_tool(
             )
         else:
             arguments = _build_fal_payload(
-                model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
+                model_id, prompt, aspect_lc, seed=seed, overrides=overrides, size=size,
             )
             endpoint = model_id
             logger.info(
@@ -1226,6 +1311,15 @@ IMAGE_GENERATE_SCHEMA = {
                     "capped per-model; the description above indicates the max."
                 ),
             },
+            "size": {
+                "type": "string",
+                "description": (
+                    "Optional explicit output size override for providers that "
+                    "support it. For OpenAI/OpenAI-Codex gpt-image-2 use "
+                    "'auto' or '<width>x<height>' (for example '1024x1024'); "
+                    "when omitted, aspect_ratio selects the existing default."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -1276,6 +1370,7 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    size: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1333,6 +1428,7 @@ def _dispatch_to_plugin_provider(
             "error_type": "provider_not_registered",
         })
 
+    explicit_size = size.strip() if isinstance(size, str) and size.strip() else None
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
         if configured_model:
@@ -1346,6 +1442,21 @@ def _dispatch_to_plugin_provider(
             norm_refs = normalize_reference_images(reference_image_urls)
         if norm_refs:
             kwargs["reference_image_urls"] = norm_refs
+        if explicit_size:
+            caps = provider.capabilities() or {}
+            is_edit = "image_url" in kwargs or "reference_image_urls" in kwargs
+            key = "supports_image_to_image_size" if is_edit else "supports_size"
+            if not caps.get(key):
+                return json.dumps({
+                    "success": False,
+                    "image": None,
+                    "error": (
+                        f"Provider '{getattr(provider, 'name', '?')}' does not "
+                        f"support explicit size for {'image-to-image / editing' if is_edit else 'text-to-image'}."
+                    ),
+                    "error_type": "size_unsupported",
+                })
+            kwargs["size"] = explicit_size
         result = provider.generate(**kwargs)
     except TypeError as exc:
         # A provider whose generate() signature predates image_url support
@@ -1517,6 +1628,7 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
+    size = args.get("size")
     task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's
@@ -1526,6 +1638,7 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        size=size,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
@@ -1548,6 +1661,7 @@ def _handle_image_generate(args, **kw):
         aspect_ratio=aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        size=size,
     )
     return _postprocess_image_generate_result(raw, task_id=task_id)
 

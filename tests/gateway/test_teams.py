@@ -864,6 +864,32 @@ class TestTeamsAttachmentClassification:
         assert event.media_urls == []
 
     @pytest.mark.anyio
+    async def test_fetch_attachment_rejects_oversized_content_length(self, monkeypatch):
+        import gateway.platforms.base as base_mod
+        import tools.url_safety as url_safety
+
+        adapter = self._make_adapter()
+        transport = httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                headers={"content-length": "9"},
+                content=b"123456789",
+            )
+        )
+        real_async_client = httpx.AsyncClient
+
+        def async_client_with_transport(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real_async_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", async_client_with_transport)
+        monkeypatch.setattr(base_mod, "get_inbound_media_max_bytes", lambda: 8)
+        monkeypatch.setattr(url_safety, "is_safe_url", lambda _url: True)
+
+        with pytest.raises(ValueError, match="Inbound teams attachment payload is too large"):
+            await adapter._fetch_attachment_bytes("https://contoso.sharepoint.com/download/x")
+
+    @pytest.mark.anyio
     async def test_image_only_still_photo(self):
         from gateway.platforms.base import MessageType
 

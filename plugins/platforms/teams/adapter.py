@@ -806,7 +806,7 @@ class TeamsAdapter(BasePlatformAdapter):
         matching the cache_*_from_url helpers in gateway.platforms.base.
         """
         from tools.url_safety import is_safe_url
-        from gateway.platforms.base import _ssrf_redirect_guard
+        from gateway.platforms.base import _read_httpx_body_with_limit, _ssrf_redirect_guard
 
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
@@ -818,12 +818,16 @@ class TeamsAdapter(BasePlatformAdapter):
             follow_redirects=True,
             event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
+            async with client.stream(
+                "GET",
                 url,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
-            )
-            response.raise_for_status()
-            return response.content
+            ) as response:
+                response.raise_for_status()
+                return await _read_httpx_body_with_limit(
+                    response,
+                    media_type="teams attachment",
+                )
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""

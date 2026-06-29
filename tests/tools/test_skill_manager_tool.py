@@ -15,6 +15,7 @@ from tools.skill_manager_tool import (
     _create_skill,
     _edit_skill,
     _patch_skill,
+    _rename_skill,
     _delete_skill,
     _write_file,
     _remove_file,
@@ -366,6 +367,91 @@ word word
         assert outside_file.read_text() == "old text here"
 
 
+class TestRenameSkill:
+    def test_rename_updates_directory_frontmatter_and_support_files(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            _write_file("old-skill", "references/note.md", "kept")
+            result = _rename_skill("old-skill", "new-skill")
+
+        assert result["success"] is True, result
+        assert not (tmp_path / "old-skill").exists()
+        new_dir = tmp_path / "new-skill"
+        assert (new_dir / "SKILL.md").exists()
+        assert (new_dir / "references" / "note.md").read_text() == "kept"
+        content = (new_dir / "SKILL.md").read_text()
+        assert 'name: "new-skill"' in content
+        assert "name: old-skill" not in content
+
+    def test_rename_rejects_existing_target_and_preserves_source(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            _create_skill("new-skill", _skill_content("new-skill"))
+            result = _rename_skill("old-skill", "new-skill")
+
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+        assert (tmp_path / "old-skill" / "SKILL.md").exists()
+        assert (tmp_path / "new-skill" / "SKILL.md").exists()
+
+    def test_rename_refuses_pinned_skill(self, tmp_path):
+        def _fake_get_record(skill_name):
+            return {"pinned": True} if skill_name == "old-skill" else {"pinned": False}
+
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            with patch("tools.skill_usage.get_record", side_effect=_fake_get_record):
+                result = _rename_skill("old-skill", "new-skill")
+
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert (tmp_path / "old-skill" / "SKILL.md").exists()
+        assert not (tmp_path / "new-skill").exists()
+
+    def test_rename_refuses_frontmatter_pinned_skill(self, tmp_path):
+        def _fake_get_record(skill_name):
+            return {"pinned": True} if skill_name == "front-skill" else {"pinned": False}
+
+        with _skill_dir(tmp_path):
+            _create_skill("dir-skill", _skill_content("front-skill"))
+            with patch("tools.skill_usage.get_record", side_effect=_fake_get_record):
+                result = _rename_skill("dir-skill", "new-skill")
+
+        assert result["success"] is False
+        assert "front-skill" in result["error"]
+        assert "pinned" in result["error"].lower()
+        assert (tmp_path / "dir-skill" / "SKILL.md").exists()
+        assert not (tmp_path / "new-skill").exists()
+
+    def test_rename_rejects_existing_frontmatter_name_and_preserves_source(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            _create_skill("alias-dir", _skill_content("target-skill"))
+            result = _rename_skill("old-skill", "target-skill")
+
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+        assert "alias-dir" in result["error"]
+        assert (tmp_path / "old-skill" / "SKILL.md").exists()
+        assert (tmp_path / "alias-dir" / "SKILL.md").exists()
+        assert not (tmp_path / "target-skill").exists()
+
+    @pytest.mark.parametrize("scalar_like_name", ["123", "true", "null", "2024-01-01"])
+    def test_rename_quotes_yaml_scalar_like_new_name(self, tmp_path, scalar_like_name):
+        import yaml
+
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", _skill_content("old-skill"))
+            result = _rename_skill("old-skill", scalar_like_name)
+
+        assert result["success"] is True, result
+        content = (tmp_path / scalar_like_name / "SKILL.md").read_text()
+        frontmatter = content.split("---", 2)[1]
+        parsed = yaml.safe_load(frontmatter)
+        assert parsed["name"] == scalar_like_name
+        assert isinstance(parsed["name"], str)
+
+
 class TestDeleteSkill:
     def test_delete_existing(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -600,6 +686,27 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "does not exist" in result["error"]
 
+    def test_rename_via_dispatcher_threads_new_name(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="old-skill", content=_skill_content("old-skill"))
+            raw = skill_manage(action="rename", name="old-skill", new_name="new-skill")
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert result["old_name"] == "old-skill"
+        assert result["new_name"] == "new-skill"
+        assert (tmp_path / "new-skill" / "SKILL.md").exists()
+        assert not (tmp_path / "old-skill").exists()
+
+    def test_rename_via_dispatcher_moves_frontmatter_usage_alias(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="dir-skill", content=_skill_content("front-skill"))
+            with patch("tools.skill_usage.rename_record") as rename_record:
+                raw = skill_manage(action="rename", name="dir-skill", new_name="new-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        rename_record.assert_called_once_with("dir-skill", "new-skill", aliases=["front-skill"])
+
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
@@ -824,6 +931,22 @@ class TestExternalSkillMutations:
 
         assert result["success"] is True, result
         assert not (skill_dir / "references" / "notes.md").exists()
+
+    def test_rename_external_skill_writes_in_place(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _rename_skill("ext-skill", "better-ext-skill")
+
+        assert result["success"] is True, result
+        assert not skill_dir.exists()
+        renamed = external / "better-ext-skill"
+        assert renamed.exists()
+        assert 'name: "better-ext-skill"' in (renamed / "SKILL.md").read_text()
+        assert not (local / "better-ext-skill").exists()
 
     def test_delete_external_skill_removes_skill_not_root(self, tmp_path):
         local = tmp_path / "local"

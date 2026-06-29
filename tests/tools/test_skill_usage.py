@@ -229,6 +229,27 @@ def test_forget_removes_record(skills_home):
     assert "x" not in load_usage()
 
 
+def test_rename_record_moves_frontmatter_alias_without_double_counting(skills_home):
+    from tools.skill_usage import get_record, rename_record, save_usage, load_usage
+
+    save_usage({
+        "front-name": {
+            "view_count": 3,
+            "patch_count": 4,
+            "pinned": False,
+        }
+    })
+
+    rename_record("dir-name", "new-name", aliases=["front-name"])
+
+    data = load_usage()
+    assert "dir-name" not in data
+    assert "front-name" not in data
+    rec = get_record("new-name")
+    assert rec["view_count"] == 3
+    assert rec["patch_count"] == 5
+
+
 # ---------------------------------------------------------------------------
 # Provenance filter — the load-bearing safety check
 # ---------------------------------------------------------------------------

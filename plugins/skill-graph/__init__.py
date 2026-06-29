@@ -108,9 +108,27 @@ CREATE TABLE IF NOT EXISTS skill_term_stats (
 def _db_path() -> Path:
     """Return path to graph DB under the active Hermes home.
 
-    Bundled/embedded plugin → root level (profiles/<name>/skill-graph.db).
-    PS/standalone plugin → under personal/ (profiles/<name>/personal/skill-graph.db).
+    Priority:
+    1. skills.config.skill-graph.db_path from config.yaml (explicit override)
+    2. HERMES_BUNDLED_PLUGINS → root level (profiles/<name>/skill-graph.db)
+    3. Default → under personal/ (profiles/<name>/personal/skill-graph.db)
     """
+    # Priority 1: config.yaml override
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        raw = (
+            config
+            .get("skills", {})
+            .get("config", {})
+            .get("skill-graph", {})
+            .get("db_path")
+        )
+        if raw:
+            return Path(raw).expanduser().resolve()
+    except Exception:
+        pass
+
     hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
     if os.environ.get("HERMES_BUNDLED_PLUGINS"):
         return hermes_home / GRAPH_DB_FILENAME

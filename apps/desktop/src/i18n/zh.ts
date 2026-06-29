@@ -1233,6 +1233,7 @@ export const zh: Translations = {
     nameHint: '小写字母、数字、连字符和下划线。必须以字母或数字开头。',
     title: '配置档案',
     count: count => `${count} 个配置档案`,
+    search: '搜索配置档案…',
     loading: '正在加载配置档案…',
     newProfile: '新建配置档案',
     allProfiles: '全部配置档案',
@@ -1305,6 +1306,8 @@ export const zh: Translations = {
 
   cron: {
     close: '关闭定时任务',
+    title: '定时任务',
+    count: count => `${count} 个任务`,
     search: '搜索定时任务…',
     loading: '正在加载定时任务…',
     states: {

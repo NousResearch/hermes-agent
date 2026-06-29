@@ -50,9 +50,10 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
   return (
     <aside
       className={cn(
-        // pt clears the floating titlebar/header; the bg itself fills from the
-        // card's top edge so there's no surface-colored gap above the sidebar.
-        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
+        // pt clears the in-card close button (the OverlayView now insets the
+        // whole card below the OS titlebar); the bg fills from the card's top
+        // edge so there's no surface-colored gap above the sidebar.
+        'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3 pt-[calc(var(--titlebar-height)/2+1rem)]',
         className
       )}
     >
@@ -65,7 +66,7 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
     <main
       className={cn(
-        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
+        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)/2+1rem)]',
         PAGE_INSET_X,
         className
       )}

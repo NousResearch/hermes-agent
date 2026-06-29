@@ -8605,3 +8605,26 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_project_toolset_disabled_honors_config():
+    """#54433: agent.disabled_toolsets:[project] must be detected."""
+    assert server._project_toolset_disabled({"agent": {"disabled_toolsets": ["project"]}}) is True
+    assert server._project_toolset_disabled({"agent": {"disabled_toolsets": ["memory"]}}) is False
+    assert server._project_toolset_disabled({"agent": {}}) is False
+    assert server._project_toolset_disabled({}) is False
+
+
+def test_maybe_with_project_adds_unless_disabled():
+    """#54433: the desktop/TUI resolver must NOT fold in `project` when the
+    user disabled it via agent.disabled_toolsets — previously it was added
+    unconditionally, making the disable a no-op on desktop/TUI."""
+    base = {"file", "web"}
+
+    # Not disabled -> project is folded in (preserves desktop behavior).
+    enabled_cfg = {"agent": {"disabled_toolsets": []}}
+    assert server._maybe_with_project(base, enabled_cfg) == {"file", "web", "project"}
+
+    # Disabled -> project must be absent.
+    disabled_cfg = {"agent": {"disabled_toolsets": ["project"]}}
+    assert server._maybe_with_project(base, disabled_cfg) == {"file", "web"}

@@ -1915,7 +1915,24 @@ def _resolve_model() -> str:
     ).strip()
     if env:
         return env
-    m = _load_cfg().get("model", "")
+    cfg = _load_cfg()
+    # Per-platform override (#14327, #11439): the dashboard / TUI may run
+    # alongside a messaging platform whose model differs from the global
+    # default. Without this check the slash_worker subprocesses get pinned
+    # to ``model.default`` even when the user has set
+    # ``platforms.telegram.model: …`` (the gateway itself uses the right
+    # model because ``gateway.run._resolve_session_agent_runtime`` threads
+    # ``source.platform``; this is the parallel fix for the dashboard path
+    # so model-picker / new-session dialogs reflect the active override).
+    try:
+        from gateway.run import _get_platform_model_overrides
+        overrides = _get_platform_model_overrides(cfg)
+        plat_model = overrides.get("model")
+        if isinstance(plat_model, str) and plat_model.strip():
+            return plat_model.strip()
+    except Exception:
+        pass
+    m = cfg.get("model", "")
     if isinstance(m, dict):
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:

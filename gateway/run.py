@@ -1701,7 +1701,12 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(
+    *,
+    requested_provider: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
     Provider is read from ``config.yaml`` ``model.provider`` (the single
@@ -1713,6 +1718,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
     If the primary provider fails with an authentication error, attempt to
     resolve credentials using the fallback provider chain from config.yaml
     before giving up.
+
+    The optional ``requested_provider`` / ``explicit_api_key`` /
+    ``explicit_base_url`` keyword args let per-platform overrides thread
+    their own credentials into the resolution without rewriting the global
+    config — used by the per-platform model system (#11439). When omitted,
+    behavior is byte-for-byte identical to the previous signature.
     """
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
@@ -1722,7 +1733,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
     try:
-        runtime = resolve_runtime_provider()
+        runtime = resolve_runtime_provider(
+            requested=requested_provider or os.getenv("HERMES_INFERENCE_PROVIDER"),
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
     except AuthError as auth_exc:
         # Distinguish a transient rate-limit/quota cap (credentials are fine,
         # re-auth cannot help) from a genuine auth failure (expired/revoked
@@ -2133,6 +2148,56 @@ def _teams_pipeline_plugin_enabled() -> bool:
     return "teams_pipeline" in enabled or "teams-pipeline" in enabled
 
 
+def _get_platform_model_overrides(
+    config: dict | None = None,
+    *,
+    platform: "Optional[Platform]" = None,
+    platform_key: Optional[str] = None,
+) -> dict:
+    """Return per-platform model/runtime overrides from config.yaml.
+
+    Honors both ``platforms.<platform>.extra.{model,provider,api_key,base_url,api_mode}``
+    (the structured path used by plugin ``apply_yaml_config_fn`` hooks) and the
+    top-level ``platforms.<platform>.{model,provider,...}`` shortcut that users
+    intuitively write. The ``extra`` block takes precedence when both are set,
+    mirroring how the gateway's ``_merge_platform_map`` already nests platform
+    config under ``platforms.<name>.extra`` at load time.
+
+    Returns an empty dict when no override is configured — callers fall back
+    to the global ``model.default`` / ``model.provider`` with no behavior
+    change for unconfigured platforms.
+    """
+    cfg = config if config is not None else _load_gateway_config()
+    resolved_platform_key = platform_key or (
+        _platform_config_key(platform) if platform is not None else None
+    )
+    if not resolved_platform_key:
+        return {}
+
+    platforms_cfg = cfg.get("platforms") or {}
+    if not isinstance(platforms_cfg, dict):
+        return {}
+    platform_cfg = platforms_cfg.get(resolved_platform_key) or {}
+    if not isinstance(platform_cfg, dict):
+        return {}
+
+    extra = platform_cfg.get("extra") or {}
+    if not isinstance(extra, dict):
+        extra = {}
+
+    overrides: dict = {}
+    for key in ("model", "provider", "api_key", "base_url", "api_mode"):
+        # Top-level ``platforms.<p>.<key>`` wins over ``extra.<key>`` because
+        # the top-level form is the more explicit user intent when both are
+        # set; ``extra`` is the canonical plugin-managed path that callers
+        # like the telegram ``apply_yaml_config`` hook seed programmatically.
+        if key in platform_cfg and platform_cfg[key] is not None:
+            overrides[key] = platform_cfg[key]
+        elif key in extra and extra[key] is not None:
+            overrides[key] = extra[key]
+    return overrides
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
@@ -2214,14 +2279,36 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml — single source of truth.
+def _resolve_gateway_model(
+    config: dict | None = None,
+    *,
+    platform: "Optional[Platform]" = None,
+    platform_key: Optional[str] = None,
+) -> str:
+    """Read model from config.yaml, preferring per-platform defaults when present.
 
     Without this, temporary AIAgent instances (e.g. /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
+
+    Precedence: per-platform override (``platforms.<platform>.{model,extra.model}``)
+    → global ``model.default`` / ``model.model``.
+
+    The ``platform`` / ``platform_key`` kwargs are opt-in — every existing
+    call site that omits them is byte-for-byte unchanged. This is the
+    minimal hook needed to support ``platforms.telegram.model: …``-style
+    overrides (#14327, #11439).
     """
     cfg = config if config is not None else _load_gateway_config()
+    platform_override = _get_platform_model_overrides(
+        cfg,
+        platform=platform,
+        platform_key=platform_key,
+    )
+    platform_model = platform_override.get("model")
+    if isinstance(platform_model, str) and platform_model.strip():
+        return platform_model.strip()
+
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg
@@ -3485,7 +3572,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 resolved_session_key = None
 
-        model = _resolve_gateway_model(user_config)
+        model = _resolve_gateway_model(
+            user_config,
+            platform=source.platform if source is not None else None,
+        )
+        platform_override = _get_platform_model_overrides(
+            user_config,
+            platform=source.platform if source is not None else None,
+        )
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
@@ -3516,7 +3610,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Per-platform override (#14327, #11439): requested_provider from
+        # ``platforms.<platform>.{provider,extra.provider}`` flows through to
+        # the runtime resolver so the platform uses its own credentials
+        # rather than the global default. The model was already resolved
+        # above via _resolve_gateway_model(platform=...). When the platform
+        # override is empty (the common case for unconfigured platforms)
+        # this is a no-op — the global model/provider is used unchanged.
+        requested_provider = platform_override.get("provider")
+        runtime_kwargs = _resolve_runtime_agent_kwargs(
+            requested_provider=requested_provider,
+            explicit_api_key=platform_override.get("api_key"),
+            explicit_base_url=platform_override.get("base_url"),
+        )
+        if requested_provider:
+            runtime_kwargs["provider"] = requested_provider
+        if (
+            "api_mode" in platform_override
+            and platform_override.get("api_mode") is not None
+        ):
+            runtime_kwargs["api_mode"] = platform_override.get("api_mode")
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -9777,7 +9890,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(platform=source.platform)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -10969,20 +11082,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, *, platform: "Platform | None" = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        The optional ``platform`` kwarg threads the active platform through
+        the per-platform override system (#14327, #11439) so the surfaced
+        model matches the one the gateway will actually use for the next
+        turn — not the global default. When omitted, behavior is identical
+        to the previous signature.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        # Apply platform overrides when available (e.g. Telegram uses a
+        # different default model than the global one).
+        plat_overrides = _get_platform_model_overrides(platform=platform)
+
+        model = _resolve_gateway_model(platform=platform)
         config_context_length = None
-        provider = None
-        base_url = None
-        api_key = None
+        provider = plat_overrides.get("provider") or None
+        base_url = plat_overrides.get("base_url") or None
+        api_key = plat_overrides.get("api_key") or None
         custom_provs = None
         data = None
 
@@ -11044,7 +11167,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Resolve runtime credentials for probing
         try:
-            runtime = _resolve_runtime_agent_kwargs()
+            runtime = _resolve_runtime_agent_kwargs(
+                requested_provider=plat_overrides.get("provider"),
+                explicit_api_key=plat_overrides.get("api_key"),
+                explicit_base_url=plat_overrides.get("base_url"),
+            )
             provider = provider or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
             api_key = runtime.get("api_key")

@@ -157,3 +157,75 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+
+class TestPerPlatformModelOverride:
+    """Per-platform model/provider override (#14327, #11439).
+
+    `platforms.<platform>.{model,provider,...}` and the equivalent
+    `platforms.<platform>.extra.{...}` block both override the global
+    `model.default` for the matching platform, while other platforms and
+    the global default are unchanged.
+    """
+
+    def test_top_level_shortcut_overrides_global_for_matching_platform(self):
+        from gateway.run import _get_platform_model_overrides, _resolve_gateway_model
+        from gateway.config import Platform
+
+        cfg = {
+            "model": {"default": "qwen3.7-plus", "provider": "opencode-go"},
+            "platforms": {"telegram": {"model": "minimax-m3", "provider": "opencode-go"}},
+        }
+        # Telegram gets the platform override
+        assert _get_platform_model_overrides(cfg, platform=Platform.TELEGRAM) == {
+            "model": "minimax-m3",
+            "provider": "opencode-go",
+        }
+        assert _resolve_gateway_model(cfg, platform=Platform.TELEGRAM) == "minimax-m3"
+        # Other platforms fall back to the global default — no behavior change
+        assert _resolve_gateway_model(cfg, platform=Platform.DISCORD) == "qwen3.7-plus"
+        # No platform → global default
+        assert _resolve_gateway_model(cfg) == "qwen3.7-plus"
+
+    def test_extra_block_path_matches_top_level(self):
+        """`platforms.<p>.extra.model` is the canonical plugin-managed path."""
+        from gateway.run import _get_platform_model_overrides, _resolve_gateway_model
+        from gateway.config import Platform
+
+        cfg = {
+            "model": {"default": "gpt-5.4", "provider": "openai-codex"},
+            "platforms": {
+                "telegram": {
+                    "extra": {"model": "claude-sonnet-4", "provider": "anthropic"},
+                },
+            },
+        }
+        assert _get_platform_model_overrides(cfg, platform=Platform.TELEGRAM) == {
+            "model": "claude-sonnet-4",
+            "provider": "anthropic",
+        }
+        assert _resolve_gateway_model(cfg, platform=Platform.TELEGRAM) == "claude-sonnet-4"
+
+    def test_unconfigured_platform_returns_empty_overrides(self):
+        from gateway.run import _get_platform_model_overrides
+        from gateway.config import Platform
+
+        cfg = {"model": {"default": "gpt-5.4"}}
+        assert _get_platform_model_overrides(cfg, platform=Platform.TELEGRAM) == {}
+
+    def test_top_level_wins_over_extra_block(self):
+        """When both paths are set, the top-level shortcut wins (more explicit)."""
+        from gateway.run import _get_platform_model_overrides
+        from gateway.config import Platform
+
+        cfg = {
+            "platforms": {
+                "telegram": {
+                    "model": "top-level-model",
+                    "extra": {"model": "extra-model"},
+                },
+            },
+        }
+        assert _get_platform_model_overrides(cfg, platform=Platform.TELEGRAM) == {
+            "model": "top-level-model",
+        }

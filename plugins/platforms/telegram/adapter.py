@@ -7859,9 +7859,37 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     telegram_cfg block from gateway/config.py::load_gateway_config(). Env vars
     take precedence over YAML. Returns a dict of extras to merge into
     PlatformConfig.extra (disable_topic_auto_rename + runtime flags), or None.
+
+    Per-platform model/provider override (#14327, #11439): the
+    ``model``/``provider``/``api_key``/``base_url``/``api_mode`` keys under
+    ``platforms.telegram.*`` are mirrored into ``extras`` so
+    ``_get_platform_model_overrides()`` in ``gateway/run.py`` picks them up
+    when the gateway creates a session. Without this hook, users who set
+    ``platforms.telegram.model: minimax-m3`` would see their sessions fall
+    back to ``model.default`` instead.
     """
     import json as _json
     extras: dict = {}
+
+    # Per-platform model/runtime override. Stored under ``extras`` so the
+    # core resolution path finds it via the standard override helper.
+    # The top-level ``platforms.telegram.{model,provider}`` shortcut is
+    # honored in addition to the explicit ``platforms.telegram.extra.``
+    # block — most users write the shortcut, plugin authors use the
+    # structured block. The core helper applies the same precedence.
+    _model_keys = ("model", "provider", "api_key", "base_url", "api_mode")
+    _telegram_block_extra = (
+        telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
+    )
+    for _mk in _model_keys:
+        # Top-level shortcut wins because it's the more explicit user intent
+        # when both are set; structured ``extra`` block is the canonical
+        # plugin-managed path for plugin authors.
+        _val = telegram_cfg.get(_mk)
+        if _val is None and isinstance(_telegram_block_extra, dict):
+            _val = _telegram_block_extra.get(_mk)
+        if _val is not None:
+            extras.setdefault(_mk, _val)
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])

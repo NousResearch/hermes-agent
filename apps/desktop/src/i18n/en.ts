@@ -234,7 +234,11 @@ export const en: Translations = {
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.showFiles': 'Show file browser',
-      'view.showTerminal': 'Show terminal',
+      'view.showTerminal': 'Toggle terminal',
+      'view.newTerminal': 'New terminal',
+      'view.nextTerminal': 'Next terminal',
+      'view.prevTerminal': 'Previous terminal',
+      'view.closeTerminal': 'Close terminal',
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',
@@ -1883,6 +1887,10 @@ export const en: Translations = {
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
     terminalHide: 'Hide terminal',
+    terminalsAria: 'Terminals',
+    terminalNew: 'New terminal',
+    terminalCloseOthers: 'Close others',
+    terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
   },
 

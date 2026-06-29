@@ -1946,6 +1946,10 @@ export const zhHant = defineLocale({
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
     terminalHide: '隱藏終端機',
+    terminalsAria: '終端機',
+    terminalNew: '新增終端機',
+    terminalCloseOthers: '關閉其他',
+    terminalCloseAll: '全部關閉',
     addToChat: '新增至聊天'
   },
 

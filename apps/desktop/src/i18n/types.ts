@@ -1540,6 +1540,10 @@ export interface Translations {
     loadingTree: string
     loadingFiles: string
     terminalHide: string
+    terminalsAria: string
+    terminalNew: string
+    terminalCloseOthers: string
+    terminalCloseAll: string
     addToChat: string
   }
 

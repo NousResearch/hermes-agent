@@ -2058,6 +2058,10 @@ export const zh: Translations = {
     loadingTree: '正在加载文件树',
     loadingFiles: '正在加载文件',
     terminalHide: '隐藏终端',
+    terminalsAria: '终端',
+    terminalNew: '新建终端',
+    terminalCloseOthers: '关闭其他',
+    terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
   },
 

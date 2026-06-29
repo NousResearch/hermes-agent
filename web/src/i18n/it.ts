@@ -433,6 +433,14 @@ export const it: Translations = {
     replaceCurrentValue: "Sostituisci valore corrente ({preview})",
     showValue: "Mostra valore reale",
     hideValue: "Nascondi valore",
+    customTitle: "Chiavi personalizzate",
+    customHint: "Variabili d'ambiente arbitrarie salvate nel tuo .env che Hermes non riconosce. Usale per iniettare variabili d'ambiente per skill, server MCP o i tuoi strumenti.",
+    customConfigured: "{count} chiave/i personalizzata/e impostata/e",
+    addCustomKey: "Aggiungi una chiave personalizzata",
+    customKeyName: "Nome della variabile",
+    customKeyNamePlaceholder: "es. MY_SERVICE_API_KEY",
+    add: "Aggiungi",
+    invalidKeyName: "Usa solo lettere, numeri e trattini bassi (deve iniziare con una lettera o un trattino basso).",
   },
 
   oauth: {

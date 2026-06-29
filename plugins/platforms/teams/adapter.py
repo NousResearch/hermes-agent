@@ -80,6 +80,58 @@ _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
 
 
+def _card_value_field(value: Any, field: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(field)
+    return getattr(value, field, None)
+
+
+def _coerce_card_submit_data(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+
+    action = _card_value_field(value, "action")
+    action_data = _card_value_field(action, "data")
+    if isinstance(action_data, dict) and (
+        not isinstance(value, dict) or len(value) == 1
+        or _card_value_field(action, "type") in ("Action.Submit", "Action.Execute")
+    ):
+        return action_data
+
+    data = _card_value_field(value, "data")
+    # Direct submits merge action data with input fields; "data" need not be an envelope.
+    if isinstance(data, dict) and (not isinstance(value, dict) or len(value) == 1):
+        return data
+
+    if isinstance(value, dict):
+        return value
+
+    return {}
+
+
+def _format_card_submit_value(data: Dict[str, Any], *, limit: int = 4000) -> str:
+    visible = [
+        (str(key), item)
+        for key, item in sorted(data.items(), key=lambda field: str(field[0]))
+        if not str(key).startswith("_")
+    ]
+    if not visible:
+        return ""
+
+    lines = ["Adaptive Card submit:"]
+    for key, item in visible:
+        if isinstance(item, (dict, list)):
+            rendered = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        else:
+            rendered = str(item)
+        lines.append(f"{key}: {rendered}")
+
+    text = "\n".join(lines)
+    if len(text) > limit:
+        return text[: max(0, limit - 3)] + "..."
+    return text
+
+
 def _bf_token_request(tenant_id: str, client_id: str, client_secret: str) -> tuple[str, dict]:
     """(token URL, client-credentials form) for a Bot Framework bearer token."""
     return (
@@ -477,6 +529,11 @@ class TeamsAdapter(BasePlatformAdapter):
         text = activity.text if hasattr(activity, "text") and activity.text else ""
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        if not text.strip():
+            submit_data = _coerce_card_submit_data(getattr(activity, "value", None))
+            if self._handle_card_submit_approval_fallback(activity, submit_data):
+                return
+            text = _format_card_submit_value(submit_data)
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         source = self.build_source(
@@ -572,6 +629,22 @@ class TeamsAdapter(BasePlatformAdapter):
     def _invoke_card(body: list) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
         card = AdaptiveCard().with_version("1.4").with_body(body)
         return InvokeResponse(status=200, body=AdaptiveCardActionCardResponse(value=card))
+
+    def _handle_card_submit_approval_fallback(self, activity: Any, data: Dict[str, Any]) -> bool:
+        """Message-activity approval submits use the same scoped gate as invoke clicks."""
+        hermes_action = str(data.get("hermes_action") or "")
+        session_key = str(data.get("session_key") or "")
+        if not hermes_action or not session_key:
+            return False
+        if self._card_action_denied(getattr(activity, "from_", None)):
+            return True
+
+        from tools.approval import resolve_gateway_approval, has_blocking_approval
+
+        choice = _APPROVAL_CHOICES.get(hermes_action)
+        if choice and has_blocking_approval(session_key):
+            resolve_gateway_approval(session_key, choice)
+        return True
 
     async def _on_card_action(
         self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"

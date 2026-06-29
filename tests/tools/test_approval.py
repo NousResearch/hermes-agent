@@ -1,11 +1,15 @@
 """Tests for the dangerous command approval module."""
 
 import ast
+import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
+from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
     _smart_approve,
@@ -14,7 +18,6 @@ from tools.approval import (
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
-    submit_pending,
 )
 
 
@@ -366,6 +369,12 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo x | tee {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_custom_hermes_home_env(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
         assert dangerous is True
@@ -385,6 +394,139 @@ class TestTeePattern:
         dangerous, key, desc = detect_dangerous_command("echo hello | tee output.log")
         assert dangerous is False
         assert key is None
+
+
+class TestHermesConfigWriteProtection:
+    """Terminal-side pairing for the file_tools write_file/patch deny on
+    ~/.hermes/config.yaml (#14639). config.yaml IS the security policy
+    (approvals.mode/yolo live there, mtime-keyed cache reloads mid-session),
+    so a write_file deny without terminal-side coverage is unpaired theater.
+    These pin every terminal write idiom against the config file."""
+
+    def test_redirect_overwrite(self):
+        dangerous, key, desc = detect_dangerous_command("echo 'approvals:' > ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append(self):
+        dangerous, key, desc = detect_dangerous_command("echo '  mode: off' >> ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_tee(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_cp_over_config(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_sed_in_place(self):
+        # The gap the pairing closes: sed -i mutates the file directly,
+        # bypassing the redirection/tee patterns.
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/manual/off/' ~/.hermes/config.yaml")
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_sed_in_place_long_flag(self):
+        dangerous, key, desc = detect_dangerous_command("sed --in-place 's/manual/off/' ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_sed_in_place_absolute_hermes_home_config(self):
+        config_path = get_hermes_home() / "config.yaml"
+        dangerous, key, desc = detect_dangerous_command(
+            f"sed -i 's/manual/off/' {config_path}"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_sed_in_place_absolute_hermes_home_env(self):
+        env_path = get_hermes_home() / ".env"
+        dangerous, key, desc = detect_dangerous_command(
+            f"sed -i 's/API_KEY=.*/API_KEY=x/' {env_path}"
+        )
+        assert dangerous is True
+        assert "hermes config" in desc.lower() or "in-place" in desc.lower()
+
+    def test_custom_hermes_home(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/config.yaml")
+        assert dangerous is True
+
+    def test_perl_in_place_config(self):
+        # perl -i performs the same in-place mutation as sed -i but was not
+        # caught by the -e/-c pattern (which targets code evaluation).
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "perl" in desc.lower()
+
+    def test_perl_in_place_absolute_hermes_home_config(self):
+        config_path = get_hermes_home() / "config.yaml"
+        dangerous, key, desc = detect_dangerous_command(
+            f"perl -i -pe 's/approvals.mode: on/approvals.mode: off/' {config_path}"
+        )
+        assert dangerous is True
+        assert "in-place" in desc.lower() or "perl" in desc.lower()
+
+    def test_ruby_in_place_config(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "ruby -i -pe 'gsub(/manual/, \"off\")' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_ruby_in_place_absolute_hermes_home_env(self):
+        env_path = get_hermes_home() / ".env"
+        dangerous, key, desc = detect_dangerous_command(
+            f"ruby -i -pe 'gsub(/API_KEY=.*/, \"API_KEY=x\")' {env_path}"
+        )
+        assert dangerous is True
+
+    def test_regular_absolute_config_path_still_uses_project_rule(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed -i 's/a/b/' /srv/app/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_perl_in_place_env(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/SECRET=old/SECRET=new/' ~/.hermes/.env"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_separate_flag_token(self):
+        # The -i flag does not have to be the first token. `perl -p -i -e`
+        # splits the in-place flag out as its own token after -p; the pattern
+        # must catch it the same as `perl -i -pe`.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -p -i -e 's/approvals.mode: on/approvals.mode: off/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_in_place_backup_suffix(self):
+        # `perl -i.bak` keeps a backup but still mutates the file in place.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i.bak -pe 's/x/y/' ~/.hermes/config.yaml"
+        )
+        assert dangerous is True
+
+    def test_perl_eval_no_inplace_safe(self):
+        # `perl -e` with no -i flag is code evaluation, not file mutation —
+        # the perl/ruby -i pattern must not fire on it.
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -wne 'print' ~/.hermes/config.yaml"
+        )
+        assert dangerous is False
+
+    def test_read_is_safe(self):
+        # Reading config is not a write — must not trip.
+        dangerous, key, desc = detect_dangerous_command("cat ~/.hermes/config.yaml")
+        assert dangerous is False
+
+    def test_normal_yaml_write_safe(self):
+        # A non-Hermes config.yaml in a project dir is handled by the project
+        # patterns, but a plain temp write must not false-positive.
+        dangerous, key, desc = detect_dangerous_command("echo data > /tmp/scratch.txt")
+        assert dangerous is False
 
 
 class TestFindExecFullPathRm:
@@ -424,10 +566,36 @@ class TestSensitiveRedirectPattern:
         assert dangerous is True
         assert key is not None
 
+    def test_append_to_absolute_home_ssh_authorized_keys(self):
+        authorized_keys = Path.home() / ".ssh" / "authorized_keys"
+        dangerous, key, desc = detect_dangerous_command(f"cat key >> {authorized_keys}")
+        assert dangerous is True
+        assert key is not None
+
     def test_append_to_tilde_ssh_authorized_keys(self):
         dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
         assert dangerous is True
         assert key is not None
+
+    def test_redirect_to_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo 'alias ll=\"ls -la\"' > {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_home_set_after_import(self, monkeypatch, tmp_path):
+        late_home = tmp_path / "late-home"
+        late_home.mkdir()
+        monkeypatch.setenv("HOME", str(late_home))
+
+        dangerous, key, desc = detect_dangerous_command(f"echo x > {late_home}/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_other_absolute_home_bashrc_is_not_current_user_sensitive(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > /tmp/not-current-home/.bashrc")
+        assert dangerous is False
+        assert key is None
 
     def test_redirect_to_safe_tmp_file(self):
         dangerous, key, desc = detect_dangerous_command("echo hello > /tmp/output.txt")
@@ -495,6 +663,137 @@ class TestProjectSensitiveCopyPattern:
         assert dangerous is False
         assert key is None
         assert desc is None
+
+
+class TestSensitiveCopyMovePattern:
+    """cp/mv/install OVERWRITING ~/.ssh/*, credential files (~/.netrc etc.),
+    shell rc files, or ~/.hermes/config.yaml/.env must require approval — the
+    tee/redirection forms were already gated (#14639 family / commit 4e9d886d),
+    but cp/mv/install on these targets was an unpaired half-door (key implant /
+    shell-rc command injection slipped through auto-approve)."""
+
+    def test_cp_to_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil ~/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_mv_to_ssh_private_key(self):
+        dangerous, key, desc = detect_dangerous_command("mv /tmp/k ~/.ssh/id_rsa")
+        assert dangerous is True
+
+    def test_install_to_netrc(self):
+        dangerous, key, desc = detect_dangerous_command("install -m600 /tmp/c ~/.netrc")
+        assert dangerous is True
+
+    def test_cp_to_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/e ~/.bashrc")
+        assert dangerous is True
+
+    def test_cp_to_hermes_config(self):
+        dangerous, key, desc = detect_dangerous_command("cp /tmp/evil.yaml ~/.hermes/config.yaml")
+        assert dangerous is True
+
+    def test_cp_from_ssh_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp ~/.ssh/config /tmp/x")
+        assert dangerous is False
+
+    def test_cp_unrelated_files_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp a.txt b.txt")
+        assert dangerous is False
+
+
+class TestSensitiveInPlaceEditPattern:
+    """Detect in-place edits to user startup and credential files."""
+
+    def test_sed_in_place_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' ~/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_long_in_place_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed --in-place 's/key/newkey/' ~/.ssh/authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_perl_in_place_netrc(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/pass/pass2/' ~/.netrc"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_ruby_in_place_absolute_home_zshrc(self):
+        zshrc = Path.home() / ".zshrc"
+        dangerous, key, desc = detect_dangerous_command(
+            f"ruby -i -pe 'gsub(/a/, \"b\")' {zshrc}"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_in_place_regular_file_safe(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' notes.txt")
+        assert dangerous is False
+        assert key is None
+
+
+class TestWindowsAbsolutePathFolding:
+    """Windows absolute home / Hermes-home prefixes must fold to ~/ and
+    ~/.hermes/ in dangerous-command detection.
+
+    Regression: on native Windows the home prefix uses backslash separators
+    (``C:\\Users\\alice\\.ssh\\authorized_keys``). Detection stripped backslash
+    escapes *before* folding, dissolving those separators, so writes to startup,
+    SSH, and Hermes config/env files returned "safe" without an approval prompt.
+    The OS-specific ``Path.home()`` / ``get_hermes_home()`` tests above only
+    exercise this branch on a Windows host; these monkeypatch a Windows-style
+    HOME/HERMES_HOME so the fold is verified on the POSIX CI runner too."""
+
+    def test_windows_home_bashrc_folds(self, monkeypatch):
+        monkeypatch.setenv("HOME", r"C:\Users\tester")
+        dangerous, key, _ = detect_dangerous_command(
+            r"echo 'pwned' > C:\Users\tester\.bashrc"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_windows_home_ssh_authorized_keys_multiseg_folds(self, monkeypatch):
+        # The multi-segment suffix (\.ssh\authorized_keys) must also have its
+        # separators normalized, not just the home prefix.
+        monkeypatch.setenv("HOME", r"C:\Users\tester")
+        dangerous, key, _ = detect_dangerous_command(
+            r"cat key >> C:\Users\tester\.ssh\authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_windows_home_forward_slash_folds(self, monkeypatch):
+        monkeypatch.setenv("HOME", r"C:\Users\tester")
+        dangerous, key, _ = detect_dangerous_command(
+            "cat key >> C:/Users/tester/.ssh/authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_windows_hermes_home_config_folds(self, monkeypatch):
+        # Hermes home nests under the user home on Windows; it must fold before
+        # the user-home rewrite eats its prefix.
+        monkeypatch.setenv("HOME", r"C:\Users\tester")
+        monkeypatch.setenv("HERMES_HOME", r"C:\Users\tester\.hermes")
+        dangerous, key, _ = detect_dangerous_command(
+            r"sed -i 's/manual/off/' C:\Users\tester\.hermes\config.yaml"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_windows_unrelated_path_not_flagged(self, monkeypatch):
+        monkeypatch.setenv("HOME", r"C:\Users\tester")
+        dangerous, key, _ = detect_dangerous_command(
+            r"cp report.txt C:\Users\tester\notes.txt"
+        )
+        assert dangerous is False
+        assert key is None
 
 
 class TestProjectSensitiveTeePattern:
@@ -819,6 +1118,61 @@ class TestPgrepKillExpansion:
     def test_safe_kill_pid_not_flagged(self):
         """A plain 'kill 12345' (literal PID, no expansion) must stay safe."""
         cmd = "kill 12345"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_kill_dollar_pidof_detected(self):
+        """`kill $(pidof hermes)` is the BSD/Linux equivalent of the
+        pgrep expansion and bypasses the pkill/killall name pattern
+        in the same way. See issue #33071."""
+        cmd = "kill -TERM $(pidof hermes_cli.main)"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "pidof" in desc.lower() or "pgrep" in desc.lower()
+
+    def test_kill_backtick_pidof_detected(self):
+        cmd = "kill -9 `pidof hermes`"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+
+class TestLaunchctlGatewayLifecycle:
+    """launchctl stop/kickstart/bootout/unload against the Hermes service
+    label achieves the same effect as `hermes gateway stop|restart` and
+    must require the same approval. See issue #33071.
+    """
+
+    def test_launchctl_stop_hermes_detected(self):
+        cmd = "launchctl stop ai.hermes.gateway"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "launchd" in desc.lower() or "hermes" in desc.lower()
+
+    def test_launchctl_kickstart_hermes_detected(self):
+        cmd = "launchctl kickstart -k system/ai.hermes.gateway"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_bootout_hermes_detected(self):
+        cmd = "launchctl bootout system/ai.hermes.gateway"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_unload_hermes_detected(self):
+        cmd = "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_print_unrelated_not_flagged(self):
+        """Read-only inspection of an unrelated launchd label must stay safe."""
+        cmd = "launchctl print system/com.apple.WindowServer"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_launchctl_stop_unrelated_not_flagged(self):
+        """`launchctl stop` on a non-Hermes label is out of scope for the
+        gateway-lifecycle guard."""
+        cmd = "launchctl stop com.example.unrelated"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 
@@ -1305,3 +1659,265 @@ class TestEtcPatternsUnaffectedByRefactor:
     def test_grep_etc_passwd_is_safe(self):
         dangerous, _, _ = detect_dangerous_command("grep root /etc/passwd")
         assert dangerous is False
+
+
+# =========================================================================
+# Gateway approval timeout = deny, NOT consent (#24912)
+#
+# A Slack user walked away mid-conversation; the agent requested approval
+# to run `rm -rf .git`; the prompt timed out; the agent ran the command
+# anyway. Reported by @tofalck on 2026-05-13, corroborated by
+# @angry-programmer on Telegram. Silence is not consent.
+#
+# These tests pin:
+#   1. Gateway timeout → approved=False, with a message strong enough that
+#      a downstream agent reading "BLOCKED: ... Silence is not consent."
+#      treats it as a hard halt, not an invitation to rephrase.
+#   2. The structured outcome / user_consent fields are present so
+#      plugins, hooks, and audit pipelines can act on the timeout without
+#      string-parsing the message.
+#   3. Explicit /deny carries the same shape (treat-as-not-consented).
+# =========================================================================
+
+
+class TestApprovalTimeoutIsNotConsent:
+    """The gateway approval contract: silence is not consent (#24912)."""
+
+    SESSION_KEY = "test-no-consent-session"
+
+    def setup_method(self):
+        """Reset module state and force tight gateway_timeout for fast tests."""
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_YOLO_MODE",
+                      "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_YOLO_MODE", None)
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        # HERMES_CRON_SESSION takes priority over HERMES_GATEWAY_SESSION in
+        # _is_gateway_approval_context(); a leaked value from a parent cron
+        # process would force the cron path and break these gateway tests.
+        os.environ.pop("HERMES_CRON_SESSION", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _force_short_timeout(self, monkeypatch, seconds=1):
+        from tools import approval as mod
+        monkeypatch.setattr(
+            mod, "_get_approval_config",
+            lambda: {"mode": "manual", "gateway_timeout": seconds, "timeout": seconds},
+        )
+
+    def test_timeout_returns_approved_false_with_no_consent(self, monkeypatch):
+        """The reported #24912 scenario — user never responds, agent must see BLOCKED."""
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=1)
+
+        # Slack-shaped: notify_cb registered, but user doesn't respond.
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        assert result["approved"] is False
+        assert result.get("user_consent") is False
+        assert result.get("outcome") == "timeout"
+        # The notify_cb DID fire — we did try to ask the user.
+        assert len(notified) == 1
+
+    def test_timeout_message_is_emphatic_against_retry_and_rephrase(self, monkeypatch):
+        """The BLOCKED message must explicitly tell the agent not to rephrase.
+
+        Without this, the agent treats 'Do NOT retry this command' as
+        permission to try a different command achieving the same outcome.
+        """
+        from tools import approval as mod
+        self._force_short_timeout(monkeypatch, seconds=1)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        result = mod.check_all_command_guards("rm -rf .git", "local")
+
+        msg = result["message"]
+        # Explicit halt signals — these are the model-facing contract.
+        assert "BLOCKED" in msg
+        assert "NOT consented" in msg
+        assert "Silence is not consent" in msg
+        # Both forms of evasion must be named:
+        assert "do NOT retry" in msg.lower() or "Do NOT retry" in msg
+        assert "rephrase" in msg.lower()
+        assert "different command" in msg.lower()
+
+    def test_explicit_deny_carries_same_no_consent_shape(self):
+        """An explicit /deny must produce the same shape as timeout —
+        the agent should treat both identically."""
+        from tools import approval as mod
+
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        # Spawn the approval wait in a thread, then resolve it with "deny".
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("rm -rf .git", "local")
+        t = threading.Thread(target=_check)
+        t.start()
+
+        # Wait for the queue entry to appear, then resolve.
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        t.join(timeout=5)
+        assert "r" in result_holder, "approval wait did not return after deny"
+
+        r = result_holder["r"]
+        assert r["approved"] is False
+        assert r.get("user_consent") is False
+        assert r.get("outcome") == "denied"
+        assert "Silence is not consent" not in r["message"]  # this one IS denied, not timed-out
+        assert "NOT consented" in r["message"]
+        assert "rephrase" in r["message"].lower()
+
+    def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
+        """Plugins must be able to distinguish timeout from explicit deny.
+
+        This is what an audit / notification plugin needs to alert
+        operators on 'agent asked, user never replied' incidents like #24912.
+        """
+        from tools import approval as mod
+        self._force_short_timeout(monkeypatch, seconds=1)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+
+        hook_calls = []
+        original_fire = mod._fire_approval_hook
+
+        def _capture(event_name, **kwargs):
+            hook_calls.append((event_name, kwargs))
+            return original_fire(event_name, **kwargs)
+
+        monkeypatch.setattr(mod, "_fire_approval_hook", _capture)
+
+        mod.check_all_command_guards("rm -rf .git", "local")
+
+        # post_approval_response must be in the hook log with choice=timeout
+        posts = [c for c in hook_calls if c[0] == "post_approval_response"]
+        assert posts, "post_approval_response hook did not fire"
+        last_post = posts[-1][1]
+        assert last_post.get("choice") == "timeout", (
+            f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
+        )
+
+
+class TestTirithImportErrorFailOpenPolicy:
+    """Regression guard for #20733.
+
+    When ``tools.tirith_security`` cannot be imported, ``check_all_command_guards``
+    must honour the ``security.tirith_fail_open`` config knob:
+
+    * ``tirith_fail_open: true``  (default) → allow, no approval prompt.
+    * ``tirith_fail_open: false`` → surface a Tirith-style warning through
+      the normal approval flow so the command is not silently permitted.
+    """
+
+    def _make_failing_import(self, real_import):
+        """Return a builtins.__import__ replacement that raises for tirith."""
+        def _fake(name, *args, **kwargs):
+            if name == "tools.tirith_security":
+                raise ImportError("simulated tirith import failure")
+            return real_import(name, *args, **kwargs)
+        return _fake
+
+    def test_fail_open_true_allows_silently_on_import_error(self):
+        """Default fail-open: ImportError is silently swallowed, command allowed."""
+        import builtins
+        from unittest.mock import patch as _patch
+        from tools.approval import check_all_command_guards
+
+        cfg = {
+            "approvals": {"mode": "manual"},
+            "security": {"tirith_enabled": True, "tirith_fail_open": True},
+        }
+        real_import = builtins.__import__
+        with _patch("builtins.__import__", side_effect=self._make_failing_import(real_import)):
+            with _patch("hermes_cli.config.load_config", return_value=cfg):
+                with _patch("tools.approval.detect_dangerous_command", return_value=(False, None, None)):
+                    with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+                        result = check_all_command_guards("echo hello", "local")
+
+        assert result.get("approved") is True
+
+    def test_fail_open_false_escalates_to_approval_on_import_error(self):
+        """Fail-closed: ImportError must NOT silently allow when tirith_fail_open=false."""
+        import builtins
+        from unittest.mock import patch as _patch
+        from tools.approval import check_all_command_guards
+
+        cfg = {
+            "approvals": {"mode": "manual"},
+            "security": {"tirith_enabled": True, "tirith_fail_open": False},
+        }
+        calls = []
+
+        def approval_callback(command, description, **kwargs):
+            calls.append({"command": command, "description": description})
+            return "deny"
+
+        real_import = builtins.__import__
+        with _patch("builtins.__import__", side_effect=self._make_failing_import(real_import)):
+            with _patch("hermes_cli.config.load_config", return_value=cfg):
+                with _patch("tools.approval.detect_dangerous_command", return_value=(False, None, None)):
+                    with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+                        result = check_all_command_guards(
+                            "echo hello",
+                            "local",
+                            approval_callback=approval_callback,
+                        )
+
+        # The user must have been consulted — the command should NOT be silently allowed.
+        assert result.get("approved") is not True or calls, (
+            "Command was silently allowed despite tirith_fail_open=false and Tirith import failure. "
+            "This is the bug described in issue #20733."
+        )
+        # Specifically: user denied via callback, so approved must be False.
+        assert result.get("approved") is False
+        assert calls, "Approval callback was never invoked — command slipped through silently"
+        assert "tirith" in calls[0]["description"].lower() or "unavailable" in calls[0]["description"].lower()
+
+    def test_tirith_disabled_skips_fail_open_check(self):
+        """When tirith_enabled=false, ImportError is irrelevant — allow without prompt."""
+        import builtins
+        from unittest.mock import patch as _patch
+        from tools.approval import check_all_command_guards
+
+        cfg = {
+            "approvals": {"mode": "manual"},
+            "security": {"tirith_enabled": False, "tirith_fail_open": False},
+        }
+        real_import = builtins.__import__
+        with _patch("builtins.__import__", side_effect=self._make_failing_import(real_import)):
+            with _patch("hermes_cli.config.load_config", return_value=cfg):
+                with _patch("tools.approval.detect_dangerous_command", return_value=(False, None, None)):
+                    with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+                        result = check_all_command_guards("echo hello", "local")
+
+        assert result.get("approved") is True

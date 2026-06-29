@@ -15,17 +15,20 @@ import gateway.run as gateway_run
 from agent import prompt_builder
 
 
-def test_environment_hints_prefer_terminal_cwd(monkeypatch):
+def test_environment_hints_prefer_terminal_cwd(monkeypatch, tmp_path):
     """Gateway prompts should report the configured workspace, not daemon cwd."""
+    workspace = tmp_path / "hermes-workspace-sentinel"
+    workspace.mkdir()
+
     monkeypatch.setattr(prompt_builder, "is_wsl", lambda: False)
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
-    monkeypatch.setenv("TERMINAL_CWD", "/tmp/hermes-workspace-sentinel")
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
     prompt_builder._clear_backend_probe_cache()
 
     result = prompt_builder.build_environment_hints()
 
-    assert "Current working directory: /tmp/hermes-workspace-sentinel" in result
+    assert f"Current working directory: {workspace}" in result
 
 
 def test_environment_hints_fall_back_to_getcwd(monkeypatch):

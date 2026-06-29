@@ -4,16 +4,17 @@ title: "Sessions"
 description: "Session persistence, resume, search, management, and per-platform session tracking"
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Sessions
 
 Hermes Agent automatically saves every conversation as a session. Sessions enable conversation resume, cross-session search, and full conversation history management.
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in:
 
-1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search
-2. **JSONL transcripts** (`~/.hermes/sessions/`) — raw conversation transcripts including tool calls (gateway)
+1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search, plus full message history
 
 The SQLite database stores:
 - Session ID, source platform, user ID
@@ -145,7 +146,7 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
 
-<img className="docs-terminal-figure" src="/img/docs/session-recap.svg" alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
+<img className="docs-terminal-figure" src={useBaseUrl('/img/docs/session-recap.svg')} alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
 <p className="docs-figure-caption">Resume mode shows a compact recap panel with recent user and assistant turns before returning you to the live prompt.</p>
 
 The recap:
@@ -365,7 +366,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/docs/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
 
 ## Session Search Tool
 
@@ -488,10 +489,34 @@ Sessions with **active background processes** are never auto-reset, regardless o
 | What | Path | Description |
 |------|------|-------------|
 | SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
-| Gateway transcripts | `~/.hermes/sessions/` | JSONL transcripts per session + sessions.json index |
-| Gateway index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs |
+| Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
+| Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
+
+:::warning `sessions.json` is not the session list
+`~/.hermes/sessions/sessions.json` is the **gateway routing index** — it maps
+messaging session keys (`agent:main:<platform>:...`) to active session IDs.
+It only ever contains gateway/messaging entries, so if you run a messaging
+platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
+
+This is **expected** and does **not** mean your CLI sessions are missing.
+`hermes sessions list`, `/sessions`, and the dashboard all read `state.db`,
+which holds **every** session (CLI, TUI, and gateway). The `/save` snapshots
+under `~/.hermes/sessions/saved/*.json` are convenience exports, not the index.
+
+If CLI sessions genuinely don't appear in `hermes sessions list`, the cause is
+`state.db` not receiving them — run `hermes sessions repair` and watch for a
+`⚠ Session store unavailable` warning at CLI startup, which means SQLite
+persistence failed for that run.
+:::
+
+:::note Legacy JSONL transcripts
+Sessions created before state.db became canonical may have leftover
+`*.jsonl` files in `~/.hermes/sessions/`. They are no longer written or
+read by Hermes. Safe to delete after verifying the corresponding session
+exists in state.db.
+:::
 
 ### Database Schema
 

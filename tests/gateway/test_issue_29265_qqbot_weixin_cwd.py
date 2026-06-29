@@ -15,11 +15,14 @@ from gateway.session import SessionSource, build_session_context
 
 
 @pytest.mark.parametrize("platform", [Platform.QQBOT, Platform.WEIXIN])
-def test_qqbot_weixin_sessions_inherit_gateway_terminal_cwd(monkeypatch, platform):
+def test_qqbot_weixin_sessions_inherit_gateway_terminal_cwd(monkeypatch, tmp_path, platform):
     """QQBot/Weixin session sources should not alter the shared cwd contract."""
+    workspace = tmp_path / "hermes-gateway-workspace"
+    workspace.mkdir()
+
     monkeypatch.setattr(prompt_builder, "is_wsl", lambda: False)
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
-    monkeypatch.setenv("TERMINAL_CWD", "/tmp/hermes-gateway-workspace")
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
     prompt_builder._clear_backend_probe_cache()
 
     source = SessionSource(
@@ -35,4 +38,4 @@ def test_qqbot_weixin_sessions_inherit_gateway_terminal_cwd(monkeypatch, platfor
     hints = prompt_builder.build_environment_hints()
 
     assert context.source.platform == platform
-    assert "Current working directory: /tmp/hermes-gateway-workspace" in hints
+    assert f"Current working directory: {workspace}" in hints

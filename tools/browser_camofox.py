@@ -18,6 +18,9 @@ Setup::
     docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
 
 Then set ``CAMOFOX_URL=http://localhost:9377`` in ``~/.hermes/.env``.
+For Docker Camofox, optionally set ``CAMOFOX_REWRITE_LOOPBACK_URLS=true``
+so page URLs like ``http://127.0.0.1:3000`` are opened inside the
+container as ``http://host.docker.internal:3000``.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import os
 import threading
 import uuid
 from typing import Any, Dict, Optional
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import requests
 
@@ -157,6 +161,89 @@ def _adopt_existing_tab_enabled(camofox_cfg: Dict[str, Any]) -> bool:
     if env_value is not None:
         return env_value
     return bool(camofox_cfg.get("adopt_existing_tab"))
+
+
+def _loopback_rewrite_enabled(camofox_cfg: Dict[str, Any]) -> bool:
+    """Return whether loopback navigation URLs should be rewritten for Docker.
+
+    ``CAMOFOX_URL`` itself often points at a host-published Docker port such as
+    ``http://127.0.0.1:9377``.  That is correct for Hermes talking to the
+    Camofox control API, but a page URL like ``http://127.0.0.1:3000`` is opened
+    by the browser *inside* the Docker container.  In that context loopback
+    points at the container, not the host running the web app.
+
+    The rewrite is opt-in because non-Docker Camofox installs run the browser on
+    the host, where loopback URLs are already correct.
+    """
+    env_value = _env_flag("CAMOFOX_REWRITE_LOOPBACK_URLS")
+    if env_value is not None:
+        return env_value
+    return bool(camofox_cfg.get("rewrite_loopback_urls"))
+
+
+def _loopback_rewrite_host(camofox_cfg: Dict[str, Any]) -> str:
+    """Return the host alias used when rewriting loopback page URLs."""
+    return (
+        os.getenv("CAMOFOX_LOOPBACK_HOST_ALIAS", "").strip()
+        or str(camofox_cfg.get("loopback_host_alias") or "").strip()
+        or "host.docker.internal"
+    )
+
+
+def _is_loopback_hostname(hostname: Optional[str]) -> bool:
+    """Return True for localhost/127.0.0.0/8/::1-style hostnames."""
+    if not hostname:
+        return False
+    host = hostname.strip().strip("[]").lower()
+    if host in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str, str]]]:
+    """Rewrite loopback page URLs for Docker-hosted Camofox, if configured.
+
+    Returns ``(rewritten_url, metadata)``.  ``metadata`` is present only when a
+    rewrite happened so the tool result can disclose the change to the model.
+    """
+    camofox_cfg = _get_camofox_config()
+    if not _loopback_rewrite_enabled(camofox_cfg):
+        return url, None
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url, None
+
+    if parsed.scheme not in {"http", "https"} or not _is_loopback_hostname(parsed.hostname):
+        return url, None
+
+    alias = _loopback_rewrite_host(camofox_cfg)
+    if not alias:
+        return url, None
+
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    host_part = f"[{alias}]" if ":" in alias and not alias.startswith("[") else alias
+    port_part = f":{parsed.port}" if parsed.port else ""
+    rewritten = urlunsplit(
+        SplitResult(parsed.scheme, f"{userinfo}{host_part}{port_part}", parsed.path, parsed.query, parsed.fragment)
+    )
+    return rewritten, {
+        "from": parsed.hostname or "",
+        "to": alias,
+        "original_url": url,
+        "rewritten_url": rewritten,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -336,23 +423,31 @@ def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> di
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
+        browser_url, rewrite_info = _rewrite_loopback_url_for_camofox(url)
         session = _get_session(task_id)
         if not session["tab_id"]:
             # Create tab with the target URL directly
-            session = _ensure_tab(task_id, url)
-            data = {"ok": True, "url": url}
+            session = _ensure_tab(task_id, browser_url)
+            data = {"ok": True, "url": browser_url}
         else:
             # Navigate existing tab
             data = _post(
                 f"/tabs/{session['tab_id']}/navigate",
-                {"userId": session["user_id"], "url": url},
+                {"userId": session["user_id"], "url": browser_url},
                 timeout=60,
             )
         result = {
             "success": True,
-            "url": data.get("url", url),
+            "url": data.get("url", browser_url),
             "title": data.get("title", ""),
         }
+        if rewrite_info:
+            result["requested_url"] = url
+            result["url_rewrite"] = rewrite_info
+            result["warning"] = (
+                "Rewrote loopback URL for Docker-hosted Camofox: "
+                f"{rewrite_info['from']} -> {rewrite_info['to']}"
+            )
         vnc = get_vnc_url()
         if vnc:
             result["vnc_url"] = vnc
@@ -467,13 +562,28 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/type",
             {"userId": session["user_id"], "ref": clean_ref, "text": text},
         )
-        return json.dumps({
+        from agent.display import (
+            redact_browser_typed_text_for_display,
+            redact_tool_args_for_display,
+        )
+
+        display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
+
+        response = {
             "success": True,
-            "typed": text,
+            # Match browser_tool.browser_type: run typed text through the
+            # secret-pattern redactor so API keys / tokens don't leak into
+            # tool progress or chat history.  The raw text is still typed into
+            # the page; only the returned display value is redacted.
+            "typed": display_text,
             "element": clean_ref,
-        })
+        }
+        response = redact_browser_typed_text_for_display(response, text)
+        return json.dumps(response)
     except Exception as e:
-        return tool_error(str(e), success=False)
+        from agent.display import redact_browser_typed_text_for_display
+
+        return tool_error(redact_browser_typed_text_for_display(str(e), text), success=False)
 
 
 def camofox_scroll(direction: str, task_id: Optional[str] = None) -> str:

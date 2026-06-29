@@ -8,12 +8,12 @@ import os
 import sys
 import subprocess
 import shutil
-import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
+from hermes_constants import agent_browser_runnable
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -25,7 +25,6 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
-from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -49,7 +48,6 @@ _PROVIDER_ENV_HINTS = (
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
     "HF_TOKEN",
-    "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
@@ -161,12 +159,6 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
     that direct-key problem into the final blocking summary.
     """
     normalized = (provider_label or "").strip().lower()
-    if normalized in {"google / gemini", "gemini"}:
-        try:
-            from hermes_cli.auth import get_gemini_oauth_auth_status
-            return bool((get_gemini_oauth_auth_status() or {}).get("logged_in"))
-        except Exception:
-            return False
     if normalized == "minimax":
         try:
             from hermes_cli.auth import get_minimax_oauth_auth_status
@@ -207,19 +199,151 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _read_pyproject_version() -> str | None:
+    """Read the ``version = "..."`` from ``pyproject.toml`` at the project root.
+
+    Returns None when running from an installed wheel (no pyproject.toml ships
+    with the package) or when the file can't be parsed. Reads only the
+    ``[project]`` version, ignoring any version strings that appear in other
+    tables.
+    """
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    in_project = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_project = line == "[project]"
+            continue
+        if in_project and line.startswith("version") and "=" in line:
+            value = line.split("=", 1)[1]
+            value = value.split("#", 1)[0].strip().strip("\"'")
+            return value or None
+    return None
+
+
+def _check_version_consistency(issues: list[str]) -> None:
+    """Verify pyproject.toml version matches hermes_cli.__version__.
+
+    A git conflict resolution (reset/merge) can revert one file without the
+    other, leaving ``hermes --version`` reporting a stale version while
+    ``pyproject.toml`` is current. Detect that drift so users can re-sync.
+    Silent no-op for installed wheels where pyproject.toml isn't present.
+    """
+    try:
+        from hermes_cli import __version__ as init_version
+    except Exception:
+        return
+    pyproject_version = _read_pyproject_version()
+    if pyproject_version is None:
+        # Installed wheel or unreadable pyproject — nothing to cross-check.
+        return
+    if pyproject_version == init_version:
+        check_ok("Version files consistent", f"({init_version})")
+    else:
+        _fail_and_issue(
+            "Version mismatch between source files",
+            f"(pyproject.toml {pyproject_version} != hermes_cli/__init__.py {init_version})",
+            "Re-sync version files (e.g. run 'hermes update', or set "
+            "hermes_cli/__init__.py __version__ to match pyproject.toml)",
+            issues,
+        )
+
+
+def _check_s6_supervision(issues: list[str]) -> None:
+    """Inside a container under our s6 /init, surface what s6 sees.
+
+    Runs as a counterpart to :func:`_check_gateway_service_linger` for
+    the systemd-on-host case. No-op everywhere except in the s6
+    container so host runs aren't cluttered with irrelevant output.
+
+    Reports:
+      - Whether the main-hermes and dashboard static services are up
+      - How many per-profile gateway slots are registered (via
+        ``S6ServiceManager.list_profile_gateways()``) and how many are
+        currently supervised as ``up``
+    """
+    try:
+        from hermes_cli.service_manager import (
+            S6ServiceManager,
+            detect_service_manager,
+        )
+    except Exception:
+        return
+
+    if detect_service_manager() != "s6":
+        return
+
+    _section("s6 Supervision")
+
+    mgr = S6ServiceManager()
+
+    # Static services. They live under /run/service/ via s6-rc symlinks,
+    # so the same s6-svstat probe works.
+    for static in ("main-hermes", "dashboard"):
+        if mgr.is_running(static):
+            check_ok(f"{static}: up")
+        else:
+            check_info(f"{static}: down (expected if not enabled via env)")
+
+    profiles = mgr.list_profile_gateways()
+    if not profiles:
+        check_info("No per-profile gateways registered yet — create one with `hermes profile create <name>`")
+        return
+
+    up_count = sum(1 for p in profiles if mgr.is_running(f"gateway-{p}"))
+    check_ok(
+        f"Per-profile gateways: {up_count}/{len(profiles)} supervised up"
+        + (f" ({', '.join(sorted(profiles))})" if len(profiles) <= 8 else "")
+    )
+
+
+def check_certificates() -> None:
+    """Verify the certifi CA bundle is loadable.
+
+    Surfaces the SSLConfigurationError user-friendly path before they hit
+    a wall of tracebacks on the first outbound HTTPS call.
+    """
+    try:
+        from agent.ssl_guard import verify_ca_bundle_with_fallback
+        from agent.errors import SSLConfigurationError
+        verify_ca_bundle_with_fallback()
+        check_ok("SSL CA certificate bundle is valid")
+    except SSLConfigurationError as e:
+        check_fail("SSL CA certificate bundle is broken", str(e))
+    except Exception as e:
+        check_warn("SSL certificate check skipped", str(e))
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
-    """Warn when a systemd user gateway service will stop after logout."""
+    """Warn when a systemd user gateway service will stop after logout.
+
+    Skipped inside a container running under s6 — the linger concept
+    (user-systemd surviving SSH logout) doesn't apply there, and the
+    s6 supervision state is surfaced separately by
+    ``_check_s6_supervision``.
+    """
     try:
         from hermes_cli.gateway import (
             get_systemd_linger_status,
             get_systemd_unit_path,
             is_linux,
         )
+        from hermes_cli.service_manager import detect_service_manager
     except Exception as e:
         check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
         return
 
     if not is_linux():
+        return
+
+    # Inside a container under our s6 /init, _check_s6_supervision
+    # reports the live supervision state; the linger warning would be
+    # confusing here (no systemd, no logout, no "lingering" concept).
+    if detect_service_manager() == "s6":
         return
 
     unit_path = get_systemd_unit_path()
@@ -263,7 +387,6 @@ def _build_apikey_providers_list() -> list:
         ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
-        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
         # OpenCode Go has no shared /models endpoint; skip the health check.
@@ -279,7 +402,7 @@ def _build_apikey_providers_list() -> list:
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
-        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
+        "MiniMax (China)": "minimax-cn",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",
     }
@@ -332,6 +455,31 @@ def _build_apikey_providers_list() -> list:
     except Exception:
         pass
     return _static
+
+
+def managed_scope_check() -> None:
+    """Report the active managed scope (resolved dir + pinned key counts).
+
+    Silent when no managed scope is present. When the managed directory was
+    resolved from the HERMES_MANAGED_DIR override (rather than the system
+    default), that is surfaced too — a redirected scope is the documented
+    foot-gun (see docs/design/managed-scope.md §7) and an operator should see it.
+    """
+    try:
+        from hermes_cli import managed_scope
+        managed_dir = managed_scope.get_managed_dir()
+    except Exception:  # noqa: BLE001 — diagnostics must never crash
+        return
+    if managed_dir is None:
+        return
+    n_cfg = len(managed_scope.managed_config_keys())
+    n_env = len(managed_scope.load_managed_env())
+    check_ok(
+        f"Managed scope active: {n_cfg} config key(s), {n_env} env key(s) "
+        f"pinned by {managed_dir}"
+    )
+    if os.environ.get("HERMES_MANAGED_DIR", "").strip():
+        check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
 def run_doctor(args):
@@ -428,6 +576,30 @@ def run_doctor(args):
     except Exception as e:
         # Never let a bug in the advisory check block the rest of doctor.
         check_warn(f"Security advisory check failed: {e}")
+
+    _section("MCP Server Security")
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_security import validate_mcp_server_entry
+
+        servers = load_config().get("mcp_servers") or {}
+        suspicious = 0
+        if isinstance(servers, dict):
+            for name, entry in sorted(servers.items()):
+                if not isinstance(entry, dict):
+                    continue
+                issues_found = validate_mcp_server_entry(name, entry)
+                if not issues_found:
+                    continue
+                suspicious += 1
+                check_warn(f"MCP server '{name}' has suspicious stdio command", "; ".join(issues_found))
+                manual_issues.append(
+                    f"Review/remove mcp_servers.{name} in config.yaml; rotate any credentials that may have been exposed."
+                )
+        if suspicious == 0:
+            check_ok("No suspicious MCP stdio commands")
+    except Exception as e:
+        check_warn(f"MCP security check failed: {e}")
     
     _section("Python Environment")
     py_version = sys.version_info
@@ -452,7 +624,14 @@ def run_doctor(args):
         check_ok("Virtual environment active")
     else:
         check_warn("Not in virtual environment", "(recommended)")
-    
+
+    # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
+    # (a git conflict resolution can silently revert one but not the other).
+    _check_version_consistency(issues)
+
+    _section("SSL / CA Certificates")
+    check_certificates()
+
     _section("Required Packages")
     required_packages = [
         ("openai", "OpenAI SDK"),
@@ -483,6 +662,8 @@ def run_doctor(args):
             check_warn(name, "(optional, not installed)")
     
     _section("Configuration Files")
+    # Managed scope (administrator-pinned config/env), when present.
+    managed_scope_check()
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
@@ -508,6 +689,13 @@ def run_doctor(args):
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
                 env_path.touch()
+                # .env holds API keys — restrict to owner-only access from
+                # creation. touch() obeys umask which is commonly 0o022,
+                # leaving the file world-readable; tighten explicitly.
+                try:
+                    os.chmod(str(env_path), 0o600)
+                except OSError:
+                    pass
                 check_ok(f"Created empty {_DHH}/.env")
                 check_info("Run 'hermes setup' to configure API keys")
                 fixed_count += 1
@@ -616,24 +804,32 @@ def run_doctor(args):
                         issues,
                     )
 
-            # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
+            # Warn if model is set to a provider-prefixed name on a provider that doesn't use them.
+            # Vendor/model slugs are valid on aggregator-style providers and on any custom
+            # provider — bare "custom" or a named "custom:<name>" that fronts an OpenAI-compatible
+            # aggregator (e.g. custom:hpc-ai serving deepseek/deepseek-v4-flash) requires the prefix.
             provider_for_policy = runtime_provider or catalog_provider
+            provider_policy_id = str(provider_for_policy or "").strip().lower()
             providers_accepting_vendor_slugs = {
                 "openrouter",
-                "custom",
                 "auto",
-                "ai-gateway",
                 "kilocode",
                 "opencode-zen",
                 "huggingface",
                 "lmstudio",
                 "nous",
+                "nvidia",
             }
+            provider_accepts_vendor_slug = (
+                provider_policy_id in providers_accepting_vendor_slugs
+                or provider_policy_id == "custom"
+                or provider_policy_id.startswith("custom:")
+            )
             if (
                 default_model
                 and "/" in default_model
-                and provider_for_policy
-                and provider_for_policy not in providers_accepting_vendor_slugs
+                and provider_policy_id
+                and not provider_accepts_vendor_slug
             ):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
@@ -744,7 +940,18 @@ def run_doctor(args):
                     "(should be under 'model:' section)"
                 )
                 if should_fix:
-                    model_section = raw_config.setdefault("model", {})
+                    # Coerce scalar/None ``model:`` into a dict before mutation —
+                    # ``setdefault("model", {})`` would return an existing scalar
+                    # and then ``model_section[k] = ...`` would raise TypeError.
+                    raw_model = raw_config.get("model")
+                    if isinstance(raw_model, dict):
+                        model_section = raw_model
+                    elif isinstance(raw_model, str) and raw_model.strip():
+                        model_section = {"default": raw_model.strip()}
+                        raw_config["model"] = model_section
+                    else:
+                        model_section = {}
+                        raw_config["model"] = model_section
                     for k in stale_root_keys:
                         if not model_section.get(k):
                             model_section[k] = raw_config.pop(k)
@@ -756,6 +963,63 @@ def run_doctor(args):
                     fixed_count += 1
                 else:
                     issues.append("Stale root-level provider/base_url in config.yaml — run 'hermes doctor --fix'")
+        except Exception:
+            pass
+
+        # Detect stale HERMES_MAX_ITERATIONS ghost in .env shadowing
+        # agent.max_turns in config.yaml (issue #17534). The setup wizard
+        # used to dual-write the iteration budget to both stores; users who
+        # later edit only config.yaml are left with a .env ghost. The gateway
+        # bridge normally derives HERMES_MAX_ITERATIONS from agent.max_turns
+        # at startup, but if that bridge bails (any earlier config-parse
+        # error), the stale .env value silently wins and the agent runs at the
+        # wrong budget — e.g. config says 400 but the activity line reads N/90.
+        # Read the .env FILE directly (load_env), not get_env_value/os.environ,
+        # which the startup bridge may already have overridden.
+        try:
+            import yaml
+            from hermes_cli.config import load_env, remove_env_value
+            with open(config_path, encoding="utf-8") as f:
+                raw_config = yaml.safe_load(f) or {}
+            agent_cfg = raw_config.get("agent")
+            cfg_max_turns = (
+                agent_cfg.get("max_turns")
+                if isinstance(agent_cfg, dict)
+                else None
+            )
+            # Legacy root-level key counts too.
+            if cfg_max_turns is None:
+                cfg_max_turns = raw_config.get("max_turns")
+            env_ghost = load_env().get("HERMES_MAX_ITERATIONS")
+            drift = (
+                cfg_max_turns is not None
+                and env_ghost is not None
+                and str(cfg_max_turns).strip() != str(env_ghost).strip()
+            )
+            if drift:
+                check_warn(
+                    f"HERMES_MAX_ITERATIONS={env_ghost} in .env shadows "
+                    f"agent.max_turns={cfg_max_turns} in config.yaml",
+                    "(stale ghost from an earlier `hermes setup` run)",
+                )
+                if should_fix:
+                    if remove_env_value("HERMES_MAX_ITERATIONS"):
+                        check_ok(
+                            "Removed stale HERMES_MAX_ITERATIONS from .env "
+                            f"(config.yaml agent.max_turns={cfg_max_turns} is now authoritative)"
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn("Could not remove HERMES_MAX_ITERATIONS from .env")
+                        manual_issues.append(
+                            "Manually delete the HERMES_MAX_ITERATIONS line from "
+                            f"{_DHH}/.env — config.yaml agent.max_turns is authoritative."
+                        )
+                else:
+                    issues.append(
+                        "Stale HERMES_MAX_ITERATIONS in .env shadows config.yaml — "
+                        "run 'hermes doctor --fix'"
+                    )
         except Exception:
             pass
 
@@ -777,12 +1041,37 @@ def run_doctor(args):
         except Exception:
             pass
 
+    _section("xAI Model Retirement (May 15, 2026)")
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.xai_retirement import (
+            MIGRATION_GUIDE_URL,
+            find_retired_xai_refs,
+            format_issue,
+        )
+
+        _xai_cfg = load_config()
+        retired_refs = find_retired_xai_refs(_xai_cfg)
+        if not retired_refs:
+            check_ok("No retired xAI models in config")
+        else:
+            for ref in retired_refs:
+                check_warn(format_issue(ref))
+            check_info(f"Migration guide: {MIGRATION_GUIDE_URL}")
+            manual_issues.append(
+                f"Update {len(retired_refs)} retired xAI model reference(s) "
+                f"in config.yaml — see {MIGRATION_GUIDE_URL}"
+            )
+    except Exception as _xai_check_err:
+        check_warn("xAI retirement check skipped", f"({_xai_check_err})")
+
     _section("Auth Providers")
+
     try:
         from hermes_cli.auth import (
             get_nous_auth_status,
             get_codex_auth_status,
-            get_gemini_oauth_auth_status,
             get_minimax_oauth_auth_status,
         )
 
@@ -809,20 +1098,6 @@ def run_doctor(args):
                     "(optional — only required to import tokens "
                     "from an existing Codex CLI login)"
                 )
-
-        gemini_status = get_gemini_oauth_auth_status()
-        if gemini_status.get("logged_in"):
-            email = gemini_status.get("email") or ""
-            project = gemini_status.get("project_id") or ""
-            pieces = []
-            if email:
-                pieces.append(email)
-            if project:
-                pieces.append(f"project={project}")
-            suffix = f" ({', '.join(pieces)})" if pieces else ""
-            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
-        else:
-            check_warn("Google Gemini OAuth", "(not logged in)")
 
         minimax_status = get_minimax_oauth_auth_status()
         if minimax_status.get("logged_in"):
@@ -927,8 +1202,94 @@ def run_doctor(args):
             count = cursor.fetchone()[0]
             conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+
+            # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
+            # even when the FTS index is corrupt and every message write fails
+            # through the triggers. `_db_opens_cleanly` now drives a rolled-back
+            # write so this otherwise-silent corruption class is surfaced (and
+            # repaired in place with --fix).
+            from hermes_state import _db_opens_cleanly, repair_state_db_schema
+
+            _write_reason = _db_opens_cleanly(state_db_path)
+            if _write_reason is not None:
+                check_warn(
+                    f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",
+                    f"({_write_reason})",
+                )
+                if should_fix:
+                    report = repair_state_db_schema(state_db_path)
+                    if report.get("repaired"):
+                        backup_name = (
+                            Path(report["backup_path"]).name
+                            if report.get("backup_path") else "n/a"
+                        )
+                        check_ok(
+                            "Repaired state.db FTS write health",
+                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn(
+                            "state.db FTS write-health repair did not recover automatically",
+                            f"({report.get('error')}; backup: {report.get('backup_path')})",
+                        )
+                        issues.append(
+                            "state.db FTS write corruption and auto-repair failed — "
+                            "restore from the backup copy beside state.db"
+                        )
+                else:
+                    issues.append(
+                        "state.db FTS write corruption — run 'hermes doctor --fix' "
+                        "(or 'hermes sessions repair') to rebuild the FTS index"
+                    )
         except Exception as e:
-            check_warn(f"{_DHH}/state.db exists but has issues: {e}")
+            from hermes_state import is_malformed_db_error, repair_state_db_schema
+
+            if is_malformed_db_error(e):
+                # sqlite_master itself is malformed (e.g. duplicate
+                # messages_fts) — every statement fails before it runs, so
+                # this is NOT a plain FTS-index rebuild. Repair sqlite_master
+                # in place (backup first; sessions/messages preserved).
+                check_warn(
+                    f"{_DHH}/state.db schema is malformed (sessions hidden until repaired)",
+                    f"({e})",
+                )
+                if should_fix:
+                    report = repair_state_db_schema(state_db_path)
+                    if report.get("repaired"):
+                        try:
+                            conn = sqlite3.connect(str(state_db_path))
+                            count = conn.execute(
+                                "SELECT COUNT(*) FROM sessions"
+                            ).fetchone()[0]
+                            conn.close()
+                        except Exception:
+                            count = "?"
+                        backup_name = (
+                            Path(report["backup_path"]).name
+                            if report.get("backup_path") else "n/a"
+                        )
+                        check_ok(
+                            f"Repaired state.db schema ({count} sessions recovered)",
+                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn(
+                            "state.db schema repair did not recover automatically",
+                            f"({report.get('error')}; backup: {report.get('backup_path')})",
+                        )
+                        issues.append(
+                            "state.db schema malformed and auto-repair failed — "
+                            "restore from the backup copy beside state.db"
+                        )
+                else:
+                    issues.append(
+                        "state.db schema malformed — run 'hermes doctor --fix' "
+                        "(or 'hermes sessions repair') to recover hidden sessions"
+                    )
+            else:
+                check_warn(f"{_DHH}/state.db exists but has issues: {e}")
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
@@ -958,6 +1319,7 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
+    _check_s6_supervision(issues)
 
     if sys.platform != "win32":
         _section("Command Installation")
@@ -1050,6 +1412,26 @@ def run_doctor(args):
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
+    try:
+        from hermes_constants import is_container as _is_container
+        running_in_container = _is_container()
+    except Exception:
+        running_in_container = False
+
+    if running_in_container:
+        # Inside our container the Docker terminal backend is not
+        # configured by default (Docker-in-Docker isn't set up); the
+        # local backend is the intended one. Skip the noisy "docker
+        # not found" warning. If the user has explicitly chosen
+        # TERMINAL_ENV=docker inside the container they likely mounted
+        # /var/run/docker.sock, so fall through to the normal check.
+        if terminal_env != "docker":
+            check_info(
+                "Running inside a container — using local terminal backend "
+                "(docker-in-docker is not configured by default)"
+            )
+            # Skip to next section; Docker isn't relevant here.
+            terminal_env = "local"
     if terminal_env == "docker":
         if _safe_which("docker"):
             # Check if docker daemon is running
@@ -1072,6 +1454,8 @@ def run_doctor(args):
         check_ok("docker", "(optional)")
     elif _is_termux():
         check_info("Docker backend is not available inside Termux (expected on Android)")
+    elif running_in_container:
+        pass  # already explained above
     else:
         check_warn("docker not found", "(optional)")
     
@@ -1134,80 +1518,27 @@ def run_doctor(args):
                 issues,
             )
 
-    # Vercel Sandbox (if using vercel_sandbox backend)
-    if terminal_env == "vercel_sandbox":
-        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
-        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
-        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
-            check_ok("Vercel runtime", f"({runtime})")
-        else:
-            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-            _fail_and_issue(
-                "Vercel runtime unsupported",
-                f"({runtime}; use {supported})",
-                f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}",
-                issues,
-            )
-
-        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in {"", "0", "51200"}:
-            check_ok("Vercel disk setting", "(uses platform default)")
-        else:
-            _fail_and_issue(
-                "Vercel custom disk unsupported",
-                "(reset terminal.container_disk to 51200)",
-                "Vercel Sandbox does not support custom container_disk; use the shared default 51200",
-                issues,
-            )
-
-        if importlib.util.find_spec("vercel") is not None:
-            check_ok("vercel SDK", "(installed)")
-        else:
-            _fail_and_issue(
-                "vercel SDK not installed",
-                "(pip install 'hermes-agent[vercel]')",
-                "Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'",
-                issues,
-            )
-
-        auth_status = describe_vercel_auth()
-        if auth_status.ok:
-            check_ok("Vercel auth", f"({auth_status.label})")
-        elif auth_status.label.startswith("partial"):
-            _fail_and_issue(
-                "Vercel auth incomplete",
-                f"({auth_status.label})",
-                "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together",
-                issues,
-            )
-        else:
-            _fail_and_issue(
-                "Vercel auth not configured",
-                f"({auth_status.label})",
-                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID",
-                issues,
-            )
-        for line in auth_status.detail_lines:
-            check_info(f"Vercel auth {line}")
-
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
-        if persistent:
-            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
-        else:
-            check_info("Vercel persistence: ephemeral filesystem")
-
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         agent_browser_ok = False
+        _which_ab = shutil.which("agent-browser")
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
             agent_browser_ok = True
-        elif shutil.which("agent-browser"):
+        elif _which_ab and agent_browser_runnable(_which_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
+        elif _which_ab:
+            # Found on PATH but won't run — almost always a dangling global
+            # symlink left behind by agent-browser's npm postinstall after a
+            # `hermes update` wiped node_modules (issue #48521).
+            check_warn(
+                "agent-browser found but not runnable",
+                f"(broken symlink at {_which_ab}? run: npm install)",
+            )
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")
             check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
@@ -1278,18 +1609,38 @@ def run_doctor(args):
     # npm audit for all Node.js packages
     _npm_bin = _safe_which("npm")
     if _npm_bin:
-        npm_dirs = [
-            (PROJECT_ROOT, "Browser tools (agent-browser)"),
-            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
+        # Each entry: (cwd, label, extra_audit_args)
+        # PROJECT_ROOT is audited with --workspaces=false so that the apps/*
+        # glob (which pulls in Electron, node-pty, etc.) is never resolved
+        # for a routine security check. The web and ui-tui workspaces are
+        # audited separately via --workspace flags. See #38772.
+        # The WhatsApp bridge may live under a writable HERMES_HOME mirror
+        # instead of the (possibly read-only) install tree in Docker — resolve
+        # it through the shared helper so we audit the dir that actually holds
+        # node_modules. See #49561.
+        try:
+            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+            _whatsapp_bridge_dir = resolve_whatsapp_bridge_dir()
+        except Exception:
+            _whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
+        npm_audit_targets = [
+            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+            (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
+            (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
+            (_whatsapp_bridge_dir, "WhatsApp bridge", []),
         ]
-        for npm_dir, label in npm_dirs:
-            if not (npm_dir / "node_modules").exists():
+        for npm_dir, label, audit_extra in npm_audit_targets:
+            # For workspace-scoped audits run from PROJECT_ROOT the
+            # node_modules check must use the workspace root; standalone dirs
+            # (whatsapp-bridge) check their own node_modules.
+            check_dir = PROJECT_ROOT if audit_extra else npm_dir
+            if not (check_dir / "node_modules").exists():
                 continue
             try:
                 # Use resolved absolute path so Windows can execute
                 # npm.cmd (CreateProcessW can't run bare .cmd names).
                 audit_result = subprocess.run(
-                    [_npm_bin, "audit", "--json"],
+                    [_npm_bin, "audit", "--json", *audit_extra],
                     cwd=str(npm_dir),
                     capture_output=True, text=True, timeout=30,
                 )
@@ -1300,13 +1651,47 @@ def run_doctor(args):
                 high = vuln_count.get("high", 0)
                 moderate = vuln_count.get("moderate", 0)
                 total = critical + high + moderate
+                # Determine a scoped fix command for the remediation hint.
+                if audit_extra and audit_extra[0] == "--workspace":
+                    # Detection (`npm audit --workspace <name>`) is read-only and
+                    # safe, but `npm audit fix --workspace <name>` crashes on
+                    # current npm with "Cannot read properties of null (reading
+                    # 'edgesOut')" — an arborist bug with workspace-filtered
+                    # audit fix. The root-level `npm audit fix` can crash on the
+                    # same tree with "isDescendantOf", so do not hand the user a
+                    # manual fix command for these build-tool advisories.
+                    fix_cmd = None
+                elif audit_extra == ["--workspaces=false"]:
+                    fix_cmd = f"cd {npm_dir} && npm audit fix --workspaces=false"
+                else:
+                    fix_cmd = f"cd {npm_dir} && npm audit fix"
                 if total == 0:
                     check_ok(f"{label} deps", "(no known vulnerabilities)")
                 elif critical > 0 or high > 0:
+                    if fix_cmd:
+                        vuln_detail = (
+                            f"{critical} critical, {high} high, {moderate} moderate — run: {fix_cmd}"
+                        )
+                    else:
+                        vuln_detail = (
+                            f"{critical} critical, {high} high, {moderate} moderate — "
+                            "build-tool advisory; clears via lockfile bump"
+                        )
                     check_warn(
                         f"{label} deps",
-                        f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
+                        f"({vuln_detail})"
                     )
+                    if audit_extra and audit_extra[0] == "--workspace":
+                        # The web/ui-tui workspace advisories are in build-time
+                        # tooling (esbuild/vite, etc.), not runtime code that ships
+                        # to users. Manual npm remediation may error with a known
+                        # arborist crash (edgesOut / isDescendantOf) on this monorepo
+                        # tree — in that case it is an npm bug, not a Hermes one.
+                        check_info(
+                            "  ^ build-time tooling (not runtime); if manual npm remediation "
+                            "errors with an arborist crash it's a known npm bug — clears "
+                            "via a lockfile bump"
+                        )
                     issues.append(
                         f"{label} has {total} npm "
                         f"{'vulnerability' if total == 1 else 'vulnerabilities'}"
@@ -1832,6 +2217,11 @@ def run_doctor(args):
         if _mem_cfg_path.exists():
             with open(_mem_cfg_path, encoding="utf-8") as _f:
                 _raw_cfg = _yaml.safe_load(_f) or {}
+            try:
+                from hermes_cli import managed_scope
+                _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
+            except Exception:
+                pass
             _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:
         pass
@@ -1845,7 +2235,15 @@ def run_doctor(args):
             _honcho_cfg_path = resolve_config_path()
 
             if not _honcho_cfg_path.exists():
-                check_warn("Honcho config not found", "run: hermes memory setup")
+                # Config file missing — but env var fallback may have resolved it.
+                # Only warn if the config didn't actually resolve from env vars.
+                if hcfg.api_key or hcfg.base_url:
+                    check_ok(
+                        "Honcho configured via environment variables",
+                        f"config file {_honcho_cfg_path} not found, using HONCHO_API_KEY env var",
+                    )
+                else:
+                    check_warn("Honcho config not found", "run: hermes memory setup")
             elif not hcfg.enabled:
                 check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
             elif not (hcfg.api_key or hcfg.base_url):

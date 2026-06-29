@@ -9,12 +9,9 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
-import hashlib
-import json
 import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 def _make_runner():
@@ -278,6 +275,111 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config({})
 
         assert out["tools.registry_generation"] == 12345
+
+
+    def test_skips_honcho_config_read_when_provider_is_not_honcho(self, monkeypatch):
+        """Non-Honcho gateways must not read/parse honcho.json on every message."""
+        from gateway.run import GatewayRunner
+
+        called = False
+
+        def _boom():
+            nonlocal called
+            called = True
+            raise AssertionError("should not read Honcho config")
+
+        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _boom)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert called is False
+        assert out["honcho.peer_name"] is None
+        assert out["honcho.user_peer_aliases"] is None
+
+    def test_reads_honcho_config_only_when_provider_is_honcho(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        calls = []
+
+        def _fake():
+            calls.append(True)
+            return {
+                "honcho.peer_name": "eri",
+                "honcho.ai_peer": "hermes",
+                "honcho.pin_peer_name": True,
+                "honcho.runtime_peer_prefix": "tg_",
+                "honcho.user_peer_aliases": [("123", "eri")],
+            }
+
+        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _fake)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        assert calls == [True]
+        assert out["honcho.peer_name"] == "eri"
+        assert out["honcho.user_peer_aliases"] == [("123", "eri")]
+
+    def test_memory_provider_change_busts_signature(self, monkeypatch):
+        """Switching memory.provider must itself change the cache-busting
+        signature, so the agent is rebuilt when a user swaps providers
+        mid-gateway (independent of the honcho.json identity keys)."""
+        from gateway.run import GatewayRunner
+
+        # Neutralize honcho.json reads so the only varying input is the
+        # provider value itself.
+        monkeypatch.setattr(
+            GatewayRunner,
+            "_extract_honcho_cache_busting_config",
+            classmethod(lambda cls: cls._empty_honcho_cache_busting_config()),
+        )
+
+        sig_honcho = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+        sig_mem0 = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert sig_honcho["memory.provider"] == "honcho"
+        assert sig_mem0["memory.provider"] == "mem0"
+        assert sig_honcho != sig_mem0
+
+    def test_honcho_cache_busting_config_memoized_by_mtime(self, monkeypatch, tmp_path):
+        """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text("{}")
+        parse_calls = []
+
+        class FakeConfig:
+            peer_name = "eri"
+            ai_peer = "hermes"
+            pin_peer_name = False
+            runtime_peer_prefix = "tg_"
+            user_peer_aliases = {"123": "eri"}
+
+            @classmethod
+            def from_global_config(cls, config_path=None):
+                parse_calls.append(config_path)
+                return cls()
+
+        fake_client = SimpleNamespace(
+            HonchoClientConfig=FakeConfig,
+            resolve_config_path=lambda: config_path,
+        )
+        monkeypatch.setitem(__import__("sys").modules, "plugins.memory.honcho.client", fake_client)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        first = GatewayRunner._extract_honcho_cache_busting_config()
+        second = GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert first == second
+        assert first["honcho.user_peer_aliases"] == [("123", "eri")]
+        assert parse_calls == [config_path]
+
+        config_path.write_text("{\n  \"changed\": true\n}")
+        third = GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert third == first
+        assert parse_calls == [config_path, config_path]
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the
@@ -1308,6 +1410,38 @@ class TestCachedAgentInactivityReset:
 
         assert agent._last_activity_ts == old_ts
 
+    def test_fresh_turn_resets_flush_cursor(self):
+        """interrupt_depth=0: _last_flushed_db_idx resets so new-turn
+        messages are fully persisted to the session DB (#44327)."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42  # stale from previous turn
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent._last_flushed_db_idx == 0, (
+            "_last_flushed_db_idx must be reset on a fresh turn so that "
+            "_flush_messages_to_session_db starts from index 0"
+        )
+
+    def test_interrupt_turn_preserves_flush_cursor(self):
+        """interrupt_depth=1: _last_flushed_db_idx preserved so an
+        in-progress flush is not disrupted by interrupt re-entry."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42
+
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
+
+        assert agent._last_flushed_db_idx == 42, (
+            "_last_flushed_db_idx must not be reset on interrupt-recursive "
+            "turns — the flush cursor tracks in-progress writes"
+        )
+
     def test_api_call_count_reset_regardless_of_depth(self):
         """_api_call_count is always reset to 0 for the new turn, at any depth."""
         from gateway.run import GatewayRunner
@@ -1344,3 +1478,345 @@ class TestCachedAgentInactivityReset:
             f"Watchdog would see {idle_secs:.0f}s idle, expected ~{STUCK_FOR}s. "
             "Inactivity timeout could not fire for a stuck interrupted turn."
         )
+
+
+class TestAgentConfigSignatureUserId:
+    """Shared-thread cache must not reuse an agent across users.
+
+    HonchoSessionManager freezes the resolved runtime user identity at
+    first-message init.  When the gateway session_key omits the participant
+    ID (``thread_sessions_per_user=False``), a cached AIAgent created by
+    user A would otherwise be reused for user B, attributing B's writes to
+    A's resolved peer.  Including ``user_id`` / ``user_id_alt`` in the
+    signature forces per-user agent builds in shared threads.
+
+    Tradeoff: cold prompt cache for each user's first turn in a shared
+    thread, in exchange for correct memory attribution.
+    """
+
+    def test_signature_changes_with_user_id(self):
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_a = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="7654321"
+        )
+        sig_b = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="491827364"
+        )
+        assert sig_a != sig_b
+
+    def test_signature_stable_with_same_user_id(self):
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_1 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="7654321"
+        )
+        sig_2 = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "", user_id="7654321"
+        )
+        assert sig_1 == sig_2
+
+    def test_signature_changes_with_user_id_alt(self):
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_a = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            user_id="7654321", user_id_alt="@igor_tg",
+        )
+        sig_b = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            user_id="7654321", user_id_alt="@erosika_tg",
+        )
+        assert sig_a != sig_b
+
+    def test_signature_omits_user_id_when_absent(self):
+        """Default-None user_id must not change signatures vs unset call.
+
+        Callers that pass no user_id kwarg must produce a signature
+        byte-identical to ``user_id=None`` so in-flight caches survive
+        the rollout of this fix.
+        """
+        from gateway.run import GatewayRunner
+        runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}
+        sig_implicit = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+        )
+        sig_explicit_none = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4", runtime, ["hermes-telegram"], "",
+            user_id=None, user_id_alt=None,
+        )
+        assert sig_implicit == sig_explicit_none
+
+
+class TestAgentCacheMessageCountRebaseline:
+    """The cross-process coherence guard (#45966) must NOT invalidate the
+    cache on this process's OWN writes.
+
+    The guard snapshots ``message_count`` at agent-build time (before the
+    turn writes its own rows) and never refreshes it on reuse.  Without a
+    post-turn re-baseline, the gateway's own turn grows the count and the
+    next turn sees a mismatch and rebuilds the agent — every turn, for every
+    conversation — silently destroying per-conversation prompt caching.
+
+    ``_refresh_agent_cache_message_count`` re-baselines the stored count to
+    the now-current value after each turn, so the guard fires ONLY when a
+    different process changed the transcript.  These tests pin both halves of
+    the invariant against the REAL SessionDB + the REAL guard condition.
+    """
+
+    def _runner_with_db(self, db):
+        runner = _make_runner()
+        runner._session_db = db
+        return runner
+
+    @staticmethod
+    def _guard_would_reuse(runner, session_key, session_id):
+        """Mirror the production cache-hit guard's reuse decision exactly.
+
+        Reuse iff the live on-disk count equals the snapshot stored next to
+        the cached agent (or either side is None / it's a legacy 2-tuple).
+        """
+        try:
+            row = runner._session_db.get_session(session_id)
+            live = row.get("message_count", 0) if row else None
+        except Exception:
+            live = None
+        with runner._agent_cache_lock:
+            cached = runner._agent_cache.get(session_key)
+        cached_mc = cached[2] if cached and len(cached) > 2 else None
+        invalidate = (
+            cached_mc is not None
+            and live is not None
+            and live != cached_mc
+        )
+        return not invalidate
+
+    def test_same_process_turns_preserve_cached_agent(self, tmp_path):
+        """The regression guard: consecutive same-process turns must REUSE
+        the cached agent (prompt cache preserved), not rebuild every turn.
+
+        Drives the real lifecycle: snapshot at build (before this turn's
+        writes), turn appends its own rows, then the post-turn re-baseline
+        runs — so the NEXT turn's guard sees no external change and reuses.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        # Turn 1: cache miss -> build. Snapshot is the count BEFORE this
+        # turn's own writes (production stores _current_msg_count here).
+        _row = db.get_session("s1")
+        build_count = _row.get("message_count", 0) if _row else 0
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (agent, "sig", build_count)
+
+        reuses = 0
+        for _turn in range(1, 6):
+            # This process's own turn flushes its user + assistant rows.
+            db.append_message("s1", role="user", content="u")
+            db.append_message("s1", role="assistant", content="a")
+            # Post-turn re-baseline (the fix).
+            runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+            # Next turn's guard decision.
+            if self._guard_would_reuse(runner, "telegram:s1", "s1"):
+                reuses += 1
+
+        # All 5 follow-on turns must reuse — WITHOUT the re-baseline this is 0.
+        assert reuses == 5
+        # The same agent instance is still cached (never rebuilt).
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is agent
+
+    def test_cross_process_write_still_invalidates(self, tmp_path):
+        """After the re-baseline, a DIFFERENT process appending to the same
+        session must still flip the guard to rebuild (the #45966 fix holds).
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        runner = self._runner_with_db(db)
+        agent = object()
+
+        with runner._agent_cache_lock:
+            _row = db.get_session("s1")
+            runner._agent_cache["telegram:s1"] = (
+                agent, "sig", (_row.get("message_count", 0) if _row else 0),
+            )
+
+        # Our own turn + re-baseline -> reuse next turn.
+        db.append_message("s1", role="user", content="u")
+        db.append_message("s1", role="assistant", content="a")
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
+
+        # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
+        # to the SAME session in the shared DB — we have NOT re-baselined for it.
+        db.append_message("s1", role="user", content="external from dashboard")
+
+        # Guard must now reject reuse so the agent rebuilds from fresh disk.
+        assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
+
+    def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
+        """Re-baseline must never crash and must leave legacy 2-tuples and
+        pending-sentinel entries untouched."""
+        from hermes_state import SessionDB
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        runner = self._runner_with_db(db)
+
+        # No session_db -> no-op, no crash.
+        runner._session_db = None
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        runner._session_db = db
+
+        # Falsy session_id -> no-op.
+        runner._refresh_agent_cache_message_count("telegram:s1", "")
+        runner._refresh_agent_cache_message_count("telegram:s1", None)
+
+        # Legacy 2-tuple is left untouched (it opts out of the guard).
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (object(), "sig")
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert len(runner._agent_cache["telegram:s1"]) == 2
+
+        # Pending sentinel entry is left untouched.
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (_AGENT_PENDING_SENTINEL, "sig", 0)
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][0] is _AGENT_PENDING_SENTINEL
+            assert runner._agent_cache["telegram:s1"][2] == 0
+
+        # A probe that raises is swallowed (no crash, snapshot unchanged).
+        class _BoomDB:
+            def get_session(self, _sid):
+                raise RuntimeError("db locked")
+
+        runner._session_db = _BoomDB()  # type: ignore[assignment]
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (object(), "sig", 5)
+        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["telegram:s1"][2] == 5
+
+
+class TestCrossProcessInvalidationDefersCleanup:
+    """#52197: cross-process cache invalidation must NOT run agent cleanup
+    while holding ``_agent_cache_lock``.
+
+    The #45966 guard popped the stale cached agent and then called the
+    blocking ``_cleanup_agent_resources`` (memory-provider shutdown, socket
+    teardown) *inside* the ``with _agent_cache_lock:`` block, on the gateway
+    event-loop thread.  While that ran, ``_sweep_idle_cached_agents`` (driven
+    by the session-expiry watcher) blocked acquiring the same lock and the
+    asyncio loop stalled, tripping Discord heartbeat-blocked warnings.
+
+    The fix mirrors the cap-enforcer / idle-sweep paths: pop under the lock,
+    release it, then schedule the SOFT release (which preserves the session's
+    terminal sandbox / browser / bg processes for the immediately-rebuilt
+    agent) on a daemon thread.
+
+    These tests replicate the exact eviction sequence the production guard now
+    performs and pin the invariant: the lock is free while cleanup runs, and
+    the hard-teardown path is never used here.
+    """
+
+    def _runner(self):
+        from collections import OrderedDict
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._agent_cache = OrderedDict()
+        runner._agent_cache_lock = threading.Lock()
+        return runner
+
+    @staticmethod
+    def _evict_like_production(runner, session_key):
+        """Run the post-#52197 cross-process eviction sequence verbatim:
+        pop the stale entry under the lock, then schedule the soft release
+        on a daemon thread AFTER the lock is released."""
+        _xproc_evicted_agent = None
+        with runner._agent_cache_lock:
+            evicted = runner._agent_cache.pop(session_key, None)
+            _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+            if _ev_agent is not None:
+                _xproc_evicted_agent = _ev_agent
+        if _xproc_evicted_agent is not None:
+            threading.Thread(
+                target=runner._release_evicted_agent_soft,
+                args=(_xproc_evicted_agent,),
+                daemon=True,
+                name="agent-xproc-evict-test",
+            ).start()
+
+    def test_cleanup_runs_with_lock_released(self):
+        """The cache lock must be acquirable WHILE the evicted agent's
+        cleanup is running — proving cleanup is off the locked path."""
+        runner = self._runner()
+
+        cleanup_started = threading.Event()
+        release_lock = threading.Event()
+
+        def _soft(agent):
+            cleanup_started.set()
+            # Block here as if memory-provider shutdown / socket teardown is
+            # slow.  If cleanup were still holding _agent_cache_lock, the
+            # assertion below could never acquire it.
+            release_lock.wait(timeout=2.0)
+
+        runner._release_evicted_agent_soft = _soft
+        runner._cleanup_agent_resources = MagicMock()
+
+        old_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (old_agent, "sig", 3)
+
+        self._evict_like_production(runner, "telegram:s1")
+
+        # Wait until the (blocking) cleanup is mid-flight.
+        assert cleanup_started.wait(timeout=2.0)
+
+        # The lock MUST be free right now — this is the heart of #52197.
+        # A 0.5s acquire timeout would fire if cleanup held the lock.
+        acquired = runner._agent_cache_lock.acquire(timeout=0.5)
+        assert acquired, "cache lock blocked during cross-process cleanup (#52197)"
+        runner._agent_cache_lock.release()
+
+        # Let the cleanup thread finish.
+        release_lock.set()
+
+        # Stale entry was popped, hard-teardown path never used.
+        assert "telegram:s1" not in runner._agent_cache
+        runner._cleanup_agent_resources.assert_not_called()
+
+    def test_soft_release_scheduled_for_evicted_agent(self):
+        """The evicted agent is handed to the soft-release path, not the
+        hard ``_cleanup_agent_resources`` teardown."""
+        runner = self._runner()
+
+        release_calls: list = []
+        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
+        runner._cleanup_agent_resources = MagicMock()
+
+        old_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (old_agent, "sig", 3)
+
+        self._evict_like_production(runner, "telegram:s1")
+
+        import time as _t
+        deadline = _t.time() + 2.0
+        while _t.time() < deadline and not release_calls:
+            _t.sleep(0.02)
+
+        assert release_calls == [old_agent]
+        runner._cleanup_agent_resources.assert_not_called()
+

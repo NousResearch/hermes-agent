@@ -35,7 +35,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import (  # noqa: E402
+from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
     _strip_mdv2,
@@ -176,6 +176,74 @@ class TestFormatMessageCodeBlocks:
         result = adapter.format_message(text)
         # \\ in input → \\\\ in output (each \ escaped once)
         assert r"`\\\\server\\share`" in result
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_keeps_chunk_indicators_outside_fenced_code_lines(adapter):
+    """Chunk markers must not corrupt Telegram MarkdownV2 code fences.
+
+    Telegram treats a closing fenced-code line with trailing text, e.g.
+    ````` (1/2)``, as malformed MarkdownV2. The bot then falls back to plain
+    text, which is the user-visible duplicate/malformed preview symptom.
+    """
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(
+        side_effect=[SimpleNamespace(message_id=i) for i in range(1, 20)]
+    )
+    adapter._bot.send_chat_action = AsyncMock()
+    object.__setattr__(adapter, "MAX_MESSAGE_LENGTH", 120)
+    adapter._rich_messages_enabled = False
+
+    content = (
+        "Intro before code block\n"
+        "```text\n"
+        + ("~/.hermes/skills/github/hermes-contribution-workflow/SKILL.md\n" * 8)
+        + "```\n"
+        "After."
+    )
+
+    result = await adapter.send("12345", content, metadata={"expect_edits": True})
+
+    assert result.success is True
+    sent_texts = [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
+    assert len(sent_texts) > 1
+    for text in sent_texts:
+        for line in text.splitlines():
+            assert not re.match(r"^```\s+\\?\(\d+/\d+\\?\)$", line), text
+            assert not re.match(r"^```\s+\(\d+/\d+\)$", line), text
+
+
+@pytest.mark.asyncio
+async def test_final_send_does_not_retrigger_typing(adapter):
+    """The final reply (metadata['notify']) must NOT re-arm Telegram's typing
+    timer. The gateway has already torn down the refresh loop by then, so a
+    re-trigger here would leave the '...typing' bubble lingering after the
+    answer (Telegram has no stop-typing API). See #48678."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "All done.", metadata={"notify": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_intermediate_send_still_retriggers_typing(adapter):
+    """Intermediate/progress sends (no notify marker) keep re-triggering typing
+    so the '...typing' bubble survives across progress messages while the agent
+    is still working."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_messages_enabled = False
+
+    result = await adapter.send("12345", "Checking:", metadata={"expect_edits": True})
+
+    assert result.success is True
+    adapter._bot.send_chat_action.assert_awaited()
 
 
 # =========================================================================
@@ -574,10 +642,15 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Alice**" in out
-        assert "• Player: Alice" in out
+        # The heading IS the Player cell — don't repeat it as a bullet.
+        assert "• Player: Alice" not in out
         assert "• Score: 150" in out
         assert "**Bob**" in out
         assert "• Score: 120" in out
+        # Heading and its bullet sit on consecutive lines (no blank between).
+        assert "**Alice**\n• Score: 150" in out
+        # Separate row groups ARE separated by a blank line.
+        assert "• Score: 150\n\n**Bob**" in out
         # Surrounding prose is preserved
         assert out.startswith("Scores:")
         assert out.endswith("End.")
@@ -587,7 +660,8 @@ class TestWrapMarkdownTables:
         text = "head1 | head2\n--- | ---\na | b\nc | d"
         out = _wrap_markdown_tables(text)
         assert out.startswith("**a**")
-        assert "• head1: a" in out
+        # No duplicate first bullet — heading 'a' already shows the head1 value.
+        assert "• head1: a" not in out
         assert "• head2: b" in out
         assert "**c**" in out
 
@@ -600,8 +674,12 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Ada**" in out
+        # 'Ada' is the heading (first cell); skip the redundant Name bullet.
+        assert "• Name: Ada" not in out
         assert "• Age: 30" in out
         assert "• City: NYC" in out
+        # All three lines pack tightly with single newlines.
+        assert "**Ada**\n• Age: 30\n• City: NYC" in out
 
     def test_two_consecutive_tables_rewritten_separately(self):
         text = (
@@ -616,8 +694,11 @@ class TestWrapMarkdownTables:
         out = _wrap_markdown_tables(text)
         assert out.count("**1**") == 1
         assert out.count("**9**") == 1
-        assert "• A: 1" in out
-        assert "• X: 9" in out
+        # Headings duplicate first cells (no row-label col) — skip those bullets.
+        assert "• A: 1" not in out
+        assert "• X: 9" not in out
+        assert "• B: 2" in out
+        assert "• Y: 8" in out
 
     def test_plain_text_with_pipes_not_wrapped(self):
         """A bare pipe in prose must NOT trigger wrapping."""
@@ -655,6 +736,56 @@ class TestWrapMarkdownTables:
         text = "| a |\n| - |\n| b |"
         assert _wrap_markdown_tables(text) == text
 
+    def test_row_group_uses_single_newlines_within_group(self):
+        """Regression: each bullet within a row-group must be separated by
+        a single newline, not a blank line.  Telegram renders blank lines
+        as paragraph breaks, which previously left every bullet floating in
+        its own paragraph and made multi-column tables unreadable.
+
+        Mirrors the exact pattern that produced the screenshot bug report:
+        a five-column comparison table with no row-label column.
+        """
+        text = (
+            "| Play | Capital | Build | $/day | Risk |\n"
+            "|---|---|---|---|---|\n"
+            "| A. Copy Hands (HK/SZ) | $5-10k | 2 wk | $30-70 | Low |\n"
+            "| B. NO-sweeper        | $50-100k | 3 wk | $300-1000 | Med |"
+        )
+        out = _wrap_markdown_tables(text)
+
+        # No bullet sits inside its own paragraph: the substring "\n\n• "
+        # would mean a blank line precedes a bullet, which is the bug.
+        assert "\n\n• " not in out
+
+        # The two row-groups DO have a paragraph break between them.
+        groups = [g for g in out.split("\n\n") if g.strip()]
+        assert len(groups) == 2
+        # Heading + 4 bullets per group means each group is exactly 5 lines.
+        for group in groups:
+            line_count = group.count("\n") + 1
+            assert line_count == 5, (
+                "Each row-group should be 5 lines (heading + 4 bullets), "
+                f"got {line_count}:\n{group}"
+            )
+
+    def test_row_label_column_preserves_first_bullet(self):
+        """When the table has a row-label column (data rows have one more
+        cell than the header row), the heading comes from the label cell
+        and is distinct from any header — so every header→value bullet is
+        kept, including the first one."""
+        text = (
+            "|        | Score | Rank |\n"
+            "|--------|-------|------|\n"
+            "| Alice  | 150   | 1    |\n"
+            "| Bob    | 120   | 2    |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**Alice**" in out
+        # No header to duplicate against — both bullets stay.
+        assert "• Score: 150" in out
+        assert "• Rank: 1" in out
+        assert "**Alice**\n• Score: 150\n• Rank: 1" in out
+
 
 class TestFormatMessageTables:
     """End-to-end: pipe tables become readable Telegram-native text instead
@@ -669,7 +800,8 @@ class TestFormatMessageTables:
         )
         out = adapter.format_message(text)
         assert "*A*" in out
-        assert "• Col1: A" in out
+        # Heading 'A' duplicates the Col1 value — skip that bullet.
+        assert "• Col1: A" not in out
         assert "• Col2: B" in out
         assert "```" not in out
         assert "\\|" not in out
@@ -688,7 +820,9 @@ class TestFormatMessageTables:
         # Exclamation outside fence is escaped
         assert "\\!" in out
         assert "*1*" in out
-        assert "• A: 1" in out
+        # Heading '1' is also the A-column value — skip the redundant bullet.
+        assert "• A: 1" not in out
+        assert "• B: 2" in out
 
     def test_multiple_tables_in_single_message(self, adapter):
         text = (
@@ -705,7 +839,7 @@ class TestFormatMessageTables:
         out = adapter.format_message(text)
         assert out.count("*1*") == 1
         assert out.count("*9*") == 1
-        assert "• X: 9" in out
+        assert "• Y: 8" in out
 
 
 @pytest.mark.asyncio
@@ -769,17 +903,17 @@ class TestEditMessageStreamingSafety:
         assert second_call == {
             "chat_id": 123,
             "message_id": 456,
-            "text": "final **bold**",
+            "text": "final bold",
         }
 
     @pytest.mark.asyncio
     async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
-        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit, the
-        adapter must split the content across the existing message + new
-        continuation messages so the user gets the full reply.  Previously
-        the adapter best-effort truncated the content with '…' and returned
-        success=True, dropping everything past the truncation boundary
-        (#19537)."""
+        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit on
+        finalize, the adapter must split the content across the existing
+        message + new continuation messages so the user gets the full reply.
+        Previously the adapter best-effort truncated the content with '…' and
+        returned success=True, dropping everything past the truncation
+        boundary (#19537)."""
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
         adapter._bot = MagicMock()
         adapter._bot.edit_message_text = AsyncMock()
@@ -792,7 +926,7 @@ class TestEditMessageStreamingSafety:
 
         # 6000-char content well over the 4096 UTF-16 limit.
         oversized = "x" * 6000
-        result = await adapter.edit_message("123", "456", oversized, finalize=False)
+        result = await adapter.edit_message("123", "456", oversized, finalize=True)
 
         # Adapter reports success with continuations populated.
         assert result.success is True
@@ -827,7 +961,7 @@ class TestEditMessageStreamingSafety:
             "-100123",
             "456",
             "x" * 6000,
-            finalize=False,
+            finalize=True,
             metadata={"thread_id": "17585"},
         )
 
@@ -835,6 +969,60 @@ class TestEditMessageStreamingSafety:
         assert sent_kwargs, "expected at least one overflow continuation"
         assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
         assert sent_kwargs[0]["reply_to_message_id"] == 456
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_overflow_truncates_instead_of_splitting(self):
+        """During streaming (finalize=False), oversized content must be
+        truncated to fit one message rather than split into continuations.
+        Splitting mid-stream creates new message IDs that the stream consumer
+        then edits with the full accumulated text, causing an infinite
+        duplication loop (#48648)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        _next_id = [1000]
+
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        oversized = "x" * 6000
+        result = await adapter.edit_message("123", "456", oversized, finalize=False)
+
+        # Must NOT create continuation messages during streaming.
+        assert result.success is True
+        assert adapter._bot.send_message.await_count == 0, (
+            "mid-stream overflow must not send continuation messages"
+        )
+        # message_id stays the original — no shift to a new ID.
+        assert result.message_id == "456"
+        # The edit must contain truncated content (≤ MAX_MESSAGE_LENGTH).
+        edited_text = adapter._bot.edit_message_text.call_args.kwargs["text"]
+        assert len(edited_text) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_mid_stream_reactive_overflow_retries_truncated_edit(self):
+        """If Telegram rejects a streaming edit as too long, retry with a
+        one-message preview instead of splitting into continuations."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock(
+            side_effect=[Exception("Bad Request: message is too long"), None]
+        )
+        adapter._bot.send_message = AsyncMock()
+
+        content = "x" * adapter.MAX_MESSAGE_LENGTH
+        result = await adapter.edit_message("123", "456", content, finalize=False)
+
+        assert result.success is True
+        assert result.message_id == "456"
+        adapter._bot.send_message.assert_not_called()
+        assert adapter._bot.edit_message_text.await_count == 2
+        retry_text = adapter._bot.edit_message_text.await_args_list[1].kwargs["text"]
+        assert len(retry_text) <= adapter.MAX_MESSAGE_LENGTH
+
 
 # =========================================================================
 # Telegram guest mention gating

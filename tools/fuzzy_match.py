@@ -6,7 +6,7 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
@@ -108,8 +108,36 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 if drift_err:
                     return content, 0, None, drift_err
 
-            # Perform replacement
-            new_content = _apply_replacements(content, matches, new_string)
+            # Perform replacement. When the matched strategy is NOT `exact`,
+            # the file's indentation may differ from what the LLM sent in
+            # old_string/new_string — e.g. LLM used 2-space indent but the
+            # file is 4-space. Shift new_string by the indentation delta so
+            # the replacement matches the file's actual indent pattern.
+            # LLMs frequently serialize tabs / carriage returns in JSON
+            # tool-call arguments as the two-character sequences ``\t`` and
+            # ``\r`` (backslash + letter) instead of the real control bytes.
+            # If we write new_string verbatim, the file ends up with literal
+            # backslash sequences where the surrounding code uses real tabs.
+            #
+            # Strategy: only unescape when the matched region of the file
+            # *actually contains* the corresponding real control character.
+            # That mirrors the region-based heuristic in
+            # ``_detect_escape_drift`` and keeps legitimate writes of the
+            # literal two-character string ``"\t"`` (e.g. patching Python
+            # source that contains a tab string literal in source text)
+            # untouched — those files have a backslash+t in the matched
+            # region, not a real tab, so we leave new_string alone.
+            #
+            # ``\n`` is intentionally excluded: newlines serialize correctly
+            # through JSON, and rewriting backslash-n would mangle escape
+            # sequences in source code constants far more often than help.
+            effective_new = _maybe_unescape_new_string(
+                new_string, content, matches,
+            )
+            new_content = _apply_replacements(
+                content, matches, effective_new,
+                old_string=old_string if strategy_name != "exact" else None,
+            )
             return new_content, len(matches), strategy_name, None
 
     # No strategy found a match
@@ -156,26 +184,155 @@ def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
     return None
 
 
-def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string: str) -> str:
+def _leading_whitespace(line: str) -> str:
+    """Return the leading whitespace prefix of a line (spaces/tabs)."""
+    i = 0
+    while i < len(line) and line[i] in (" ", "\t"):
+        i += 1
+    return line[:i]
+
+
+def _first_meaningful_line(text: str) -> Optional[str]:
+    """Return the first line of ``text`` that has any non-whitespace content.
+
+    Returns ``None`` if no such line exists (text is empty or all whitespace).
+    """
+    for line in text.split("\n"):
+        if line.strip():
+            return line
+    return None
+
+
+def _reindent_replacement(file_region: str, old_string: str, new_string: str) -> str:
+    """Adjust ``new_string`` so its indentation matches ``file_region``.
+
+    Used after a non-exact fuzzy match: the LLM may have sent old_string and
+    new_string with a different indent than the file actually has (e.g.
+    2-space indent in tool args vs 4-space indent on disk). The fuzzy
+    strategy successfully matched anyway, but writing ``new_string`` verbatim
+    would corrupt the file's indentation.
+
+    Approach:
+
+    1. For each non-blank line in ``new_string``, compute its indent
+       *relative* to the shallowest non-blank line of ``old_string`` (the
+       LLM's base indent).
+    2. Anchor that relative indent onto the file's actual base indent (the
+       leading whitespace of the file_region's first non-blank line).
+    3. Re-emit each non-blank line as ``file_base + (line_indent - llm_base)``.
+
+    Blank lines and lines less-indented than the LLM's base are anchored
+    directly to the file's base indent.
+
+    No-op cases (returns ``new_string`` unchanged):
+    - file_region or old_string has no meaningful line
+    - LLM base indent equals file base indent
+    - new_string is empty
+    """
+    if not new_string:
+        return new_string
+
+    old_first = _first_meaningful_line(old_string)
+    file_first = _first_meaningful_line(file_region)
+    if old_first is None or file_first is None:
+        return new_string
+
+    old_indent = _leading_whitespace(old_first)
+    file_indent = _leading_whitespace(file_first)
+
+    if old_indent == file_indent:
+        return new_string
+
+    # Re-indent each line of new_string. Strategy: replace the LLM's base
+    # indent prefix with the file's base indent prefix, preserving any
+    # additional indent the LLM added on top. This is the same approach
+    # Roo Code uses (multi-search-replace.ts:466-500). It preserves the
+    # LLM's intended *relative* nesting between lines while anchoring to
+    # the file's actual indent style.
+    out_lines: List[str] = []
+    for line in new_string.split("\n"):
+        if not line.strip():
+            # Blank lines: leave whitespace untouched.
+            out_lines.append(line)
+            continue
+        line_indent = _leading_whitespace(line)
+        if line_indent.startswith(old_indent):
+            # Common case: line has the LLM's base indent (possibly plus
+            # extra). Swap base prefix for the file's base prefix.
+            remainder = line[len(old_indent):]
+            out_lines.append(file_indent + remainder)
+        else:
+            # Line is less-indented than the LLM's base — e.g. a dedent at
+            # the start of new_string. Anchor to the file's base.
+            out_lines.append(file_indent + line.lstrip(" \t"))
+    return "\n".join(out_lines)
+
+
+def _maybe_unescape_new_string(new_string: str,
+                               content: str,
+                               matches: List[Tuple[int, int]]) -> str:
+    """Conditionally unescape ``\\t``/``\\r`` in new_string.
+
+    LLMs frequently send the two-character sequences ``\\t`` (backslash + t)
+    and ``\\r`` (backslash + r) inside JSON tool-call arguments where they
+    meant a real tab or carriage-return byte. Writing the string verbatim
+    corrupts tab-indented files with literal backslash-letter pairs.
+
+    The unescape is only applied per-sequence when the *matched region of
+    the file* actually contains the corresponding control character — that
+    is, we only convert ``\\t`` -> tab when the file region we're replacing
+    contains a real tab byte. Files that legitimately contain the literal
+    two-character string ``"\\t"`` (e.g. a Python source line that defines
+    ``sep = "\\t"``) get a backslash+t in the matched region instead of a
+    tab, so we leave new_string alone.
+
+    ``\\n`` is intentionally excluded: newlines serialize correctly through
+    JSON and rewriting backslash-n would corrupt escape sequences in
+    string literals far more often than it would help.
+    """
+    # Cheap pre-check — bail out unless new_string actually contains one of
+    # the suspect sequences. Keeps the common case free.
+    if "\\t" not in new_string and "\\r" not in new_string:
+        return new_string
+
+    matched_regions = "".join(content[start:end] for start, end in matches)
+    out = new_string
+    if "\\t" in out and "\t" in matched_regions:
+        out = out.replace("\\t", "\t")
+    if "\\r" in out and "\r" in matched_regions:
+        out = out.replace("\\r", "\r")
+    return out
+
+
+def _apply_replacements(content: str, matches: List[Tuple[int, int]],
+                        new_string: str, old_string: Optional[str] = None) -> str:
     """
     Apply replacements at the given positions.
-    
+
     Args:
         content: Original content
         matches: List of (start, end) positions to replace
         new_string: Replacement text
-    
+        old_string: When non-None, signals that the match came from a
+            non-exact fuzzy strategy; ``new_string`` is re-indented to
+            match the file's actual indentation before substitution.
+
     Returns:
         Content with replacements applied
     """
     # Sort matches by position (descending) to replace from end to start
     # This preserves positions of earlier matches
     sorted_matches = sorted(matches, key=lambda x: x[0], reverse=True)
-    
+
     result = content
     for start, end in sorted_matches:
-        result = result[:start] + new_string + result[end:]
-    
+        if old_string is not None:
+            file_region = content[start:end]
+            adjusted = _reindent_replacement(file_region, old_string, new_string)
+        else:
+            adjusted = new_string
+        result = result[:start] + adjusted + result[end:]
+
     return result
 
 
@@ -611,9 +768,14 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
+        # Expand to include trailing whitespace that was normalized,
+        # but only when the normalized match itself ended with whitespace.
+        # When the match ends with a non-space character, the first
+        # whitespace in the original is a word boundary and must not be
+        # consumed.  See https://github.com/NousResearch/hermes-agent/issues/52491
+        if norm_end < len(normalized) and normalized[norm_end - 1] == ' ':
+            while orig_end < len(original) and original[orig_end] in ' \t':
+                orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     

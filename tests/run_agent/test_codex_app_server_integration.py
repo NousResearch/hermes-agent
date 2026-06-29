@@ -12,7 +12,7 @@ Verifies that:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -84,6 +84,56 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-usage-1",
+                thread_id="thread-usage-1",
+                token_usage_last={
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+                model_context_window=200000,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-usage-1"
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == 1
+        assert result["prompt_tokens"] == 100
+        assert result["completion_tokens"] == 25
+        assert result["total_tokens"] == 130
+        assert result["input_tokens"] == 80
+        assert result["output_tokens"] == 25
+        assert result["cache_read_tokens"] == 20
+        assert result["cache_write_tokens"] == 0
+        assert result["reasoning_tokens"] == 5
+        assert result["last_prompt_tokens"] == 100
+
+        assert agent.session_api_calls == 1
+        assert agent.session_prompt_tokens == 100
+        assert agent.session_completion_tokens == 25
+        assert agent.session_total_tokens == 130
+        assert agent.session_input_tokens == 80
+        assert agent.session_output_tokens == 25
+        assert agent.session_cache_read_tokens == 20
+        assert agent.session_cache_write_tokens == 0
+        assert agent.session_reasoning_tokens == 5
+        assert agent.context_compressor.last_prompt_tokens == 100
+        assert agent.context_compressor.last_completion_tokens == 25
+        assert agent.context_compressor.last_total_tokens == 130
+        assert agent.context_compressor.context_length == 200000
+
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
         with patch.object(agent, "_spawn_background_review", return_value=None):
@@ -97,6 +147,17 @@ class TestRunConversationCodexPath:
         final = [m for m in msgs if m.get("role") == "assistant"
                  and m.get("content") == "echo: hello"]
         assert final, f"expected final assistant message in {msgs}"
+
+    def test_projected_messages_are_synced_to_external_memory(self, fake_session):
+        agent = _make_codex_agent()
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        agent._memory_manager.sync_all.assert_called_once()
+        assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
 
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across
@@ -231,6 +292,39 @@ class TestRunConversationCodexPath:
         ):
             agent.run_conversation("hi")
         assert not client_mock.chat.completions.create.called
+
+    def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
+        """Gateway sessions set TERMINAL_CWD without stamping agent.session_cwd.
+        Codex app-server must still start in that configured workspace instead
+        of falling back to the Hermes daemon process cwd."""
+        from agent.transports.codex_app_server_session import (
+            CodexAppServerSession, TurnResult,
+        )
+
+        captured: dict[str, str] = {}
+
+        def fake_init(self, **kwargs):
+            captured["cwd"] = kwargs["cwd"]
+            self._thread_id = "thread-stub-1"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        assert not hasattr(agent, "session_cwd")
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+
+        assert captured["cwd"] == str(tmp_path)
 
 
 class TestReviewForkApiModeDowngrade:
@@ -416,3 +510,82 @@ class TestSessionRetirementOnRunAgent:
         assert agent._codex_session is None
         assert result["completed"] is False
         assert "codex segfaulted" in result["error"]
+
+
+class TestCodexToolProgressBridge:
+    """#38835: Codex app-server item/started notifications must surface as
+    Hermes tool-progress so gateways show verbose breadcrumbs on this route."""
+
+    def test_mapper_command_execution(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        note = {"method": "item/started", "params": {"item": {
+            "type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}}}
+        name, preview, args = _codex_note_to_tool_progress(note)
+        assert name == "exec_command"
+        assert preview == "ls -la"
+        assert args == {"command": "ls -la", "cwd": "/tmp"}
+
+    def test_mapper_file_change(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        note = {"method": "item/started", "params": {"item": {
+            "type": "fileChange",
+            "changes": [{"path": "a.py"}, {"path": "b.py"}]}}}
+        name, preview, args = _codex_note_to_tool_progress(note)
+        assert name == "apply_patch"
+        assert preview == "a.py, b.py"
+
+    def test_mapper_mcp_and_dynamic_tool_calls(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        mcp = {"method": "item/started", "params": {"item": {
+            "type": "mcpToolCall", "server": "fs", "tool": "read", "arguments": {"p": 1}}}}
+        name, preview, args = _codex_note_to_tool_progress(mcp)
+        assert name == "mcp.fs.read"
+        assert preview == "read"
+        assert args == {"p": 1}
+
+        dyn = {"method": "item/started", "params": {"item": {
+            "type": "dynamicToolCall", "tool": "web_search", "arguments": {"q": "x"}}}}
+        assert _codex_note_to_tool_progress(dyn)[0] == "web_search"
+
+    def test_mapper_ignores_non_tool_items_and_other_methods(self):
+        from agent.codex_runtime import _codex_note_to_tool_progress
+        # agentMessage / reasoning items are not tool-shaped
+        assert _codex_note_to_tool_progress({"method": "item/started", "params": {
+            "item": {"type": "agentMessage", "text": "hi"}}}) is None
+        # non-item/started methods
+        assert _codex_note_to_tool_progress({"method": "item/completed", "params": {}}) is None
+        assert _codex_note_to_tool_progress({}) is None
+
+    def test_session_wired_with_on_event_that_fires_tool_progress(self, monkeypatch):
+        """The session is constructed with an on_event hook that, when fed an
+        item/started note, calls the agent's tool_progress_callback."""
+        captured_init = {}
+        events = []
+
+        def fake_init(self, **kwargs):
+            captured_init.update(kwargs)
+            # minimal attrs so the rest of run_turn stubs work
+            self._client = None
+
+        def fake_run_turn(self, user_input, **kwargs):
+            # Exercise the wired on_event hook with a real item/started note.
+            on_event = captured_init.get("on_event")
+            if on_event:
+                on_event({"method": "item/started", "params": {"item": {
+                    "type": "commandExecution", "command": "pytest", "cwd": "/repo"}}})
+            return TurnResult(final_text="done", projected_messages=[
+                {"role": "assistant", "content": "done"}], turn_id="t1", thread_id="th1")
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        agent.tool_progress_callback = lambda kind, name, preview, args: events.append(
+            (kind, name, preview))
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("run the tests")
+
+        assert "on_event" in captured_init and captured_init["on_event"] is not None
+        assert ("tool.started", "exec_command", "pytest") in events
+

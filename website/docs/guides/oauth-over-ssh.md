@@ -1,12 +1,12 @@
 ---
 sidebar_position: 17
 title: "OAuth over SSH / Remote Hosts"
-description: "How to complete browser-based OAuth (xAI, Spotify) when Hermes runs on a remote machine, container, or behind a jump box"
+description: "How to complete browser-based OAuth (xAI, Spotify, MCP servers) when Hermes runs on a remote machine, container, or behind a jump box"
 ---
 
 # OAuth over SSH / Remote Hosts
 
-Some Hermes providers — currently **xAI Grok OAuth** and **Spotify** — use a *loopback redirect* OAuth flow. The auth server (xAI, Spotify) redirects your browser to `http://127.0.0.1:<port>/callback` so a tiny HTTP listener started by the `hermes auth ...` command can grab the authorization code.
+Some Hermes providers — **xAI Grok OAuth**, **Spotify**, and **remote MCP servers** (Linear, Sentry, Atlassian, Asana, Figma, …) — use a *loopback redirect* OAuth flow. The auth server redirects your browser to `http://127.0.0.1:<port>/callback` so a tiny HTTP listener started by Hermes can grab the authorization code.
 
 This works perfectly when Hermes and your browser are on the same machine. It breaks the moment they aren't: your laptop's browser tries to reach `127.0.0.1` on **your laptop**, but the listener is bound to `127.0.0.1` on **the remote server**.
 
@@ -40,7 +40,7 @@ hermes auth add xai-oauth --manual-paste
 # → Paste it back into the terminal at the "Callback URL:" prompt.
 ```
 
-The same flag works on `hermes model --manual-paste` for the integrated model picker. A bare `?code=...&state=...` query fragment is accepted too if you don't want to paste the whole URL.
+The same flag works on `hermes model --manual-paste` for the integrated model picker. Hermes accepts three callback paste forms interchangeably: the full URL, a bare `?code=...&state=...` query fragment, or — when the upstream consent page renders the authorization code in-page instead of redirecting (xAI's current behavior on browser-based consoles) — just the bare code value on its own.
 
 Hermes uses the **same PKCE verifier, state and nonce** for both paths, so the upstream OAuth flow is byte-identical — `--manual-paste` is purely a transport change for the callback hop and is not a security downgrade.
 
@@ -50,11 +50,43 @@ Hermes uses the **same PKCE verifier, state and nonce** for both paths, so the u
 |----------|---------------|----------------|
 | `xai-oauth` (Grok SuperGrok) | `56121` | Yes, when Hermes is remote |
 | Spotify | `43827` | Yes, when Hermes is remote |
+| MCP servers (`auth: oauth`) | auto-picked per server | Yes, when Hermes is remote |
 | `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
 | `openai-codex` (ChatGPT Plus/Pro) | n/a | No — device code flow |
 | `minimax`, `nous-portal` | n/a | No — device code flow |
 
 If your provider isn't in the table, you don't need a tunnel.
+
+## MCP Servers
+
+Remote MCP servers (Linear, Sentry, Atlassian, Asana, Figma, etc.) use the same loopback redirect flow. Hermes auto-picks a free port per server and prints the authorize URL when the OAuth flow kicks off — either at startup (when a new server appears in `mcp_servers:`) or when you run `hermes mcp login <server>`.
+
+You have two ways to complete it from a remote host:
+
+**Option 1 — paste the redirect URL back (no setup, works anywhere).** On an interactive terminal, Hermes prompts you to paste the redirect URL alongside running the local listener. After approving in your browser, the redirect to `http://127.0.0.1:<port>/callback` will show a connection error — that's expected. Copy the **full URL from the browser's address bar** and paste it at the Hermes prompt:
+
+```
+  MCP OAuth: authorization required.
+  Open this URL in your browser:
+
+    https://mcp.linear.app/authorize?response_type=code&...
+
+  Or paste the redirect URL here (or the ?code=...&state=... portion) and press Enter:
+> https://mcp.linear.app/callback?code=abc123&state=xyz
+  Got authorization code from paste — completing flow.
+```
+
+A bare `?code=...&state=...` query string is accepted too. This works for any MCP server with `auth: oauth` and requires no SSH config changes.
+
+**Option 2 — SSH port forward (same as xAI / Spotify).** Hermes prints the exact port it bound to in the SSH-session hint. Open a separate terminal on your laptop:
+
+```bash
+ssh -N -L <port>:127.0.0.1:<port> user@remote-host
+```
+
+Then open the authorize URL in your browser as normal; the redirect tunnels through and the listener picks it up. Use this when you need the flow to complete unattended (e.g. scripted re-auth where you can't paste interactively).
+
+**Pitfall — the 30s config-reload race.** If you edit `~/.hermes/config.yaml` to add an OAuth MCP server from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough time to complete an interactive OAuth flow, and the reload will give up. Use `hermes mcp login <server>` from a fresh terminal instead — it has no such cap and waits the full 5 min for you to paste back.
 
 ## Why the listener can't just bind 0.0.0.0
 
@@ -151,4 +183,5 @@ The tokens are written under the Linux user that ran `hermes auth add ...`. If y
 
 - [xAI Grok OAuth](./xai-grok-oauth.md)
 - [Spotify (`Running over SSH`)](../user-guide/features/spotify.md#running-over-ssh--in-a-headless-environment)
+- [Native MCP client (OAuth section)](../user-guide/features/mcp.md#oauth-authenticated-http-servers)
 - [SSH `-J` / ProxyJump (man page)](https://man.openbsd.org/ssh#J)

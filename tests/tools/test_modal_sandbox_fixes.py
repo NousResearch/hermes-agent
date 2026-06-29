@@ -7,7 +7,6 @@ Covers the bugs discovered while setting up TBLite evaluation:
 4. ensurepip fix in Modal image builder
 5. No swe-rex dependency — uses native Modal SDK
 6. /home/ added to host prefix check
-7. Vercel sandbox cwd normalization
 """
 
 import os
@@ -101,26 +100,6 @@ class TestCwdHandling:
         monkeypatch.setenv("TERMINAL_CWD", "C:\\Users\\someone\\projects")
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/root"
-
-    def test_host_path_replaced_for_vercel_sandbox(self, monkeypatch):
-        """Host paths should be discarded for Vercel Sandbox."""
-        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/vercel/sandbox"
-
-    def test_relative_path_replaced_for_vercel_sandbox(self, monkeypatch):
-        """Relative cwd should not map into a remote Vercel sandbox."""
-        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-        monkeypatch.setenv("TERMINAL_CWD", "src")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/vercel/sandbox"
-
-    def test_default_cwd_is_workspace_root_for_vercel_sandbox(self, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-        monkeypatch.delenv("TERMINAL_CWD", raising=False)
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/vercel/sandbox"
 
     @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
     def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
@@ -295,17 +274,30 @@ class TestEnsurepipFix:
 # =========================================================================
 
 class TestHostPrefixList:
-    """Verify the host prefix list catches common host-only paths."""
+    """Verify the host prefix list catches common host-only paths.
 
-    def test_all_common_host_prefixes_caught(self):
-        """The host prefix check should catch /Users/, /home/, C:\\, C:/."""
-        # Read the actual source to verify the prefixes
-        import inspect
-        source = inspect.getsource(_tt_mod._get_env_config)
-        for prefix in ["/Users/", "/home/", 'C:\\\\"', "C:/"]:
-            # Normalize for source comparison
-            check = prefix.rstrip('"')
-            assert check in source or prefix in source, (
-                f"Host prefix {prefix!r} not found in _get_env_config. "
+    The prefixes used to live as an inline literal inside ``_get_env_config``;
+    they now live in the module-level ``_HOST_CWD_PREFIXES`` constant shared by
+    both the ``_get_env_config`` sanitizer and the override-resolution guard
+    (``_is_unusable_container_cwd``). Assert the *behavior* (each common host
+    prefix is flagged as unusable inside a container) rather than grepping a
+    function's source — the latter is a change-detector that breaks on any
+    refactor that moves the constant.
+    """
+
+    def test_all_common_host_prefixes_present_in_constant(self):
+        """The shared prefix constant must list the common host-only roots."""
+        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
+            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
+                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
                 "Container backends need this to avoid using host paths."
+            )
+
+    def test_all_common_host_paths_flagged_unusable(self):
+        """A host path under each prefix must be rejected as a container cwd."""
+        for host_path in ("/Users/me/proj", "/home/me/proj",
+                           "C:\\Users\\me", "C:/Users/me"):
+            assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
+                f"Host path {host_path!r} should be rejected as a container "
+                "cwd but was accepted."
             )

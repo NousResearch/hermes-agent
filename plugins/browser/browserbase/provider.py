@@ -26,7 +26,7 @@ Optional feature knobs::
     BROWSERBASE_PROXIES=true      # default true
     BROWSERBASE_ADVANCED_STEALTH=false
     BROWSERBASE_KEEP_ALIVE=true   # default true
-    BROWSERBASE_SESSION_TIMEOUT=... (ms, integer)
+    BROWSERBASE_SESSION_TIMEOUT=... (seconds, integer, max 21600 = 6h)
 """
 
 from __future__ import annotations

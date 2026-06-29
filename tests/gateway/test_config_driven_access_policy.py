@@ -48,6 +48,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "TELEGRAM_ALLOWED_USERS",
+        "FEISHU_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "WECOM_ALLOW_ALL_USERS",
@@ -55,6 +56,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "YUANBAO_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
+        "FEISHU_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -164,6 +166,85 @@ def test_non_owning_platform_still_default_denies(monkeypatch):
     runner, _adapter = _make_runner(Platform.TELEGRAM, config, enforces=False)
 
     assert runner._is_user_authorized(_source(Platform.TELEGRAM)) is False
+
+
+def test_config_allowed_users_authorize_non_owning_platform(monkeypatch):
+    """Config-level allowed_users is a first-class allowlist source."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"allowed_users": ["allowed-user"]},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config, enforces=False)
+
+    listed = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="allowed-user",
+        chat_id="c",
+        user_name="t",
+        chat_type="dm",
+    )
+    stranger = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="stranger",
+        chat_id="c",
+        user_name="t",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(listed) is True
+    assert runner._is_user_authorized(stranger) is False
+
+
+def test_config_allowed_users_are_scoped_to_source_adapter_id(monkeypatch):
+    """A Feishu app must not inherit another app's config allowlist."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: [
+                PlatformConfig(
+                    enabled=True,
+                    extra={"app_id": "cli_app1", "allowed_users": ["same-user"]},
+                ),
+                PlatformConfig(
+                    enabled=True,
+                    extra={"app_id": "cli_app2", "allowed_users": ["other-user"]},
+                ),
+            ]
+        }
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config, enforces=False)
+
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        user_id="same-user",
+        chat_id="c",
+        user_name="t",
+        chat_type="dm",
+        adapter_id="feishu:cli_app2",
+    )
+
+    assert runner._is_user_authorized(source) is False
+
+
+def test_config_allow_all_users_authorizes_non_owning_platform(monkeypatch):
+    """Config-level allow_all_users mirrors the platform allow-all env flag."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"allow_all_users": True},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config, enforces=False)
+
+    assert runner._is_user_authorized(_source(Platform.FEISHU)) is True
 
 
 def test_env_allowlist_still_takes_precedence_for_own_policy_platform(monkeypatch):

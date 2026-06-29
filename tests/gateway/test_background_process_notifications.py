@@ -530,6 +530,13 @@ def test_parse_session_key_with_extra_parts():
     assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
+def test_parse_session_key_with_adapter_namespace():
+    result = _parse_session_key(
+        "agent:main:feishu:adapter=feishu%3Acli_app2:dm:oc_same"
+    )
+    assert result == {"platform": "feishu", "chat_type": "dm", "chat_id": "oc_same"}
+
+
 def test_parse_session_key_with_user_id_part():
     """Group keys with per-user isolation have user_id as 6th part — don't return as thread_id."""
     result = _parse_session_key("agent:main:telegram:group:chat1:user99")

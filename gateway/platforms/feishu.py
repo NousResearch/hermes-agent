@@ -1286,12 +1286,29 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     import lark_oapi.ws.client as ws_client_module
 
     async def _run_manual_ws_client() -> None:
+        disconnected_since: Optional[float] = None
+        stale_after = max(
+            30.0,
+            float(getattr(adapter, "_ws_reconnect_nonce", 30) or 0)
+            + float(getattr(adapter, "_ws_reconnect_interval", 120) or 120)
+            + 15.0,
+        )
         await ws_client._connect()
         ping_loop = getattr(ws_client, "_ping_loop", None)
         if callable(ping_loop):
             loop.create_task(ping_loop())
         while getattr(adapter, "_running", False):
-            await asyncio.sleep(60)
+            if getattr(ws_client, "_conn", None) is None:
+                now = time.monotonic()
+                disconnected_since = disconnected_since or now
+                if now - disconnected_since >= stale_after:
+                    raise RuntimeError(
+                        "Feishu websocket receive loop exited and did not reconnect "
+                        f"within {stale_after:.0f}s"
+                    )
+            else:
+                disconnected_since = None
+            await asyncio.sleep(5)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1335,10 +1352,15 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             logger.warning("[Feishu] lark_oapi.start() requires running loop — retrying with loop.run_until_complete")
             try:
                 loop.run_until_complete(_run_manual_ws_client())
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                logger.error("[Feishu] websocket client exited: %s", exc, exc_info=True)
+                raise
+        else:
+            logger.error("[Feishu] websocket client exited: %s", e, exc_info=True)
+            raise
+    except Exception as exc:
+        logger.error("[Feishu] websocket client exited: %s", exc, exc_info=True)
+        raise
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
@@ -1492,6 +1514,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
+        def _iter_allowed_users(raw: Any):
+            if isinstance(raw, str):
+                yield from (item.strip() for item in raw.split(",") if item.strip())
+            elif isinstance(raw, (list, tuple, set)):
+                for item in raw:
+                    text = str(item).strip()
+                    if text:
+                        yield text
+
         # Parse per-group rules from config
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -1541,9 +1572,8 @@ class FeishuAdapter(BasePlatformAdapter):
             ).strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(
-                item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
-                if item.strip()
+                set(_iter_allowed_users(os.getenv("FEISHU_ALLOWED_USERS", "")))
+                | set(_iter_allowed_users(extra.get("allowed_users")))
             ),
             bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
             bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
@@ -4610,6 +4640,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        self._ws_future.add_done_callback(self._on_websocket_thread_done)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
@@ -4636,6 +4667,36 @@ class FeishuAdapter(BasePlatformAdapter):
             .log_level(lark.LogLevel.WARNING)
             .build()
         )
+
+    def _on_websocket_thread_done(self, future: asyncio.Future) -> None:
+        """Escalate an unexpected Feishu websocket thread exit to the runner."""
+        if not getattr(self, "_running", False):
+            return
+        try:
+            exc = future.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as callback_exc:
+            exc = callback_exc
+
+        if exc is None:
+            message = "Feishu websocket thread exited while adapter was still running"
+        else:
+            message = f"Feishu websocket thread exited: {exc}"
+        logger.error(
+            "[Feishu] %s",
+            message,
+            exc_info=(type(exc), exc, exc.__traceback__) if exc else None,
+        )
+        self._set_fatal_error("feishu_ws_disconnected", message, retryable=True)
+
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._notify_fatal_error(), loop)
+        except RuntimeError:
+            logger.debug("[Feishu] Could not schedule websocket fatal-error handler", exc_info=True)
 
     async def _feishu_send_with_retry(
         self,

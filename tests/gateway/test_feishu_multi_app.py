@@ -16,7 +16,7 @@ from gateway.config import (
 )
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 from gateway.platforms.base import BasePlatformAdapter
 
 
@@ -259,6 +259,30 @@ class TestMultiAppListConfig:
         source = adapter.build_source(chat_id="chat-1", user_id="user-1")
 
         assert source.adapter_id == "feishu:cli_app1"
+
+    def test_session_key_isolates_matching_chat_ids_across_feishu_apps(self):
+        """Different Feishu apps must not share agent/session state."""
+        first = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_same",
+            chat_type="dm",
+            user_id="ou_same",
+            adapter_id="feishu:cli_app1",
+        )
+        second = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_same",
+            chat_type="dm",
+            user_id="ou_same",
+            adapter_id="feishu:cli_app2",
+        )
+
+        first_key = build_session_key(first)
+        second_key = build_session_key(second)
+
+        assert first_key == "agent:main:feishu:adapter=feishu%3Acli_app1:dm:oc_same"
+        assert second_key == "agent:main:feishu:adapter=feishu%3Acli_app2:dm:oc_same"
+        assert first_key != second_key
 
     def test_runner_routes_source_to_matching_feishu_app_adapter(self):
         runner = GatewayRunner.__new__(GatewayRunner)

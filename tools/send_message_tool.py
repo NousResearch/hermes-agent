@@ -174,6 +174,27 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _enabled_platform_configs(pconfig):
+    """Return enabled configs from a single- or multi-app platform config."""
+    configs = pconfig if isinstance(pconfig, list) else [pconfig]
+    return [cfg for cfg in configs if cfg is not None and getattr(cfg, "enabled", False)]
+
+
+def _select_platform_config(platform, configs, chat_id):
+    """Pick the best config for a target, preserving Feishu multi-app fallback."""
+    if not configs:
+        return None
+    if platform.value == "feishu":
+        for cfg in configs:
+            home = getattr(cfg, "home_channel", None)
+            if home and chat_id and str(home.chat_id) == str(chat_id):
+                return cfg
+        # Unknown Feishu chats may belong to any configured app. Let _send_feishu
+        # try each enabled app instead of failing before it reaches the adapter.
+        return configs if len(configs) > 1 else configs[0]
+    return configs[0]
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
@@ -228,7 +249,8 @@ def _handle_send(args):
         return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
-    if not pconfig or not pconfig.enabled:
+    enabled_configs = _enabled_platform_configs(pconfig)
+    if not enabled_configs:
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.
         if platform_name == "weixin":
@@ -245,6 +267,7 @@ def _handle_send(args):
                         "cdn_base_url": os.getenv("WEIXIN_CDN_BASE_URL", "").strip(),
                     },
                 )
+                enabled_configs = [pconfig]
             else:
                 return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
         else:
@@ -264,16 +287,29 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
-        if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
-            if wx_home:
-                from gateway.config import HomeChannel
-                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
-        if home:
-            chat_id = home.chat_id
-            used_home_channel = True
-        else:
+        enabled_configs = _enabled_platform_configs(pconfig)
+        if enabled_configs:
+            for cfg in enabled_configs:
+                home = getattr(cfg, "home_channel", None)
+                if home:
+                    chat_id = home.chat_id
+                    used_home_channel = True
+                    break
+        if not chat_id and hasattr(config, "get_home_channel"):
+            home = config.get_home_channel(platform)
+            if home:
+                chat_id = home.chat_id
+                used_home_channel = True
+        if not chat_id:
+            if platform_name == "weixin":
+                wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+                if wx_home:
+                    from gateway.config import HomeChannel
+                    home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+                    if home:
+                        chat_id = home.chat_id
+                        used_home_channel = True
+        if not chat_id:
             home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
                 platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
             )
@@ -286,6 +322,10 @@ def _handle_send(args):
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
         return json.dumps(duplicate_skip)
+
+    pconfig = _select_platform_config(platform, enabled_configs, chat_id)
+    if not pconfig:
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):
@@ -1594,61 +1634,105 @@ async def _send_bluebubbles(extra, chat_id, message):
         return _error(f"BlueBubbles send failed: {e}")
 
 
+def normalize_feishu_configs(extra):
+    """Normalize Feishu multi-app config to a list of enabled configs."""
+    if extra is None:
+        return []
+    if isinstance(extra, list):
+        return [item for item in extra if item and _feishu_config_enabled(item)]
+    if isinstance(extra, dict):
+        if isinstance(extra.get("apps"), list):
+            return [item for item in extra["apps"] if item and _feishu_config_enabled(item)]
+        if extra.get("enabled", True):
+            return [extra]
+    elif _feishu_config_enabled(extra):
+        return [extra]
+    return []
+
+
+def _feishu_config_enabled(config):
+    if isinstance(config, dict):
+        return bool(config.get("enabled", True))
+    return bool(getattr(config, "enabled", True))
+
+
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""
+    configs = normalize_feishu_configs(pconfig)
+    if not configs:
+        return {"error": "No enabled Feishu config found"}
+
     try:
         from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
         if not FEISHU_AVAILABLE:
             return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
         from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
+        from gateway.config import PlatformConfig
     except ImportError:
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
 
     media_files = media_files or []
+    errors = []
 
-    try:
-        adapter = FeishuAdapter(pconfig)
-        domain_name = getattr(adapter, "_domain_name", "feishu")
-        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
-        adapter._client = adapter._build_lark_client(domain)
-        metadata = {"thread_id": thread_id} if thread_id else None
+    for candidate in configs:
+        try:
+            feishu_config = (
+                PlatformConfig.from_dict(candidate)
+                if isinstance(candidate, dict)
+                else candidate
+            )
+            adapter = FeishuAdapter(feishu_config)
+            domain_name = getattr(adapter, "_domain_name", "feishu")
+            domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
+            adapter._client = adapter._build_lark_client(domain)
+            metadata = {"thread_id": thread_id} if thread_id else None
 
-        last_result = None
-        if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
-            if not last_result.success:
-                return _error(f"Feishu send failed: {last_result.error}")
+            last_result = None
+            delivered_any = False
+            if message.strip():
+                last_result = await adapter.send(chat_id, message, metadata=metadata)
+                if not last_result.success:
+                    errors.append(str(last_result.error))
+                    continue
+                delivered_any = True
 
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return _error(f"Media file not found: {media_path}")
+            for media_path, is_voice in media_files:
+                if not os.path.exists(media_path):
+                    return _error(f"Media file not found: {media_path}")
 
-            ext = os.path.splitext(media_path)[1].lower()
-            if ext in _IMAGE_EXTS:
-                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
-            elif ext in _VIDEO_EXTS:
-                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
-            elif ext in _VOICE_EXTS and is_voice:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            elif ext in _AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                ext = os.path.splitext(media_path)[1].lower()
+                if ext in _IMAGE_EXTS:
+                    last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+                elif ext in _VIDEO_EXTS:
+                    last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+                elif ext in _VOICE_EXTS and is_voice:
+                    last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                elif ext in _AUDIO_EXTS:
+                    last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                else:
+                    last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+
+                if not last_result.success:
+                    if delivered_any:
+                        return _error(f"Feishu media send failed: {last_result.error}")
+                    errors.append(str(last_result.error))
+                    break
+                delivered_any = True
             else:
-                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+                if last_result is None:
+                    return {"error": "No deliverable text or media remained after processing MEDIA tags"}
 
-            if not last_result.success:
-                return _error(f"Feishu media send failed: {last_result.error}")
+                return {
+                    "success": True,
+                    "platform": "feishu",
+                    "chat_id": chat_id,
+                    "message_id": last_result.message_id,
+                }
+        except Exception as e:
+            errors.append(str(e))
 
-        if last_result is None:
-            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
-
-        return {
-            "success": True,
-            "platform": "feishu",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id,
-        }
-    except Exception as e:
-        return _error(f"Feishu send failed: {e}")
+    detail = "; ".join(error for error in errors if error) or "all configured Feishu apps failed"
+    return _error(f"Feishu send failed: {detail}")
 
 
 def _check_send_message():

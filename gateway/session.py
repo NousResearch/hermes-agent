@@ -601,6 +601,23 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _session_key_prefix_parts(source: SessionSource) -> list[str]:
+    """Return the namespace prefix for a source's session key.
+
+    Single-instance platforms keep their historical ``agent:main:<platform>``
+    prefix. Multi-instance adapters, such as multiple Feishu apps, include the
+    concrete adapter id so colliding app-scoped chat/user ids cannot share an
+    agent cache or transcript.
+    """
+    platform = source.platform.value
+    parts = ["agent:main", platform]
+    adapter_id = str(getattr(source, "adapter_id", "") or "").strip()
+    if adapter_id and adapter_id != platform:
+        escaped = adapter_id.replace("%", "%25").replace(":", "%3A")
+        parts.append(f"adapter={escaped}")
+    return parts
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
@@ -629,7 +646,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
-    platform = source.platform.value
+    prefix_parts = _session_key_prefix_parts(source)
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
@@ -637,8 +654,8 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return ":".join([*prefix_parts, "dm", dm_chat_id, str(source.thread_id)])
+            return ":".join([*prefix_parts, "dm", dm_chat_id])
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
@@ -653,11 +670,11 @@ def build_session_key(
             )
         if dm_participant_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_participant_id}"
+                return ":".join([*prefix_parts, "dm", str(dm_participant_id), str(source.thread_id)])
+            return ":".join([*prefix_parts, "dm", str(dm_participant_id)])
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return ":".join([*prefix_parts, "dm", str(source.thread_id)])
+        return ":".join([*prefix_parts, "dm"])
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -665,7 +682,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [*prefix_parts, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)

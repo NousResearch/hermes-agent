@@ -549,7 +549,8 @@ class TestAdapterModule(unittest.TestCase):
         try:
             from gateway.platforms.feishu import _run_official_feishu_ws_client
 
-            _run_official_feishu_ws_client(fake_client, fake_adapter)
+            with self.assertRaisesRegex(RuntimeError, "stop test client"):
+                _run_official_feishu_ws_client(fake_client, fake_adapter)
         finally:
             sys.modules.clear()
             sys.modules.update(original_modules)
@@ -614,6 +615,95 @@ class TestAdapterModule(unittest.TestCase):
         self.assertIn("ping", calls)
         self.assertIn("sleep", calls)
         self.assertIsNone(fake_adapter._ws_thread_loop)
+
+    def test_ws_client_no_running_loop_fallback_exits_when_disconnected_stale(self):
+        import sys
+        from types import ModuleType
+
+        class _FakeWSClient:
+            def start(self):
+                raise RuntimeError("no running event loop")
+
+            async def _connect(self):
+                self._conn = None
+
+        fake_client = _FakeWSClient()
+        fake_adapter = SimpleNamespace(
+            _running=True,
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+        )
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_client_module.websockets = SimpleNamespace(connect=AsyncMock())
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        async def _fast_sleep(_delay):
+            return None
+
+        clock = [-31.0]
+
+        def _tick():
+            clock[0] += 31.0
+            return clock[0]
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from gateway.platforms import feishu as feishu_module
+
+            with (
+                patch.object(feishu_module.asyncio, "sleep", side_effect=_fast_sleep),
+                patch.object(feishu_module.time, "monotonic", side_effect=_tick),
+                self.assertRaisesRegex(RuntimeError, "receive loop exited"),
+            ):
+                feishu_module._run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        self.assertIsNone(fake_adapter._ws_thread_loop)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_websocket_thread_done_marks_retryable_fatal(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        callback_loop = SimpleNamespace(is_closed=lambda: False)
+        future_loop = asyncio.new_event_loop()
+        scheduled = []
+
+        def _run_threadsafe(coro, loop):
+            scheduled.append((coro, loop))
+            return SimpleNamespace()
+
+        try:
+            future = future_loop.create_future()
+            future.set_exception(RuntimeError("ws lost"))
+            adapter._running = True
+            adapter._loop = callback_loop
+
+            with patch("gateway.platforms.feishu.asyncio.run_coroutine_threadsafe", side_effect=_run_threadsafe):
+                adapter._on_websocket_thread_done(future)
+
+            self.assertFalse(adapter._running)
+            self.assertEqual(adapter.fatal_error_code, "feishu_ws_disconnected")
+            self.assertTrue(adapter.fatal_error_retryable)
+            self.assertIn("ws lost", adapter.fatal_error_message)
+            self.assertEqual(scheduled[0][1], callback_loop)
+        finally:
+            for coro, _loop in scheduled:
+                coro.close()
+            future_loop.close()
 
 
 def _admits_group(adapter, message, sender_id, chat_id=""):

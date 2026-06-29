@@ -25,7 +25,7 @@ def _reset_signal_scheduler():
     yield
     _reset_scheduler()
 
-from gateway.config import Platform
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
@@ -169,6 +169,48 @@ class TestSendMessageTool:
         assert chat_id == "alerts-channel"
         assert thread_id is None
         assert is_explicit is True
+
+    def test_feishu_multi_app_config_selects_matching_home_channel(self):
+        first = PlatformConfig(
+            enabled=True,
+            home_channel=HomeChannel(Platform.FEISHU, "oc_first", "First"),
+            extra={"app_id": "cli_first", "app_secret": "secret"},
+        )
+        second = PlatformConfig(
+            enabled=True,
+            home_channel=HomeChannel(Platform.FEISHU, "oc_second", "Second"),
+            extra={"app_id": "cli_second", "app_secret": "secret"},
+        )
+        config = SimpleNamespace(
+            platforms={Platform.FEISHU: [first, second]},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "feishu:oc_second",
+                        "message": "done",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.FEISHU,
+            second,
+            "oc_second",
+            "done",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
 
     def test_ntfy_topic_target_bypasses_channel_directory(self):
         ntfy_platform = Platform("ntfy")

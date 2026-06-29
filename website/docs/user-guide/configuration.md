@@ -1418,6 +1418,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  runtime_notices: true     # Gateway: send lifecycle/runtime notices (set false for public-facing agents)
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1510,6 +1511,13 @@ display:
       tool_progress: verbose  # detailed progress on Telegram
     slack:
       tool_progress: 'off'    # quiet in shared Slack workspace
+    whatsapp:
+      tool_progress: 'off'
+      streaming: false
+      interim_assistant_messages: false
+      long_running_notifications: false
+      busy_ack_detail: false
+      runtime_notices: false  # final-answer-only for public/customer channels
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
@@ -1517,6 +1525,8 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`runtime_notices` is gateway-only. When enabled, Hermes may send lifecycle/runtime notices such as context compression, retry/backoff, usage-band, or background-review summaries. Set it to `false` for public-facing agents such as receptionists or customer support bots so the contact receives only the final assistant answer.
 
 ## Privacy
 

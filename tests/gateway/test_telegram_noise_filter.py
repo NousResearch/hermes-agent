@@ -3,8 +3,10 @@
 import pytest
 
 from gateway.config import Platform
+from gateway.display_config import OVERRIDEABLE_KEYS, resolve_display_setting
 from gateway.run import (
     _prepare_gateway_status_message,
+    _resolve_gateway_display_bool,
     _sanitize_gateway_final_response,
 )
 
@@ -33,6 +35,7 @@ NOISY_STATUS_MESSAGES = [
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
+    "Codex gpt-5.5 caps context at ~512k tokens; auto-compaction was raised to prevent truncation.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
 ]
@@ -134,6 +137,34 @@ def test_plugin_platform_string_suppresses_noise():
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
 
     assert _prepare_gateway_status_message("irc", "warn", message) is None
+
+
+def test_runtime_notices_can_be_disabled_per_whatsapp_profile():
+    """Public WhatsApp agents can suppress Hermes lifecycle/runtime notices."""
+    cfg = {
+        "display": {
+            "runtime_notices": True,
+            "platforms": {"whatsapp": {"runtime_notices": False}},
+        }
+    }
+
+    assert "runtime_notices" in OVERRIDEABLE_KEYS
+    assert resolve_display_setting(cfg, "whatsapp", "runtime_notices") is False
+    assert (
+        _resolve_gateway_display_bool(
+            cfg,
+            "whatsapp",
+            "runtime_notices",
+            default=True,
+            platform=Platform.WHATSAPP,
+        )
+        is False
+    )
+
+
+def test_runtime_notices_default_remains_enabled_for_whatsapp_backcompat():
+    """Existing WhatsApp profiles keep lifecycle notices unless they opt out."""
+    assert resolve_display_setting({}, "whatsapp", "runtime_notices") is True
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

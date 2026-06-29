@@ -77,6 +77,8 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
+    r"|codex\s+gpt[-\s]?5\.5\s+caps\s+context"
+    r"|auto[-\s]?compaction\s+was\s+raised"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|preflight\s+compression"
     r"|session\s+compressed\s+\d+\s+times"
@@ -15400,6 +15402,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform=source.platform,
             require_platform_override_for={Platform.MATTERMOST},
         )
+        _runtime_status_notices_enabled = _resolve_gateway_display_bool(
+            user_config,
+            platform_key,
+            "runtime_notices",
+            default=True,
+            platform=source.platform,
+        )
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
 
 
@@ -16084,6 +16093,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
+            if not _runtime_status_notices_enabled:
+                logger.debug(
+                    "status_callback suppressed by runtime_notices=false for %s/%s: %s",
+                    source.platform.value if source.platform else "unknown",
+                    event_type,
+                    _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+                )
+                return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
                 event_type,
@@ -16475,6 +16492,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _notice_callback_sync(notice) -> None:
                 if not _status_adapter or not _run_still_current():
                     return
+                if not _runtime_status_notices_enabled:
+                    logger.debug(
+                        "notice_callback suppressed by runtime_notices=false for %s",
+                        source.platform.value if source.platform else "unknown",
+                    )
+                    return
                 try:
                     line = render_notice_line(notice)
                 except Exception:
@@ -16502,6 +16525,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter or not _run_still_current():
+                    return
+                if not _runtime_status_notices_enabled:
+                    logger.debug(
+                        "background_review_callback suppressed by runtime_notices=false for %s",
+                        source.platform.value if source.platform else "unknown",
+                    )
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(

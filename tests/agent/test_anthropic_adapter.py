@@ -507,7 +507,10 @@ class TestResolveAnthropicToken:
 
 
 class TestRefreshOauthToken:
-    def test_returns_none_without_refresh_token(self):
+    def test_returns_none_without_refresh_token(self, tmp_path, monkeypatch):
+        # Isolate Path.home so the live credential file is never read (else
+        # _refresh_oauth_token adopts the real on-disk token and leaks it).
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
         assert _refresh_oauth_token(creds) is None
 
@@ -544,7 +547,10 @@ class TestRefreshOauthToken:
         assert written["claudeAiOauth"]["accessToken"] == "new-token-abc"
         assert written["claudeAiOauth"]["refreshToken"] == "new-refresh-456"
 
-    def test_failed_refresh_returns_none(self):
+    def test_failed_refresh_returns_none(self, tmp_path, monkeypatch):
+        # Isolate Path.home so the live credential file is never read (else
+        # _refresh_oauth_token adopts the real on-disk token and leaks it).
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         creds = {
             "accessToken": "old",
             "refreshToken": "refresh-123",

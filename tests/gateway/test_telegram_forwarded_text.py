@@ -101,6 +101,7 @@ def _make_adapter(telegram_adapter_cls):
     """Create a minimal adapter with auth bypassed for routing tests."""
     a = telegram_adapter_cls(PlatformConfig(enabled=True, token="***", extra={}))
     a._is_callback_user_authorized = lambda user_id, **_kw: True
+    a._is_user_authorized_from_message = lambda msg, **_kw: True
     a._should_process_message = lambda msg, **_kw: True
     a._should_observe_unmentioned_group_message = lambda msg: False
     a._ensure_forum_commands = AsyncMock()
@@ -352,3 +353,42 @@ class TestForwardedTextMessage:
         adapter._enqueue_text_event.assert_called_once()
         event = adapter._enqueue_text_event.call_args.args[0]
         assert event.text == "hello world"
+
+
+class TestResolveForwardedText:
+    """Direct unit tests for the _resolve_forwarded_text helper."""
+
+    @pytest.mark.asyncio
+    async def test_returns_eff_msg_when_text_present(self, telegram_adapter_cls):
+        """Should return effective_message when it has text."""
+        adapter = _make_adapter(telegram_adapter_cls)
+        update = _make_forwarded_text_update("hello from forward")
+
+        result = await adapter._resolve_forwarded_text(update, MagicMock())
+
+        assert result is not None
+        assert result.text == "hello from forward"
+
+    @pytest.mark.asyncio
+    async def test_routes_caption_to_media_handler(self, telegram_adapter_cls):
+        """Should delegate to _handle_media_message when caption is present."""
+        adapter = _make_adapter(telegram_adapter_cls)
+        adapter._handle_media_message = AsyncMock()
+        update = _make_forwarded_caption_update(caption="photo caption")
+
+        result = await adapter._resolve_forwarded_text(update, MagicMock())
+
+        assert result is None
+        adapter._handle_media_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_empty_forward(self, telegram_adapter_cls):
+        """Should return None when no text or caption is available."""
+        adapter = _make_adapter(telegram_adapter_cls)
+        adapter._handle_media_message = AsyncMock()
+        update = _make_empty_forwarded_update()
+
+        result = await adapter._resolve_forwarded_text(update, MagicMock())
+
+        assert result is None
+        adapter._handle_media_message.assert_not_called()

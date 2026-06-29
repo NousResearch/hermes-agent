@@ -3116,8 +3116,21 @@ class TelegramAdapter(BasePlatformAdapter):
             # deliver it with forward_origin set but message.text as None —
             # the content can be in effective_message.text or caption.
             # Without this, those forwards are silently dropped.
+            _forwarded_non_media = (
+                filters.FORWARDED
+                & filters.ALL
+                & ~filters.COMMAND
+                & ~filters.TEXT
+                & ~filters.PHOTO
+                & ~filters.VIDEO
+                & ~filters.AUDIO
+                & ~filters.VOICE
+                & ~filters.Document.ALL
+                & ~filters.Sticker.ALL
+                & ~filters.LOCATION
+            )
             self._app.add_handler(TelegramMessageHandler(
-                filters.FORWARDED | (filters.ALL & ~filters.COMMAND & ~filters.TEXT & ~filters.PHOTO & ~filters.VIDEO & ~filters.AUDIO & ~filters.VOICE & ~filters.Document.ALL & ~filters.Sticker.ALL & ~filters.LOCATION),
+                _forwarded_non_media,
                 self._handle_text_message,
             ))
             # Handle inline keyboard button callbacks (update prompts)
@@ -7359,6 +7372,26 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    async def _resolve_forwarded_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Resolve a forwarded message whose ``.text`` is None.
+
+        Telegram may deliver forwarded messages with ``message.text`` set to
+        ``None`` even when the text content is available via
+        ``effective_message.text``.  Forwarded media with a caption is routed
+        to ``_handle_media_message``.
+
+        Returns the resolved message object, or ``None`` to signal the caller
+        should stop processing this update.
+        """
+        eff_msg = getattr(update, 'effective_message', None)
+        if eff_msg and eff_msg.text:
+            return eff_msg
+        if eff_msg and getattr(eff_msg, 'caption', None):
+            # Forwarded media with caption — route to media handler
+            await self._handle_media_message(update, context)
+            return None
+        return None
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7388,14 +7421,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # — Telegram may deliver forwards with text accessible via
         # effective_message.text even when message.text is None.
         if not msg.text:
-            eff_msg = getattr(update, 'effective_message', None)
-            if eff_msg and eff_msg.text:
-                msg = eff_msg
-            elif eff_msg and getattr(eff_msg, 'caption', None):
-                # Forwarded media with caption — route to media handler
-                await self._handle_media_message(update, context)
-                return
-            else:
+            msg = await self._resolve_forwarded_text(update, context)
+            if msg is None:
                 return
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):

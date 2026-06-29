@@ -52,6 +52,10 @@ class SessionOrchestrationConfig:
     external_runs_channel_id: Optional[str] = _DEFAULT_EXTERNAL_RUNS_CHANNEL_ID
     hang_stale_seconds: int = _DEFAULT_HANG_STALE_SECONDS
     hang_idle_ticks: int = _DEFAULT_HANG_IDLE_TICKS
+    # Manual repo alias overrides for the repo registry (alias → path or dict).
+    # Stored as the raw config dict so repo_registry.build_repo_registry() can
+    # parse it without the config module importing the registry module.
+    repos: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionOrchestrationConfig":
@@ -76,6 +80,8 @@ class SessionOrchestrationConfig:
         hang_idle_ticks = _coerce_positive_int(
             data.get("hang_idle_ticks"), _DEFAULT_HANG_IDLE_TICKS
         )
+        repos = data.get("repos")
+        repos = repos if isinstance(repos, dict) else {}
 
         return cls(
             enabled=enabled,
@@ -83,6 +89,7 @@ class SessionOrchestrationConfig:
             external_runs_channel_id=external_runs_channel_id,
             hang_stale_seconds=hang_stale_seconds,
             hang_idle_ticks=hang_idle_ticks,
+            repos=repos,
         )
 
 

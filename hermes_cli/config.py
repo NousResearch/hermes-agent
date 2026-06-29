@@ -2470,6 +2470,12 @@ DEFAULT_CONFIG = {
         # N pane-hash-unchanged ticks before a RUNNING session is
         # declared hung.  Each tick is ~1–2 min depending on cron cadence.
         "hang_idle_ticks": 3,
+
+        # Manual repo registry overrides.  Keys are aliases; values are either
+        # an absolute path string (shorthand) or a dict with ``path`` and an
+        # optional ``default_agent`` (defaults to "omp").
+        # See cli-config.yaml.example for the full documented format.
+        "repos": {},
     },
 }
 

@@ -1,5 +1,6 @@
 """
-Tests for session_orchestration/config.py (T016 — Config gating).
+Tests for session_orchestration/config.py (T016 — Config gating) and
+session_orchestration/repo_registry.py (T002 — Repo registry).
 
 Covers:
   - Defaults (enabled=False when unset or file absent)
@@ -9,6 +10,7 @@ Covers:
   - Malformed / unexpected values fall back to defaults gracefully
   - is_enabled() convenience wrapper
   - _KNOWN_ROOT_KEYS includes session_orchestration (schema registration)
+  - Repo registry: known-name resolution, fuzzy match, override priority, unresolved
 """
 
 from __future__ import annotations
@@ -25,6 +27,15 @@ from session_orchestration.config import (
     _coerce_positive_int,
     is_enabled,
     load_session_orchestration_config,
+)
+from session_orchestration.repo_registry import (
+    DEFAULT_AGENT,
+    RepoEntry,
+    RepoRegistry,
+    ResolvedRepo,
+    UnresolvedRepo,
+    build_repo_registry,
+    scan_for_repos,
 )
 
 
@@ -328,3 +339,222 @@ def test_coerce_optional_str(value: Any, expected: Optional[str]) -> None:
 )
 def test_coerce_positive_int(value: Any, default: int, expected: int) -> None:
     assert _coerce_positive_int(value, default) == expected
+
+
+# ---------------------------------------------------------------------------
+# 8. SessionOrchestrationConfig — repos field
+# ---------------------------------------------------------------------------
+
+
+def test_repos_defaults_to_empty_dict() -> None:
+    """repos field defaults to {} when absent from config."""
+    cfg = SessionOrchestrationConfig.from_dict({})
+    assert cfg.repos == {}
+
+
+def test_repos_parsed_from_dict() -> None:
+    """repos dict is extracted verbatim for downstream registry parsing."""
+    data = {
+        "repos": {
+            "myproject": "/home/user/myproject",
+            "infra": {"path": "/home/user/infra", "default_agent": "claude"},
+        }
+    }
+    cfg = SessionOrchestrationConfig.from_dict(data)
+    assert cfg.repos == data["repos"]
+
+
+def test_repos_non_dict_ignored() -> None:
+    """Non-dict repos value (e.g. a string) defaults to {}."""
+    cfg = SessionOrchestrationConfig.from_dict({"repos": "bad"})
+    assert cfg.repos == {}
+
+
+# ---------------------------------------------------------------------------
+# 9. Repo registry — core resolution tests (T002)
+# ---------------------------------------------------------------------------
+
+# These tests inject a fake scan dict so no filesystem access is needed.
+_FAKE_SCAN: Dict[str, str] = {
+    "hermes-agent": "/home/zeke/dev/hermes-agent",
+    "myproject": "/home/zeke/dev/myproject",
+    "infra-core": "/home/zeke/dev/infra-core",
+}
+
+
+def _registry(
+    overrides: Optional[Dict[str, RepoEntry]] = None,
+) -> RepoRegistry:
+    """Build a registry with the fake scan and given overrides."""
+    return RepoRegistry(overrides=overrides, _injected_scan=_FAKE_SCAN)
+
+
+def test_known_name_resolves_to_absolute_path() -> None:
+    """An exact name in the scan cache resolves to its absolute path."""
+    reg = _registry()
+    result = reg.resolve("hermes-agent")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/home/zeke/dev/hermes-agent"
+    assert result.match_kind == "exact"
+
+
+def test_known_name_case_insensitive() -> None:
+    """Resolution is case-insensitive for scan names."""
+    reg = _registry()
+    result = reg.resolve("Hermes-Agent")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/home/zeke/dev/hermes-agent"
+
+
+def test_default_agent_is_omp_when_not_specified() -> None:
+    """Auto-scanned repos use DEFAULT_AGENT (omp) when no override is present."""
+    reg = _registry()
+    result = reg.resolve("myproject")
+    assert isinstance(result, ResolvedRepo)
+    assert result.default_agent == DEFAULT_AGENT
+    assert result.default_agent == "omp"
+
+
+def test_fuzzy_suffix_match_resolves() -> None:
+    """A suffix-segment query (e.g. 'agent') resolves via fuzzy matching."""
+    reg = _registry()
+    result = reg.resolve("agent")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/home/zeke/dev/hermes-agent"
+    assert result.match_kind == "fuzzy"
+
+
+def test_fuzzy_substring_match_resolves() -> None:
+    """A substring query ('core') fuzzy-matches 'infra-core'."""
+    reg = _registry()
+    result = reg.resolve("core")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/home/zeke/dev/infra-core"
+    assert result.match_kind == "fuzzy"
+
+
+def test_unknown_name_returns_unresolved_sentinel() -> None:
+    """An unknown repo name returns UnresolvedRepo (never raises)."""
+    reg = _registry()
+    result = reg.resolve("totally-unknown-repo-xyz")
+    assert isinstance(result, UnresolvedRepo)
+    assert result.name == "totally-unknown-repo-xyz"
+
+
+def test_manual_override_wins_over_auto_scan() -> None:
+    """A manual override for an alias wins over an identically-named scan entry."""
+    overrides = {
+        "myproject": RepoEntry(path="/custom/override/path", default_agent="claude"),
+    }
+    reg = _registry(overrides=overrides)
+    result = reg.resolve("myproject")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/custom/override/path"
+    assert result.default_agent == "claude"
+    assert result.match_kind == "exact"
+
+
+def test_manual_override_alias_resolves() -> None:
+    """A manual override alias that doesn't appear in the scan resolves correctly."""
+    overrides = {
+        "prod-infra": RepoEntry(path="/prod/infra", default_agent="omp"),
+    }
+    reg = _registry(overrides=overrides)
+    result = reg.resolve("prod-infra")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/prod/infra"
+
+
+def test_manual_override_fuzzy_beats_scan_fuzzy() -> None:
+    """Override fuzzy match takes precedence over scan fuzzy match."""
+    # "infra" would fuzzy-match "infra-core" from the scan, but the override
+    # alias "infra-tool" also fuzzy-matches "infra" and overrides come first.
+    overrides = {
+        "infra-tool": RepoEntry(path="/override/infra-tool", default_agent="omp"),
+    }
+    reg = _registry(overrides=overrides)
+    result = reg.resolve("infra")
+    assert isinstance(result, ResolvedRepo)
+    # Could match either override "infra-tool" or scan "infra-core"; override wins
+    assert result.path == "/override/infra-tool"
+    assert result.match_kind == "fuzzy"
+
+
+# ---------------------------------------------------------------------------
+# 10. build_repo_registry — config parsing
+# ---------------------------------------------------------------------------
+
+
+def test_build_registry_string_shorthand() -> None:
+    """build_repo_registry parses the string shorthand form."""
+    repos_cfg = {"work": "/home/user/work"}
+    reg = build_repo_registry(repos_cfg=repos_cfg, _injected_scan={})
+    result = reg.resolve("work")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/home/user/work"
+    assert result.default_agent == DEFAULT_AGENT
+
+
+def test_build_registry_dict_form_with_agent() -> None:
+    """build_repo_registry parses the dict form with explicit default_agent."""
+    repos_cfg = {
+        "infra": {"path": "/home/user/infra", "default_agent": "claude"},
+    }
+    reg = build_repo_registry(repos_cfg=repos_cfg, _injected_scan={})
+    result = reg.resolve("infra")
+    assert isinstance(result, ResolvedRepo)
+    assert result.path == "/home/user/infra"
+    assert result.default_agent == "claude"
+
+
+def test_build_registry_none_repos_cfg() -> None:
+    """build_repo_registry with None repos_cfg builds an empty-overrides registry."""
+    reg = build_repo_registry(repos_cfg=None, _injected_scan={})
+    result = reg.resolve("anything")
+    assert isinstance(result, UnresolvedRepo)
+
+
+def test_build_registry_skips_empty_path() -> None:
+    """build_repo_registry skips aliases with empty paths without raising."""
+    repos_cfg = {"bad": ""}
+    reg = build_repo_registry(repos_cfg=repos_cfg, _injected_scan={})
+    result = reg.resolve("bad")
+    assert isinstance(result, UnresolvedRepo)
+
+
+# ---------------------------------------------------------------------------
+# 11. scan_for_repos — filesystem scan (uses a real temp dir)
+# ---------------------------------------------------------------------------
+
+
+def test_scan_finds_git_repos_in_root(tmp_path: Any) -> None:
+    """scan_for_repos returns repos discovered under a scan root."""
+    repo_dir = tmp_path / "my-repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    result = scan_for_repos(scan_roots=[str(tmp_path)])
+    assert "my-repo" in result
+    assert result["my-repo"] == str(repo_dir)
+
+
+def test_scan_skips_non_git_dirs(tmp_path: Any) -> None:
+    """scan_for_repos ignores directories that are not git repos."""
+    non_repo = tmp_path / "not-a-repo"
+    non_repo.mkdir()
+
+    result = scan_for_repos(scan_roots=[str(tmp_path)])
+    assert "not-a-repo" not in result
+
+
+def test_scan_returns_empty_for_missing_root(tmp_path: Any) -> None:
+    """scan_for_repos returns {} when a scan root does not exist."""
+    result = scan_for_repos(scan_roots=[str(tmp_path / "nonexistent")])
+    assert result == {}
+
+
+def test_scan_includes_root_itself_if_git_repo(tmp_path: Any) -> None:
+    """If the scan root itself is a git repo it is included."""
+    (tmp_path / ".git").mkdir()
+    result = scan_for_repos(scan_roots=[str(tmp_path)])
+    assert tmp_path.name.lower() in result

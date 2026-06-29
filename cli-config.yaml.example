@@ -1233,3 +1233,35 @@ updates:
 #   # Number of consecutive pane-hash-unchanged ticks before a RUNNING
 #   # session is declared hung.  Each tick is roughly 1-2 minutes.
 #   # hang_idle_ticks: 3
+#
+#   # ── Repo registry manual overrides ───────────────────────────────────────
+#   #
+#   # Hermes auto-scans ~/dev/* and ~/.hermes for git repos and makes them
+#   # available by their directory basename (case-insensitive).  Use ``repos:``
+#   # to add aliases, override paths, or set a per-repo default agent.
+#   #
+#   # Resolution order:
+#   #   1. Exact alias match in repos: overrides
+#   #   2. Exact basename match from the auto-scan cache
+#   #   3. Fuzzy match (suffix-segment or substring, overrides first)
+#   #   4. Literal filesystem path (must point at a git repo)
+#   #   5. Unresolved — Hermes asks the user for clarification
+#   #
+#   # Default agent when none is specified: omp
+#   #
+#   # Shorthand form (path only, uses default agent "omp"):
+#   # repos:
+#   #   myproject: /absolute/path/to/myproject
+#   #
+#   # Full form (explicit agent):
+#   # repos:
+#   #   myproject:
+#   #     path: /absolute/path/to/myproject
+#   #     default_agent: omp    # omp | claude (default: omp)
+#   #
+#   # Mixed example:
+#   # repos:
+#   #   work-api: /Users/alice/src/work-api
+#   #   infra:
+#   #     path: /home/alice/infra
+#   #     default_agent: claude

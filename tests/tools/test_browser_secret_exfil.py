@@ -126,7 +126,6 @@ class TestWebExtractSecretExfil:
         try:
             result = await web_tools.web_extract_tool(
                 urls=["https://wttr.in/Köln"],
-                use_llm_processing=False,
             )
         finally:
             web_search_registry._reset_for_tests()

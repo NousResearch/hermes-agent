@@ -349,6 +349,7 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/audio", "audio_cache"),
     ("cache/videos", "video_cache"),
     ("cache/screenshots", "browser_screenshots"),
+    ("cache/web", "web_cache"),
 ]
 
 

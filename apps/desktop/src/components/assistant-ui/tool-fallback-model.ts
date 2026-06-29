@@ -257,6 +257,18 @@ function isToolTitleKey(name: string): name is ToolTitleKey {
   return name in TOOL_META
 }
 
+/** The icon name the thread uses for a tool, so other surfaces (e.g. the trace
+ *  waterfall) can render the same glyph. Falls back to the generic tools icon. */
+export function toolIconName(name: string): string {
+  if (isToolTitleKey(name)) {
+    return TOOL_META[name].icon ?? 'tools'
+  }
+
+  const prefix = PREFIX_META.find(p => name.startsWith(p.prefix))
+
+  return prefix?.icon ?? 'tools'
+}
+
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
 const BACKTICK_NOISE_RE = /`{3,}/g

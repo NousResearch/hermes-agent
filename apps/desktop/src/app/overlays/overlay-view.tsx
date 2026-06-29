@@ -49,7 +49,11 @@ export function OverlayView({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/22 p-3 backdrop-blur-[0.125rem] sm:p-6"
+      className={cn(
+        'fixed inset-0 z-50 bg-black/22 backdrop-blur-[0.125rem]',
+        'p-3 pt-[calc(var(--titlebar-height)+0.625rem)] pl-[max(0.75rem,calc(var(--titlebar-content-inset,0px)+0.25rem))]',
+        'sm:p-6 sm:pt-[calc(var(--titlebar-height)+0.875rem)] sm:pl-[max(1.5rem,calc(var(--titlebar-content-inset,0px)+0.25rem))]'
+      )}
       onClick={event => {
         if (event.target === event.currentTarget) {
           closeOverlay()

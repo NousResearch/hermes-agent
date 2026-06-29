@@ -39,6 +39,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { liveTurnReset } from '@/store/live-turn'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setPetScale } from '@/store/pet-gallery'
@@ -767,6 +768,12 @@ export function usePromptActions({
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
+
+        // New user turn = the real trace boundary: reset the live turn + clear
+        // the prior turn's subagents here, so async re-entries / multi-round
+        // message.starts accumulate into one turn instead of clobbering it.
+        liveTurnReset(sessionId)
+        clearSessionSubagents(sessionId)
 
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. Detect this,

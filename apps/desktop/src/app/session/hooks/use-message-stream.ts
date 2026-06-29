@@ -31,6 +31,7 @@ import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
+import { liveToolComplete, liveToolStart, liveTurnAppendText, liveTurnEnd, liveTurnStart } from '@/store/live-turn'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -53,7 +54,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
-import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
@@ -857,7 +858,11 @@ export function useMessageStream({
         }
 
         flushQueuedDeltas(sessionId)
-        clearSessionSubagents(sessionId)
+        // NOTE: subagents are cleared on the user's submit (the real turn
+        // boundary), NOT here — message.start also fires per assistant round and
+        // for synthetic re-entries (async-delegation completion / notifications),
+        // which must accumulate into the same turn, not wipe it.
+        liveTurnStart(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
@@ -880,7 +885,9 @@ export function useMessageStream({
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
-          appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+          const text = coerceGatewayText(payload?.text)
+          appendAssistantDelta(sessionId, text)
+          liveTurnAppendText(sessionId, text)
         }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
@@ -945,6 +952,7 @@ export function useMessageStream({
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)
+        liveTurnEnd(sessionId)
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -985,6 +993,14 @@ export function useMessageStream({
         flushQueuedDeltas(sessionId)
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
 
+        if (event.type === 'tool.start') {
+          const toolId = String(payload?.tool_id ?? payload?.tool_call_id ?? payload?.id ?? payload?.name ?? '')
+
+          if (toolId) {
+            liveToolStart(sessionId, toolId, String(payload?.name ?? 'tool'))
+          }
+        }
+
         if (isActiveEvent) {
           setPetActivity({ reasoning: false, toolRunning: true })
         }
@@ -992,6 +1008,12 @@ export function useMessageStream({
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+
+          const toolId = String(payload?.tool_id ?? payload?.tool_call_id ?? payload?.id ?? payload?.name ?? '')
+
+          if (toolId) {
+            liveToolComplete(sessionId, toolId, payload?.error ? 'error' : 'ok')
+          }
 
           if (isActiveEvent) {
             setPetActivity({ toolRunning: false })

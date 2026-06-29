@@ -7824,6 +7824,109 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
+# ── Execution traces: span tree reconstructed from the session store ──
+# Powers the desktop /agents waterfall. A trace is derived on read from
+# sessions + messages (real server timestamps, parent_session_id lineage),
+# so it works for any session — live or historical — with no extra storage.
+
+
+def _resolve_trace_session(db, raw: str) -> str | None:
+    """Resolve a trace target id from a DB id/prefix OR a live gateway key.
+
+    The desktop tracks conversations by gateway ``session_key`` (a UUID), while
+    DB rows use timestamp ids. Fall back to the live agent's ``session_id`` for
+    that key so the overlay can trace the conversation the user is in.
+    """
+    sid = db.resolve_session_id(raw)
+    if sid:
+        return sid
+    sess = _sessions.get(raw)
+    agent = sess.get("agent") if isinstance(sess, dict) else None
+    live_id = getattr(agent, "session_id", None)
+    if live_id:
+        return db.resolve_session_id(live_id) or live_id
+    return None
+
+
+def _empty_trace(session_id: str) -> dict:
+    return {
+        "trace_id": f"trace:{session_id}",
+        "root_session_id": session_id,
+        "root_span_id": None,
+        "start": 0.0,
+        "end": 0.0,
+        "duration": 0.0,
+        "metadata": {},
+        "spans": [],
+    }
+
+
+@method("trace.get")
+def _(rid, params: dict) -> dict:
+    db = _get_db()
+    if db is None:
+        return _err(rid, 5000, "session store unavailable")
+
+    raw = str(params.get("session_id") or "").strip()
+    if not raw:
+        return _err(rid, 4000, "session_id required")
+    sid = _resolve_trace_session(db, raw)
+    if not sid:
+        return _err(rid, 4040, f"no session matching {raw!r}")
+
+    include_subagents = params.get("include_subagents", True)
+    turn = params.get("turn")
+
+    from agent.trace_builder import build_session_turns, build_trace
+
+    if turn is not None:
+        try:
+            turns = build_session_turns(db, sid, include_subagents=include_subagents)
+            ti = int(turn)
+            if ti < 0 or ti >= len(turns):
+                return _err(rid, 4040, f"turn {ti} out of range (0..{len(turns) - 1})")
+            return _ok(rid, turns[ti].to_dict())
+        except (TypeError, ValueError):
+            return _err(rid, 4000, "turn must be an integer")
+
+    trace = build_trace(db, sid, include_subagents=include_subagents)
+    # A live session with no flushed messages yet has no spans — return an empty
+    # trace (not an error) so the overlay shows "no activity" rather than failing.
+    return _ok(rid, trace.to_dict() if trace is not None else _empty_trace(sid))
+
+
+@method("trace.turns")
+def _(rid, params: dict) -> dict:
+    db = _get_db()
+    if db is None:
+        return _err(rid, 5000, "session store unavailable")
+
+    raw = str(params.get("session_id") or "").strip()
+    if not raw:
+        return _err(rid, 4000, "session_id required")
+    sid = _resolve_trace_session(db, raw)
+    if not sid:
+        return _ok(rid, {"session_id": raw, "turns": []})
+
+    from agent.trace_builder import build_session_turns
+
+    turns = build_session_turns(db, sid, include_subagents=True)
+    summaries = []
+    for ti, tr in enumerate(turns):
+        root = next((s for s in tr.spans if s.span_id == tr.root_span_id), None)
+        summaries.append(
+            {
+                "index": ti,
+                "label": root.name if root else f"turn {ti}",
+                "start": tr.start,
+                "end": tr.end,
+                "duration": tr.duration,
+                "span_count": len(tr.spans),
+            }
+        )
+    return _ok(rid, {"session_id": sid, "turns": summaries})
+
+
 # ── Spawn-tree snapshots: TUI-written, disk-persisted ────────────────
 # The TUI is the source of truth for subagent state (it assembles payloads
 # from the event stream).  On turn-complete it posts the final tree here;

@@ -2086,6 +2086,27 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_child_session_ids(self, parent_session_id: str) -> List[str]:
+        """Return subagent child session ids spawned by ``parent_session_id``.
+
+        Scoped to *ephemeral* children — delegate/subagent runs — using the same
+        predicate that hides them from session pickers. Branch forks and
+        compression continuations (which also carry ``parent_session_id``) are
+        intentionally excluded: a branch is a separate trace, and a compression
+        continuation is the same conversation rather than a nested subagent.
+        Ordered by ``started_at`` so callers can match them to spawn order.
+        """
+        if not parent_session_id:
+            return []
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT id FROM sessions s "
+                f"WHERE s.parent_session_id = ? AND {_ephemeral_child_sql('s')} "
+                f"ORDER BY s.started_at ASC, s.id ASC",
+                (parent_session_id,),
+            )
+            return [row["id"] for row in cursor.fetchall()]
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

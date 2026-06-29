@@ -15667,7 +15667,7 @@ def main(
                 # invocations are fast.
                 _query_label = query or ("[image attached]" if single_query_images else "")
                 if _query_label:
-                    cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+                    cli.console.print(f"[bold blue]Query:[/] {_escape(_query_label)}")
                 # Surface security advisories before the agent runs — short
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()

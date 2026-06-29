@@ -3066,7 +3066,26 @@ def select_provider_and_model(args=None):
         _aux_config_menu()
         return
 
-    # Step 2: Provider-specific setup + model selection
+    # Get display label for the selected provider
+    _selected_label = ""
+    for _key, _label, _members in ordered:
+        if _key == selected_provider:
+            _selected_label = _label.replace("  ← currently active", "").strip()
+            break
+
+    # Ask if user wants to make this the default provider
+    # This prevents accidentally overwriting model.base_url when just adding/configuring a provider
+    if selected_provider not in {"custom", "remove-custom", "aux-config", "cancel"} and not selected_provider.startswith("custom:"):
+        try:
+            _make_default = input(f"Make '{_selected_label}' your default provider? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            _make_default = "n"
+        if _make_default in {"n", "no"}:
+            # Configure provider only (credentials, base_url) without switching default
+            _configure_provider_only(config, selected_provider, _selected_label)
+            return
+
+    # Step 2: Provider-specific setup + model selection (make_default=True)
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "moa":
@@ -3608,6 +3627,179 @@ _DEFAULT_QWEN_PORTAL_MODELS = [
     "qwen3-coder-plus",
     "qwen3-coder",
 ]
+
+
+def _configure_provider_only(config, provider_id: str, provider_label: str):
+    """Configure a provider (credentials, base_url) WITHOUT making it the default.
+
+    This allows users to add/set up providers via `hermes model` without
+    overwriting their current model.provider and model.base_url.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        get_provider_auth_state,
+        _login_minimax_oauth,
+        _login_xai_oauth,
+        resolve_xai_oauth_runtime_credentials,
+        resolve_minimax_oauth_runtime_credentials,
+        resolve_qwen_runtime_credentials,
+        resolve_gemini_oauth_runtime_credentials,
+        DEFAULT_XAI_OAUTH_BASE_URL,
+        DEFAULT_QWEN_BASE_URL,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.secret_prompt import masked_secret_prompt
+    import argparse
+
+    print(f"\nConfiguring {provider_label} (without switching default)...\n")
+
+    # Handle OAuth providers
+    if provider_id == "xai-oauth":
+        from hermes_cli.auth import get_xai_oauth_auth_status, PROVIDER_REGISTRY
+        status = get_xai_oauth_auth_status()
+        if not status.get("logged_in"):
+            print("Not logged into xAI Grok OAuth. Starting login...")
+            try:
+                _login_xai_oauth(argparse.Namespace(manual_paste=False, no_browser=False, timeout=None), PROVIDER_REGISTRY["xai-oauth"])
+            except SystemExit:
+                print("Login cancelled.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+        else:
+            print("Already logged into xAI Grok OAuth.")
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "qwen-oauth":
+        from hermes_cli.auth import get_qwen_auth_status
+        status = get_qwen_auth_status()
+        if not status.get("logged_in"):
+            print("Not logged into Qwen CLI OAuth.")
+            print("Run: qwen auth qwen-oauth")
+            return
+        print("Already logged into Qwen CLI OAuth.")
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "minimax-oauth":
+        from hermes_cli.auth import get_provider_auth_state, PROVIDER_REGISTRY
+        state = get_provider_auth_state("minimax-oauth")
+        if not state or not state.get("access_token"):
+            print("Not logged into MiniMax. Starting OAuth login...")
+            try:
+                _login_minimax_oauth(argparse.Namespace(region="global", no_browser=False, timeout=15.0), PROVIDER_REGISTRY["minimax-oauth"])
+            except SystemExit:
+                print("Login cancelled.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+        else:
+            print("Already logged into MiniMax.")
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "google-gemini-cli":
+        from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials(force_refresh=False)
+            project_id = creds.get("project_id", "")
+            if project_id:
+                print(f"  Using GCP project: {project_id}")
+            else:
+                print("  No GCP project configured — free tier will be auto-provisioned on first request.")
+        except Exception as exc:
+            print(f"Failed to resolve Gemini credentials: {exc}")
+            return
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "copilot-acp":
+        print(f"{provider_label} requires no additional configuration.")
+        print(f"Use 'hermes model' to switch to it as default.")
+        return
+
+    if provider_id == "copilot":
+        print(f"{provider_label} requires GitHub Copilot authentication.")
+        print("Run: gh auth login")
+        print(f"Use 'hermes model' to switch to it as default.")
+        return
+
+    # Handle API key providers (OpenAI, Anthropic, DeepSeek, etc.)
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if pconfig and pconfig.api_key_env_vars:
+        key_env = pconfig.api_key_env_vars[0]
+        base_url_env = pconfig.base_url_env_var or ""
+        current_key = get_env_value(key_env) or ""
+        current_base = ""
+        if base_url_env:
+            current_base = get_env_value(base_url_env) or ""
+
+        print(f"API key environment variable: {key_env}")
+        if current_key:
+            print(f"  Current key: {current_key[:8]}...")
+        if current_base:
+            print(f"  Current base URL: {current_base}")
+
+        try:
+            api_key = masked_secret_prompt(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+
+        if api_key:
+            save_env_value(key_env, api_key)
+            print(f"API key saved to {key_env}.")
+        elif not current_key:
+            print("No API key provided.")
+
+        if base_url_env:
+            try:
+                override = input(f"Base URL [{current_base or pconfig.inference_base_url}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                override = ""
+            if override:
+                if not override.startswith(("http://", "https://")):
+                    print("Invalid URL — must start with http:// or https://. Keeping current value.")
+                else:
+                    save_env_value(base_url_env, override)
+                    print(f"Base URL saved to {base_url_env}.")
+
+        print(f"{provider_label} configured. Use 'hermes model' to switch to it as default.")
+        return
+
+    # Handle special providers
+    if provider_id == "openrouter":
+        print("OpenRouter configuration uses the Nous Portal flow.")
+        print("Run 'hermes model' and select OpenRouter to configure fully.")
+        return
+
+    if provider_id == "nous":
+        print("Nous Portal configuration requires the full setup flow.")
+        print("Run 'hermes model' and select Nous to configure fully.")
+        return
+
+    if provider_id == "openai-codex":
+        print("OpenAI Codex configuration requires the full setup flow.")
+        print("Run 'hermes model' and select OpenAI Codex to configure fully.")
+        return
+
+    if provider_id == "bedrock":
+        print("AWS Bedrock configuration requires AWS credentials.")
+        print("Run 'hermes auth add bedrock' to configure.")
+        return
+
+    if provider_id == "azure-foundry":
+        print("Azure Foundry configuration requires the full setup flow.")
+        print("Run 'hermes model' and select Azure Foundry to configure fully.")
+        return
+
+    # Fallback for unknown providers
+    print(f"Configuration for {provider_label} not implemented in 'configure only' mode.")
+    print("Run 'hermes model' and select this provider to configure fully.")
 
 
 def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:

@@ -258,6 +258,11 @@ class HonchoMemoryProvider(MemoryProvider):
         self._session_initialized = False
         self._lazy_init_kwargs: Optional[dict] = None
         self._lazy_init_session_id: Optional[str] = None
+        # Preserve the logical session inputs after lazy initialization clears
+        # the network-init refs. Named compartments must route to the same
+        # session title/gateway key as the primary workspace.
+        self._session_init_kwargs: dict = {}
+        self._session_init_session_id: str = ""
         self._init_thread: Optional[threading.Thread] = None
         self._init_lock = threading.Lock()
         self._init_error = ""
@@ -363,6 +368,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
             self._lazy_init_kwargs = dict(kwargs)
             self._lazy_init_session_id = session_id
+            self._session_init_kwargs = dict(kwargs)
+            self._session_init_session_id = session_id
             self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
 
             # Network-backed session creation can block on Honcho service or DB
@@ -548,10 +555,16 @@ class HonchoMemoryProvider(MemoryProvider):
             return False
 
         try:
+            init_session_id = self._lazy_init_session_id or "hermes-default"
+            init_kwargs = dict(self._lazy_init_kwargs)
+            if not self._session_init_session_id:
+                self._session_init_session_id = init_session_id
+            if not self._session_init_kwargs:
+                self._session_init_kwargs = dict(init_kwargs)
             self._do_session_init(
                 self._config,
-                self._lazy_init_session_id or "hermes-default",
-                **self._lazy_init_kwargs,
+                init_session_id,
+                **init_kwargs,
             )
             # Clear lazy refs
             self._lazy_init_kwargs = None
@@ -1352,8 +1365,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
             cfg = self._config.for_compartment(name)
             client = get_honcho_client(cfg)
-            init_kwargs = dict(self._lazy_init_kwargs or {})
-            init_session_id = self._lazy_init_session_id or self._session_key or "hermes-default"
+            init_kwargs = dict(self._session_init_kwargs or self._lazy_init_kwargs or {})
+            init_session_id = (
+                self._session_init_session_id
+                or self._lazy_init_session_id
+                or self._session_key
+                or "hermes-default"
+            )
             session_key = self._resolve_session_key(cfg, init_session_id, **init_kwargs)
             manager = HonchoSessionManager(
                 honcho=client,

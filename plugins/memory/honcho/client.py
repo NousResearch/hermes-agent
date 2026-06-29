@@ -588,11 +588,35 @@ class HonchoClientConfig:
                 name = str(raw_name).strip()
                 if not name or not isinstance(raw_block, dict):
                     continue
-                comp_api_key, comp_key_explicit = _resolve_api_key(
-                    raw_block,
-                    raw,
-                    config_path=path,
-                )
+                if raw_block.get("apiKey"):
+                    comp_api_key = str(raw_block.get("apiKey"))
+                    comp_key_explicit = True
+                else:
+                    comp_api_key = _read_api_key_file(
+                        raw_block.get("apiKeyFile"),
+                        config_path=path,
+                    )
+                    comp_key_explicit = bool(comp_api_key)
+                if not comp_api_key:
+                    # Compartment-level auth inherits from the active host before
+                    # falling back to root/env. The CLI labels this state as
+                    # "inherited/default", so host-scoped JWTs must work when a
+                    # compartment only overrides its workspace.
+                    if host_block.get("apiKey"):
+                        comp_api_key = str(host_block.get("apiKey"))
+                    else:
+                        comp_api_key = _read_api_key_file(
+                            host_block.get("apiKeyFile"),
+                            config_path=path,
+                        )
+                    comp_key_explicit = False
+                if not comp_api_key:
+                    comp_api_key, _ = _resolve_api_key(
+                        {},
+                        raw,
+                        config_path=path,
+                    )
+                    comp_key_explicit = False
                 comp_workspace = raw_block.get("workspace") or name
                 comp_base_url = (
                     raw_block.get("baseUrl")

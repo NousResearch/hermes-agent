@@ -179,6 +179,34 @@ class TestHonchoClientConfigAutoEnable:
         assert personal_cfg.api_key == "personal-key"
         assert personal_cfg.host == "hermes:personal"
 
+    def test_compartment_without_key_inherits_active_host_key(self, tmp_path, monkeypatch):
+        """CLI-listed inherited/default auth should inherit the active host key."""
+        host_key = tmp_path / "host.jwt"
+        host_key.write_text("host-key\n")
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text(json.dumps({
+            "baseUrl": "https://honcho.example.test",
+            "apiKey": "root-key",
+            "hosts": {
+                "hermes": {
+                    "workspace": "personal-prod",
+                    "apiKeyFile": "host.jwt",
+                    "compartments": {
+                        "ops": {"workspace": "ops-prod"},
+                    },
+                }
+            },
+        }))
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        ops_cfg = cfg.for_compartment("ops")
+
+        assert cfg.api_key == "host-key"
+        assert ops_cfg.workspace_id == "ops-prod"
+        assert ops_cfg.api_key == "host-key"
+        assert ops_cfg.api_key_explicit is False
+
 
 def test_honcho_config_schema_documents_file_backed_compartments():
     provider = HonchoMemoryProvider()

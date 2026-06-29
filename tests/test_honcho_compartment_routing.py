@@ -163,3 +163,57 @@ def test_honcho_tool_lazily_initializes_configured_compartment_manager(monkeypat
         ("get_or_create", "Compartment-Test"),
         ("search_context", "Compartment-Test", "routing", 800, "user"),
     ]
+
+def test_honcho_compartment_route_preserves_session_context_after_primary_lazy_init(monkeypatch):
+    """Compartment route must use the same logical session after lazy refs clear."""
+    provider = HonchoMemoryProvider()
+    provider._session_initialized = False
+    provider._lazy_init_session_id = "session-123"
+    provider._lazy_init_kwargs = {"session_title": "Compartment Test"}
+    provider._config = HonchoClientConfig(
+        workspace_id="personal-prod",
+        api_key="personal-key",
+        base_url="https://honcho.example.test",
+        compartments={
+            "ops": HonchoCompartmentConfig(
+                name="ops",
+                workspace_id="ops-prod",
+                api_key="ops-key",
+                base_url="https://honcho.example.test",
+            )
+        },
+    )
+
+    built = []
+
+    def fake_get_honcho_client(cfg):
+        built.append((cfg.host, cfg.workspace_id, cfg.api_key))
+        return object()
+
+    class FakeSessionManager(_FakeManager):
+        def __init__(self, **kwargs):
+            super().__init__(kwargs["config"].workspace_id)
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("plugins.memory.honcho.client.get_honcho_client", fake_get_honcho_client)
+    monkeypatch.setattr("plugins.memory.honcho.session.HonchoSessionManager", FakeSessionManager)
+
+    result = json.loads(
+        provider.handle_tool_call(
+            "honcho_search",
+            {"query": "routing", "compartment": "ops"},
+        )
+    )
+
+    assert result == {"result": "ops-prod:Compartment-Test:routing:user"}
+    assert built == [
+        ("hermes", "personal-prod", "personal-key"),
+        ("hermes:ops", "ops-prod", "ops-key"),
+    ]
+    assert provider._lazy_init_kwargs is None
+    assert provider._lazy_init_session_id is None
+    assert provider._session_key == "Compartment-Test"
+    assert provider._compartment_managers["ops"].calls == [
+        ("get_or_create", "Compartment-Test"),
+        ("search_context", "Compartment-Test", "routing", 800, "user"),
+    ]

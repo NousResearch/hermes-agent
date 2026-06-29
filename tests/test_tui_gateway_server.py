@@ -5962,10 +5962,14 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     assert "kimi-k2.6" in payload.get("text", "")
 
 
-def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
-    """An empty final_response with NO backend error must stay empty — do not
-    synthesize an error string. Preserves the existing None/empty-sentinel
-    semantics owned by downstream handlers."""
+def test_prompt_submit_synthesizes_graceful_fallback_for_empty_response(monkeypatch):
+    """An empty final_response with NO backend error gets a graceful
+    "The task completed." fallback so the TUI/desktop always receives a
+    terminal assistant bubble. We MUST NOT fabricate an "Error:" string
+    (handled by ``test_prompt_submit_surfaces_backend_error_as_visible_text``)
+    — the fallback is a neutral completion notice. Regression for #54756
+    where an empty successful turn left the client looking unfinished.
+    """
 
     class _Agent:
         def run_conversation(
@@ -6004,7 +6008,110 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     payload = complete_events[-1][2]
     # Status stays "complete" because no error flag was set
     assert payload.get("status") == "complete"
-    # Text stays empty — we did NOT fabricate an "Error:" string
+    # Text is a graceful completion notice — NOT an "Error:" string
+    text = payload.get("text", "")
+    assert text, "expected graceful fallback text, got empty"
+    assert "Error:" not in text, f"must not fabricate Error: string, got {text!r}"
+
+
+def test_prompt_submit_falls_back_to_turn_completion_explanation(monkeypatch):
+    """When ``turn_exit_reason`` is set on an empty successful turn, prefer
+    the agent's turn-completion explainer (e.g. "No reply: …") over the
+    generic "The task completed." sentinel. Regression for #54756 — gives
+    users an actionable reason for the empty turn instead of a vague
+    completion notice.
+    """
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "(empty)",
+                "messages": [],
+                "api_calls": 1,
+                "completed": True,
+                "turn_exit_reason": "empty_response_exhausted",
+            }
+
+        def _format_turn_completion_explanation(self, reason):
+            return f"No reply: {reason}"
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    text = payload.get("text", "")
+    assert text == "No reply: empty_response_exhausted", f"got {text!r}"
+
+
+def test_prompt_submit_does_not_synthesize_for_interrupted_turns(monkeypatch):
+    """The graceful fallback only fires for ``status == "complete"`` turns.
+    An interrupted turn with empty final_response must keep its existing
+    semantics — a fresh user prompt or a follow-up is the next move, and
+    a synthesised "The task completed." would lie about the outcome.
+    Regression guard for #54756 — the fallback is intentionally narrow.
+    """
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": None,
+                "messages": [],
+                "api_calls": 1,
+                "completed": False,
+                "interrupted": True,
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello"},
+        }
+    )
+
+    complete_events = [e for e in emitted if e[0] == "message.complete"]
+    assert complete_events, "expected message.complete to be emitted"
+    payload = complete_events[-1][2]
+    assert payload.get("status") == "interrupted"
+    # Interrupted turns are not the failure mode — keep text empty so the
+    # client renders whatever partial state it already has.
     text = payload.get("text", "")
     assert text in {"", None}, f"expected empty text, got {text!r}"
 

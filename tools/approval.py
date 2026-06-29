@@ -500,8 +500,8 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+push\b.*?--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b.*?-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
     # Script execution after chmod +x — catches the two-step pattern where
@@ -711,6 +711,57 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     return _fold_home_prefixes(command, candidates, "~/.hermes")
 
 
+_ALLOWED_FORCE_WITH_LEASE_RE = re.compile(
+    r'^git\s+push\s+--force-with-lease(?:=\S+)?\s+(\w\S*)\s+(?:HEAD:)?(\w\S*)\s*(?:$|&&|\|\||;|\n)',
+    _RE_FLAGS,
+)
+
+
+def _is_allowed_force_with_lease_branch_push(command_from_match: str) -> bool:
+    """Allow a narrow safe-ish `git push --force-with-lease` shape.
+
+    Expects a substring that begins at the dangerous match start. Permits:
+        git push --force-with-lease <remote> <branch>
+        git push --force-with-lease <remote> HEAD:<branch>
+
+    ...as long as the explicit destination is a branch update whose branch
+    name contains a ``/`` separator.
+
+    This intentionally stays narrow:
+    - no plain ``--force`` / ``-f``
+    - no implicit destination branch
+    - no extra positional refspecs
+    - no additional options beyond ``--force-with-lease``
+    - no non-branch namespaces like ``refs/tags/`` or ``refs/notes/``
+    """
+    match = _ALLOWED_FORCE_WITH_LEASE_RE.match(command_from_match)
+    if not match:
+        return False
+
+    _remote, target_ref = match.groups()
+    normalized_target_ref = target_ref
+    lower_target_ref = normalized_target_ref.lower()
+    if lower_target_ref.startswith("refs/heads/"):
+        normalized_target_ref = normalized_target_ref[len("refs/heads/"):]
+        lower_target_ref = normalized_target_ref.lower()
+    elif lower_target_ref.startswith("refs/"):
+        return False
+
+    return "/" in normalized_target_ref and not normalized_target_ref.endswith("/")
+
+
+def _dangerous_match_is_safely_overridden(
+    command: str,
+    *,
+    pattern_key: str,
+    match: re.Match[str],
+) -> bool:
+    """Check whether a specific dangerous match is cancelled by a safe override."""
+    if pattern_key != "git force push (rewrites remote history)":
+        return False
+    return _is_allowed_force_with_lease_branch_push(command[match.start():])
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -719,8 +770,14 @@ def detect_dangerous_command(command: str) -> tuple:
     """
     command_lower = _normalize_command_for_detection(command).lower()
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
+        for match in pattern_re.finditer(command_lower):
             pattern_key = description
+            if _dangerous_match_is_safely_overridden(
+                command_lower,
+                pattern_key=pattern_key,
+                match=match,
+            ):
+                continue
             return (True, pattern_key, description)
     return (False, None, None)
 

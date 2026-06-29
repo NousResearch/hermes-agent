@@ -694,8 +694,12 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     _info(f"Starting OAuth flow for '{name}'...")
 
     # Probe triggers the OAuth flow (browser redirect + callback capture).
+    # The whole interactive browser authorization happens INSIDE this probe
+    # call, so it needs a generous timeout — the default 40s is not enough for
+    # a human to open the URL, approve, and paste the redirect back. Allow up
+    # to ~5 min (matches the OAuth provider's own 300s callback wait).
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(name, server_config, connect_timeout=300)
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +
         # tools/list WITHOUT auth, so the probe lists tools even when the

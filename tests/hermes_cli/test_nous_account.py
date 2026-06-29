@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import hermes_cli.nous_account as nous_account
 from hermes_cli.nous_account import (
     NousPaidServiceAccessInfo,
     NousPortalAccountInfo,
@@ -73,11 +74,73 @@ def _account_payload(
     }
 
 
+class _FakePortalResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> "_FakePortalResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        if size is None or size < 0:
+            return self.body
+        return self.body[:size]
+
+
 @pytest.fixture(autouse=True)
 def _reset_cache():
     reset_nous_portal_account_info_cache()
     yield
     reset_nous_portal_account_info_cache()
+
+
+def test_fetch_nous_account_info_bounds_response_read(monkeypatch):
+    response = _FakePortalResponse(
+        json.dumps({"user": {"email": "alice@example.test"}}).encode()
+    )
+    captured = []
+
+    def _urlopen(req, timeout):
+        captured.append((req, timeout))
+        return response
+
+    monkeypatch.setattr(nous_account.urllib.request, "urlopen", _urlopen)
+
+    payload = nous_account._fetch_nous_account_info(
+        "portal-token",
+        "https://portal.example.test/",
+    )
+
+    assert payload == {"user": {"email": "alice@example.test"}}
+    assert response.read_sizes == [
+        nous_account._NOUS_ACCOUNT_RESPONSE_BODY_MAX_BYTES + 1
+    ]
+    assert captured[0][0].full_url == "https://portal.example.test/api/oauth/account"
+    assert captured[0][1] == 8
+
+
+def test_fetch_nous_account_info_rejects_oversized_response(monkeypatch):
+    response = _FakePortalResponse(
+        b"x" * (nous_account._NOUS_ACCOUNT_RESPONSE_BODY_MAX_BYTES + 1)
+    )
+
+    monkeypatch.setattr(
+        nous_account.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: response,
+    )
+
+    with pytest.raises(nous_account._NousAccountResponseTooLarge):
+        nous_account._fetch_nous_account_info("portal-token")
+
+    assert response.read_sizes == [
+        nous_account._NOUS_ACCOUNT_RESPONSE_BODY_MAX_BYTES + 1
+    ]
 
 
 def test_valid_jwt_with_paid_access_true(monkeypatch):

@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
 
+_FETCH_MODELS_MAX_BYTES = 4 * 1024 * 1024
+
 
 def _profile_user_agent() -> str:
     """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
@@ -33,6 +35,29 @@ def _profile_user_agent() -> str:
         return f"hermes-cli/{_ver}"
     except Exception:
         return "hermes-cli"
+
+
+def _read_fetch_models_body(resp: Any) -> bytes:
+    """Read a provider model-list response without trusting its body size."""
+    content_length = None
+    headers = getattr(resp, "headers", None)
+    if headers is not None:
+        try:
+            content_length = headers.get("Content-Length") or headers.get("content-length")
+        except Exception:
+            content_length = None
+    if content_length is not None:
+        try:
+            length = int(content_length)
+        except (TypeError, ValueError):
+            length = None
+        if length is not None and length > _FETCH_MODELS_MAX_BYTES:
+            raise ValueError("provider model list response is too large")
+
+    raw = resp.read(_FETCH_MODELS_MAX_BYTES + 1)
+    if len(raw) > _FETCH_MODELS_MAX_BYTES:
+        raise ValueError("provider model list response is too large")
+    return raw
 
 
 @dataclass
@@ -209,7 +234,7 @@ class ProviderProfile:
 
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(_read_fetch_models_body(resp).decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
         except Exception as exc:

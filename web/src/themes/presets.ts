@@ -199,6 +199,7 @@ export const nousBlueTheme: DashboardTheme = {
   typography: DEFAULT_TYPOGRAPHY,
   layout: DEFAULT_LAYOUT,
   terminalBackground: "#f5f8fc",
+  terminalForeground: "#170d02",
   seriesColors: {
     inputTokenAccent: "#001934",
     outputTokenAccent: "#0053fd",

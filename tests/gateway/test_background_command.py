@@ -338,13 +338,13 @@ class TestRunBackgroundTask:
             await runner._run_background_task("make stuff", source, "bg_test")
 
             mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            assert _os.path.normpath(mock_adapter.send_voice.call_args.kwargs["audio_path"]) == _os.path.normpath(_ogg)
             mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            assert _os.path.normpath(mock_adapter.send_video.call_args.kwargs["video_path"]) == _os.path.normpath(_mp4)
             mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            assert _os.path.normpath(mock_adapter.send_image_file.call_args.kwargs["image_path"]) == _os.path.normpath(_png)
             mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+            assert _os.path.normpath(mock_adapter.send_document.call_args.kwargs["file_path"]) == _os.path.normpath(_pdf)
         finally:
             import shutil as _shutil
             _shutil.rmtree(_tmpdir, ignore_errors=True)

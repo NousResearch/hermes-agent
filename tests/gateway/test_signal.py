@@ -1,6 +1,7 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -1170,10 +1171,7 @@ class TestSignalSendResultValidation:
     @pytest.mark.asyncio
     async def test_rpc_raises_rate_limit_on_results_failure(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
-        mock_client = AsyncMock()
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
+        _install_fake_client(adapter, {
             "jsonrpc": "2.0",
             "result": {
                 "timestamp": 1712345678000,
@@ -1186,9 +1184,7 @@ class TestSignalSendResultValidation:
                 ]
             },
             "id": "1"
-        }
-        mock_client.post = AsyncMock(return_value=mock_response)
-        adapter.client = mock_client
+        })
 
         from gateway.platforms.signal_rate_limit import SignalRateLimitError
         with pytest.raises(SignalRateLimitError) as exc_info:
@@ -1662,8 +1658,10 @@ class TestSignalQuoteExtraction:
 class _FakeHttpResponse:
     """Minimal stand-in for httpx.Response — only what _rpc touches."""
 
-    def __init__(self, json_data):
+    def __init__(self, json_data=None, *, body_chunks=None, headers=None):
         self._json = json_data
+        self._body_chunks = body_chunks
+        self.headers = headers or {}
 
     def raise_for_status(self):
         return None
@@ -1671,15 +1669,37 @@ class _FakeHttpResponse:
     def json(self):
         return self._json
 
+    async def aiter_bytes(self, chunk_size=None):
+        chunks = self._body_chunks
+        if chunks is None:
+            chunks = [json.dumps(self._json or {}).encode("utf-8")]
+        for chunk in chunks:
+            yield chunk
 
-def _install_fake_client(adapter, json_data):
-    """Replace adapter.client.post with an async fn returning json_data."""
+
+class _FakeHttpStream:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *args):
+        return None
+
+
+def _install_fake_client(adapter, json_data=None, *, body_chunks=None, headers=None):
+    """Replace adapter.client.stream with a fake response stream."""
     from types import SimpleNamespace
 
-    async def _post(url, json=None, timeout=None):
-        return _FakeHttpResponse(json_data)
+    def _stream(method, url, json=None, timeout=None):
+        return _FakeHttpStream(_FakeHttpResponse(
+            json_data,
+            body_chunks=body_chunks,
+            headers=headers,
+        ))
 
-    adapter.client = SimpleNamespace(post=_post)
+    adapter.client = SimpleNamespace(stream=_stream)
 
 
 class TestSignalRpcRateLimit:
@@ -1720,6 +1740,38 @@ class TestSignalRpcRateLimit:
 
         result = await adapter._rpc("send", {})
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_rejects_oversized_content_length(self, monkeypatch, caplog):
+        import gateway.platforms.signal as signal_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        monkeypatch.setattr(signal_module, "SIGNAL_RPC_RESPONSE_MAX_BYTES", 8)
+        _install_fake_client(
+            adapter,
+            {"result": "ok"},
+            headers={"content-length": "9"},
+        )
+
+        with caplog.at_level("WARNING"):
+            result = await adapter._rpc("send", {})
+
+        assert result is None
+        assert "Signal RPC response exceeds 8 bytes" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_rejects_oversized_streamed_body(self, monkeypatch, caplog):
+        import gateway.platforms.signal as signal_module
+
+        adapter = _make_signal_adapter(monkeypatch)
+        monkeypatch.setattr(signal_module, "SIGNAL_RPC_RESPONSE_MAX_BYTES", 8)
+        _install_fake_client(adapter, body_chunks=[b"x" * 9])
+
+        with caplog.at_level("WARNING"):
+            result = await adapter._rpc("send", {})
+
+        assert result is None
+        assert "Signal RPC response exceeds 8 bytes" in caplog.text
 
     @pytest.mark.asyncio
     async def test_non_rate_limit_error_does_not_raise_when_opted_in(self, monkeypatch):

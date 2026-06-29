@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
+SIGNAL_RPC_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
 SSE_RETRY_DELAY_INITIAL = 2.0
@@ -78,6 +79,36 @@ HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before conc
 def _parse_comma_list(value: str) -> List[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [v.strip() for v in value.split(",") if v.strip()]
+
+
+async def _read_signal_rpc_json_response(response: httpx.Response) -> Dict[str, Any]:
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError:
+            declared_size = None
+        if declared_size is not None and declared_size > SIGNAL_RPC_RESPONSE_MAX_BYTES:
+            raise ValueError(
+                f"Signal RPC response exceeds {SIGNAL_RPC_RESPONSE_MAX_BYTES} bytes"
+            )
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        if len(body) + len(chunk) > SIGNAL_RPC_RESPONSE_MAX_BYTES:
+            raise ValueError(
+                f"Signal RPC response exceeds {SIGNAL_RPC_RESPONSE_MAX_BYTES} bytes"
+            )
+        body.extend(chunk)
+
+    if not body:
+        return {}
+    data = json.loads(bytes(body).decode("utf-8", "replace"))
+    if not isinstance(data, dict):
+        raise ValueError("Signal RPC response JSON was not an object")
+    return data
 
 
 def _guess_extension(data: bytes) -> str:
@@ -958,13 +989,14 @@ class SignalAdapter(BasePlatformAdapter):
         }
 
         try:
-            resp = await self.client.post(
+            async with self.client.stream(
+                "POST",
                 f"{self.http_url}/api/v1/rpc",
                 json=payload,
                 timeout=timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            ) as resp:
+                resp.raise_for_status()
+                data = await _read_signal_rpc_json_response(resp)
 
             if "error" in data:
                 err = data["error"]

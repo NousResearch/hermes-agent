@@ -164,6 +164,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    NOSTR = "nostr"
     RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
     @classmethod
     def _missing_(cls, value):
@@ -490,6 +491,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
     ),
+    Platform.NOSTR: lambda cfg: bool(cfg.extra.get("nsec")),
     # Relay dials OUT to a connector; it is "connected" once an endpoint URL is
     # configured (extra["relay_url"] or extra["url"]). The capability descriptor
     # is negotiated at handshake time, so the URL is the only config-level
@@ -1239,6 +1241,30 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # re-enabling a platform the user explicitly disabled (migrated plugin
         # platforms — telegram, matrix — flow through here too, #41112). The
         # flag is cleared once for all platforms in the final cleanup at the
+    # Nostr
+    nostr_enabled = os.getenv("NOSTR_ENABLED", "").lower() in {"true", "1", "yes"}
+    nostr_disabled_explicitly = os.getenv("NOSTR_ENABLED", "").lower() in {"false", "0", "no"}
+    if nostr_enabled and not nostr_disabled_explicitly:
+        if Platform.NOSTR not in config.platforms:
+            config.platforms[Platform.NOSTR] = PlatformConfig()
+        config.platforms[Platform.NOSTR].enabled = True
+        # Nostr private key (nsec) from environment
+        nostr_nsec = os.getenv("NOSTR_NSEC")
+        if nostr_nsec:
+            config.platforms[Platform.NOSTR].extra["nsec"] = nostr_nsec
+        # Nostr relays (optional, defaults to a set of public relays)
+        nostr_relays = os.getenv("NOSTR_RELAYS", "")
+        if nostr_relays:
+            config.platforms[Platform.NOSTR].extra["relays"] = [r.strip() for r in nostr_relays.split(",") if r.strip()]
+        # Nostr home channel (optional)
+        nostr_home = os.getenv("NOSTR_HOME_CHANNEL")
+        if nostr_home and Platform.NOSTR in config.platforms:
+            config.platforms[Platform.NOSTR].home_channel = HomeChannel(
+                platform=Platform.NOSTR,
+                chat_id=nostr_home,
+                name=os.getenv("NOSTR_HOME_CHANNEL_NAME", "Home"),
+                thread_id=os.getenv("NOSTR_HOME_CHANNEL_THREAD_ID") or None,
+            )
         # end of _apply_env_overrides.
         enabled_was_explicit = bool(platform_config.extra.get("_enabled_explicit", False))
         if not platform_config.enabled and not enabled_was_explicit:

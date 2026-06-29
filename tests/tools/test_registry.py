@@ -544,3 +544,58 @@ class TestThreadSafety:
         toolsets = result_holder["value"]
         assert "gated" in toolsets
         assert toolsets["gated"]["available"] is True
+
+
+class TestToolsetAvailabilityAggregation:
+    def test_mixed_toolset_available_when_general_tool_passes(self):
+        """Desktop-only helpers must not hide general-purpose tools from doctor."""
+        reg = ToolRegistry()
+        reg.register(
+            name="read_terminal",
+            toolset="terminal",
+            schema=_make_schema("read_terminal"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        reg.register(
+            name="terminal",
+            toolset="terminal",
+            schema=_make_schema("terminal"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="process",
+            toolset="terminal",
+            schema=_make_schema("process"),
+            handler=_dummy_handler,
+        )
+
+        available, unavailable = reg.check_tool_availability()
+
+        assert "terminal" in available
+        assert unavailable == []
+        assert reg.is_toolset_available("terminal")
+        assert reg.get_available_toolsets()["terminal"]["available"] is True
+
+    def test_mixed_toolset_unavailable_when_every_tool_is_gated(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="read_terminal",
+            toolset="terminal",
+            schema=_make_schema("read_terminal"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        reg.register(
+            name="terminal",
+            toolset="terminal",
+            schema=_make_schema("terminal"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+
+        available, unavailable = reg.check_tool_availability()
+
+        assert "terminal" not in available
+        assert any(item["name"] == "terminal" for item in unavailable)

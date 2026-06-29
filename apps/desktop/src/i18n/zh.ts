@@ -2015,6 +2015,24 @@ export const zh: Translations = {
       turnRunning: '运行中',
       currentTurnElapsed: '当前回合已用时间',
       contextUsage: '上下文用量',
+      contextUsagePanel: {
+        categories: {
+          conversation: '对话',
+          mcp: 'MCP',
+          memory: '记忆',
+          rules: '规则',
+          skills: '技能',
+          subagent_definitions: '子代理定义',
+          system_prompt: '系统提示词',
+          tool_definitions: '工具定义'
+        },
+        empty: '暂无上下文数据',
+        loading: '正在加载明细…',
+        percentFull: percent => `已用 ${percent}%`,
+        title: '上下文用量',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: '打开上下文用量明细',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
       yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',

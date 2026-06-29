@@ -884,6 +884,23 @@ def fetch_endpoint_model_metadata(
     return {}
 
 
+def get_cached_endpoint_model_metadata(base_url: str) -> Dict[str, Dict[str, Any]]:
+    """Return already-cached ``/models`` metadata for ``base_url`` without fetching.
+
+    Cache-only counterpart to :func:`fetch_endpoint_model_metadata` for hot paths
+    (e.g. session-info polling) that must never issue a blocking network call.
+    Returns ``{}`` on a cache miss or when the cached entry has expired.
+    """
+    normalized = _normalize_base_url(base_url)
+    if not normalized or _is_openrouter_base_url(normalized):
+        return {}
+    cached = _endpoint_model_metadata_cache.get(normalized)
+    cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
+    if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
+        return cached
+    return {}
+
+
 def _resolve_endpoint_context_length(
     model: str,
     base_url: str,

@@ -149,6 +149,15 @@ gateway:
     subscribed_suffix:     "（已訂閱 — 當 {task_id} 完成或被封鎖時將通知您）"
     truncated_suffix:      "…（已截斷；如需完整輸出請在終端機執行 `hermes kanban …`）"
     no_output:             "（無輸出）"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未設定人格"

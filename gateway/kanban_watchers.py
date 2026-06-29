@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from agent.i18n import t
+
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
@@ -486,17 +488,19 @@ class GatewayKanbanWatchersMixin:
                                     _title = (task.title if task else sub["task_id"])[:120]
                                     _assignee = task.assignee if task else ""
                                     _parts = []
-                                    if "completed" in _wake_kinds: _parts.append("已完成")
-                                    if "gave_up" in _wake_kinds: _parts.append("已放弃（重试次数耗尽）")
-                                    if "crashed" in _wake_kinds: _parts.append("崩溃（worker 异常退出），dispatcher 将重试")
-                                    if "timed_out" in _wake_kinds: _parts.append("超时，dispatcher 将重试")
-                                    if "blocked" in _wake_kinds: _parts.append("被阻塞，需要处理")
-                                    _status = "，".join(_parts) or "状态变化"
-                                    _synth = (
-                                        f"[kanban] 任务 {sub['task_id']} {_status}。\n"
-                                        f"标题: {_title}\n执行者: @{_assignee}\n"
-                                        f"看板: {board_slug}\n\n"
-                                        f"请检查结果或决定下一步动作。"
+                                    if "completed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.completed"))
+                                    if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
+                                    if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
+                                    if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
+                                    if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
+                                    _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
+                                    _synth = t(
+                                        "gateway.kanban.wake.message",
+                                        task_id=sub["task_id"],
+                                        status=_status,
+                                        title=_title,
+                                        assignee=_assignee,
+                                        board=board_slug,
                                     )
                                     from gateway.session import SessionSource
                                     from gateway.platforms.base import MessageEvent, MessageType

@@ -149,6 +149,15 @@ gateway:
     subscribed_suffix:     "(abone olundu — {task_id} tamamlandığında veya engellendiğinde bildirim alacaksınız)"
     truncated_suffix:      "… (kısaltıldı; tam çıktı için terminalinizde `hermes kanban …` komutunu kullanın)"
     no_output:             "(çıktı yok)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "`{path}/config.yaml` içinde yapılandırılmış kişilik yok"

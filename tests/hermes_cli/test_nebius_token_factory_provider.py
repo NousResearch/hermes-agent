@@ -25,7 +25,7 @@ def test_nebius_provider_profile_loads():
     assert profile.name == "nebius-token-factory"
     assert profile.display_name == "Nebius Token Factory"
     assert profile.base_url == "https://api.tokenfactory.nebius.com/v1"
-    assert profile.models_url == "https://api.tokenfactory.nebius.com/v1/models"
+    assert profile.models_url == "https://api.tokenfactory.nebius.com/v1/models?verbose=true"
     assert profile.env_vars[:2] == (
         "NEBIUS_API_KEY",
         "NEBIUS_TOKEN_FACTORY_API_KEY",

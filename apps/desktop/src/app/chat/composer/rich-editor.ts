@@ -172,6 +172,49 @@ export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
   }
 }
 
+/** Insert `text` at the current selection as a single native editing
+ *  transaction.
+ *
+ *  Unlike ``insertPlainTextAtCaret`` this routes through
+ *  ``document.execCommand('insertText')`` — which Chromium treats as ONE
+ *  undoable transaction — so Ctrl+Z reverts the whole insertion in one
+ *  step. The function is the recommended entry point for user-initiated
+ *  bulk text inserts (paste, IME commit, drag-and-drop of text) where
+ *  undo behavior matters; the manual fragment path is still used for
+ *  synthetic inserts that should NOT appear on the undo stack (chip
+ *  authoring, completion replacements).
+ *
+ *  We deliberately do not touch the DOM after the execCommand call:
+ *  Chromium's editing pipeline emits the same text-node + <br> shape
+ *  our other write paths use, and ``composerPlainText`` round-trips it
+ *  correctly. Any post-insert mutation would split the undo entry into
+ *  two separate transactions — the exact bug this helper exists to fix.
+ *
+ *  Returns the caret range left by Chromium at the end of the inserted
+ *  text, or ``null`` if the editor had no live selection (nothing to
+ *  do) or if ``execCommand`` was unavailable. */
+export function insertPlainTextUndoable(editor: HTMLElement, text: string): Range | null {
+  if (!text) {
+    return null
+  }
+
+  const hit = composerSelectionRange(editor)
+
+  if (!hit) {
+    return null
+  }
+
+  document.execCommand('insertText', false, text)
+
+  const selection = window.getSelection()
+
+  if (!selection || !selection.rangeCount) {
+    return null
+  }
+
+  return selection.getRangeAt(0)
+}
+
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND
  *  the single trailing space we auto-insert after it, atomically — so removing a
  *  directive never strands an orphaned space (the contenteditable-driven cleanup

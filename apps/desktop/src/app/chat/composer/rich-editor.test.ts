@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
   composerPlainText,
   deleteSelectionInEditor,
   insertPlainTextAtCaret,
+  insertPlainTextUndoable,
   normalizeComposerEditorDom,
   refChipElement,
   renderComposerContents,
@@ -105,6 +106,154 @@ describe('insertPlainTextAtCaret', () => {
     insertPlainTextAtCaret(editor, 'cd')
 
     expect(composerPlainText(editor)).toBe('abcdef')
+
+    editor.remove()
+  })
+})
+
+describe('insertPlainTextUndoable', () => {
+  // jsdom doesn't implement document.execCommand, so we stub it with the
+  // exact DOM mutations Chromium's contenteditable pipeline performs for a
+  // plain-text insert: a text node (with embedded \n) at the caret, and a
+  // <br> emitted for every internal newline.
+  let execCommandSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    execCommandSpy = vi.spyOn(document, 'execCommand').mockImplementation((command, _showUi, value) => {
+      if (command !== 'insertText' || typeof value !== 'string') {
+        return false
+      }
+
+      const selection = window.getSelection()
+
+      if (!selection || !selection.rangeCount) {
+        return false
+      }
+
+      const range = selection.getRangeAt(0)
+      range.deleteContents()
+
+      const lines = value.split('\n')
+
+      for (let index = 0; index < lines.length; index += 1) {
+        if (index > 0) {
+          range.insertNode(document.createElement('br'))
+        }
+
+        if (lines[index]) {
+          range.insertNode(document.createTextNode(lines[index]))
+        }
+      }
+
+      const caret = document.createRange()
+      caret.selectNodeContents(range.startContainer)
+      caret.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(caret)
+
+      return true
+    })
+  })
+
+  afterEach(() => {
+    execCommandSpy.mockRestore()
+  })
+
+  it('routes the insert through document.execCommand so the whole paste is one undo step', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertPlainTextUndoable(editor, 'https://example.com/some-long-link')
+
+    expect(execCommandSpy).toHaveBeenCalledTimes(1)
+    expect(execCommandSpy.mock.calls[0]?.[0]).toBe('insertText')
+    expect(execCommandSpy.mock.calls[0]?.[2]).toBe('https://example.com/some-long-link')
+    expect(composerPlainText(editor)).toBe('https://example.com/some-long-link')
+
+    editor.remove()
+  })
+
+  it('flattens Chromium-inserted <br> tags into the composer text-node + br shape', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertPlainTextUndoable(editor, 'first line\nsecond line\nthird line')
+
+    // User-visible contract: composerPlainText round-trips the inserted
+    // text. We do NOT assert on the exact DOM shape (e.g. no wrapper
+    // <div>) — execCommand's exact output varies across Chromium
+    // versions, and constraining the shape would force us to mutate the
+    // inserted range, which would split the undo entry.
+    expect(composerPlainText(editor)).toBe('first line\nsecond line\nthird line')
+
+    editor.remove()
+  })
+
+  it('replaces the existing selected span in one undoable transaction', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = 'abXYef'
+    document.body.append(editor)
+
+    const text = editor.firstChild!
+    const selection = window.getSelection()!
+    const range = document.createRange()
+
+    range.setStart(text, 2)
+    range.setEnd(text, 4)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    insertPlainTextUndoable(editor, 'cd')
+
+    expect(composerPlainText(editor)).toBe('abcdef')
+    // Single execCommand call, not one per character: the whole
+    // selection-replace is one transaction.
+    expect(execCommandSpy).toHaveBeenCalledTimes(1)
+
+    editor.remove()
+  })
+
+  it('is a no-op when there is no live selection', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+
+    // Force the selection to live outside the editor so composerSelectionRange
+    // returns null — insertPlainTextUndoable should bail without touching DOM.
+    const elsewhere = document.createElement('p')
+    document.body.append(elsewhere)
+    const selection = window.getSelection()!
+    const range = document.createRange()
+    range.selectNodeContents(elsewhere)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    const result = insertPlainTextUndoable(editor, 'ignored')
+
+    expect(result).toBeNull()
+    expect(execCommandSpy).not.toHaveBeenCalled()
+    expect(editor.textContent).toBe('')
+
+    editor.remove()
+    elsewhere.remove()
+  })
+
+  it('is a no-op for an empty string', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    const result = insertPlainTextUndoable(editor, '')
+
+    expect(result).toBeNull()
+    expect(execCommandSpy).not.toHaveBeenCalled()
+    expect(composerPlainText(editor)).toBe('')
 
     editor.remove()
   })

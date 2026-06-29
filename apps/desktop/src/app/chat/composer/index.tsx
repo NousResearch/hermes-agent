@@ -104,6 +104,7 @@ import {
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
   insertPlainTextAtCaret,
+  insertPlainTextUndoable,
   normalizeComposerEditorDom,
   placeCaretEnd,
   refChipElement,
@@ -813,7 +814,7 @@ export function ChatBar({
     }
 
     event.preventDefault()
-    insertPlainTextAtCaret(event.currentTarget, pastedText)
+    insertPlainTextUndoable(event.currentTarget, pastedText)
     flushEditorToDraft(event.currentTarget)
   }
 

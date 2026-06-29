@@ -1049,6 +1049,7 @@ export const en: Translations = {
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
     title: 'Profiles',
     count: count => `${count} ${count === 1 ? 'profile' : 'profiles'}`,
+    search: 'Search profiles...',
     loading: 'Loading profiles...',
     newProfile: 'New profile',
     allProfiles: 'All profiles',
@@ -1121,6 +1122,8 @@ export const en: Translations = {
 
   cron: {
     close: 'Close cron',
+    title: 'Scheduled jobs',
+    count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     search: 'Search cron jobs...',
     loading: 'Loading cron jobs...',
     states: {

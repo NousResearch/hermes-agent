@@ -276,6 +276,66 @@ class TestBlockAnchorThreshold:
         )
 
 
+class TestContentDivergenceGuard:
+    """A fuzzy match must not overwrite a region whose content differs from
+    old_string in more than formatting, even when a first/last-line anchor or a
+    partial line overlap lines up. Otherwise the edit lands on the wrong text
+    and the tool still reports success."""
+
+    def test_block_anchor_partial_middle_does_not_overwrite(self):
+        # The file's middle line is a real audit_log call. old_string names a
+        # different statement that never existed in the file, but shares the
+        # first and last lines. This must not replace the audit_log line.
+        content = (
+            "def handler(request):\n"
+            "    audit_log(request.user_id)\n"
+            "    return process(request)\n"
+        )
+        old_string = (
+            "def handler(request):\n"
+            "    validate(request.token)\n"
+            "    return process(request)"
+        )
+        new_string = (
+            "def handler(request):\n"
+            "    rate_limit(request)\n"
+            "    return process(request)"
+        )
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert count == 0, f"overwrote a non-matching region via {strategy}"
+        assert new == content
+        assert "audit_log(request.user_id)" in new
+
+    def test_context_aware_half_matching_block_does_not_overwrite(self):
+        # Only the first and last of four lines match the file. The two middle
+        # lines (the real balance check and ledger debit) never appear in
+        # old_string and must survive.
+        content = (
+            "def transfer(amount, dst):\n"
+            "    check_balance(amount)\n"
+            "    ledger.debit(amount, dst)\n"
+            "    return receipt(dst)\n"
+        )
+        old_string = (
+            "def transfer(amount, dst):\n"
+            "    # TODO add logging here\n"
+            "    pass\n"
+            "    return receipt(dst)"
+        )
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, "x = 1")
+        assert count == 0, f"overwrote a half-matching region via {strategy}"
+        assert "check_balance(amount)" in new
+        assert "ledger.debit(amount, dst)" in new
+
+    def test_genuine_single_line_drift_still_matches(self):
+        # The same block with one line lightly drifted is a legitimate rescue
+        # and must still apply, so the guard does not regress real edits.
+        content = "def foo():\n    x = 1\n    y = 2\n    return x + y\n"
+        old_string = "def foo():\n    x = 1\n    y = 9\n    return x + y"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, "def foo():\n    return 0\n")
+        assert count == 1
+
+
 class TestStrategyNameSurfaced:
     """Tests for the strategy name in the 4-tuple return (Bug 6)."""
 

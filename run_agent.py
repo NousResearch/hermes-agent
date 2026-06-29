@@ -3625,28 +3625,66 @@ class AIAgent:
 
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "") -> Any:
+        """Build an httpx.Client with proactive idle-connection reaping.
+
+        Previously this method injected a custom ``httpx.HTTPTransport``
+        with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
+        prevent CLOSE-WAIT accumulation on long-lived connections (#10324).
+
+        That approach broke streaming for providers behind reverse proxies
+        (OpenResty, Cloudflare, etc.) because the custom socket options
+        conflict with the proxy's chunked-transfer handling (#54049,
+        #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
+        and SSE encoding.
+
+        The fix moves connection lifecycle management from the socket layer
+        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
+        close idle pooled connections *before* a reverse proxy's typical
+        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
+        without modifying socket options.  The default httpx transport
+        preserves OS TCP defaults (including ``TCP_NODELAY``).
+        """
         try:
             import httpx as _httpx
-            import socket as _socket
 
-            if "api.githubcopilot.com" in str(base_url or "").lower():
-                return _httpx.Client()
-
-            _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
-            if hasattr(_socket, "TCP_KEEPIDLE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
-            elif hasattr(_socket, "TCP_KEEPALIVE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
-            # When a custom transport is provided, httpx won't auto-read proxy
-            # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings while still honoring NO_PROXY for
-            # loopback / local endpoints such as a locally hosted sub2api.
+            # Explicitly read proxy settings so requests route through
+            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
+
+            # Proactive pool reaping: close idle connections at 20 s,
+            # before reverse proxies (30–60 s typical) send FIN and
+            # cause CLOSE-WAIT accumulation.
+            _limits = _httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=20.0,
+            )
+
+            # Timeouts: generous read=None for SSE streaming endpoints.
+            _timeout = _httpx.Timeout(
+                connect=15.0,
+                read=None,
+                write=15.0,
+                pool=10.0,
+            )
+
+            # trust_env=True: preserves SSL_CERT_FILE / SSL_CERT_DIR for
+            # corporate users behind SSL-decrypting proxies.  When _proxy is
+            # None (NO_PROXY bypass or no proxy configured), we mount plain
+            # transports to prevent httpx from reading env proxy vars and
+            # creating an HTTPProxy mount that would bypass our NO_PROXY
+            # resolution.
+            _mounts = {}
+            if _proxy is None:
+                _mounts = {
+                    "http://": _httpx.HTTPTransport(),
+                    "https://": _httpx.HTTPTransport(),
+                }
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                limits=_limits,
+                timeout=_timeout,
                 proxy=_proxy,
+                mounts=_mounts or None,
             )
         except Exception:
             return None

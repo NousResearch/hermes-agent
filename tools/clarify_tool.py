@@ -188,11 +188,16 @@ def clarify_tool(
 
     user_response_text = str(user_response).strip()
     selected_choices = _selected_choices_from_response(user_response_text, choices)
-    if multi_select and choices and selected_choices:
-        if len(selected_choices) < min_selections:
+    if multi_select and choices:
+        if selected_choices:
+            if len(selected_choices) < min_selections:
+                return tool_error(f"Select at least {min_selections} choices.")
+            if max_selections is not None and len(selected_choices) > max_selections:
+                return tool_error(f"Select at most {max_selections} choices.")
+        elif not user_response_text and min_selections > 0:
             return tool_error(f"Select at least {min_selections} choices.")
-        if max_selections is not None and len(selected_choices) > max_selections:
-            return tool_error(f"Select at most {max_selections} choices.")
+        elif user_response_text and not allow_other:
+            return tool_error("Reply with one or more listed choices.")
 
     return json.dumps({
         "question": question,

@@ -263,6 +263,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const selectionSummary = selectedSummary || selectedChoice || customSummary
   const selectedChoiceCount = selectedChoices.length
   const canSubmitSelected = multiSelect && selectedChoiceCount > 0 && selectedChoiceCount >= minSelections
+  const canSkip = minSelections <= 0
 
   const selectChoice = useCallback(
     (choice: string) => {
@@ -452,9 +453,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       )}
 
       <div className="flex items-center justify-end gap-1">
-        <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
-          {copy.skip}
-        </Button>
+        {canSkip && (
+          <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
+            {copy.skip}
+          </Button>
+        )}
         {multiSelect && !trimmedDraft ? (
           <Button disabled={submitting || !canSubmitSelected} onClick={submitSelected} size="xs" type="button">
             {submitting ? <Loader2 className="size-3" /> : copy.selectSelected}

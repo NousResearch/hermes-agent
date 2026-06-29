@@ -5259,6 +5259,18 @@ def test_clarify_respond_enforces_multi_select_bounds():
         },
     )
     try:
+        empty = server.handle_request(
+            {
+                "id": "0",
+                "method": "clarify.respond",
+                "params": {"request_id": "rid-ms", "answer": ""},
+            }
+        )
+        assert empty.get("error")
+        assert empty["error"]["code"] == 4010
+        assert "Select at least 2 choices" in empty["error"]["message"]
+        assert not ev.is_set()
+
         too_few = server.handle_request(
             {
                 "id": "1",

@@ -228,11 +228,11 @@ class GatewaySlashCommandsMixin:
             session_info = ""
 
         if new_entry:
-            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_default")
+            header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_default")
         else:
             # No existing session, just create one
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
-            header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
+            header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_new")
 
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
@@ -262,9 +262,9 @@ class GatewaySlashCommandsMixin:
         # uses the freshly-created session. Without this, the binding
         # still points at the old session and the binding-lookup at the
         # top of _handle_message_with_agent would switch right back.
-        if self._is_telegram_topic_lane(source) and new_entry is not None:
+        if await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
             try:
-                self._record_telegram_topic_binding(source, new_entry)
+                await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
             except Exception:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
 
@@ -1175,7 +1175,7 @@ class GatewaySlashCommandsMixin:
         # (Telegram DM topic recovery) before deriving the override key, so
         # the override is stored under the key the next message turn reads
         # (#30479).
-        source = self._normalize_source_for_session_key(source)
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
         if override:
@@ -2331,7 +2331,7 @@ class GatewaySlashCommandsMixin:
         # Normalize the source (Telegram DM topic recovery) before deriving
         # the override key so storage matches the key the next message turn
         # reads — same fix as /model (#30479).
-        _reasoning_source = self._normalize_source_for_session_key(event.source)
+        _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
         self._show_reasoning = self._load_show_reasoning()
         self._reasoning_config = self._resolve_session_reasoning_config(
@@ -2825,7 +2825,7 @@ class GatewaySlashCommandsMixin:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
-                session_db=self._session_db,
+                session_db=getattr(self._session_db, "_db", self._session_db),
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
@@ -2870,7 +2870,8 @@ class GatewaySlashCommandsMixin:
                 if rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
-                    self._sync_telegram_topic_binding(
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding,
                         source, session_entry, reason="compress-command",
                     )
 
@@ -3090,7 +3091,7 @@ class GatewaySlashCommandsMixin:
                     )
                     if callable(schedule_rename):
                         try:
-                            schedule_rename(source, session_id, sanitized)
+                            await asyncio.to_thread(schedule_rename, source, session_id, sanitized)
                         except Exception:
                             logger.debug(
                                 "Failed to rename Telegram topic from /title",
@@ -3300,8 +3301,9 @@ class GatewaySlashCommandsMixin:
             return await self._handle_resume_command(resume_event)
 
         current_entry = self.session_store.get_or_create_session(source)
-        rows = query_session_listing(
-            self._session_db,
+        rows = await asyncio.to_thread(
+            query_session_listing,
+            getattr(self._session_db, "_db", self._session_db),
             source=source.platform.value if source.platform else None,
             current_session_id=current_entry.session_id,
             include_all_sources=include_all,

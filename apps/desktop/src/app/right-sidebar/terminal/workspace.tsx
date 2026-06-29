@@ -48,7 +48,7 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
     <>
       {terminals.map(term =>
         term.kind === 'agent' ? (
-          <AgentTerminalInstance active={term.id === activeId} key={term.id} procId={term.procId!} />
+          <AgentTerminalInstance active={term.id === activeId} id={term.id} key={term.id} procId={term.procId!} />
         ) : (
           <TerminalInstance
             active={term.id === activeId}

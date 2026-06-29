@@ -1171,7 +1171,7 @@ export function useMessageStream({
         // Live chunk from a background process → its read-only agent terminal tab.
         writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')
       } else if (event.type === 'terminal.close') {
-        // Agent closed its own read-only tab via process(action="close_terminal").
+        // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
       } else if (event.type === 'status.update') {

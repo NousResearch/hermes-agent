@@ -1,4 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
@@ -6,12 +8,13 @@ import { useEffect, useRef } from 'react'
 import { useTheme } from '@/themes/context'
 
 import { registerAgentTerminalWriter } from './agent-terminal-stream'
+import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { resolveSurfaceColor, terminalTheme } from './selection'
 
 // Read-only terminal for an agent background process: a write-only xterm (no PTY,
 // no input) fed live by the backend output stream, keyed by process id. Shares
 // the user terminal's look so the two read as one surface.
-export function useAgentTerminal({ active, procId }: { active: boolean; procId: string }) {
+export function useAgentTerminal({ active, id, procId }: { active: boolean; id: string; procId: string }) {
   const { renderedMode, theme, themeName } = useTheme()
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -34,11 +37,15 @@ export function useAgentTerminal({ active, procId }: { active: boolean; procId: 
 
     const term = new Terminal({
       allowProposedApi: true,
+      allowTransparency: false,
       convertEol: true,
       cursorBlink: false,
       disableStdin: true,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
+      fontWeight: 'normal',
+      fontWeightBold: 'bold',
+      letterSpacing: 0,
       lineHeight: 1.12,
       minimumContrastRatio: 4.5,
       scrollback: 5000,
@@ -47,6 +54,9 @@ export function useAgentTerminal({ active, procId }: { active: boolean; procId: 
 
     const fit = new FitAddon()
     term.loadAddon(fit)
+    term.loadAddon(new Unicode11Addon())
+    term.loadAddon(new WebLinksAddon())
+    term.unicode.activeVersion = '11'
     term.open(host)
     termRef.current = term
 
@@ -78,9 +88,11 @@ export function useAgentTerminal({ active, procId }: { active: boolean; procId: 
 
     // Stream live output straight into the terminal (replays backlog on attach).
     const unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
+    const unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
 
     return () => {
       unregister()
+      unregisterReader()
       observer.disconnect()
       term.dispose()
       termRef.current = null

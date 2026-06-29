@@ -138,9 +138,9 @@ export function closeTerminal(id: string): void {
 }
 
 /** Close the read-only agent tab mirroring a background process. The agent
- *  drives this via `process(action="close_terminal")` → `terminal.close`. The
- *  process is NOT killed — only the view is dropped; `surfacedProcs` keeps it
- *  from auto-resurfacing, and the status-stack row can reopen it on demand.
+ *  drives this via the desktop-gated `close_terminal` tool → `terminal.close`.
+ *  The process is NOT killed — only the view is dropped; `surfacedProcs` keeps
+ *  it from auto-resurfacing, and the status-stack row can reopen it on demand.
  *  No-op when no such tab exists. */
 export function closeAgentTerminalByProc(procId: string): boolean {
   const term = $terminals.get().find(t => t.kind === 'agent' && t.procId === procId)

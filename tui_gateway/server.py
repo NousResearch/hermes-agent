@@ -8322,7 +8322,9 @@ def _wire_agent_terminal_output() -> None:
     safe."""
     from tools.process_registry import process_registry
 
-    if getattr(process_registry, "on_output", None) is not None:
+    has_output_sink = getattr(process_registry, "on_output", None) is not None
+    has_close_sink = getattr(process_registry, "on_close", None) is not None
+    if has_output_sink and has_close_sink:
         return
 
     def _owner_sid_for_process(session) -> str:
@@ -8348,8 +8350,10 @@ def _wire_agent_terminal_output() -> None:
         sid = _owner_sid_for_process(session) if session is not None else ""
         _emit("terminal.close", sid, {"process_id": process_id})
 
-    process_registry.on_output = _emit_agent_terminal_output
-    process_registry.on_close = _emit_agent_terminal_close
+    if not has_output_sink:
+        process_registry.on_output = _emit_agent_terminal_output
+    if not has_close_sink:
+        process_registry.on_close = _emit_agent_terminal_close
 
 
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:

@@ -237,7 +237,27 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         )
         if not head_rev or not target_rev:
             return None
-        return 0 if head_rev == target_rev else UPDATE_AVAILABLE_NO_COUNT
+        if head_rev == target_rev:
+            return 0
+
+        # A shallow installer checkout may legitimately carry downstream or
+        # packaging commits on top of the fetched upstream tip. Exact SHA
+        # comparison would report a phantom update forever in that state even
+        # though origin/main is already contained in HEAD. When the fetched
+        # target is an ancestor of HEAD, treat the checkout as up-to-date.
+        try:
+            ancestor = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", target_rev, head_rev],
+                capture_output=True,
+                timeout=5,
+                cwd=str(repo_dir),
+            )
+            if ancestor.returncode == 0:
+                return 0
+        except Exception:
+            pass
+
+        return UPDATE_AVAILABLE_NO_COUNT
 
     try:
         result = subprocess.run(

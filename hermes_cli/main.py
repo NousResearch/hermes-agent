@@ -8490,7 +8490,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
 
     if is_shallow:
         # No history to count across the shallow boundary. Compare tip SHAs and
-        # report presence-only (mirrors the banner's _check_via_local_git).
+        # then allow downstream/local carried commits whose HEAD already
+        # contains the fetched compare tip (mirrors banner._check_via_local_git).
         head_sha = subprocess.run(
             git_cmd + ["rev-parse", "HEAD"],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
@@ -8499,7 +8500,16 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             git_cmd + ["rev-parse", compare_branch],
             cwd=PROJECT_ROOT, capture_output=True, text=True,
         ).stdout.strip()
-        if head_sha and target_sha and head_sha == target_sha:
+        up_to_date = bool(head_sha and target_sha and head_sha == target_sha)
+        if not up_to_date and head_sha and target_sha:
+            ancestor = subprocess.run(
+                git_cmd + ["merge-base", "--is-ancestor", target_sha, head_sha],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            up_to_date = ancestor.returncode == 0
+        if up_to_date:
             print("✓ Already up to date.")
         else:
             print(f"⚕ Update available (behind {compare_branch}).")

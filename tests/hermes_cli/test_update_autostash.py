@@ -704,6 +704,42 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     assert ["git", "fetch", "origin"] not in recorded
 
 
+def test_cmd_update_check_shallow_with_downstream_commit_reports_current(monkeypatch, tmp_path, capsys):
+    """`hermes update --check` should not report a phantom update when
+    a shallow checkout carries downstream commits on top of the fetched tip.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="true\n", stderr="", returncode=0)
+        if cmd == ["git", "fetch", "--depth", "1", "upstream", "main"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--verify", "--quiet", "upstream/main"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout="downstream-sha\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "upstream/main"]:
+            return SimpleNamespace(stdout="upstream-sha\n", stderr="", returncode=0)
+        if cmd == ["git", "merge-base", "--is-ancestor", "upstream-sha", "downstream-sha"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd[:2] == ["git", "rev-list"]:
+            raise AssertionError("shallow check path must not count commits")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main._cmd_update_check()
+
+    out = capsys.readouterr().out
+    assert "Already up to date" in out
+    assert "Update available" not in out
+    assert ["git", "merge-base", "--is-ancestor", "upstream-sha", "downstream-sha"] in calls
+
+
 # ---------------------------------------------------------------------------
 # Fetch failure — friendly error messages
 # ---------------------------------------------------------------------------

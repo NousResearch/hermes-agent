@@ -170,6 +170,46 @@ def test_check_via_local_git_shallow_clone_behind_reports_no_count(tmp_path):
     assert ["git", "fetch", "origin", "--depth", "1", "--quiet"] in calls
 
 
+def test_check_via_local_git_shallow_clone_with_downstream_commit_is_current(tmp_path):
+    """Shallow clones may carry downstream commits on top of upstream.
+
+    If the fetched upstream tip is already an ancestor of HEAD, the checkout is
+    current even though the two tip SHAs differ. The banner should not report a
+    phantom update in that state.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            return MagicMock(returncode=0, stdout="https://github.com/NousResearch/hermes-agent.git\n")
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            return MagicMock(returncode=0, stdout="true\n")
+        if cmd[:2] == ["git", "fetch"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="downstream-sha\n")
+        if cmd == ["git", "rev-parse", "FETCH_HEAD"]:
+            return MagicMock(returncode=0, stdout="upstream-sha\n")
+        if cmd == ["git", "merge-base", "--is-ancestor", "upstream-sha", "downstream-sha"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            raise AssertionError("shallow path must not count across the boundary")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner._check_via_local_git(repo_dir)
+
+    assert result == 0
+    assert ["git", "merge-base", "--is-ancestor", "upstream-sha", "downstream-sha"] in calls
+
+
 def test_check_via_local_git_shallow_clone_up_to_date(tmp_path):
     """Shallow clone whose tip matches upstream reports up-to-date (0)."""
     import hermes_cli.banner as banner

@@ -831,6 +831,82 @@ class SessionStore:
         
         return None
     
+    def _is_session_active(self, session_id: str) -> bool:
+        """
+        Check if a session is still active in the database.
+        
+        A session is active if:
+        1. It exists in the database
+        2. It has no end_reason (not ended)
+        
+        Returns True if the session is active, False otherwise.
+        """
+        if not self._db or not session_id:
+            return True  # Assume active if no DB or no session_id
+        
+        try:
+            session_data = self._db.get_session(session_id)
+            if not session_data:
+                return False  # Session doesn't exist in DB
+            
+            # Check if session is ended
+            end_reason = session_data.get('end_reason')
+            return end_reason is None or end_reason == ''
+        except Exception:
+            # If we can't check the DB, assume it's active to avoid disruption
+            return True
+    
+    def remove_session(self, session_key: str) -> bool:
+        """
+        Remove a session from the SessionStore and update sessions.json.
+        
+        This removes the session_key mapping from both memory and disk,
+        effectively cleaning up stale routing entries.
+        
+        Args:
+            session_key: The session key to remove
+            
+        Returns:
+            True if the session was removed, False if it didn't exist
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            
+            if session_key not in self._entries:
+                return False
+            
+            # Remove from memory
+            self._entries.pop(session_key, None)
+            
+            # Save to disk
+            self._save()
+            
+            return True
+    
+    def remove_ended_session(self, session_key: str, session_id: str) -> bool:
+        """
+        Remove a session from SessionStore if it's ended in the database.
+        
+        This is the key fix for bug #54878. When a session is ended due to
+        idle eviction or other reasons, we remove it from sessions.json to
+        prevent silent message drops.
+        
+        Args:
+            session_key: The session key to check and potentially remove
+            session_id: The session ID to check in the database
+            
+        Returns:
+            True if the session was ended and removed, False otherwise
+        """
+        if not self._is_session_active(session_id):
+            logger.warning(
+                "Session %s (key: %s) is ended in DB but still in sessions.json - removing stale entry",
+                session_id, session_key
+            )
+            return self.remove_session(session_key)
+        
+        return False
+    
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
@@ -877,38 +953,55 @@ class SessionStore:
 
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
-
-                # Auto-reset sessions marked as suspended (e.g. after /stop
-                # broke a stuck loop — #7536).  ``suspended`` is the hard
-                # forced-wipe signal and always wins over ``resume_pending``,
-                # so repeated interrupted restarts that escalate via the
-                # existing ``.restart_failure_counts`` stuck-loop counter
-                # still converge to a clean slate.
-                if entry.suspended:
-                    reset_reason = "suspended"
-                elif entry.resume_pending:
-                    # Restart-interrupted session: preserve the session_id
-                    # and return the existing entry so the transcript
-                    # reloads intact.  ``resume_pending`` is cleared after
-                    # the NEXT successful turn completes (not here), which
-                    # means a re-interrupted retry keeps trying — the
-                    # stuck-loop counter handles terminal escalation.
-                    entry.updated_at = now
-                    self._save()
-                    return entry
+                
+                # KEY FIX: Check if the session is still active in the database
+                # If it's ended, remove the stale entry and create a new session
+                if not self._is_session_active(entry.session_id):
+                    logger.warning(
+                        "Session %s (key: %s) is ended in DB but still in sessions.json - removing and creating new session",
+                        entry.session_id, session_key
+                    )
+                    # Remove the stale entry
+                    self._entries.pop(session_key, None)
+                    # Set default values for new session (not an auto-reset)
+                    was_auto_reset = False
+                    auto_reset_reason = None
+                    reset_had_activity = False
+                    db_end_session_id = None
+                    # Fall through to create new session below
                 else:
-                    reset_reason = self._should_reset(entry, source)
-                if not reset_reason:
-                    entry.updated_at = now
-                    self._save()
-                    return entry
-                else:
-                    # Session is being auto-reset.
-                    was_auto_reset = True
-                    auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation
-                    reset_had_activity = entry.total_tokens > 0
-                    db_end_session_id = entry.session_id
+                    # Session is active, proceed with normal reset policy checks
+                    # Auto-reset sessions marked as suspended (e.g. after /stop
+                    # broke a stuck loop — #7536).  ``suspended`` is the hard
+                    # forced-wipe signal and always wins over ``resume_pending``,
+                    # so repeated interrupted restarts that escalate via the
+                    # existing ``.restart_failure_counts`` stuck-loop counter
+                    # still converge to a clean slate.
+                    if entry.suspended:
+                        reset_reason = "suspended"
+                    elif entry.resume_pending:
+                        # Restart-interrupted session: preserve the session_id
+                        # and return the existing entry so the transcript
+                        # reloads intact.  ``resume_pending`` is cleared after
+                        # the NEXT successful turn completes (not here), which
+                        # means a re-interrupted retry keeps trying — the
+                        # stuck-loop counter handles terminal escalation.
+                        entry.updated_at = now
+                        self._save()
+                        return entry
+                    else:
+                        reset_reason = self._should_reset(entry, source)
+                    if not reset_reason:
+                        entry.updated_at = now
+                        self._save()
+                        return entry
+                    else:
+                        # Session is being auto-reset.
+                        was_auto_reset = True
+                        auto_reset_reason = reset_reason
+                        # Track whether the expired session had any real conversation
+                        reset_had_activity = entry.total_tokens > 0
+                        db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
                 auto_reset_reason = None

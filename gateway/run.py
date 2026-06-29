@@ -16234,8 +16234,46 @@ class GatewayRunner:
                 # Older agent instance (shouldn't happen in practice) —
                 # fall back to the legacy full-close path.
                 self._cleanup_agent_resources(agent)
+            
+            # KEY FIX: Clean up the session store entry to prevent stale routing
+            self._cleanup_evicted_agent_session(agent)
+            
         except Exception:
             pass
+
+    def _cleanup_evicted_agent_session(self, agent):
+        """
+        Clean up session store entry when an agent is evicted due to idle timeout.
+        
+        This prevents the stale sessions.json entries that cause silent message drops.
+        """
+        try:
+            # Get the session key from the agent
+            if hasattr(agent, '_session_key') and agent._session_key:
+                session_key = agent._session_key
+            elif hasattr(agent, 'session') and hasattr(agent.session, 'session_key'):
+                session_key = agent.session.session_key
+            else:
+                return
+            
+            # Get the session ID from the agent
+            if hasattr(agent, '_session_id') and agent._session_id:
+                session_id = agent._session_id
+            elif hasattr(agent, 'session') and hasattr(agent.session, 'session_id'):
+                session_id = agent.session.session_id
+            else:
+                return
+            
+            # Remove the session entry from sessions.json
+            if session_key and self.session_store:
+                self.session_store.remove_ended_session(session_key, session_id)
+                logger.info(
+                    "Cleaned up evicted agent session: %s -> %s",
+                    session_key, session_id
+                )
+                
+        except Exception as e:
+            logger.debug("Failed to clean up evicted agent session: %s", e)
 
     def _enforce_agent_cache_cap(self) -> None:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.

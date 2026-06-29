@@ -579,314 +579,316 @@ def compress_context(
         _release_lock()  # compression aborted — no rotation will happen
         return messages, _existing_sp
 
-    summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
-    if summary_error:
-        if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
-            agent._last_compression_summary_warning = summary_error
-            agent._emit_warning(
-                f"⚠ Compression summary failed: {summary_error}. "
-                "Inserted a fallback context marker."
-            )
-    else:
-        # No hard failure — but did the configured aux model error out
-        # and get recovered by retrying on main?  Surface that so users
-        # know their auxiliary.compression.model setting is broken even
-        # though compression succeeded.
-        _aux_fail_model = getattr(agent.context_compressor, "_last_aux_model_failure_model", None)
-        _aux_fail_err = getattr(agent.context_compressor, "_last_aux_model_failure_error", None)
-        if _aux_fail_model:
-            # Dedup on (model, error) so we don't spam on every compaction
-            _aux_key = (_aux_fail_model, _aux_fail_err)
-            if getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
-                agent._last_aux_fallback_warning_key = _aux_key
+    try:
+        summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
+        if summary_error:
+            if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
+                agent._last_compression_summary_warning = summary_error
                 agent._emit_warning(
-                    f"ℹ Configured compression model '{_aux_fail_model}' failed "
-                    f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                    "check auxiliary.compression.model in config.yaml."
+                    f"⚠ Compression summary failed: {summary_error}. "
+                    "Inserted a fallback context marker."
                 )
-
-    todo_snapshot = agent._todo_store.format_for_injection()
-    if todo_snapshot:
-        compressed.append({"role": "user", "content": todo_snapshot})
-
-    agent._invalidate_system_prompt()
-    new_system_prompt = agent._build_system_prompt(system_message)
-    agent._cached_system_prompt = new_system_prompt
-
-    if agent._session_db:
-        try:
-            # Trigger memory extraction on the current session before the
-            # transcript is rewritten (runs in BOTH modes — the logical
-            # conversation's pre-compaction turns are about to be summarized
-            # away regardless of whether the id rotates).
-            agent.commit_memory_session(messages)
-
-            if in_place:
-                # ── In-place compaction: keep the same session_id ──────────
-                # No end_session, no new row, no parent_session_id, no title
-                # renumber, no contextvar/env/logging re-sync. The session's
-                # id, title, cwd, /goal, and gateway routing all stay put.
-                #
-                # Durable, NON-DESTRUCTIVE replace: soft-archive the
-                # pre-compaction turns (active=0, kept on disk + FTS-searchable +
-                # recoverable) and insert `compressed` as the new live (active=1)
-                # set, atomically. `compressed` already carries the surviving
-                # tail (current-turn messages the compressor kept via
-                # protect_last_n), so we DON'T pre-flush here — a flush would
-                # INSERT current-turn rows that archive_and_compact would then
-                # archive alongside the rest (harmless but wasted writes). The
-                # live-context load filters active=1, so a resume reloads ONLY
-                # the compacted set; the original turns remain under the SAME id
-                # for search/recovery (Teknium review — keep one durable id
-                # WITHOUT destroying history, unlike a hard replace_messages).
-                # See #38763.
-                agent._session_db.archive_and_compact(agent.session_id, compressed)
-                # Reset the flush identity set so the next turn's appends are
-                # diffed against the COMPACTED transcript: the compacted dicts
-                # are passed as conversation_history next turn and skipped by
-                # identity, so only genuinely new turn messages get appended
-                # (no dup of the summary, no resurrection of dropped turns).
-                agent._flushed_db_message_ids = set()
-                # Rotation-independent signal: the conversation was compacted in
-                # place (id unchanged). The gateway reads this (NOT an id-change
-                # diff) to re-baseline transcript handling.
-                compacted_in_place = True
-            else:
-                # ── Rotation (legacy): end this session, fork a continuation ─
-                # Flush any un-persisted current-turn messages to the OLD
-                # session before ending it, so they survive in the preserved
-                # parent transcript (#47202). (In-place skips this — see above.)
-                try:
-                    agent._flush_messages_to_session_db(messages)
-                except Exception:
-                    pass  # best-effort — don't block compression on a flush error
-                # Propagate title to the new session with auto-numbering
-                old_title = agent._session_db.get_session_title(agent.session_id)
-                agent._session_db.end_session(agent.session_id, "compression")
-                old_session_id = agent.session_id
-                agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-                # Ordering contract: the agent thread updates the contextvar here;
-                # the gateway propagates to SessionEntry after run_in_executor returns.
-                try:
-                    from gateway.session_context import set_current_session_id
-
-                    set_current_session_id(agent.session_id)
-                except Exception:
-                    os.environ["HERMES_SESSION_ID"] = agent.session_id
-                # The gateway/tools session context (ContextVar + env) and the
-                # logging session context are SEPARATE mechanisms. The call above
-                # moves the former; the ``[session_id]`` tag on log lines comes
-                # from ``hermes_logging._session_context`` (set once per turn in
-                # conversation_loop.py). Without this, post-rotation log lines in
-                # the same turn keep the STALE old id while the message/DB/gateway
-                # state carry the new one — breaking log correlation exactly at the
-                # compaction boundary (see #34089). Guarded separately so a logging
-                # failure can never regress the routing update above.
-                try:
-                    from hermes_logging import set_session_context
-
-                    set_session_context(agent.session_id)
-                except Exception:
-                    pass
-                agent._session_db_created = False
-                try:
-                    agent._session_db.create_session(
-                        session_id=agent.session_id,
-                        source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                        model=agent.model,
-                        model_config=agent._session_init_model_config,
-                        parent_session_id=old_session_id,
+        else:
+            # No hard failure — but did the configured aux model error out
+            # and get recovered by retrying on main?  Surface that so users
+            # know their auxiliary.compression.model setting is broken even
+            # though compression succeeded.
+            _aux_fail_model = getattr(agent.context_compressor, "_last_aux_model_failure_model", None)
+            _aux_fail_err = getattr(agent.context_compressor, "_last_aux_model_failure_error", None)
+            if _aux_fail_model:
+                # Dedup on (model, error) so we don't spam on every compaction
+                _aux_key = (_aux_fail_model, _aux_fail_err)
+                if getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
+                    agent._last_aux_fallback_warning_key = _aux_key
+                    agent._emit_warning(
+                        f"ℹ Configured compression model '{_aux_fail_model}' failed "
+                        f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
+                        "check auxiliary.compression.model in config.yaml."
                     )
-                except Exception as _cs_err:
-                    # The child row could not be created (e.g. FK constraint,
-                    # contended write). Previously the outer handler simply
-                    # warned and let the agent continue on the NEW id — which
-                    # has no row in state.db, producing an orphan: the parent
-                    # is ended, the child is never indexed, and every
-                    # subsequent message is attributed to a session that
-                    # doesn't exist (#33906/#33907). Roll the live id back to
-                    # the parent so the conversation stays attached to a real,
-                    # indexed session instead of a phantom.
-                    logger.warning(
-                        "Compression child session create failed (%s) — "
-                        "rolling back to parent session %s to avoid an orphan.",
-                        _cs_err, old_session_id,
-                    )
-                    agent.session_id = old_session_id
+
+        todo_snapshot = agent._todo_store.format_for_injection()
+        if todo_snapshot:
+            compressed.append({"role": "user", "content": todo_snapshot})
+
+        agent._invalidate_system_prompt()
+        new_system_prompt = agent._build_system_prompt(system_message)
+        agent._cached_system_prompt = new_system_prompt
+
+        if agent._session_db:
+            try:
+                # Trigger memory extraction on the current session before the
+                # transcript is rewritten (runs in BOTH modes — the logical
+                # conversation's pre-compaction turns are about to be summarized
+                # away regardless of whether the id rotates).
+                agent.commit_memory_session(messages)
+
+                if in_place:
+                    # ── In-place compaction: keep the same session_id ──────────
+                    # No end_session, no new row, no parent_session_id, no title
+                    # renumber, no contextvar/env/logging re-sync. The session's
+                    # id, title, cwd, /goal, and gateway routing all stay put.
+                    #
+                    # Durable, NON-DESTRUCTIVE replace: soft-archive the
+                    # pre-compaction turns (active=0, kept on disk + FTS-searchable +
+                    # recoverable) and insert `compressed` as the new live (active=1)
+                    # set, atomically. `compressed` already carries the surviving
+                    # tail (current-turn messages the compressor kept via
+                    # protect_last_n), so we DON'T pre-flush here — a flush would
+                    # INSERT current-turn rows that archive_and_compact would then
+                    # archive alongside the rest (harmless but wasted writes). The
+                    # live-context load filters active=1, so a resume reloads ONLY
+                    # the compacted set; the original turns remain under the SAME id
+                    # for search/recovery (Teknium review — keep one durable id
+                    # WITHOUT destroying history, unlike a hard replace_messages).
+                    # See #38763.
+                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    # Reset the flush identity set so the next turn's appends are
+                    # diffed against the COMPACTED transcript: the compacted dicts
+                    # are passed as conversation_history next turn and skipped by
+                    # identity, so only genuinely new turn messages get appended
+                    # (no dup of the summary, no resurrection of dropped turns).
+                    agent._flushed_db_message_ids = set()
+                    # Rotation-independent signal: the conversation was compacted in
+                    # place (id unchanged). The gateway reads this (NOT an id-change
+                    # diff) to re-baseline transcript handling.
+                    compacted_in_place = True
+                else:
+                    # ── Rotation (legacy): end this session, fork a continuation ─
+                    # Flush any un-persisted current-turn messages to the OLD
+                    # session before ending it, so they survive in the preserved
+                    # parent transcript (#47202). (In-place skips this — see above.)
+                    try:
+                        agent._flush_messages_to_session_db(messages)
+                    except Exception:
+                        pass  # best-effort — don't block compression on a flush error
+                    # Propagate title to the new session with auto-numbering
+                    old_title = agent._session_db.get_session_title(agent.session_id)
+                    agent._session_db.end_session(agent.session_id, "compression")
+                    old_session_id = agent.session_id
+                    agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                    # Ordering contract: the agent thread updates the contextvar here;
+                    # the gateway propagates to SessionEntry after run_in_executor returns.
                     try:
                         from gateway.session_context import set_current_session_id
+
                         set_current_session_id(agent.session_id)
                     except Exception:
                         os.environ["HERMES_SESSION_ID"] = agent.session_id
+                    # The gateway/tools session context (ContextVar + env) and the
+                    # logging session context are SEPARATE mechanisms. The call above
+                    # moves the former; the ``[session_id]`` tag on log lines comes
+                    # from ``hermes_logging._session_context`` (set once per turn in
+                    # conversation_loop.py). Without this, post-rotation log lines in
+                    # the same turn keep the STALE old id while the message/DB/gateway
+                    # state carry the new one — breaking log correlation exactly at the
+                    # compaction boundary (see #34089). Guarded separately so a logging
+                    # failure can never regress the routing update above.
                     try:
                         from hermes_logging import set_session_context
+
                         set_session_context(agent.session_id)
                     except Exception:
                         pass
-                    # Re-open the parent: it was ended above, but we're
-                    # continuing on it, so it must not stay closed.
+                    agent._session_db_created = False
                     try:
-                        agent._session_db.reopen_session(old_session_id)
-                    except Exception:
-                        pass
-                    old_session_id = None  # no rotation happened
-                    # The parent row already exists in state.db, so mark the
-                    # session as created — _ensure_db_session would otherwise
-                    # retry a (harmless INSERT OR IGNORE) create next turn.
+                        agent._session_db.create_session(
+                            session_id=agent.session_id,
+                            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            model=agent.model,
+                            model_config=agent._session_init_model_config,
+                            parent_session_id=old_session_id,
+                        )
+                    except Exception as _cs_err:
+                        # The child row could not be created (e.g. FK constraint,
+                        # contended write). Previously the outer handler simply
+                        # warned and let the agent continue on the NEW id — which
+                        # has no row in state.db, producing an orphan: the parent
+                        # is ended, the child is never indexed, and every
+                        # subsequent message is attributed to a session that
+                        # doesn't exist (#33906/#33907). Roll the live id back to
+                        # the parent so the conversation stays attached to a real,
+                        # indexed session instead of a phantom.
+                        logger.warning(
+                            "Compression child session create failed (%s) — "
+                            "rolling back to parent session %s to avoid an orphan.",
+                            _cs_err, old_session_id,
+                        )
+                        agent.session_id = old_session_id
+                        try:
+                            from gateway.session_context import set_current_session_id
+                            set_current_session_id(agent.session_id)
+                        except Exception:
+                            os.environ["HERMES_SESSION_ID"] = agent.session_id
+                        try:
+                            from hermes_logging import set_session_context
+                            set_session_context(agent.session_id)
+                        except Exception:
+                            pass
+                        # Re-open the parent: it was ended above, but we're
+                        # continuing on it, so it must not stay closed.
+                        try:
+                            agent._session_db.reopen_session(old_session_id)
+                        except Exception:
+                            pass
+                        old_session_id = None  # no rotation happened
+                        # The parent row already exists in state.db, so mark the
+                        # session as created — _ensure_db_session would otherwise
+                        # retry a (harmless INSERT OR IGNORE) create next turn.
+                        agent._session_db_created = True
+                        raise
                     agent._session_db_created = True
-                    raise
-                agent._session_db_created = True
-                # Carry a persistent /goal onto the continuation session.
-                # Compression mints a fresh child id; load_goal does a flat
-                # per-session lookup with no parent walk, so without this an
-                # active goal silently dies at the boundary (#33618).
-                try:
-                    from hermes_cli.goals import migrate_goal_to_session
-                    migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
-                except Exception as _goal_err:
-                    logger.debug("Could not migrate goal on compression: %s", _goal_err)
-                # Auto-number the title for the continuation session
-                if old_title:
+                    # Carry a persistent /goal onto the continuation session.
+                    # Compression mints a fresh child id; load_goal does a flat
+                    # per-session lookup with no parent walk, so without this an
+                    # active goal silently dies at the boundary (#33618).
                     try:
-                        new_title = agent._session_db.get_next_title_in_lineage(old_title)
-                        agent._session_db.set_session_title(agent.session_id, new_title)
-                    except (ValueError, Exception) as e:
-                        logger.debug("Could not propagate title on compression: %s", e)
+                        from hermes_cli.goals import migrate_goal_to_session
+                        migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
+                    except Exception as _goal_err:
+                        logger.debug("Could not migrate goal on compression: %s", _goal_err)
+                    # Auto-number the title for the continuation session
+                    if old_title:
+                        try:
+                            new_title = agent._session_db.get_next_title_in_lineage(old_title)
+                            agent._session_db.set_session_title(agent.session_id, new_title)
+                        except (ValueError, Exception) as e:
+                            logger.debug("Could not propagate title on compression: %s", e)
 
-            # Shared post-write steps (both modes target agent.session_id, which
-            # in-place keeps and rotation has already reassigned to the new id):
-            # refresh the stored system prompt and reset the flush cursor so the
-            # next turn re-bases its append diff.
-            agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            agent._last_flushed_db_idx = 0
-        except Exception as e:
-            # If the rotation rolled back to the parent (orphan-avoidance
-            # above), agent.session_id is the still-indexed parent and
-            # old_session_id was cleared — so this is recovery, not an
-            # un-indexed orphan. Otherwise an earlier step failed before the
-            # child was created and the warning's original meaning holds.
-            if locals().get("old_session_id") is None and not in_place:
-                logger.warning(
-                    "Compression rotation aborted and rolled back to the "
-                    "parent session (%s): %s", agent.session_id or "?", e,
-                )
-            else:
-                logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                # Shared post-write steps (both modes target agent.session_id, which
+                # in-place keeps and rotation has already reassigned to the new id):
+                # refresh the stored system prompt and reset the flush cursor so the
+                # next turn re-bases its append diff.
+                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                agent._last_flushed_db_idx = 0
+            except Exception as e:
+                # If the rotation rolled back to the parent (orphan-avoidance
+                # above), agent.session_id is the still-indexed parent and
+                # old_session_id was cleared — so this is recovery, not an
+                # un-indexed orphan. Otherwise an earlier step failed before the
+                # child was created and the warning's original meaning holds.
+                if locals().get("old_session_id") is None and not in_place:
+                    logger.warning(
+                        "Compression rotation aborted and rolled back to the "
+                        "parent session (%s): %s", agent.session_id or "?", e,
+                    )
+                else:
+                    logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
-    # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
-    # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`
-    # is the id the boundary notifications attribute the prior state to: the old
-    # id on rotation, the (unchanged) current id in-place.
-    _old_sid = locals().get("old_session_id")
-    _is_boundary = bool(_old_sid) or in_place
-    _boundary_parent = _old_sid or agent.session_id or ""
+        # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
+        # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`
+        # is the id the boundary notifications attribute the prior state to: the old
+        # id on rotation, the (unchanged) current id in-place.
+        _old_sid = locals().get("old_session_id")
+        _is_boundary = bool(_old_sid) or in_place
+        _boundary_parent = _old_sid or agent.session_id or ""
 
-    # Notify the context engine that a compaction boundary occurred. Plugin
-    # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
-    # DAG lineage / checkpoint per-session state across the boundary instead of
-    # re-initializing fresh. See hermes-lcm#68. Built-in ContextCompressor
-    # ignores kwargs. Fires in BOTH modes: rotation passes old→new ids; in-place
-    # passes the SAME id (the boundary is real even though the id didn't move).
-    try:
-        if _is_boundary and hasattr(agent.context_compressor, "on_session_start"):
-            agent.context_compressor.on_session_start(
-                agent.session_id or "",
-                boundary_reason="compression",
-                old_session_id=_boundary_parent,
-                platform=getattr(agent, "platform", None) or "cli",
-                conversation_id=getattr(agent, "_gateway_session_key", None),
-            )
-    except Exception as _ce_err:
-        logger.debug("context engine on_session_start (compression): %s", _ce_err)
-
-    # Notify memory providers of the compaction boundary so provider-cached
-    # per-session state (Hindsight's _document_id, accumulated turn buffers,
-    # counters) refreshes. reset=False because the logical conversation
-    # continues. See #6672. Fires in BOTH modes: in-place uses the same id as
-    # parent (the conversation didn't fork, but the buffer must still be told
-    # the transcript was compacted so it doesn't double-count dropped turns).
-    try:
-        if _is_boundary and agent._memory_manager:
-            agent._memory_manager.on_session_switch(
-                agent.session_id or "",
-                parent_session_id=_boundary_parent,
-                reset=False,
-                reason="compression",
-            )
-    except Exception as _me_err:
-        logger.debug("memory manager on_session_switch (compression): %s", _me_err)
-
-    # Warn on repeated compressions (quality degrades with each pass).
-    # Route through _emit_status (like the other compression warnings above)
-    # so the warning reaches the TUI / Telegram / Discord via status_callback,
-    # not just CLI stdout. _emit_status still _vprints for the CLI, and
-    # storing it on _compression_warning lets replay_compression_warning
-    # re-deliver it once a late-bound gateway status_callback is wired (#36908).
-    _cc = agent.context_compressor.compression_count
-    if _cc >= 2:
-        _cc_msg = (
-            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-            f"accuracy may degrade. Consider /new to start fresh."
-        )
-        agent._compression_warning = _cc_msg
-        agent._emit_status(_cc_msg)
-
-    # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
-    # the completed old session before its details are lost. In in-place mode
-    # there is no old id (same session); ``in_place=True`` tells hooks the
-    # transcript was compacted on the same id rather than rotated.
-    if getattr(agent, "event_callback", None):
+        # Notify the context engine that a compaction boundary occurred. Plugin
+        # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
+        # DAG lineage / checkpoint per-session state across the boundary instead of
+        # re-initializing fresh. See hermes-lcm#68. Built-in ContextCompressor
+        # ignores kwargs. Fires in BOTH modes: rotation passes old→new ids; in-place
+        # passes the SAME id (the boundary is real even though the id didn't move).
         try:
-            agent.event_callback("session:compress", {
-                "platform": agent.platform or "",
-                "session_id": agent.session_id,
-                "old_session_id": _old_sid or "",
-                "in_place": in_place,
-                "compression_count": agent.context_compressor.compression_count,
-            })
-        except Exception as e:
-            logger.debug("event_callback error on session:compress: %s", e)
+            if _is_boundary and hasattr(agent.context_compressor, "on_session_start"):
+                agent.context_compressor.on_session_start(
+                    agent.session_id or "",
+                    boundary_reason="compression",
+                    old_session_id=_boundary_parent,
+                    platform=getattr(agent, "platform", None) or "cli",
+                    conversation_id=getattr(agent, "_gateway_session_key", None),
+                )
+        except Exception as _ce_err:
+            logger.debug("context engine on_session_start (compression): %s", _ce_err)
 
-    # Surface the compaction mode to the caller (run_conversation / gateway)
-    # via a rotation-independent flag. The gateway uses this — NOT an
-    # id-change diff — to re-baseline transcript handling (history_offset=0 +
-    # rewrite on the same id) when compaction happened in place. See #38763.
-    agent._last_compaction_in_place = compacted_in_place
+        # Notify memory providers of the compaction boundary so provider-cached
+        # per-session state (Hindsight's _document_id, accumulated turn buffers,
+        # counters) refreshes. reset=False because the logical conversation
+        # continues. See #6672. Fires in BOTH modes: in-place uses the same id as
+        # parent (the conversation didn't fork, but the buffer must still be told
+        # the transcript was compacted so it doesn't double-count dropped turns).
+        try:
+            if _is_boundary and agent._memory_manager:
+                agent._memory_manager.on_session_switch(
+                    agent.session_id or "",
+                    parent_session_id=_boundary_parent,
+                    reset=False,
+                    reason="compression",
+                )
+        except Exception as _me_err:
+            logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
-    # Keep the post-compression rough estimate for diagnostics, but do not
-    # treat it as provider-reported prompt usage. Schema-heavy rough estimates
-    # can remain above threshold even after the next real API request fits.
-    _compressed_est = estimate_request_tokens_rough(
-        compressed,
-        system_prompt=new_system_prompt or "",
-        tools=agent.tools or None,
-    )
-    agent.context_compressor.last_compression_rough_tokens = _compressed_est
-    agent.context_compressor.last_prompt_tokens = -1
-    agent.context_compressor.last_completion_tokens = 0
-    agent.context_compressor.awaiting_real_usage_after_compression = True
+        # Warn on repeated compressions (quality degrades with each pass).
+        # Route through _emit_status (like the other compression warnings above)
+        # so the warning reaches the TUI / Telegram / Discord via status_callback,
+        # not just CLI stdout. _emit_status still _vprints for the CLI, and
+        # storing it on _compression_warning lets replay_compression_warning
+        # re-deliver it once a late-bound gateway status_callback is wired (#36908).
+        _cc = agent.context_compressor.compression_count
+        if _cc >= 2:
+            _cc_msg = (
+                f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
+                f"accuracy may degrade. Consider /new to start fresh."
+            )
+            agent._compression_warning = _cc_msg
+            agent._emit_status(_cc_msg)
 
-    # Clear the file-read dedup cache.  After compression the original
-    # read content is summarised away — if the model re-reads the same
-    # file it needs the full content, not a "file unchanged" stub.
-    try:
-        from tools.file_tools import reset_file_dedup
-        reset_file_dedup(task_id)
-    except Exception:
-        pass
+        # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
+        # the completed old session before its details are lost. In in-place mode
+        # there is no old id (same session); ``in_place=True`` tells hooks the
+        # transcript was compacted on the same id rather than rotated.
+        if getattr(agent, "event_callback", None):
+            try:
+                agent.event_callback("session:compress", {
+                    "platform": agent.platform or "",
+                    "session_id": agent.session_id,
+                    "old_session_id": _old_sid or "",
+                    "in_place": in_place,
+                    "compression_count": agent.context_compressor.compression_count,
+                })
+            except Exception as e:
+                logger.debug("event_callback error on session:compress: %s", e)
 
-    logger.info(
-        "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
-        agent.session_id or "none", _pre_msg_count, len(compressed),
-        f"{_compressed_est:,}",
-    )
-    # Release the lock on the OLD session_id only AFTER rotation completed
-    # and all post-rotation bookkeeping (memory manager, context engine,
-    # file dedup) ran. A concurrent path that wakes up the moment we
-    # release will see the NEW session_id in state.db / SessionEntry and
-    # acquire on that — no race against our just-finished work.
-    _release_lock()
-    return compressed, new_system_prompt
+        # Surface the compaction mode to the caller (run_conversation / gateway)
+        # via a rotation-independent flag. The gateway uses this — NOT an
+        # id-change diff — to re-baseline transcript handling (history_offset=0 +
+        # rewrite on the same id) when compaction happened in place. See #38763.
+        agent._last_compaction_in_place = compacted_in_place
+
+        # Keep the post-compression rough estimate for diagnostics, but do not
+        # treat it as provider-reported prompt usage. Schema-heavy rough estimates
+        # can remain above threshold even after the next real API request fits.
+        _compressed_est = estimate_request_tokens_rough(
+            compressed,
+            system_prompt=new_system_prompt or "",
+            tools=agent.tools or None,
+        )
+        agent.context_compressor.last_compression_rough_tokens = _compressed_est
+        agent.context_compressor.last_prompt_tokens = -1
+        agent.context_compressor.last_completion_tokens = 0
+        agent.context_compressor.awaiting_real_usage_after_compression = True
+
+        # Clear the file-read dedup cache.  After compression the original
+        # read content is summarised away — if the model re-reads the same
+        # file it needs the full content, not a "file unchanged" stub.
+        try:
+            from tools.file_tools import reset_file_dedup
+            reset_file_dedup(task_id)
+        except Exception:
+            pass
+
+        logger.info(
+            "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
+            agent.session_id or "none", _pre_msg_count, len(compressed),
+            f"{_compressed_est:,}",
+        )
+        return compressed, new_system_prompt
+    finally:
+        # Release the lock on the OLD session_id only AFTER rotation completed
+        # and all post-rotation bookkeeping (memory manager, context engine,
+        # file dedup) ran. A concurrent path that wakes up the moment we
+        # release will see the NEW session_id in state.db / SessionEntry and
+        # acquire on that — no race against our just-finished work.
+        _release_lock()
 
 
 def try_shrink_image_parts_in_messages(

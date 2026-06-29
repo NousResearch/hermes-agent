@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -33,7 +34,14 @@ from agent.image_gen_provider import (
     save_url_image,
     success_response,
 )
-from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
+from tools.xai_http import (
+    build_xai_storage_options,
+    hermes_xai_user_agent,
+    maybe_mark_xai_storage_notice_seen,
+    read_xai_imagine_storage_config,
+    resolve_xai_http_credentials,
+    xai_storage_notice_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +126,8 @@ def _resolve_resolution() -> str:
 def _xai_image_field(source: str) -> Dict[str, str]:
     """Build the xAI ``image`` field for an edit request.
 
-    xAI's ``/v1/images/edits`` accepts ``{"url": <ref>, "type": "image_url"}``
-    where ``<ref>`` is a public URL or a base64 data URI. Public URLs and
-    existing data URIs pass through unchanged; local file paths are read and
-    encoded into a ``data:`` URI.
+    xAI's ``/v1/images/edits`` accepts a public HTTPS URL or a base64 data URI.
+    Local file paths are read and encoded into a ``data:`` URI.
     """
     source = source.strip()
     lower = source.lower()
@@ -131,7 +137,7 @@ def _xai_image_field(source: str) -> Dict[str, str]:
     import base64
     import os as _os
 
-    with open(source, "rb") as fh:
+    with open(_os.path.expanduser(source), "rb") as fh:
         raw = fh.read()
     ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()
     if ext == "jpg":
@@ -176,19 +182,29 @@ class XAIImageGenProvider(ImageGenProvider):
         # hook (``hermes_cli/tools_config.py``); identical to the TTS / video
         # gen entries so users see the same OAuth-or-API-key choice for every
         # xAI service.
+        storage_notice = xai_storage_notice_text("image_gen")
+        tag = (
+            "grok-imagine-image - text-to-image & image editing; uses xAI "
+            "Grok OAuth or XAI_API_KEY"
+        )
+        if storage_notice:
+            tag += f". {storage_notice}"
         return {
             "name": "xAI Grok Imagine (image)",
             "badge": "paid",
-            "tag": "grok-imagine-image — text-to-image & image editing; uses xAI Grok OAuth or XAI_API_KEY",
+            "tag": tag,
             "env_vars": [],
             "post_setup": "xai_grok",
         }
 
     def capabilities(self) -> Dict[str, Any]:
         # xAI's /v1/images/edits supports image editing via grok-imagine-image
-        # -quality. Single primary source image (multi-image editing exists as
-        # a separate capability but we keep the primary edit surface here).
-        return {"modalities": ["text", "image"], "max_reference_images": 1}
+        # -quality, including up to 3 total source images.
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": 2,
+            "max_source_images": 3,
+        }
 
     def generate(
         self,
@@ -224,16 +240,39 @@ class XAIImageGenProvider(ImageGenProvider):
         resolution = _resolve_resolution()
         xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
-        # Pick the primary source image: explicit image_url wins, else the
-        # first reference image.
-        source_image = None
+        source_images: List[str] = []
         if isinstance(image_url, str) and image_url.strip():
-            source_image = image_url.strip()
-        else:
-            refs = normalize_reference_images(reference_image_urls)
-            if refs:
-                source_image = refs[0]
-        is_edit = bool(source_image)
+            source_images.append(image_url.strip())
+        refs = normalize_reference_images(reference_image_urls)
+        if refs:
+            source_images.extend(refs)
+        if len(source_images) > 3:
+            return error_response(
+                error="xAI image editing supports at most 3 source images",
+                error_type="too_many_references",
+                provider=provider_name,
+                model="grok-imagine-image-quality",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        for index, source in enumerate(source_images):
+            field = "image_url" if index == 0 and image_url and image_url.strip() == source else "reference_image_urls"
+            lower = source.lower()
+            if not lower.startswith(("http://", "https://", "data:")):
+                path = Path(source).expanduser()
+                if not path.is_file():
+                    return error_response(
+                        error=(
+                            f"{field} must be a public HTTPS URL or data URI "
+                            "(e.g. the `image`/`public_url` from a prior Imagine result)"
+                        ),
+                        error_type="invalid_image_url",
+                        provider=provider_name,
+                        model="grok-imagine-image-quality",
+                        prompt=prompt,
+                        aspect_ratio=aspect,
+                    )
+        is_edit = bool(source_images)
         modality = "image" if is_edit else "text"
 
         headers = {
@@ -243,6 +282,13 @@ class XAIImageGenProvider(ImageGenProvider):
         }
 
         base_url = str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
+        storage_options = build_xai_storage_options(
+            "image_gen",
+            filename_prefix="hermes-xai-image",
+            extension="png",
+        )
+        storage_notice = maybe_mark_xai_storage_notice_seen("image_gen")
+        storage_cfg = read_xai_imagine_storage_config("image_gen")
 
         if is_edit:
             # Editing requires the quality model per xAI docs. The source
@@ -250,7 +296,7 @@ class XAIImageGenProvider(ImageGenProvider):
             # are converted to a data URI here.
             edit_model = "grok-imagine-image-quality"
             try:
-                image_field = _xai_image_field(source_image)
+                image_fields = [_xai_image_field(source) for source in source_images]
             except Exception as exc:
                 return error_response(
                     error=f"Could not load source image for editing: {exc}",
@@ -263,8 +309,11 @@ class XAIImageGenProvider(ImageGenProvider):
             payload: Dict[str, Any] = {
                 "model": edit_model,
                 "prompt": prompt,
-                "image": image_field,
             }
+            if len(image_fields) == 1:
+                payload["image"] = image_fields[0]
+            else:
+                payload["images"] = image_fields
             endpoint_url = f"{base_url}/images/edits"
             model_id = edit_model
         else:
@@ -275,6 +324,8 @@ class XAIImageGenProvider(ImageGenProvider):
                 "resolution": xai_res,
             }
             endpoint_url = f"{base_url}/images/generations"
+        if storage_options is not None:
+            payload["storage_options"] = storage_options
 
         try:
             response = requests.post(
@@ -331,7 +382,8 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        # Parse response — xAI returns data[0].b64_json or data[0].url
+        # Parse response - xAI returns data[0].b64_json, data[0].url, and
+        # optionally data[0].file_output when storage_options were requested.
         data = result.get("data", [])
         if not data:
             return error_response(
@@ -346,8 +398,13 @@ class XAIImageGenProvider(ImageGenProvider):
         first = data[0]
         b64 = first.get("b64_json")
         url = first.get("url")
+        file_output = first.get("file_output") if isinstance(first, dict) else None
+        file_output = file_output if isinstance(file_output, dict) else {}
+        public_url = file_output.get("public_url") if isinstance(file_output.get("public_url"), str) else None
 
-        if b64:
+        if public_url:
+            image_ref = public_url
+        elif b64:
             try:
                 saved_path = save_b64_image(b64, prefix=f"xai_{model_id}")
             except Exception as exc:
@@ -389,9 +446,27 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        extra: Dict[str, Any] = {}
+        extra: Dict[str, Any] = {
+            "storage_enabled": bool(storage_cfg["enabled"]),
+        }
         if not is_edit:
             extra["resolution"] = xai_res
+        if storage_notice:
+            extra["storage_notice"] = storage_notice
+        if public_url:
+            extra["public_url"] = public_url
+        if file_output:
+            for key in (
+                "filename",
+                "expires_at",
+                "public_url_expires_at",
+                "public_url_error",
+                "storage_error",
+            ):
+                if key in file_output:
+                    extra[key] = file_output[key]
+        if result.get("usage"):
+            extra["usage"] = result["usage"]
 
         return success_response(
             image=image_ref,

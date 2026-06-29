@@ -476,4 +476,29 @@ def test_green_for_buidl_goal_requires_product_qa_and_memory_agent(hermes_home):
 
     goal.evidence_log.append({"role": "Product QA Agent", "summary": "business goal checked"})
     goal.evidence_log.append({"role": "Memory Agent", "summary": "durable result recorded"})
+    goal.evidence_log.extend([
+        {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "changed_files": ["hermes_cli/goal_os.py"],
+            "commands": ["python -m pytest tests/test_buidl_goal_os.py -q"],
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["lane ownership checked"],
+            "safety_review": "No secrets printed.",
+        },
+        {
+            "role": "Codex Verifier Agent",
+            "executor": "openai-codex",
+            "codex_verifier_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "commands": ["python -m pytest tests/test_buidl_goal_os.py -q", "git diff --check"],
+            "acceptance_checked": True,
+        },
+    ])
     assert evaluate_goal_report_readiness(goal, requested_label="GREEN").classification == "GREEN"

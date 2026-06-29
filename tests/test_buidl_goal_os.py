@@ -184,7 +184,7 @@ def test_ship_marks_achieved_with_verifier_evidence(hermes_home):
     assert shipped_goal.status == "achieved"
 
 
-def test_buidl_mvp_ship_requires_codex_and_claude_code_dual_review(hermes_home):
+def test_buidl_mvp_ship_requires_claude_builder_and_codex_review_verifier_lanes(hermes_home):
     from hermes_cli.goal_os import GoalOSManager
 
     manager = GoalOSManager()
@@ -204,7 +204,39 @@ def test_buidl_mvp_ship_requires_codex_and_claude_code_dual_review(hermes_home):
 
     report = manager.handle_command("ship", goal.goal_id)
     assert report.classification == "RED"
-    assert "CLAUDE_CODE_REVIEWER_NOT_ACTIVE" in report.message
+    assert "CLAUDE_CODE_BUILDER_NOT_USED" in report.message
+
+    goal = GoalOSManager().get_goal(goal.goal_id)
+    assert goal is not None
+    goal.evidence_log.append({
+        "role": "Claude Code Builder Agent",
+        "executor": "claude-code",
+        "claude_code_builder_pass": True,
+        "changed_files": ["docs/example.md"],
+        "commands": ["python3 -m py_compile hermes_cli/goal_os.py"],
+        "builder_evidence": "Claude Code made the implementation change under wrapper safety.",
+        "secrets_printed": False,
+    })
+    manager.save_goal(goal)
+    report = manager.handle_command("ship", goal.goal_id)
+    assert report.classification == "RED"
+    assert "CODEX_REVIEW_OR_VERIFY_MISSING" in report.message
+
+    goal = GoalOSManager().get_goal(goal.goal_id)
+    assert goal is not None
+    goal.evidence_log.append({
+        "role": "Codex Reviewer Agent",
+        "executor": "openai-codex",
+        "codex_reviewer_pass": True,
+        "files_inspected": ["hermes_cli/goal_os.py", "tests/test_buidl_goal_os.py"],
+        "independent_findings": ["Claude Code builder evidence exists and scope is safe"],
+        "safety_review": "No hard gates approved and no secrets printed.",
+        "secrets_printed": False,
+    })
+    manager.save_goal(goal)
+    report = manager.handle_command("ship", goal.goal_id)
+    assert report.classification == "RED"
+    assert "CODEX_VERIFIER_NOT_ACTIVE" in report.message
 
     goal = GoalOSManager().get_goal(goal.goal_id)
     assert goal is not None
@@ -215,21 +247,6 @@ def test_buidl_mvp_ship_requires_codex_and_claude_code_dual_review(hermes_home):
         "files_inspected": ["hermes_cli/goal_os.py"],
         "commands": ["pytest tests/test_buidl_goal_os.py -q", "git diff --check"],
         "summary": "Codex verifier evidence passed",
-    })
-    manager.save_goal(goal)
-    report = manager.handle_command("ship", goal.goal_id)
-    assert report.classification == "RED"
-    assert "CLAUDE_CODE_REVIEWER_NOT_ACTIVE" in report.message
-
-    goal = GoalOSManager().get_goal(goal.goal_id)
-    assert goal is not None
-    goal.evidence_log.append({
-        "role": "Claude Code Reviewer Agent",
-        "executor": "claude-code",
-        "claude_code_reviewer_pass": True,
-        "files_inspected": ["hermes_cli/goal_os.py", "tests/test_buidl_goal_os.py"],
-        "independent_findings": ["dual review gate enforced"],
-        "safety_review": "No hard gates approved and no secrets printed.",
         "secrets_printed": False,
     })
     manager.save_goal(goal)
@@ -238,7 +255,7 @@ def test_buidl_mvp_ship_requires_codex_and_claude_code_dual_review(hermes_home):
     assert report.classification == "GREEN"
 
 
-def test_buidl_green_readiness_blocks_without_dual_review(hermes_home):
+def test_buidl_green_readiness_blocks_without_dual_lane_evidence(hermes_home):
     from hermes_cli.goal_os import GoalOSManager, evaluate_goal_report_readiness
 
     manager = GoalOSManager()
@@ -250,26 +267,34 @@ def test_buidl_green_readiness_blocks_without_dual_review(hermes_home):
     ])
     verdict = evaluate_goal_report_readiness(goal, requested_label="GREEN")
     assert verdict.classification == "RED"
-    assert "CLAUDE_CODE_REVIEWER_NOT_ACTIVE" in verdict.reason
+    assert "CLAUDE_CODE_BUILDER_NOT_USED" in verdict.reason
 
 
-def test_buidl_dual_review_requires_separate_codex_and_claude_entries(hermes_home):
+def test_buidl_dual_lane_requires_separate_codex_reviewer_and_codex_verifier_entries(hermes_home):
     from hermes_cli.goal_os import GoalOSManager, buidl_dual_review_gate_verdict
 
     goal = GoalOSManager().create_goal("Buidl MVP acceptance gate")
     goal.evidence_log.append({
-        "role": "Codex Verifier Agent and Claude Code Reviewer Agent",
+        "role": "Claude Code Builder Agent",
+        "executor": "claude-code",
+        "claude_code_builder_pass": True,
+        "changed_files": ["docs/example.md"],
+        "commands": ["pytest"],
+        "builder_evidence": "Claude Code made the implementation change.",
+    })
+    goal.evidence_log.append({
+        "role": "Codex Reviewer and Verifier Agent",
         "executor": "openai-codex",
+        "codex_reviewer_pass": True,
         "codex_verifier_pass": True,
-        "claude_code_reviewer_pass": True,
         "files_inspected": ["hermes_cli/goal_os.py"],
         "commands": ["pytest"],
-        "independent_findings": ["single-entry self-certification should not pass"],
+        "independent_findings": ["single-entry Codex self-certification should not pass"],
         "safety_review": "No secrets printed.",
     })
     verdict = buidl_dual_review_gate_verdict(goal)
     assert verdict.classification == "RED"
-    assert "DUAL_REVIEW_NOT_INDEPENDENT" in verdict.reason
+    assert "CODEX_REVIEWER_VERIFIER_NOT_SEPARATE" in verdict.reason
 
 
 def test_buidl_dual_review_rejects_natural_language_only_codex_report(hermes_home):
@@ -278,19 +303,26 @@ def test_buidl_dual_review_rejects_natural_language_only_codex_report(hermes_hom
     goal = GoalOSManager().create_goal("Buidl MVP acceptance gate")
     goal.evidence_log.extend([
         {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "changed_files": ["docs/example.md"],
+            "commands": ["python3 -m py_compile hermes_cli/goal_os.py"],
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["scope checked"],
+            "safety_review": "No secrets printed.",
+        },
+        {
             "role": "Codex Verifier Agent",
             "executor": "openai-codex",
             "codex_verifier_pass": True,
             "commands": ["pytest"],
             "summary": "looks good",
-        },
-        {
-            "role": "Claude Code Reviewer Agent",
-            "executor": "claude-code",
-            "claude_code_reviewer_pass": True,
-            "files_inspected": ["hermes_cli/goal_os.py"],
-            "independent_findings": ["gate checked"],
-            "safety_review": "No secrets printed.",
         },
     ])
     verdict = buidl_dual_review_gate_verdict(goal)
@@ -304,6 +336,21 @@ def test_buidl_dual_review_rejects_codex_secret_leak_evidence(hermes_home):
     goal = GoalOSManager().create_goal("Buidl MVP acceptance gate")
     goal.evidence_log.extend([
         {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "changed_files": ["docs/example.md"],
+            "commands": ["python3 -m py_compile hermes_cli/goal_os.py"],
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["scope checked"],
+            "safety_review": "No secrets printed.",
+        },
+        {
             "role": "Codex Verifier Agent",
             "executor": "openai-codex",
             "codex_verifier_pass": True,
@@ -311,25 +358,31 @@ def test_buidl_dual_review_rejects_codex_secret_leak_evidence(hermes_home):
             "commands": ["pytest"],
             "secrets_printed": True,
         },
-        {
-            "role": "Claude Code Reviewer Agent",
-            "executor": "claude-code",
-            "claude_code_reviewer_pass": True,
-            "files_inspected": ["hermes_cli/goal_os.py"],
-            "independent_findings": ["gate checked"],
-            "safety_review": "No secrets printed.",
-        },
     ])
     verdict = buidl_dual_review_gate_verdict(goal)
     assert verdict.classification == "RED"
     assert "CODEX_VERIFIER_NOT_ACTIVE" in verdict.reason
 
 
-def test_buidl_dual_review_rejects_natural_language_only_claude_report(hermes_home):
+def test_buidl_dual_review_rejects_natural_language_only_claude_builder(hermes_home):
     from hermes_cli.goal_os import GoalOSManager, buidl_dual_review_gate_verdict
 
     goal = GoalOSManager().create_goal("Buidl MVP acceptance gate")
     goal.evidence_log.extend([
+        {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "summary": "looks good",
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["scope checked"],
+            "safety_review": "No secrets printed.",
+        },
         {
             "role": "Codex Verifier Agent",
             "executor": "openai-codex",
@@ -337,16 +390,174 @@ def test_buidl_dual_review_rejects_natural_language_only_claude_report(hermes_ho
             "files_inspected": ["hermes_cli/goal_os.py"],
             "commands": ["pytest"],
         },
+    ])
+    verdict = buidl_dual_review_gate_verdict(goal)
+    assert verdict.classification == "RED"
+    assert "CLAUDE_CODE_BUILDER_NOT_USED" in verdict.reason
+
+
+def test_buidl_dual_review_rejects_codex_self_attested_claude_builder(hermes_home):
+    from hermes_cli.goal_os import GoalOSManager, buidl_dual_review_gate_verdict
+
+    goal = GoalOSManager().create_goal("Buidl MVP acceptance gate")
+    goal.evidence_log.extend([
         {
-            "role": "Claude Code Reviewer Agent",
-            "executor": "claude-code",
-            "claude_code_reviewer_pass": True,
-            "review_summary": "looks good",
+            "role": "Codex Builder Agent",
+            "executor": "openai-codex",
+            "claude_code_builder_pass": True,
+            "changed_files": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest tests/test_buidl_goal_os.py -q"],
+            "builder_evidence": "Codex must not self-attest as Claude Code Builder.",
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["scope checked"],
+            "safety_review": "No secrets printed.",
+        },
+        {
+            "role": "Codex Verifier Agent",
+            "executor": "openai-codex",
+            "codex_verifier_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest"],
         },
     ])
     verdict = buidl_dual_review_gate_verdict(goal)
     assert verdict.classification == "RED"
-    assert "CLAUDE_CODE_REVIEWER_NOT_ACTIVE" in verdict.reason
+    assert "CLAUDE_CODE_BUILDER_NOT_USED" in verdict.reason
+
+
+def test_buidl_dual_review_rejects_codex_builder_as_verifier_fallback(hermes_home):
+    from hermes_cli.goal_os import GoalOSManager, buidl_dual_review_gate_verdict
+
+    goal = GoalOSManager().create_goal("Buidl MVP acceptance gate")
+    goal.evidence_log.extend([
+        {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "changed_files": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest tests/test_buidl_goal_os.py -q"],
+            "builder_evidence": "Claude Code made the implementation change.",
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["scope checked"],
+            "safety_review": "No secrets printed.",
+        },
+        {
+            "role": "Codex Builder Agent",
+            "executor": "openai-codex",
+            "changed_files": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest tests/test_buidl_goal_os.py -q"],
+            "builder_evidence": "Codex may not silently replace Claude Code or count as verifier.",
+        },
+    ])
+    verdict = buidl_dual_review_gate_verdict(goal)
+    assert verdict.classification == "RED"
+    assert "CODEX_VERIFIER_NOT_ACTIVE" in verdict.reason
+
+
+def test_buidl_dual_review_rejects_read_only_claude_builder_shape(hermes_home):
+    from hermes_cli.goal_os import GoalOSManager, buidl_dual_review_gate_verdict
+
+    goal = GoalOSManager().create_goal("Buidl MVP acceptance gate")
+    goal.evidence_log.extend([
+        {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "summary": "Read-only inspection is not Builder evidence.",
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["scope checked"],
+            "safety_review": "No secrets printed.",
+        },
+        {
+            "role": "Codex Verifier Agent",
+            "executor": "openai-codex",
+            "codex_verifier_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest"],
+        },
+    ])
+    verdict = buidl_dual_review_gate_verdict(goal)
+    assert verdict.classification == "RED"
+    assert "CLAUDE_CODE_BUILDER_NOT_USED" in verdict.reason
+
+
+def test_buidl_dual_review_rejects_non_codex_self_attested_reviewer_or_verifier(hermes_home):
+    from hermes_cli.goal_os import GoalOSManager, buidl_dual_review_gate_verdict
+
+    manager = GoalOSManager()
+    goal = manager.create_goal("Buidl MVP acceptance gate")
+    goal.evidence_log.extend([
+        {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "changed_files": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest tests/test_buidl_goal_os.py -q"],
+        },
+        {
+            "role": "Claude Code Reviewer Agent",
+            "executor": "claude-code",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["Non-Codex cannot self-attest Codex review."],
+            "safety_review": "No secrets printed.",
+        },
+        {
+            "role": "Codex Verifier Agent",
+            "executor": "openai-codex",
+            "codex_verifier_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest"],
+        },
+    ])
+    verdict = buidl_dual_review_gate_verdict(goal)
+    assert verdict.classification == "RED"
+    assert "CODEX_REVIEW_OR_VERIFY_MISSING" in verdict.reason
+
+    goal = manager.create_goal("Buidl MVP acceptance gate")
+    goal.evidence_log.extend([
+        {
+            "role": "Claude Code Builder Agent",
+            "executor": "claude-code",
+            "claude_code_builder_pass": True,
+            "changed_files": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest tests/test_buidl_goal_os.py -q"],
+        },
+        {
+            "role": "Codex Reviewer Agent",
+            "executor": "openai-codex",
+            "codex_reviewer_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "independent_findings": ["scope checked"],
+            "safety_review": "No secrets printed.",
+        },
+        {
+            "role": "Claude Code Verifier Agent",
+            "executor": "claude-code",
+            "codex_verifier_pass": True,
+            "files_inspected": ["hermes_cli/goal_os.py"],
+            "commands": ["pytest"],
+        },
+    ])
+    verdict = buidl_dual_review_gate_verdict(goal)
+    assert verdict.classification == "RED"
+    assert "CODEX_VERIFIER_NOT_ACTIVE" in verdict.reason
 
 
 def test_hard_gates_cannot_be_bypassed(hermes_home):

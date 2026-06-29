@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 # stop never colours the card red or feeds the guardrail halt counter.
 INTERRUPT_EXIT_CODE = 130
 
+# Exit code for a command killed by SIGPIPE (128 + SIGPIPE(13)).  A downstream
+# pipe reader closed early — e.g. `producer | head`, where head exits after N
+# lines and the producer gets SIGPIPE on its next write.  Common under
+# `set -o pipefail`, where that 141 propagates as the pipeline's status.  This
+# is a benign, expected outcome, not a command failure.
+SIGPIPE_EXIT_CODE = 141
+
+# Signal-death exit codes the failure classifiers treat as benign.  Only these
+# two: SIGINT (user stop) and SIGPIPE (downstream closed the pipe).  Other
+# 128+N exits stay failures — SIGSEGV (139), SIGABRT (134), SIGKILL/OOM (137)
+# are genuine crashes.
+BENIGN_SIGNAL_EXIT_CODES = frozenset({INTERRUPT_EXIT_CODE, SIGPIPE_EXIT_CODE})
+
 # Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in
 # tools/environments/base.py.  Enables per-call logging of set/check so the
 # caller thread, target thread, and current state are visible when

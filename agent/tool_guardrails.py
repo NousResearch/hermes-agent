@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
-from tools.interrupt import INTERRUPT_EXIT_CODE
+from tools.interrupt import BENIGN_SIGNAL_EXIT_CODES
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -207,12 +207,12 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 # Mirror _detect_tool_failure: benign nonzero exits tagged by
-                # the tool layer (exit_code_meaning) and user interrupts (130)
-                # are not failures and must not feed the guardrail counter.
-                # Unlike _detect_tool_failure this has no error-field branch;
-                # that is safe only because the producer never sets both
-                # `error` and `exit_code_meaning` on one result (terminal_tool).
-                if data.get("exit_code_meaning") or exit_code == INTERRUPT_EXIT_CODE:
+                # the tool layer (exit_code_meaning) and benign signal deaths
+                # (SIGINT 130, SIGPIPE 141) are not failures and must not feed
+                # the guardrail counter. Unlike _detect_tool_failure this has no
+                # error-field branch; that is safe only because the producer
+                # never sets both `error` and `exit_code_meaning` on one result.
+                if data.get("exit_code_meaning") or exit_code in BENIGN_SIGNAL_EXIT_CODES:
                     return False, ""
                 return True, f" [exit {exit_code}]"
         return False, ""

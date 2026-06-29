@@ -176,6 +176,17 @@ class TestClassifyTerminalBenignExits:
         assert self._assert_parity(result) is False
         assert classify_tool_failure("terminal", result) == (False, "")
 
+    def test_sigpipe_exit141_is_benign(self):
+        # SIGPIPE under pipefail (`… | head`) — benign, must not feed the
+        # same_tool_failure counter. Regression for the halt reported in #54637.
+        result = json.dumps({
+            "output": "first lines...\n",
+            "exit_code": 141,
+            "error": None,
+        })
+        assert self._assert_parity(result) is False
+        assert classify_tool_failure("terminal", result) == (False, "")
+
     # Inputs the terminal tool actually emits. (exit_code_meaning is only ever
     # set with error=None — terminal_tool.py:2469,2474 — so error+meaning never
     # co-occurs; the "error wins" guarantee is a display-only concern and is
@@ -187,6 +198,8 @@ class TestClassifyTerminalBenignExits:
         {"output": "", "exit_code": 127},                     # command not found
         {"output": "curl: (7) ...", "exit_code": 7},          # curl connect fail (no longer tagged)
         {"output": "! [rejected]", "exit_code": 1},           # git push rejected (no longer tagged)
+        {"output": "Segmentation fault", "exit_code": 139},   # SIGSEGV crash — not a benign signal
+        {"output": "", "exit_code": 137},                     # SIGKILL/OOM — not a benign signal
         {"output": "", "exit_code": -1,                       # exception path: error, no meaning
          "error": "Failed to execute command: boom", "status": "error"},
     ])

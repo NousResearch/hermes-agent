@@ -109,10 +109,24 @@ class TestDetectToolFailureTerminalBenign:
         })
         assert _detect_tool_failure("terminal", result) == (False, "")
 
+    def test_sigpipe_exit141_is_benign(self):
+        # SIGPIPE (128+13): a downstream reader closed the pipe, e.g.
+        # `grep x f | head` under `set -o pipefail`. Carries no meaning —
+        # handled by the explicit benign-signal check. Regression for the
+        # pipefail halt reported in PR #54637.
+        result = json.dumps({
+            "output": "first 5 matching lines...\n",
+            "exit_code": 141,
+            "error": None,
+        })
+        assert _detect_tool_failure("terminal", result) == (False, "")
+
     def test_real_failure_codes_without_meaning_still_flagged(self):
         # exit 2 (grep/diff real error), 124 (timeout, stays a failure per D1),
-        # 127 (command not found) have no meaning and are not 130 → flagged.
-        for code in (2, 124, 127):
+        # 127 (command not found), and crash signals 134/137/139 (SIGABRT/
+        # SIGKILL-OOM/SIGSEGV) have no meaning and are not benign signals →
+        # flagged. (130/141 are the only benign signal exits.)
+        for code in (2, 124, 127, 134, 137, 139):
             result = json.dumps({"output": "", "exit_code": code})
             is_failure, suffix = _detect_tool_failure("terminal", result)
             assert is_failure is True, f"exit {code} should be a failure"

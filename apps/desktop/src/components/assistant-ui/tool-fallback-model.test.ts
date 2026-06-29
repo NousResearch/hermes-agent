@@ -84,6 +84,13 @@ describe('buildToolView terminal exit-code status', () => {
     expect(terminal({ exit_code: 130, output: '' }).status).toBe('success')
   })
 
+  // SIGPIPE (141) — a downstream reader closed the pipe (`… | head` under
+  // pipefail). Benign signal death, rendered neutral.
+  it('treats SIGPIPE (exit 141) as success', () => {
+    expect(terminal({ exit_code: 141, output: 'first lines...' }).status).toBe('success')
+    expect(terminal({ exit_code: 141, output: '' }).status).toBe('success')
+  })
+
   // The benign tag never overrides a populated error field (error wins).
   it('keeps a populated error field red even when exit_code_meaning is set', () => {
     expect(

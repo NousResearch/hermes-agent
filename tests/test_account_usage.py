@@ -95,6 +95,51 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_codex_pool_credentials_do_not_need_singleton_tokens(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "pool-access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: (_ for _ in ()).throw(RuntimeError("singleton missing access_token")),
+    )
+
+    calls = []
+
+    class _RecordingClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            calls.append((url, dict(headers or {})))
+            return _Response(
+                {
+                    "rate_limit": {
+                        "primary_window": {"used_percent": 14},
+                        "secondary_window": {"used_percent": 29},
+                    }
+                }
+            )
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=15.0: _RecordingClient())
+
+    snapshot = fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
+    assert [w.used_percent for w in snapshot.windows] == [14.0, 29.0]
+    assert calls[0][0] == "https://chatgpt.com/backend-api/wham/usage"
+    assert "ChatGPT-Account-Id" not in calls[0][1]
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

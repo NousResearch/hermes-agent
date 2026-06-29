@@ -77,7 +77,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
-| `/footer [on\|off\|status]` | Toggle the gateway runtime-metadata footer on final replies (shows model, context %, and cwd). |
+| `/footer [on\|off\|status]` | Toggle the gateway runtime-metadata footer on final replies (shows configured fields such as model, context, account limits, tokens/cost, and cwd). |
 | `/busy [queue\|steer\|interrupt\|status]` | CLI-only: control what pressing Enter does while Hermes is working — queue the new message, steer mid-turn, or interrupt immediately. |
 | `/indicator [kaomoji\|emoji\|unicode\|ascii]` | CLI-only: pick the TUI busy-indicator style. |
 | `/timestamps [on\|off\|status]` | CLI-only: toggle `[HH:MM]` timestamps on messages and in `/history`. |
@@ -230,7 +230,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn without interrupting the current one. |
 | `/steer <prompt>` | Inject a message after the next tool call without interrupting — the model picks it up on its next iteration rather than as a new turn. |
 | `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. A judge model checks after each turn; if not done, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. See [Persistent Goals](/user-guide/features/goals). |
-| `/footer [on\|off\|status]` | Toggle the runtime-metadata footer on final replies (shows model, context %, and cwd). |
+| `/footer [on\|off\|status]` | Toggle the runtime-metadata footer on final replies (shows configured fields such as model, context, account limits, tokens/cost, and cwd). |
 | `/curator [status\|run\|pin\|archive]` | Background skill maintenance controls. |
 | `/suggestions [accept\|dismiss N\|catalog\|clear]` | Review suggested automations right in chat. `/suggestions` lists pending suggestions, `catalog` adds curated starter automations, and `clear` prunes resolved suggestion records. Accepted suggestions keep this chat/thread as the job delivery origin. |
 | `/blueprint [name] [slot=value ...]` | Browse cron blueprints, start a guided slot-filling conversation, or create a blueprint job directly. Directly created jobs deliver back to the current chat/thread. |

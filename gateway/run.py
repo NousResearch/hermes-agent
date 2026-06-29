@@ -10529,10 +10529,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
-                    model=agent_result.get("model"),
+                    model=agent_result.get("chat_model") or agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    provider=agent_result.get("chat_provider") or agent_result.get("provider"),
+                    base_url=agent_result.get("chat_base_url") or agent_result.get("base_url"),
+                    input_tokens=agent_result.get("input_tokens"),
+                    output_tokens=agent_result.get("output_tokens"),
+                    total_tokens=agent_result.get("total_tokens"),
+                    estimated_cost_usd=agent_result.get("estimated_cost_usd"),
+                    cost_status=agent_result.get("cost_status"),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

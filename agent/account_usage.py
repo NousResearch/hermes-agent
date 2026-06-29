@@ -436,11 +436,27 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
+def _read_codex_account_id() -> Optional[str]:
+    """Best-effort ChatGPT account id for the Codex usage endpoint.
+
+    Runtime credentials can legitimately resolve from the credential pool when
+    the legacy singleton provider state has no usable access/refresh token.
+    ``_read_codex_tokens()`` raises in that shape, but account_id is only an
+    optional disambiguation header for the usage request. Do not let a missing
+    singleton token suppress otherwise-valid session/week limit telemetry.
+    """
+    try:
+        token_data = _read_codex_tokens()
+    except Exception:
+        return None
+    tokens = token_data.get("tokens") or {}
+    account_id = str(tokens.get("account_id", "") or "").strip()
+    return account_id or None
+
+
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    account_id = _read_codex_account_id()
     headers = {
         "Authorization": f"Bearer {creds['api_key']}",
         "Accept": "application/json",

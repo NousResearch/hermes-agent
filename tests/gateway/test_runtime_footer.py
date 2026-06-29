@@ -4,6 +4,8 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -68,6 +70,41 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         fields=("model", "context_pct", "cwd"),
     )
     assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+
+
+@dataclass(frozen=True)
+class _UsageWindow:
+    label: str
+    used_percent: float
+    reset_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class _UsageSnapshot:
+    windows: tuple[_UsageWindow, ...]
+
+
+def test_format_footer_rich_fields_with_account_usage(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    usage = _UsageSnapshot(
+        (
+            _UsageWindow("Session", 14.0, datetime.now(timezone.utc) + timedelta(hours=3)),
+            _UsageWindow("Weekly", 29.0, datetime.now(timezone.utc) + timedelta(days=2)),
+        )
+    )
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        context_tokens=214000,
+        context_length=258000,
+        cwd=str(tmp_path),
+        fields=("model", "context", "session_limit", "weekly_limit", "cwd"),
+        account_usage=usage,
+    )
+    assert "gpt-5.5" in out
+    assert "ctx 214k/258k 83%" in out
+    assert "sess 86% left/" in out
+    assert "week 71% left/" in out
+    assert out.endswith("~")
 
 
 def test_format_footer_skips_missing_context_length():
@@ -153,14 +190,19 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {
+        "enabled": False,
+        "fields": ["model", "context", "session_limit", "weekly_limit", "cwd"],
+        "usage_cache_seconds": 300,
+        "usage_timeout_seconds": 2,
+    }
 
 
 def test_resolve_global_enable():
     user = {"display": {"runtime_footer": {"enabled": True}}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
-    assert cfg["fields"] == ["model", "context_pct", "cwd"]
+    assert cfg["fields"] == ["model", "context", "session_limit", "weekly_limit", "cwd"]
 
 
 def test_resolve_platform_override_wins():
@@ -189,7 +231,7 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
+    assert tg["fields"] == ["model", "context", "session_limit", "weekly_limit", "cwd"]
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
@@ -260,3 +302,109 @@ def test_build_footer_no_data_returns_empty_even_when_enabled():
     # With no TERMINAL_CWD env either
     if not os.environ.get("TERMINAL_CWD"):
         assert out == ""
+
+
+def test_build_footer_fetches_usage_from_config_route_when_result_omits_provider(monkeypatch):
+    # Some gateway result paths historically omitted provider/base_url even
+    # though the live config had a valid Codex route.  Without this fallback the
+    # footer silently dropped both session and weekly limit fields.
+    from agent import account_usage
+    from gateway import runtime_footer
+
+    runtime_footer._USAGE_CACHE.clear()
+    calls = []
+
+    def fake_fetch(provider, *, base_url=None, api_key=None):
+        calls.append((provider, base_url, bool(api_key)))
+        return _UsageSnapshot(
+            (
+                _UsageWindow("Session", 14.0, None),
+                _UsageWindow("Weekly", 29.0, None),
+            )
+        )
+
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
+    out = build_footer_line(
+        user_config={
+            "model": {
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            },
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["session_limit", "weekly_limit"],
+                    "usage_cache_seconds": 0,
+                }
+            },
+        },
+        platform_key="telegram",
+        model="gpt-5.5",
+        context_tokens=10,
+        context_length=100,
+        cwd="",
+        provider=None,
+        base_url=None,
+    )
+
+    assert calls == [("openai-codex", "https://chatgpt.com/backend-api/codex", False)]
+    assert out == "sess 86% left · week 71% left"
+
+
+def test_transient_usage_miss_keeps_last_good_snapshot(monkeypatch):
+    # A single transient usage-API miss (timeout / rate-limit / empty) must not
+    # blank the limit fields for the whole cache window. The footer should ride
+    # out the miss by serving the last good snapshot and retry again soon.
+    from agent import account_usage
+    from gateway import runtime_footer
+
+    runtime_footer._USAGE_CACHE.clear()
+
+    seq = [
+        _UsageSnapshot((_UsageWindow("Session", 14.0, None), _UsageWindow("Weekly", 29.0, None))),
+        None,  # transient miss
+        None,  # transient miss
+        _UsageSnapshot((_UsageWindow("Session", 20.0, None), _UsageWindow("Weekly", 31.0, None))),
+    ]
+    idx = {"i": 0}
+
+    def fake_fetch(provider, *, base_url=None, api_key=None):
+        i = idx["i"]
+        idx["i"] += 1
+        return seq[i] if i < len(seq) else seq[-1]
+
+    monkeypatch.setattr(account_usage, "fetch_account_usage", fake_fetch)
+
+    cfg = {
+        "model": {"provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex"},
+        "display": {
+            "runtime_footer": {
+                "enabled": True,
+                "fields": ["session_limit", "weekly_limit"],
+                # 0 cache so each call attempts a fresh fetch; the negative-TTL
+                # ride-out path is what must preserve the last good data.
+                "usage_cache_seconds": 0,
+                "usage_timeout_seconds": 2,
+            }
+        },
+    }
+
+    def render():
+        return build_footer_line(
+            user_config=cfg,
+            platform_key="telegram",
+            model="gpt-5.5",
+            context_tokens=10,
+            context_length=100,
+            cwd="",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+
+    first = render()
+    assert first == "sess 86% left · week 71% left"
+    # Two transient misses in a row — must still show the last good numbers.
+    assert render() == "sess 86% left · week 71% left"
+    assert render() == "sess 86% left · week 71% left"
+    # Recovery — fresh good data flows through again.
+    assert render() == "sess 80% left · week 69% left"

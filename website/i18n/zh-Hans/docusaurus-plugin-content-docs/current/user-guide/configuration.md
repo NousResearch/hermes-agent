@@ -1211,21 +1211,25 @@ display:
 
 ### 运行时元数据页脚（仅限 gateway）
 
-当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。目前页脚可显示模型、上下文窗口百分比和当前工作目录。默认关闭；如果您的团队希望每个回复都包含这些来源信息，请按 gateway 选择加入。
+当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。页脚可显示聊天模型、上下文窗口用量、当前工作目录、可选 token/费用合计，以及提供者暴露的账户限制窗口。默认关闭；如果您的团队希望每个回复都包含这些来源信息，请按 gateway 选择加入。
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # 支持字段：model、context_pct、cwd
+    fields: ["model", "context", "session_limit", "weekly_limit", "cwd"]
+    usage_cache_seconds: 300      # 缓存提供者限制遥测
+    usage_timeout_seconds: 2      # 不长时间阻塞最终回复
 ```
+
+支持字段包括 `model`、`context_pct`、`context`/`ctx`、`session_limit`、`weekly_limit`、`tokens`、`cost` 和 `cwd`。当提供者没有账户窗口遥测时，限制字段会被静默跳过。
 
 `/footer` 斜杠命令在任何会话中运行时切换此功能。
 
 附加到 Telegram/Discord/Slack 回复的示例页脚：
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+gpt-5.5 · ctx 214k/258k 83% · sess 86% left/3h · week 71% left/2d · ~
 ```
 
 只有轮次的**最终**消息获得页脚；中间更新保持干净。

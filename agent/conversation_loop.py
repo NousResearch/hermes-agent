@@ -1189,6 +1189,14 @@ def run_conversation(
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 
+                # Snapshot the active chat route immediately before the real
+                # chat API call. Auxiliary work after the turn may temporarily
+                # mutate agent.model/provider; user-visible runtime footers must
+                # report the chat route, not a compression/title/memory route.
+                agent._last_chat_model = getattr(agent, "model", "") or ""
+                agent._last_chat_provider = getattr(agent, "provider", "") or ""
+                agent._last_chat_base_url = getattr(agent, "base_url", "") or ""
+
                 response = run_llm_execution_middleware(
                     api_kwargs,
                     _perform_api_call,

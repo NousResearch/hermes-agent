@@ -259,6 +259,32 @@ class TestWebhookHandling:
         assert event.source.chat_type == "group"
         assert event.source.user_id == "+15551112222"
 
+    def test_attachment_only_inbound_uses_placeholder_text(self, tmp_path):
+        adapter = SendblueAdapter(_config(tmp_path))
+        adapter.handle_message = AsyncMock()
+        payload = {
+            "content": "",
+            "is_outbound": False,
+            "status": "RECEIVED",
+            "message_handle": "mh-media",
+            "from_number": "+15551112222",
+            "to_number": "+15550000001",
+            "media_url": "https://cdn.example.test/photo.jpg",
+            "message_type": "image/jpeg",
+        }
+        response = _run(
+            adapter._handle_webhook(
+                _Request(payload, headers={"sb-signing-secret": "webhook-secret"})
+            )
+        )
+        _run(asyncio.sleep(0))
+        assert response.status == 200
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "(attachment)"
+        assert event.message_type == _sendblue.MessageType.PHOTO
+        assert event.media_urls == ["https://cdn.example.test/photo.jpg"]
+        assert event.media_types == ["image/jpeg"]
+
 
 class TestSendResults:
     def test_success_extracts_message_handle(self):
@@ -305,10 +331,16 @@ def test_register_calls_register_platform():
     ctx = MagicMock()
     register(ctx)
     ctx.register_platform.assert_called_once()
+    ctx.register_cli_command.assert_called_once()
     kwargs = ctx.register_platform.call_args.kwargs
     assert kwargs["name"] == "sendblue"
     assert kwargs["cron_deliver_env_var"] == "SENDBLUE_HOME_CHANNEL"
     assert kwargs["allowed_users_env"] == "SENDBLUE_ALLOWED_USERS"
     assert kwargs["allow_all_env"] == "SENDBLUE_ALLOW_ALL_USERS"
+    assert kwargs["pii_safe"] is True
     assert callable(kwargs["standalone_sender_fn"])
     assert callable(kwargs["env_enablement_fn"])
+    cli_kwargs = ctx.register_cli_command.call_args.kwargs
+    assert cli_kwargs["name"] == "sendblue"
+    assert callable(cli_kwargs["setup_fn"])
+    assert callable(cli_kwargs["handler_fn"])

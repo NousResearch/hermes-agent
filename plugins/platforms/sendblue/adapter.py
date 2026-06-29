@@ -118,6 +118,34 @@ def _sendblue_number_for_payload(payload: Dict[str, Any]) -> str:
     ).strip()
 
 
+def _media_url_for_payload(payload: Dict[str, Any]) -> str:
+    return str(payload.get("media_url") or "").strip()
+
+
+def _media_type_for_payload(payload: Dict[str, Any]) -> str:
+    return str(
+        payload.get("message_type")
+        or payload.get("media_type")
+        or payload.get("content_type")
+        or "attachment"
+    ).strip()
+
+
+def _message_type_for_payload(payload: Dict[str, Any]) -> MessageType:
+    media_type = _media_type_for_payload(payload).lower()
+    if not _media_url_for_payload(payload):
+        return MessageType.TEXT
+    if "image" in media_type or media_type in {"photo", "picture"}:
+        return MessageType.PHOTO
+    if "video" in media_type:
+        return MessageType.VIDEO
+    if "audio" in media_type:
+        return MessageType.AUDIO
+    if "voice" in media_type:
+        return MessageType.VOICE
+    return MessageType.DOCUMENT
+
+
 def _response_message_id(data: Dict[str, Any]) -> Optional[str]:
     value = data.get("message_handle") or data.get("id") or data.get("message_id")
     return str(value) if value else None
@@ -561,7 +589,11 @@ class SendblueAdapter(BasePlatformAdapter):
         if str(payload.get("status") or "").upper() not in {"", "RECEIVED"}:
             return web.json_response({"status": "ok"})
 
+        media_url = _media_url_for_payload(payload)
+        media_type = _media_type_for_payload(payload) if media_url else ""
         text = str(payload.get("content") or "").strip()
+        if not text and media_url:
+            text = "(attachment)"
         sender = _sender_for_payload(payload)
         chat_id = _chat_id_for_payload(payload)
         message_handle = str(payload.get("message_handle") or "").strip()
@@ -586,14 +618,12 @@ class SendblueAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=_message_type_for_payload(payload),
             source=source,
             raw_message=payload,
             message_id=message_handle or None,
-            media_urls=[str(payload["media_url"])] if payload.get("media_url") else [],
-            media_types=[str(payload.get("message_type") or "message")]
-            if payload.get("media_url")
-            else [],
+            media_urls=[media_url] if media_url else [],
+            media_types=[media_type] if media_type else [],
         )
 
         logger.info(
@@ -757,6 +787,13 @@ def interactive_setup() -> None:
 
 
 def register(ctx) -> None:
+    try:
+        from . import cli as _cli
+    except ImportError:  # test loader imports adapter.py outside package context
+        import importlib
+
+        _cli = importlib.import_module("plugins.platforms.sendblue.cli")
+
     ctx.register_platform(
         name="sendblue",
         label="Sendblue",
@@ -778,11 +815,19 @@ def register(ctx) -> None:
         allowed_users_env="SENDBLUE_ALLOWED_USERS",
         allow_all_env="SENDBLUE_ALLOW_ALL_USERS",
         max_message_length=MAX_MESSAGE_LENGTH,
-        pii_safe=False,
+        pii_safe=True,
         allow_update_command=True,
         platform_hint=(
             "You are communicating over Sendblue iMessage/SMS/RCS. "
             "Keep replies concise and natural for a phone messaging thread. "
-            "The transport may fall back from iMessage to SMS/RCS depending on the recipient."
+            "The transport may fall back from iMessage to SMS/RCS depending on the recipient. "
+            "Recipient identifiers are E.164 phone numbers; never expose them in "
+            "responses unless the user asked."
         ),
+    )
+    ctx.register_cli_command(
+        name="sendblue",
+        help="Set up and inspect the Sendblue iMessage/SMS/RCS integration",
+        setup_fn=_cli.register_cli,
+        handler_fn=_cli.dispatch,
     )

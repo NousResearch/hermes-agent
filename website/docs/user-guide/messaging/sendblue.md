@@ -15,6 +15,27 @@ running your own Mac relay.
 
 > Run `hermes gateway setup` and pick **Sendblue** for a guided walk-through.
 
+## Architecture
+
+Sendblue is a **receive-webhook + REST-send** channel:
+
+```text
+User phone
+  <-> Sendblue iMessage/SMS/RCS line
+  <-> Sendblue receive webhook + REST API
+  <-> Hermes Sendblue platform plugin
+```
+
+The adapter lives under `plugins/platforms/sendblue/` and registers with
+Hermes through `ctx.register_platform(name="sendblue", ...)`. That means it uses
+the same plugin-platform path as other bundled channels: allowlists, pairing,
+gateway status, cron delivery, `send_message`, and platform hints are all wired
+through the plugin registry without editing gateway core files.
+
+Unlike persistent-stream channels such as Photon, Sendblue needs a public HTTPS
+URL for inbound receive webhooks and a shared secret so Hermes can reject
+forged requests.
+
 ## Prerequisites
 
 - A Sendblue account with API credentials.
@@ -33,6 +54,12 @@ hermes gateway setup
 ```
 
 Select **Sendblue** and follow the prompts.
+
+You can also inspect the plugin configuration without printing secrets:
+
+```bash
+hermes sendblue status
+```
 
 ### Via environment variables
 
@@ -74,6 +101,32 @@ SENDBLUE_INSECURE_NO_SIGNATURE=true
 ```
 
 Do not use that bypass on a public server.
+
+## Authorizing users
+
+Sendblue uses the standard Hermes platform authorization model.
+
+**DM pairing (default).** When an unknown number messages your Sendblue line,
+Hermes offers a pairing flow. Approve the code with:
+
+```bash
+hermes pairing approve sendblue <CODE>
+```
+
+**Pre-authorize specific numbers** in `~/.hermes/.env`:
+
+```bash
+SENDBLUE_ALLOWED_USERS=+15551234567,+15559876543
+```
+
+When `SENDBLUE_ALLOWED_USERS` is set, unknown senders are ignored instead of
+being offered a pairing code.
+
+**Open access** is for local development only:
+
+```bash
+SENDBLUE_ALLOW_ALL_USERS=true
+```
 
 ## Start the gateway
 
@@ -142,9 +195,14 @@ Group replies use `group:<id>` chat ids. The adapter uses Sendblue's
 - **Rate limits.** Sendblue returns HTTP 429 when a line is throttled. Hermes
   marks those send failures as retryable and preserves `Retry-After` when
   present.
-- **Attachments.** Outbound `media_url` is supported when provided as
-  metadata by a caller. Local `MEDIA:/...` attachments from cron are reported
-  as generated but are not uploaded automatically.
+- **PII redaction.** Sendblue identifiers are E.164 phone numbers, so the
+  plugin registers as PII-sensitive and Hermes redacts session descriptions
+  before exposing them to the model.
+- **Attachments.** Inbound attachment-only webhooks are accepted and delivered
+  with `(attachment)` placeholder text plus media metadata. Outbound `media_url`
+  is supported when provided as metadata by a caller. Local `MEDIA:/...`
+  attachments from cron are reported as generated but are not uploaded
+  automatically.
 
 ## Troubleshooting
 

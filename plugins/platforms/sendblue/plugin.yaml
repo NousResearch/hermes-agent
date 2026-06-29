@@ -3,10 +3,11 @@ label: Sendblue
 kind: platform
 version: 1.0.0
 description: >
-  Sendblue iMessage/SMS/RCS gateway adapter for Hermes Agent. Runs an
-  aiohttp webhook listener for inbound Sendblue receive events and sends
-  replies through the Sendblue REST API.
-author: hermes-agent
+  Bundled Sendblue iMessage/SMS/RCS platform plugin for Hermes Agent.
+  Runs an aiohttp webhook listener for inbound Sendblue receive events and
+  sends replies through the Sendblue REST API while staying on the standard
+  BasePlatformAdapter + ctx.register_platform plugin surface.
+author: NousResearch
 requires_env:
   - name: SENDBLUE_API_KEY_ID
     description: "Sendblue API key id"

@@ -41,6 +41,42 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=90000) is True
         assert compressor.should_compress(prompt_tokens=50000) is False
 
+    def test_existing_compaction_summary_uses_hysteresis(self, compressor):
+        """A resumed compressed session should not compact again at the base threshold.
+
+        Gateway turns construct a fresh agent, so ``compression_count`` can be 0
+        even when the loaded transcript already contains a compaction handoff.
+        The compressor must detect the summary in messages and require a higher
+        post-compaction trigger before re-compressing, otherwise every new turn
+        near the threshold splits the session again.
+        """
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": f"{SUMMARY_PREFIX}\nEarlier work."},
+            {"role": "user", "content": "current task"},
+        ]
+
+        compressor.compression_count = 0  # fresh gateway agent after resume
+        assert compressor.threshold_tokens == 85_000
+        assert compressor.should_compress(prompt_tokens=90_000, messages=messages) is False
+
+    def test_existing_compaction_summary_still_compresses_near_context_limit(self, compressor):
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": f"{SUMMARY_PREFIX}\nEarlier work."},
+            {"role": "user", "content": "current task"},
+        ]
+
+        assert compressor.should_compress(prompt_tokens=93_000, messages=messages) is True
+
+    def test_uncompressed_session_still_uses_base_threshold(self, compressor):
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "current task"},
+        ]
+
+        assert compressor.should_compress(prompt_tokens=85_000, messages=messages) is True
+
 
 
 class TestUpdateFromResponse:

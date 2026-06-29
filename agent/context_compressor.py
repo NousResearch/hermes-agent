@@ -961,15 +961,59 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
         return True
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def _messages_contain_context_summary(self, messages: Optional[List[Dict[str, Any]]]) -> bool:
+        """Return True when a loaded transcript already has a compaction handoff.
+
+        Gateway runs often construct a fresh ``ContextCompressor`` for each
+        inbound message, so ``compression_count`` may be zero even when the
+        persisted session has already been compacted. Detect the summary in
+        the messages themselves so anti-thrash decisions survive process/agent
+        boundaries.
+        """
+        if not messages:
+            return False
+        return any(self._is_context_summary_content(m.get("content")) for m in messages)
+
+    def _effective_trigger_tokens(self, messages: Optional[List[Dict[str, Any]]] = None) -> int:
+        """Return the trigger threshold for this turn.
+
+        First compression uses the configured threshold. Once a session has
+        already been compacted (either in this process or detected from a
+        persisted summary), use hysteresis: require meaningful growth beyond
+        the base threshold, but never wait past the near-limit safety trigger.
+        This prevents repeated compactions when fixed prompt/tool overhead
+        leaves a compressed session hovering just over the threshold.
+        """
+        base = self.threshold_tokens
+        already_compacted = self.compression_count > 0 or self._messages_contain_context_summary(messages)
+        if not already_compacted or self.context_length <= base:
+            return base
+
+        # Require ~15% growth beyond the configured threshold after a previous
+        # compaction, capped at 92% of the model context so we still compress
+        # before hitting provider limits. The hard lower bound keeps the
+        # effective trigger monotonic when users set thresholds above 92%.
+        growth_trigger = base + max(4096, int(base * 0.15))
+        near_limit_trigger = int(self.context_length * 0.92)
+        return max(base, min(growth_trigger, near_limit_trigger))
+
+    def should_compress(
+        self,
+        prompt_tokens: Optional[int] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> bool:
         """Check if context exceeds the compression threshold.
 
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
-        where each pass removes only 1-2 messages.
+        where each pass removes only 1-2 messages. After a session already
+        contains a compaction summary, a hysteresis threshold avoids repeatedly
+        re-compressing the same near-threshold transcript on every gateway
+        turn; near-limit contexts still compress.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        trigger_tokens = self._effective_trigger_tokens(messages)
+        if tokens < trigger_tokens:
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:

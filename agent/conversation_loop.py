@@ -73,6 +73,25 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _should_compress_with_messages(compressor: Any, prompt_tokens: int, messages: List[Dict[str, Any]]) -> bool:
+    """Call a context engine's compression predicate with transcript context when supported.
+
+    The built-in compressor uses ``messages`` to detect an already-compacted
+    resumed session and apply hysteresis. Third-party context engines may still
+    implement the older one-argument signature, so fall back without
+    ``messages`` for compatibility.
+    """
+    try:
+        return bool(compressor.should_compress(prompt_tokens, messages=messages))
+    except TypeError as exc:
+        # Only fall back for engines that do not accept the new keyword. Do not
+        # hide real TypeErrors raised inside an engine implementation.
+        message = str(exc)
+        if "messages" not in message or "unexpected keyword" not in message:
+            raise
+        return bool(compressor.should_compress(prompt_tokens))
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -4409,7 +4428,7 @@ def run_conversation(
                         messages, tools=agent.tools or None
                     )
 
-                if agent.compression_enabled and _compressor.should_compress(_real_tokens):
+                if agent.compression_enabled and _should_compress_with_messages(_compressor, _real_tokens, messages):
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,

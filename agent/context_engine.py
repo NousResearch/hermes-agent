@@ -80,8 +80,16 @@ class ContextEngine(ABC):
         """
 
     @abstractmethod
-    def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Return True if compaction should fire this turn."""
+    def should_compress(
+        self,
+        prompt_tokens: int | None = None,
+        messages: List[Dict[str, Any]] | None = None,
+    ) -> bool:
+        """Return True if compaction should fire this turn.
+
+        ``messages`` is optional for backward compatibility with older plugin
+        engines, but engines may use it to make resume-aware decisions.
+        """
 
     @abstractmethod
     def compress(

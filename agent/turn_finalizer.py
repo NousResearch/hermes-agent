@@ -121,6 +121,33 @@ def finalize_turn(
                     exc_info=True,
                 )
 
+    # If the loop stopped after executing tools but before a follow-up model
+    # response, close the turn with a visible assistant message.  Without this
+    # guard, Desktop/TUI can return to a ready composer while the persisted
+    # transcript ends in ``role=tool`` (the user sees a silent stop, and the
+    # next turn resumes from an invalid-looking tail).  This is distinct from
+    # an interrupted /stop path, which is handled below by
+    # close_interrupted_tool_sequence().
+    if final_response is None and not interrupted and messages:
+        try:
+            _tail_role = messages[-1].get("role") if isinstance(messages[-1], dict) else None
+        except Exception:
+            _tail_role = None
+        if _tail_role == "tool":
+            _turn_exit_reason = "pending_tool_result"
+            failed = True
+            try:
+                final_response = agent._format_turn_completion_explanation(_turn_exit_reason)
+            except Exception:
+                final_response = ""
+            if not final_response:
+                final_response = (
+                    "⚠️ No reply: the turn stopped after a tool result and the "
+                    "model produced no follow-up text. Send `continue` to let "
+                    "it summarize."
+                )
+            messages.append({"role": "assistant", "content": final_response})
+
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
     completed = (

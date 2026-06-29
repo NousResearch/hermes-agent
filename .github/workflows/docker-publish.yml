@@ -2,7 +2,11 @@ name: Docker Build and Publish
 
 on:
   push:
-    branches: [main]
+    # `main` is the production publish ref; `ci/publish-ghcr` lets us validate
+    # the GHCR publish pipeline end-to-end on a branch before merging (a
+    # workflow_dispatch trigger is only usable once it lives on the default
+    # branch, so a branch push is the only way to exercise publishing pre-merge).
+    branches: [main, ci/publish-ghcr]
     paths:
       - '**/*.py'
       - 'pyproject.toml'
@@ -20,11 +24,14 @@ on:
   release:
     types: [published]
 
+  # Manual publish from any ref (usable once this trigger is on the default
+  # branch).
+  workflow_dispatch:
+
 permissions:
   contents: read
-  # Needed so the arm64 job can push/pull its registry-backed build cache
-  # to ghcr.io (cache-to/cache-from type=registry).  See the build-arm64
-  # job for why registry cache replaced the gha cache on that arch.
+  # Needed so both build jobs and the merge job can push the image + the
+  # registry-backed build cache to ghcr.io under the JetBrains org namespace.
   packages: write
 
 # Concurrency: push/release runs are NEVER cancelled so every merge gets
@@ -36,7 +43,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-agent
+  # JetBrains fork publishes to GHCR under the org namespace (consumed by the
+  # yana repo's hermess-junie image), not to NousResearch's Docker Hub.
+  IMAGE_NAME: ghcr.io/jetbrains/hermes-agent
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -45,8 +54,8 @@ jobs:
   # is the only arch we can `load` into the local daemon on an amd64 runner.
   # ---------------------------------------------------------------------------
   build-amd64:
-    # Only run on the upstream repository, not on forks
-    if: github.repository == 'NousResearch/hermes-agent'
+    # Run on the JetBrains fork (not the NousResearch upstream).
+    if: github.repository == 'JetBrains/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -55,15 +64,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      # The image build + smoke test + integration tests run ONLY on
-      # push-to-main and release — never on PRs. They are the heaviest jobs
-      # in CI (~15-45 min) and a broken build surfaces on the main push (and
-      # is gated pre-merge by docker-lint + uv-lockfile-check). Every step
-      # below is skipped on PRs, so the job still reports green and the
-      # required check never hangs.
+      # The image build + smoke test run on every non-PR event; the heavier
+      # docker integration tests run only on main pushes and releases (see
+      # their own `if:`). Every step below is skipped on PRs, so the job still
+      # reports green and the required check never hangs.
       - name: Set up Docker Buildx
         if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      # Log in to ghcr.io so the push step below is authenticated against the
+      # JetBrains org namespace. Uses the workflow's GITHUB_TOKEN (packages:
+      # write), valid for the whole job.
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Build once, load into the local daemon for smoke testing.  Cached
       # to gha with a per-arch scope; the push step below reuses every
@@ -104,21 +122,20 @@ jobs:
       # that.  The fixture's ``HERMES_TEST_IMAGE`` branch (see
       # tests/docker/conftest.py:62-63) short-circuits the rebuild.
       #
-      # Why this job and not a standalone one: the image is 5GB+; passing
-      # it between jobs via ``docker save``/``upload-artifact`` is slower
-      # than the build itself.  Reusing the existing daemon state is the
-      # cheapest path to coverage on every PR that touches docker code.
+      # Gated to main pushes / releases only: they are the heaviest steps in
+      # CI (~15-45 min) and would needlessly slow branch-publish validation
+      # and manual dispatch runs, which already get build + smoke coverage.
       # ---------------------------------------------------------------------
       - name: Install uv (for docker tests)
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
 
       - name: Set up Python 3.11 (for docker tests)
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
         run: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
@@ -129,7 +146,7 @@ jobs:
           uv pip install -e ".[dev]"
 
       - name: Run docker integration tests
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release'
         env:
           # Skip rebuild; use the image already loaded by the build step.
           HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
@@ -142,19 +159,12 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/docker/ -v --tb=short
 
-      - name: Log in to Docker Hub
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       # Push amd64 by digest only (no tag).  The merge job assembles the
       # tagged manifest list.  `push-by-digest=true` is docker's recommended
       # pattern for multi-runner multi-platform builds.
       - name: Push amd64 by digest
         id: push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/publish-ghcr')) || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
@@ -171,14 +181,14 @@ jobs:
       # Write the digest to a file and upload it as an artifact so the
       # merge job can stitch both per-arch digests into a manifest list.
       - name: Export digest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/publish-ghcr')) || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/publish-ghcr')) || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: digest-amd64
@@ -193,7 +203,7 @@ jobs:
   # smoke test, then on push/release push by digest.
   # ---------------------------------------------------------------------------
   build-arm64:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'JetBrains/hermes-agent'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     outputs:
@@ -202,19 +212,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      # arm64 build runs only on push-to-main and release (see build-amd64).
+      # arm64 build runs on every non-PR event (see build-amd64).
       - name: Set up Docker Buildx
         if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       # Log in to ghcr.io so the registry-backed build cache below can be
-      # read (cache-from) on every event and written (cache-to) on
-      # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
+      # read (cache-from) and written (cache-to), and so the digest push is
+      # authenticated.  Uses the workflow's GITHUB_TOKEN, which is valid for
       # the whole job — unlike the gha cache backend's short-lived Azure SAS
       # token, which expired mid-build on slow cold-cache arm64 runs and
       # crashed the build before the smoke test (the reason the gha cache
       # was removed from arm64 PRs in the first place).
-      - name: Log in to ghcr.io (build cache)
+      - name: Log in to ghcr.io
         if: github.event_name != 'pull_request'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
@@ -241,8 +251,8 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
-          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
-          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+          cache-from: type=registry,ref=ghcr.io/jetbrains/hermes-agent:buildcache-arm64
+          cache-to: type=registry,ref=ghcr.io/jetbrains/hermes-agent:buildcache-arm64,mode=max
 
       - name: Smoke test image
         if: github.event_name != 'pull_request'
@@ -250,16 +260,9 @@ jobs:
         with:
           image: ${{ env.IMAGE_NAME }}:test
 
-      - name: Log in to Docker Hub
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Push arm64 by digest
         id: push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/publish-ghcr')) || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
@@ -270,18 +273,18 @@ jobs:
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
-          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+          cache-from: type=registry,ref=ghcr.io/jetbrains/hermes-agent:buildcache-arm64
+          cache-to: type=registry,ref=ghcr.io/jetbrains/hermes-agent:buildcache-arm64,mode=max
 
       - name: Export digest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/publish-ghcr')) || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/publish-ghcr')) || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: digest-arm64
@@ -294,11 +297,11 @@ jobs:
   # This is a registry-side operation — no building, no layer re-push —
   # so it runs in ~30 seconds.
   #
-  # On main pushes: tags both :main and :latest.
+  # On main / branch pushes and manual dispatch: tags both :main and :latest.
   # On releases: tags :<release_tag_name>.
   # ---------------------------------------------------------------------------
   merge:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    if: github.repository == 'JetBrains/hermes-agent' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/publish-ghcr')) || github.event_name == 'release' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     needs: [build-amd64, build-arm64]
     timeout-minutes: 10
@@ -313,11 +316,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to ghcr.io
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests

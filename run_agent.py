@@ -2387,9 +2387,13 @@ class AIAgent:
 
         # Re-derive the target path each call so /branch and /compress
         # session-id changes land in the right file without any re-point
-        # bookkeeping at the call sites.
+        # bookkeeping at the call sites.  Sanitize the session ID into a
+        # single traversal-free path segment — session IDs can come from
+        # untrusted input (X-Hermes-Session-Id header) and must not escape
+        # the sessions directory.
         try:
-            log_file = self.logs_dir / f"session_{self.session_id}.json"
+            safe_sid = _safe_session_filename_component(self.session_id)
+            log_file = self.logs_dir / f"session_{safe_sid}.json"
         except Exception:
             return
 

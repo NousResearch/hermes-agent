@@ -3455,6 +3455,24 @@ class TestSessionIdHeader:
             assert call_kwargs["session_id"] == "my-session-123"
 
     @pytest.mark.asyncio
+    async def test_traversal_session_id_header_rejected(self, auth_adapter):
+        """Security (#5958): a path-traversal X-Hermes-Session-Id must be
+        rejected with 400 so it can't reach the filesystem artifact paths
+        (session snapshot / request dump) and escape the sessions dir."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                for bad in ("../../../../etc/pwned", "/abs/path", "..\\win"):
+                    resp = await cli.post(
+                        "/v1/chat/completions",
+                        headers={"X-Hermes-Session-Id": bad, "Authorization": "Bearer sk-secret"},
+                        json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                    )
+                    assert resp.status == 400, f"{bad!r} should be rejected"
+                # The agent is never invoked for a rejected ID.
+                assert mock_run.call_count == 0
+
+    @pytest.mark.asyncio
     async def test_provided_session_id_loads_history_from_db(self, auth_adapter):
         """When X-Hermes-Session-Id is provided, history comes from SessionDB not request body."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}

@@ -1837,13 +1837,24 @@ def get_model_context_length(
                 key=lambda x: len(x[0]),
                 reverse=True,
             ):
-                if default_model in model_lower:
-                    logger.info(
-                        "Using hardcoded context length %s for model %r "
-                        "(custom endpoint, catalog match on %r)",
-                        f"{length:,}", model, default_model,
-                    )
-                    return length
+                dm_lower = default_model.lower()
+                idx = model_lower.find(dm_lower)
+                if idx == -1:
+                    continue
+                # Reject mid-token matches: "gemma" inside "gemma4" is not
+                # a real match.  The char after the catalog key must be a
+                # delimiter (colon, dash, dot, etc.) or end-of-string.
+                end = idx + len(dm_lower)
+                if end < len(model_lower):
+                    next_ch = model_lower[end]
+                    if next_ch.isalnum() or next_ch == "_":
+                        continue
+                logger.info(
+                    "Using hardcoded context length %s for model %r "
+                    "(custom endpoint, catalog match on %r)",
+                    f"{length:,}", model, default_model,
+                )
+                return length
             return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)

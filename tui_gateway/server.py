@@ -3085,6 +3085,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
     info: dict = {
         "model": getattr(agent, "model", ""),
         "provider": getattr(agent, "provider", ""),
+        "fallback_activated": bool(getattr(agent, "_fallback_activated", False)),
+        "primary_model": getattr(agent, "_primary_model", "") or "",
+        "primary_provider": getattr(agent, "_primary_provider", "") or "",
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",

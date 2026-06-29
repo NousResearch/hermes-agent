@@ -4361,6 +4361,13 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                # Ollama + gemma4 puts vision/multimodal output in `reasoning`
+                # instead of `content`. Fall back to reasoning when content is
+                # empty but reasoning carries the actual answer.
+                if not final_response.strip():
+                    _ollama_reasoning = getattr(assistant_message, "reasoning", None)
+                    if isinstance(_ollama_reasoning, str) and _ollama_reasoning.strip():
+                        final_response = _ollama_reasoning.strip()
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery

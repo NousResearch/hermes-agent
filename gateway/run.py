@@ -3469,6 +3469,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
+            # Defense-in-depth: validate override model name before use.
+            # A corrupted override (doubled prefix, truncated tag) poisons
+            # every subsequent rebuild until /new.  Dedupe silently so a
+            # bad override still falls through to config rather than
+            # silently breaking the session.  See #54511.
+            try:
+                from agent.chat_completion_helpers import _dedupe_model_name
+                _validated = _dedupe_model_name(override_model)
+                if _validated != override_model:
+                    logger.warning(
+                        "Session override model name corrected: %r -> %r (session=%s)",
+                        override_model, _validated, resolved_session_key,
+                    )
+                    override_model = _validated
+                    # Patch the override in-place so subsequent turns are clean
+                    override["model"] = _validated
+            except Exception:
+                pass
             override_runtime = {
                 "provider": override.get("provider"),
                 "api_key": override.get("api_key"),
@@ -16026,8 +16044,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key,
                     user_config=user_config,
                 )
-                logger.debug(
-                    "run_agent resolved: model=%s provider=%s session=%s",
+                logger.warning(
+                    "DBG_RESOLVED model=%s provider=%s session=%s",
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
@@ -16267,6 +16285,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                logger.warning("DBG_AGENT_CREATE model=%s sig=%s cached=%s", turn_route["model"], _sig, reused_cached_agent)
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],

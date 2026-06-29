@@ -1109,6 +1109,8 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+        agent._primary_model = ""
+        agent._primary_provider = ""
 
         # Undo the fallback's identity rewrite so the prompt is
         # byte-identical to the stored copy again (prefix cache match).
@@ -1580,7 +1582,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         agent._config_context_length = None
 
         # ── Swap core runtime fields ──
-        agent.model = new_model
+        # Defensive: strip accidentally duplicated model-name prefix
+        # (see #54511).  The /model command can produce doubled names like
+        # "gemma4:gemma4:e2b" from alias resolution; dedupe before storing.
+        from agent.chat_completion_helpers import _dedupe_model_name
+        agent.model = _dedupe_model_name(new_model)
         agent.provider = new_provider
         # Use new base_url when provided; only fall back to current when the
         # new provider genuinely has no endpoint (e.g. native SDK providers).
@@ -1774,6 +1780,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Reset fallback state ──
     agent._fallback_activated = False
     agent._fallback_index = 0
+    agent._primary_model = ""
+    agent._primary_provider = ""
 
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary

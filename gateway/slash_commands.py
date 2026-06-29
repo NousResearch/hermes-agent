@@ -1557,6 +1557,24 @@ class GatewaySlashCommandsMixin:
                 f"Adjust your self-identification accordingly.]"
             )
 
+            # Validate model name before storing override — a corrupted name
+            # (doubled prefix like "gemma4:gemma4:e2b" or truncated like "e2b")
+            # would poison every subsequent turn until /new or manual DB edit.
+            # See #54511.
+            _validated_model = result.new_model
+            try:
+                from agent.chat_completion_helpers import _dedupe_model_name
+                _validated_model = _dedupe_model_name(result.new_model)
+            except Exception:
+                pass  # dedupe is best-effort; fall back to raw name
+            if _validated_model != result.new_model:
+                logger.warning(
+                    "Session override model name corrected: %r -> %r",
+                    result.new_model,
+                    _validated_model,
+                )
+                result.new_model = _validated_model
+
             # Store session override so next agent creation uses the new model
             self._session_model_overrides[session_key] = {
                 "model": result.new_model,

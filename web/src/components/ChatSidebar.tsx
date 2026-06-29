@@ -42,6 +42,9 @@ interface SessionInfo {
   cwd?: string;
   model?: string;
   provider?: string;
+  fallback_activated?: boolean;
+  primary_model?: string;
+  primary_provider?: string;
   credential_warning?: string;
   title?: string;
 }
@@ -303,8 +306,21 @@ export function ChatSidebar({
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || "—";
+  //
+  // When fallback is active, prefer the runtime model from the gateway WS
+  // (info.model) over the config-API value (effectiveModel) so the badge
+  // reflects what's actually generating responses.
+  const fallbackActive = !!info.fallback_activated;
+  const modelName = fallbackActive
+    ? info.model || effectiveModel || "—"
+    : effectiveModel || info.model || "—";
   const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
+  const primaryLabel =
+    (info.primary_model || info.primary_provider) &&
+    fallbackActive &&
+    info.model !== info.primary_model
+      ? `${(info.primary_model || "").split("/").slice(-1)[0] || info.primary_provider || ""}`
+      : null;
   const banner = error ?? info.credential_warning ?? null;
 
   return (
@@ -320,23 +336,44 @@ export function ChatSidebar({
             model
           </div>
 
-          <Button
-            ghost
-            size="sm"
-            onClick={() => setModelOpen(true)}
-            className={cn(
-              "max-w-full min-w-0 px-0 py-0",
-              "self-start normal-case tracking-normal text-sm font-medium",
-              "hover:underline disabled:no-underline",
-            )}
-            title={modelName === "—" ? "switch model" : modelName}
-          >
-            <span className="flex min-w-0 max-w-full items-center gap-1">
-              <span className="truncate">{modelLabel}</span>
+          <div className="flex items-center gap-1.5">
+            <Button
+              ghost
+              size="sm"
+              onClick={() => setModelOpen(true)}
+              className={cn(
+                "max-w-full min-w-0 px-0 py-0",
+                "self-start normal-case tracking-normal text-sm font-medium",
+                "hover:underline disabled:no-underline",
+              )}
+              title={
+                fallbackActive && primaryLabel
+                  ? `Fallback: ${modelName} (primary: ${info.primary_model || info.primary_provider || "—"})`
+                  : modelName === "—"
+                    ? "switch model"
+                    : modelName
+              }
+            >
+              <span className="flex min-w-0 max-w-full items-center gap-1">
+                <span className="truncate">{modelLabel}</span>
 
-              <ChevronDown className="size-3.5 shrink-0 text-text-secondary" />
-            </span>
-          </Button>
+                <ChevronDown className="size-3.5 shrink-0 text-text-secondary" />
+              </span>
+            </Button>
+
+            {fallbackActive && (
+              <span
+                className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400"
+                title={
+                  primaryLabel
+                    ? `Fallback active — primary ${info.primary_model || info.primary_provider || "—"} unavailable`
+                    : "Fallback active"
+                }
+              >
+                Fallback
+              </span>
+            )}
+          </div>
         </div>
 
         <Badge tone={STATE_TONE[state]} className="shrink-0">

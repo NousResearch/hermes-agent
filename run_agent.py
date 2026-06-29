@@ -528,6 +528,7 @@ class AIAgent:
             return
         source = _session_source_for_agent(self.platform)
         try:
+            logger.warning("DBG_DB_CREATE session=%s model=%s provider=%s", self.session_id, self.model, self.provider)
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,

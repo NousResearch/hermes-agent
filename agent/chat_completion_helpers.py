@@ -586,9 +586,40 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _dedupe_model_name(name: str) -> str:
+    """Strip accidentally duplicated provider/model prefixes.
+
+    Ollama model tags like ``gemma4:e2b`` can get doubled to
+    ``gemma4:gemma4:e2b`` by an upstream bug (#54511).  A doubled tag is
+    an invalid model name and the API call fails with HTTP 400.
+
+    Handles one or more duplications: ``a:a:a:b`` → ``a:b``.
+    """
+    if not name or ":" not in name:
+        return name
+    parts = name.split(":")
+    # Walk from the left, collapsing runs where part[i] == part[i+1].
+    deduped = [parts[0]]
+    for p in parts[1:]:
+        if p != deduped[-1]:
+            deduped.append(p)
+    # If the result still has the pattern ``prefix:prefix:model`` after
+    # adjacent-collapse (e.g. ``gemma4:gemma4:e2b``), also strip a leading
+    # duplicate of the final segment's prefix.
+    result = ":".join(deduped)
+    if ":" in result:
+        head, _, tail = result.rpartition(":")
+        if head.endswith(":" + tail) or head == tail:
+            result = tail
+    return result
+
+
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
+    # Defensive: strip any accidentally duplicated model-name prefix
+    # (see #54511).  This is a no-op for well-formed names.
+    agent.model = _dedupe_model_name(agent.model)
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
@@ -1246,6 +1277,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+
+        # Remember the primary (original) model/provider so the UI can show
+        # "Fallback: X (primary: Y)" — stored once, before the swap.
+        if not getattr(agent, "_primary_model", ""):
+            agent._primary_model = getattr(agent, "model", "") or ""
+        if not getattr(agent, "_primary_provider", ""):
+            agent._primary_provider = getattr(agent, "provider", "") or ""
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -2190,6 +2228,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 content=full_content,
                 tool_calls=None,
                 reasoning_content=full_reasoning,
+                reasoning=full_reasoning,
             )
             mock_choice = SimpleNamespace(
                 index=0,
@@ -2214,6 +2253,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             content=full_content,
             tool_calls=mock_tool_calls,
             reasoning_content=full_reasoning,
+            reasoning=full_reasoning,
         )
         mock_choice = SimpleNamespace(
             index=0,

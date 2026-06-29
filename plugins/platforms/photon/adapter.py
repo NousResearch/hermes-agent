@@ -349,6 +349,13 @@ class PhotonAdapter(BasePlatformAdapter):
             else os.getenv("PHOTON_MENTION_PATTERNS")
         )
 
+        _read_receipts = extra.get("read_receipts")
+        if _read_receipts is None:
+            _read_receipts = os.getenv("PHOTON_READ_RECEIPTS")
+        self._read_receipts_enabled = str(_read_receipts).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
     # -- Group-mention gating (parity with BlueBubbles) -------------------
 
     @staticmethod
@@ -1256,6 +1263,17 @@ class PhotonAdapter(BasePlatformAdapter):
             "true", "1", "yes", "on",
         }
 
+    async def _mark_read(self, chat_id: str, message_id: str) -> bool:
+        """Mark an inbound iMessage as read. Soft-fails (False), never raises."""
+        try:
+            await self._sidecar_call(
+                "/read", {"spaceId": chat_id, "messageId": message_id}
+            )
+            return True
+        except Exception as e:
+            logger.debug("[photon] mark_read failed: %s", e)
+            return False
+
     async def _add_reaction(
         self, chat_id: str, message_id: str, emoji: str
     ) -> bool:
@@ -1343,11 +1361,13 @@ class PhotonAdapter(BasePlatformAdapter):
         return {"success": True, "message_id": target}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Tapback 👀 on the triggering message while the agent works."""
-        if not self._reactions_enabled():
-            return
+        """Mark the triggering message read, then optionally tapback 👀."""
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
+        if chat_id and message_id and self._read_receipts_enabled:
+            await self._mark_read(chat_id, message_id)
+        if not self._reactions_enabled():
+            return
         if chat_id and message_id:
             await self._add_reaction(chat_id, message_id, "\U0001f440")
 

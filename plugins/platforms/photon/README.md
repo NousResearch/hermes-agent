@@ -124,6 +124,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `hermes photon telemetry on\|off` (restart the gateway to apply) |
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
+| `PHOTON_READ_RECEIPTS`    | false                      | Send native iMessage read receipts when Hermes starts processing an inbound Photon message |
 
 ## Attachments & limitations
 
@@ -153,6 +154,11 @@ All env vars are documented in `plugin.yaml`. The most important:
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
   reachable across restarts via spectrum-ts' `space.get(id)`.
+- **Read receipts are opt-in.** Set `PHOTON_READ_RECEIPTS=true` to have Hermes
+  send a native iMessage read receipt for the triggering message when the
+  gateway starts processing it. The sidecar uses spectrum-ts' iMessage
+  `read(message)` builder through `/read`; failures are soft so message
+  handling continues even if Photon cannot mark a message read.
 - **Message effects, polls** — supported by `spectrum-ts` but not yet
   exposed; the sidecar is the natural place to add them.
 

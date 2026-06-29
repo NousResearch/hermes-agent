@@ -145,6 +145,7 @@ async def test_reaction_failure_is_soft(monkeypatch: pytest.MonkeyPatch) -> None
 @pytest.mark.asyncio
 async def test_hooks_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PHOTON_REACTIONS", raising=False)
+    monkeypatch.delenv("PHOTON_READ_RECEIPTS", raising=False)
     adapter = _make_adapter(monkeypatch)
     calls = _capture_sidecar(adapter)
 
@@ -153,6 +154,52 @@ async def test_hooks_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None
     await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_processing_start_sends_read_receipt_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOTON_REACTIONS", raising=False)
+    monkeypatch.setenv("PHOTON_READ_RECEIPTS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    event = _message_event(adapter)
+    await adapter.on_processing_start(event)
+
+    assert calls == [
+        ("/read", {"spaceId": event.source.chat_id, "messageId": "target-msg-1"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_processing_start_read_receipt_precedes_reaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_REACTIONS", "true")
+    monkeypatch.setenv("PHOTON_READ_RECEIPTS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    event = _message_event(adapter)
+    await adapter.on_processing_start(event)
+
+    assert [path for path, _ in calls] == ["/read", "/react"]
+    assert calls[0][1] == {"spaceId": event.source.chat_id, "messageId": "target-msg-1"}
+    assert calls[1][1]["emoji"] == _EYES
+
+
+@pytest.mark.asyncio
+async def test_mark_read_failure_is_soft(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+
+    async def _boom(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        raise RuntimeError("sidecar down")
+
+    adapter._sidecar_call = _boom  # type: ignore[assignment]
+
+    assert await adapter._mark_read("+1", "m") is False
 
 
 @pytest.mark.asyncio

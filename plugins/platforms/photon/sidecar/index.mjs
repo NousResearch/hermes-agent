@@ -31,6 +31,8 @@
 //   - POST /unreact     -> {"ok": true} | 400 soft failure
 //       body: {"spaceId": "...", "messageId": "<target msg id>",
 //              "reactionId": "..." | null (restart-recovery fallback)}
+//   - POST /read        -> {"ok": true}
+//       body: {"spaceId": "...", "messageId": "<target msg id>"}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
@@ -234,6 +236,7 @@ try {
 }
 let Spectrum,
   imessage,
+  imessageRead,
   attachment,
   voice,
   spectrumText,
@@ -248,7 +251,7 @@ try {
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
   } = await import("spectrum-ts"));
-  ({ imessage } = await import("spectrum-ts/providers/imessage"));
+  ({ imessage, read: imessageRead } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -827,6 +830,23 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "reaction not removable");
       }
       return badRequest(res, "no tracked reaction for message");
+    }
+    if (req.url === "/read") {
+      const { spaceId, messageId } = body || {};
+      if (!spaceId || !messageId) {
+        return badRequest(res, "spaceId and messageId are required");
+      }
+      if (typeof imessageRead !== "function") {
+        return badRequest(res, "read receipts not supported on this platform");
+      }
+      const space = await resolveSpace(spaceId);
+      const target =
+        knownMessages.get(messageId) ?? (await space.getMessage(messageId));
+      if (!target) {
+        return badRequest(res, "message not found");
+      }
+      await space.send(imessageRead(target));
+      return ok(res, {});
     }
     if (req.url === "/typing") {
       const { spaceId, state = "start" } = body || {};

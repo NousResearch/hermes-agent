@@ -86,3 +86,7 @@ optional_env:
     description: "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
     prompt: "Enable reaction tapbacks? (true/false)"
     password: false
+  - name: PHOTON_READ_RECEIPTS
+    description: "Send native iMessage read receipts when Hermes starts processing an inbound Photon message (true/false, default false)"
+    prompt: "Enable iMessage read receipts? (true/false)"
+    password: false

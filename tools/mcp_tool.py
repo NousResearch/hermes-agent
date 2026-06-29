@@ -3730,18 +3730,30 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
-    def _rewrite_local_refs(node):
+    def _rewrite_local_refs(node, *, in_name_map=False):
         if isinstance(node, dict):
             normalized = {}
             for key, value in node.items():
-                out_key = "$defs" if key == "definitions" else key
-                normalized[out_key] = _rewrite_local_refs(value)
+                # Inside name-to-schema maps (properties, patternProperties),
+                # keys are user-defined names, not schema keywords — don't
+                # rename them. At the top level and inside $defs/definitions
+                # blocks, "definitions" is the schema keyword and should be
+                # renamed to "$defs".
+                if in_name_map:
+                    out_key = key
+                else:
+                    out_key = "$defs" if key == "definitions" else key
+                # Recurse into name-to-schema maps with in_name_map=True
+                child_in_name_map = key in {"properties", "patternProperties"}
+                normalized[out_key] = _rewrite_local_refs(
+                    value, in_name_map=child_in_name_map
+                )
             ref = normalized.get("$ref")
             if isinstance(ref, str) and ref.startswith("#/definitions/"):
                 normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
             return normalized
         if isinstance(node, list):
-            return [_rewrite_local_refs(item) for item in node]
+            return [_rewrite_local_refs(item, in_name_map=in_name_map) for item in node]
         return node
 
     def _strip_nullable_union(node):

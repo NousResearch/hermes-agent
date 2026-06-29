@@ -4136,3 +4136,47 @@ class TestMcpParallelToolCalls:
             register_mcp_servers(config_off)
         with _lock:
             assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+
+
+def test_property_named_definitions_not_renamed():
+    """A tool parameter literally named 'definitions' must not be renamed to '$defs'.
+
+    Regression test for #55081: _rewrite_local_refs was renaming every
+    'definitions' key to '$defs', even inside properties maps where the
+    key is a user-defined property name, not the schema keyword.
+    """
+    from tools.mcp_tool import _normalize_mcp_input_schema
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "term": {"type": "string"},
+            "definitions": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["term", "definitions"],
+    }
+
+    out = _normalize_mcp_input_schema(schema)
+
+    assert "definitions" in out["properties"], f"Property renamed: {list(out['properties'].keys())}"
+    assert "$defs" not in out["properties"], f"Spurious $defs in properties"
+    assert "definitions" in out["required"], f"Required pruned: {out['required']}"
+
+
+def test_schema_level_definitions_still_renamed():
+    """The schema keyword 'definitions' at the top level should still be
+    renamed to '$defs' and refs rewritten.
+    """
+    from tools.mcp_tool import _normalize_mcp_input_schema
+
+    schema = {
+        "type": "object",
+        "definitions": {"MyType": {"type": "string"}},
+        "properties": {"ref_field": {"$ref": "#/definitions/MyType"}},
+    }
+
+    out = _normalize_mcp_input_schema(schema)
+
+    assert "$defs" in out, f"Top-level definitions not renamed: {list(out.keys())}"
+    assert "definitions" not in out
+    assert out["properties"]["ref_field"]["$ref"] == "#/$defs/MyType"

@@ -123,7 +123,7 @@ def _post_enroll(
         if exc.code == 401:
             raise RuntimeError(
                 "Connector rejected the caller identity (401). Your Nous Portal "
-                "token could not be verified — try `hermes auth login nous` and retry."
+                "token could not be verified — try `hermes auth add nous` and retry."
             ) from exc
         if exc.code == 403:
             raise RuntimeError(
@@ -185,7 +185,7 @@ def cmd_gateway_enroll(args) -> None:
     except AuthError as exc:
         if getattr(exc, "relogin_required", False):
             print("✗ You're not logged into Nous Portal.")
-            print("  Run `hermes setup` (or `hermes auth login nous`) first, then retry.")
+            print("  Run `hermes setup` (or `hermes auth add nous`) first, then retry.")
         else:
             print(f"✗ Could not resolve a Nous Portal access token: {exc}")
         sys.exit(1)

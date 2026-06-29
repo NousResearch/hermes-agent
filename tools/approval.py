@@ -443,8 +443,15 @@ DANGEROUS_PATTERNS = [
     # The name-based pattern above catches `pkill hermes` but not
     # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
     # to regex at detection time. Catch the structural pattern instead.
-    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
-    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
+    # `pidof` is the BSD/Linux alternative to `pgrep` and is equally
+    # opaque, so include it in the same alternation.
+    (r'\bkill\b.*\$\(\s*(pgrep|pidof)\b', "kill process via pgrep/pidof expansion (self-termination)"),
+    (r'\bkill\b.*`\s*(pgrep|pidof)\b', "kill process via backtick pgrep/pidof expansion (self-termination)"),
+    # launchctl-driven gateway stop/restart on macOS. The agent can bypass
+    # the `hermes gateway stop|restart` pattern above by driving launchd
+    # directly against the service label (commonly `ai.hermes.gateway`).
+    # Catch the operations that stop, restart, or unload it.
+    (r'\blaunchctl\s+(stop|kickstart|bootout|unload|kill|disable|remove)\b.*\b(hermes|ai\.hermes)\b', "stop/restart hermes launchd service (kills running agents)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
@@ -1090,12 +1097,27 @@ def _normalize_approval_mode(mode) -> str:
     YAML 1.1 treats bare words like `off` as booleans, so a config entry like
     `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
     intended string mode instead of falling back to manual approvals.
+
+    Unknown string values (e.g. 'auto') are rejected with a warning rather than
+    being silently accepted and falling through every mode check downstream.
+    Always returns one of 'manual', 'smart', or 'off'.
     """
+    _VALID_MODES = ("manual", "smart", "off")
     if isinstance(mode, bool):
         return "off" if mode is False else "manual"
     if isinstance(mode, str):
         normalized = mode.strip().lower()
-        return normalized or "manual"
+        if not normalized:
+            return "manual"
+        if normalized in _VALID_MODES:
+            return normalized
+        logger.warning(
+            "Unknown approvals.mode %r — defaulting to 'manual'. "
+            "Valid values: %s",
+            mode,
+            ", ".join(_VALID_MODES),
+        )
+        return "manual"
     return "manual"
 
 
@@ -1261,8 +1283,23 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
+    """Return True when the backend is isolated enough to skip dangerous-command prompts.
+
+    Isolated container backends sandbox the agent away from the host, so their
+    commands can't damage real files/services and we skip the approval layer.
+    Docker is the exception once host paths are bind-mounted into the container:
+    at that point a command like ``rm -rf /workspace`` reaches host files, so it
+    must go through the normal approval flow.
+    """
+    if env_type == "docker":
+        return not has_host_access
+    return env_type in ("singularity", "modal", "daytona")
+
+
 def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None) -> dict:
+                            approval_callback=None,
+                            has_host_access: bool = False) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -1272,11 +1309,13 @@ def check_dangerous_command(command: str, env_type: str,
         command: The shell command to check.
         env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
         approval_callback: Optional CLI callback for interactive prompts.
+        has_host_access: True when a Docker sandbox bind-mounts host paths,
+            so its commands can reach the host and must not skip approval.
 
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -1518,16 +1557,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             has_host_access: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
+    such a session is no longer isolated, so it goes through the normal flow
+    instead of the container fast-path.
     """
-    # Skip containers for both checks
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    # Skip isolated container backends for both checks. Docker stops skipping
+    # once host paths are bind-mounted into the sandbox.
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1593,7 +1638,40 @@ def check_all_command_guards(command: str, env_type: str,
         from tools.tirith_security import check_command_security
         tirith_result = check_command_security(command)
     except ImportError:
-        pass  # tirith module not installed — allow
+        # Tirith module not installed.  When tirith_fail_open is True (the
+        # default) we silently allow, matching the pre-existing behaviour.
+        # When tirith_fail_open is False the operator has explicitly opted into
+        # fail-closed; an import failure must not silently grant access, so we
+        # synthesize a warn result that will be surfaced to the user through the
+        # normal approval flow.  Fixes #20733.
+        _tirith_fail_open = True  # safe default if config is unreadable
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _sec = (_load_cfg() or {}).get("security", {}) or {}
+            _tirith_enabled = _sec.get("tirith_enabled", True)
+            if _tirith_enabled:
+                _tirith_fail_open = _sec.get("tirith_fail_open", True)
+        except Exception:
+            pass
+        if not _tirith_fail_open:
+            tirith_result = {
+                "action": "warn",
+                "findings": [
+                    {
+                        "rule_id": "tirith-import-error",
+                        "severity": "HIGH",
+                        "title": "Tirith security module unavailable",
+                        "description": (
+                            "The Tirith security scanner could not be imported. "
+                            "Because security.tirith_fail_open is false, this "
+                            "command cannot be silently allowed. Approve only if "
+                            "you have verified the command is safe."
+                        ),
+                    }
+                ],
+                "summary": "Tirith unavailable (fail-closed)",
+            }
+        # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
 
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -1817,7 +1895,8 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
-def check_execute_code_guard(code: str, env_type: str) -> dict:
+def check_execute_code_guard(code: str, env_type: str,
+                             has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     execute_code runs arbitrary local Python — the script can call
@@ -1843,8 +1922,12 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     )
 
     # Isolated backends already sandbox the child — matches the container skip
-    # in check_all_command_guards / check_dangerous_command.
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    # in check_all_command_guards / check_dangerous_command. Docker stops
+    # skipping once host paths are bind-mounted into the sandbox; vercel_sandbox
+    # has no host-bind concept so it stays always-skipped.
+    if env_type == "vercel_sandbox":
+        return {"approved": True, "message": None}
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).

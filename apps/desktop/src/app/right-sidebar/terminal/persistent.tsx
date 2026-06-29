@@ -4,7 +4,8 @@ import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from
 
 import { $terminalTakeover } from '../store'
 
-import { TerminalTab } from './index'
+import { ensureTerminal } from './terminals'
+import { TerminalWorkspace } from './workspace'
 
 /**
  * One xterm Terminal mounted at the layout root and CSS-overlayed onto
@@ -40,7 +41,6 @@ export function TerminalSlot({ className = SLOT_CLASS }: { className?: string })
 }
 
 interface PersistentTerminalProps {
-  cwd: string
   onAddSelectionToChat: (text: string, label?: string) => void
 }
 
@@ -54,11 +54,25 @@ interface Rect {
 const sameRect = (a: Rect | null, b: Rect) =>
   !!a && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height
 
-export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerminalProps) {
+export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalProps) {
   const slot = useStore($slot)
   const terminalTakeover = useStore($terminalTakeover)
   const [rect, setRect] = useState<Rect | null>(null)
   const [ready, setReady] = useState(false)
+
+  // VS Code parity: once the pane has ever been opened, keep the terminals
+  // mounted — and their shells alive — even while hidden. Hiding the pane just
+  // collapses the slot, so the overlay below goes invisible; nothing is torn
+  // down. Only an explicit per-tab close kills a PTY. Re-opening re-ensures one
+  // terminal exists (covers having closed the last tab).
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    if (terminalTakeover && ready) {
+      setMounted(true)
+      ensureTerminal()
+    }
+  }, [terminalTakeover, ready])
 
   useLayoutEffect(() => {
     if (!slot) {
@@ -114,12 +128,12 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
     contain: 'layout size paint'
   }
 
-  // Defer mount until the terminal sidebar is open and the slot has real dims.
-  // Booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a
-  // visible conhost on Windows even when the pane is collapsed.
+  // Defer the FIRST mount until the pane is open and the slot has real dims —
+  // booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a visible
+  // conhost on Windows. After that `mounted` latches: shells persist while hidden.
   return (
     <div aria-hidden={!visible} style={style}>
-      {terminalTakeover && ready && <TerminalTab cwd={cwd} onAddSelectionToChat={onAddSelectionToChat} />}
+      {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
     </div>
   )
 }

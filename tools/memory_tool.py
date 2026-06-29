@@ -398,9 +398,9 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            header = f"USER PROFILE (who the user is) [{pct}%]"
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            header = f"MEMORY (your personal notes) [{pct}%]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"

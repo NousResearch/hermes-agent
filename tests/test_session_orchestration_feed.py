@@ -385,3 +385,169 @@ class TestPushTurnChangeSummarizeFn:
         )
         for _, content in tracker.calls:
             assert "SHOULD_NOT_APPEAR" not in content
+
+
+# ---------------------------------------------------------------------------
+# T013 — DONE/RUNNING icons, WAITING_USER DM, hang stale DM
+# ---------------------------------------------------------------------------
+
+
+class TestPushTurnChangeIcons:
+    """T013: DONE and RUNNING states render distinct icons in the posted message."""
+
+    def test_done_icon_in_message(self):
+        """new_state=DONE must produce a message containing '✅'."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-done-icon", thread_id=None)
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            result = push_turn_change(
+                "t-done-icon",
+                row,
+                new_state="DONE",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-done",
+            )
+
+        assert result is True
+        assert tracker.calls, "at least one post expected"
+        for _, content in tracker.calls:
+            assert "✅" in content, f"DONE icon '✅' not in message: {content!r}"
+
+    def test_running_icon_in_message(self):
+        """new_state=RUNNING must produce a message containing '▶'."""
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-running-icon", thread_id=None)
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            result = push_turn_change(
+                "t-running-icon",
+                row,
+                new_state="RUNNING",
+                old_state="WAITING_USER",
+                feed_channel_id="feed-ch-running",
+            )
+
+        assert result is True
+        assert tracker.calls, "at least one post expected"
+        for _, content in tracker.calls:
+            assert "▶" in content, f"RUNNING icon '▶' not in message: {content!r}"
+
+
+class TestPushTurnChangeWaitingUserDM:
+    """T013: push_turn_change sends a DM when new_state=WAITING_USER and user_id present."""
+
+    def test_waiting_user_sends_dm(self, monkeypatch):
+        """WAITING_USER + discord_user_id -> send_dm called with the message."""
+        tracker = _FakePostTracker()
+        dm_calls: list = []
+
+        monkeypatch.setattr(
+            "tools.discord_tool._get_bot_token",
+            lambda: "fake-bot-token",
+        )
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda user_id, message, token, **kw: dm_calls.append((user_id, message, token)),
+        )
+
+        row = _make_row(task_id="t-dm-wu-001", thread_id=None)
+        row["discord_user_id"] = "user-dm-001"
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-dm-wu-001",
+                row,
+                new_state="WAITING_USER",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-dm",
+            )
+
+        assert len(dm_calls) == 1, "send_dm must be called exactly once"
+        user_id_sent, message, token = dm_calls[0]
+        assert user_id_sent == "user-dm-001"
+        assert token == "fake-bot-token"
+
+    def test_waiting_user_no_dm_when_no_user_id(self, monkeypatch):
+        """WAITING_USER without discord_user_id: send_dm must NOT be called."""
+        tracker = _FakePostTracker()
+        dm_calls: list = []
+
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda *a, **kw: dm_calls.append(a),
+        )
+
+        row = _make_row(task_id="t-dm-wu-noid", thread_id=None)
+        # No discord_user_id key in row
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-dm-wu-noid",
+                row,
+                new_state="WAITING_USER",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-dm-noid",
+            )
+
+        assert dm_calls == [], "send_dm must NOT be called when discord_user_id absent"
+
+
+class TestPushHangNotificationDM:
+    """T013: push_hang_notification sends a DM on the first stale rung only."""
+
+    def test_hang_stale_sends_dm(self, monkeypatch):
+        """escalate=False + discord_user_id -> send_dm called once."""
+        from session_orchestration.feed import push_hang_notification
+
+        dm_calls: list = []
+        monkeypatch.setattr("tools.discord_tool._get_bot_token", lambda: "tok-hang")
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda user_id, message, token, **kw: dm_calls.append((user_id, message, token)),
+        )
+
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-hang-stale-dm", thread_id=None)
+        row["discord_user_id"] = "user-hang-001"
+        row["idle_ticks"] = 5
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_hang_notification(
+                "t-hang-stale-dm",
+                row,
+                escalate=False,
+                feed_channel_id="feed-ch-hang",
+            )
+
+        assert len(dm_calls) == 1, "send_dm must be called exactly once for stale rung"
+        user_id_sent, _msg, token = dm_calls[0]
+        assert user_id_sent == "user-hang-001"
+        assert token == "tok-hang"
+
+    def test_hang_escalate_no_stale_dm(self, monkeypatch):
+        """escalate=True: push_hang_notification must NOT call send_dm (T010 handles it)."""
+        from session_orchestration.feed import push_hang_notification
+
+        dm_calls: list = []
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda *a, **kw: dm_calls.append(a),
+        )
+
+        tracker = _FakePostTracker()
+        row = _make_row(task_id="t-hang-esc-nodm", thread_id=None)
+        row["discord_user_id"] = "user-hang-esc"
+        row["idle_ticks"] = 5
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_hang_notification(
+                "t-hang-esc-nodm",
+                row,
+                escalate=True,
+                feed_channel_id="feed-ch-hang-esc",
+            )
+
+        assert dm_calls == [], (
+            "send_dm must NOT be called by push_hang_notification when escalate=True"
+        )

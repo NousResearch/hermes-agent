@@ -1395,3 +1395,175 @@ class TestNeedsInputMarkerStoresLastQuestion:
             f"last_question must be None when no needs_input marker present, "
             f"got {row.get('last_question')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T013 — recommended_next_tick_interval + RUNNING transition gate
+# ---------------------------------------------------------------------------
+
+
+class TestRecommendedNextTickInterval:
+    """SessionWatcher.recommended_next_tick_interval() returns fast/idle cadence."""
+
+    def test_fast_when_running_row_present(self, registry, db_path):
+        """Registry has a RUNNING row -> interval == _FAST_TICK_SECONDS (30.0)."""
+        from session_orchestration.watcher import _FAST_TICK_SECONDS
+
+        _seed_row(registry, task_id="t-tick-run-001", state="RUNNING")
+        adapter = FakeAdapter()
+        capture = FakeCapture()
+        watcher = _make_watcher(registry, adapter, capture)
+
+        interval = watcher.recommended_next_tick_interval()
+        assert interval == _FAST_TICK_SECONDS, (
+            f"expected _FAST_TICK_SECONDS={_FAST_TICK_SECONDS}, got {interval}"
+        )
+
+    def test_fast_when_waiting_user_row_present(self, registry, db_path):
+        """Registry has a WAITING_USER row -> interval == _FAST_TICK_SECONDS (30.0)."""
+        from session_orchestration.watcher import _FAST_TICK_SECONDS
+
+        _seed_row(registry, task_id="t-tick-wu-001", state="WAITING_USER")
+        adapter = FakeAdapter()
+        capture = FakeCapture()
+        watcher = _make_watcher(registry, adapter, capture)
+
+        interval = watcher.recommended_next_tick_interval()
+        assert interval == _FAST_TICK_SECONDS, (
+            f"expected _FAST_TICK_SECONDS={_FAST_TICK_SECONDS}, got {interval}"
+        )
+
+    def test_idle_when_no_active_rows(self, registry, db_path):
+        """Registry has only a DONE row -> interval == _IDLE_TICK_SECONDS (120.0)."""
+        from session_orchestration.watcher import _IDLE_TICK_SECONDS
+
+        _seed_row(registry, task_id="t-tick-done-001", state="DONE")
+        adapter = FakeAdapter()
+        capture = FakeCapture()
+        watcher = _make_watcher(registry, adapter, capture)
+
+        interval = watcher.recommended_next_tick_interval()
+        assert interval == _IDLE_TICK_SECONDS, (
+            f"expected _IDLE_TICK_SECONDS={_IDLE_TICK_SECONDS}, got {interval}"
+        )
+
+    def test_idle_when_registry_empty(self, registry, db_path):
+        """Empty registry -> interval == _IDLE_TICK_SECONDS."""
+        from session_orchestration.watcher import _IDLE_TICK_SECONDS
+
+        adapter = FakeAdapter()
+        capture = FakeCapture()
+        watcher = _make_watcher(registry, adapter, capture)
+
+        interval = watcher.recommended_next_tick_interval()
+        assert interval == _IDLE_TICK_SECONDS
+
+
+class TestProcessRowRunningTransition:
+    """T013 PART D: RUNNING is a notify state for attention->RUNNING transitions only."""
+
+    def test_waiting_user_to_running_fires_on_turn_change(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """old_state=WAITING_USER, adapter returns RUNNING -> _on_turn_change fires."""
+        task_id = "t-run-trans-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(
+            registry, task_id, workdir, state="WAITING_USER"
+        )
+
+        turn_change_calls: List = []
+        monkeypatch.setattr(
+            "session_orchestration.watcher._on_turn_change",
+            lambda tid, row, new_s, old_s: turn_change_calls.append(
+                (tid, new_s, old_s)
+            ),
+        )
+
+        # Adapter returns RUNNING (simulates user replying, session back to RUNNING)
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("❯ ")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        running_transitions = [
+            c for c in turn_change_calls
+            if c[1] == "RUNNING" and c[2] == "WAITING_USER"
+        ]
+        assert running_transitions, (
+            "_on_turn_change must be called for WAITING_USER -> RUNNING transition"
+        )
+
+    def test_running_to_running_does_not_fire_on_turn_change(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """Steady-state RUNNING tick must NOT fire _on_turn_change."""
+        task_id = "t-run-trans-002"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir, state="RUNNING")
+
+        turn_change_calls: List = []
+        monkeypatch.setattr(
+            "session_orchestration.watcher._on_turn_change",
+            lambda tid, row, new_s, old_s: turn_change_calls.append(
+                (tid, new_s, old_s)
+            ),
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("working…")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        running_running = [
+            c for c in turn_change_calls
+            if c[1] == "RUNNING" and c[2] == "RUNNING"
+        ]
+        assert running_running == [], (
+            "_on_turn_change must NOT fire for RUNNING -> RUNNING (no-op)"
+        )
+
+    def test_done_to_running_does_not_fire_on_turn_change(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """DONE -> RUNNING (benign non-attention source) must NOT fire _on_turn_change."""
+        task_id = "t-run-trans-003"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir, state="DONE")
+
+        # Manually set DONE row as active for this test (override _ACTIVE_STATES filter)
+        # by writing a fresh RUNNING state directly so _process_row sees it as DONE->RUNNING
+        # Use a marker to force RUNNING lifecycle from a DONE-seeded row
+        # Actually, the row with state=DONE won't be in active_rows (it's terminal).
+        # To test the guard, we need a non-attention source state that IS active.
+        # Use STALLED (active but not attention) as old_state.
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id="run-stalled",
+            repo="repo-test",
+            source="spawn",
+            state="STALLED",
+        )
+
+        turn_change_calls: List = []
+        monkeypatch.setattr(
+            "session_orchestration.watcher._on_turn_change",
+            lambda tid, row, new_s, old_s: turn_change_calls.append(
+                (tid, new_s, old_s)
+            ),
+        )
+
+        # Adapter returns RUNNING — STALLED -> RUNNING is benign (not from attention state)
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("working…")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        running_from_stalled = [
+            c for c in turn_change_calls
+            if c[1] == "RUNNING" and c[2] == "STALLED"
+        ]
+        assert running_from_stalled == [], (
+            "_on_turn_change must NOT fire for STALLED -> RUNNING (not from attention state)"
+        )

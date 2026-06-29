@@ -184,10 +184,18 @@ def push_turn_change(
     if new_state == "WAITING_USER":
         icon = "🔔"
         verb = "needs your input"
-    else:
-        # PAUSED_HANDOFF
+    elif new_state == "PAUSED_HANDOFF":
         icon = "⏸️"
         verb = "paused — handoff detected"
+    elif new_state == "DONE":
+        icon = "✅"
+        verb = "completed"
+    elif new_state == "RUNNING":
+        icon = "▶"
+        verb = "running"
+    else:
+        icon = "ℹ️"
+        verb = f"state: {new_state}"
 
     message = (
         f"{icon} **[{agent}] {task_label}** {verb}{project_part}\n"
@@ -235,6 +243,22 @@ def push_turn_change(
             posted = True
     elif not thread_id:
         logger.debug("feed.push_turn_change: no discord_thread_id; skipping thread post")
+
+    # 3. DM the user when transitioning to WAITING_USER (T013)
+    if new_state == "WAITING_USER":
+        user_id = row.get("discord_user_id")
+        if user_id:
+            try:
+                from tools.discord_tool import _get_bot_token  # type: ignore[import]
+                from session_orchestration.dm_transport import send_dm
+
+                tok = token or _get_bot_token()
+                if tok:
+                    send_dm(user_id, message, tok)
+            except Exception as exc:
+                logger.error(
+                    "feed.push_turn_change: DM failed task_id=%s: %s", task_id, exc
+                )
 
     # Record the notified state (debounce marker)
     _last_notified[task_id] = new_state
@@ -326,6 +350,23 @@ def push_hang_notification(
         logger.debug(
             "feed.push_hang_notification: no discord_thread_id; skipping thread post"
         )
+
+    # DM the user on the first stale rung (escalate=False) only.
+    # When escalate=True, the escalation DM is sent by watcher._on_hang (T010) — no double-DM.
+    if not escalate:
+        user_id = row.get("discord_user_id")
+        if user_id:
+            try:
+                from tools.discord_tool import _get_bot_token  # type: ignore[import]
+                from session_orchestration.dm_transport import send_dm
+
+                tok = token or _get_bot_token()
+                if tok:
+                    send_dm(user_id, message, tok)
+            except Exception as exc:
+                logger.error(
+                    "feed.push_hang_notification: stale DM failed: %s", exc
+                )
 
     return posted
 

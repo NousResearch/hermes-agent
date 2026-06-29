@@ -78,6 +78,12 @@ _HEARTBEAT_CADENCE: int = 5
 #: cause a spurious fallback.
 _MARKER_RECENCY_SECONDS: float = 300.0
 
+#: Tick interval when any session is RUNNING or WAITING_USER (active).
+_FAST_TICK_SECONDS: float = 30.0
+
+#: Tick interval when no active sessions exist.
+_IDLE_TICK_SECONDS: float = 120.0
+
 #: Active states — rows in these states are iterated by the watcher.
 _ACTIVE_STATES = frozenset(
     {
@@ -738,6 +744,32 @@ class SessionWatcher:
             self._verified = True
         return self._available_adapters
 
+    def recommended_next_tick_interval(self) -> float:
+        """Return the advised tick interval in seconds.
+
+        Returns ``_FAST_TICK_SECONDS`` (30 s) when any registry row is in
+        RUNNING or WAITING_USER state (active sessions need faster polling).
+        Returns ``_IDLE_TICK_SECONDS`` (120 s) otherwise.
+
+        This is an advisory value for the cron driver — the watcher itself
+        does not self-schedule.  Best-effort: returns ``_IDLE_TICK_SECONDS``
+        on any registry error so the driver falls back to a safe cadence.
+        """
+        try:
+            rows = self._registry.list()
+            fast_states = {
+                SessionLifecycle.RUNNING.value,
+                SessionLifecycle.WAITING_USER.value,
+            }
+            if any(r.get("state") in fast_states for r in rows):
+                return _FAST_TICK_SECONDS
+            return _IDLE_TICK_SECONDS
+        except Exception as exc:
+            logger.debug(
+                "watcher.recommended_next_tick_interval: registry error: %s", exc
+            )
+            return _IDLE_TICK_SECONDS
+
     def tick(self) -> int:
         """Execute one watcher tick.
 
@@ -1012,15 +1044,30 @@ class SessionWatcher:
         # Re-read fresh row for hook calls (reflects counters just written)
         fresh_row = self._registry.get(task_id) or row
 
-        # Fire transition hook if state changed into a notify state (PART C)
+        # Fire transition hook if state changed into a notify state (T011/T013)
+        # RUNNING is included so transitions back to RUNNING from attention states
+        # are visible. The guard excludes benign non-attention->RUNNING no-ops
+        # (e.g. DONE->RUNNING, ERROR->RUNNING, ordinary RUNNING ticks).
         _NOTIFY_STATES = frozenset(
             {
                 SessionLifecycle.WAITING_USER.value,
                 SessionLifecycle.PAUSED_HANDOFF.value,
                 SessionLifecycle.DONE.value,
+                SessionLifecycle.RUNNING.value,
             }
         )
-        if new_state != old_state and new_state in _NOTIFY_STATES:
+        if (
+            new_state != old_state
+            and new_state in _NOTIFY_STATES
+            and not (
+                new_state == SessionLifecycle.RUNNING.value
+                and old_state
+                not in {
+                    SessionLifecycle.WAITING_USER.value,
+                    SessionLifecycle.PAUSED_HANDOFF.value,
+                }
+            )
+        ):
             _on_turn_change(task_id, fresh_row, new_state, old_state)
         elif new_state != old_state and old_state in _NOTIFY_STATES:
             # Transitioning OUT of an attention state — re-arm the debounce

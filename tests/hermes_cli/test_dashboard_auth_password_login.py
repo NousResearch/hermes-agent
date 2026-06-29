@@ -28,6 +28,7 @@ from hermes_cli.dashboard_auth import (
     clear_providers,
     register_provider,
 )
+from hermes_cli.dashboard_auth import routes as auth_routes
 from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 from hermes_cli.dashboard_auth.login_page import render_login_html
 from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
@@ -392,6 +393,34 @@ class TestRateLimit:
             json={"provider": "testpw", "username": "admin", "password": "hunter2"},
         )
         assert good.status_code == 429
+
+    def test_distinct_ip_buckets_are_capped(self, monkeypatch):
+        _reset_password_rate_limit()
+        monkeypatch.setattr(auth_routes, "_PW_RATE_MAX_BUCKETS", 3)
+
+        for i in range(5):
+            assert auth_routes._password_rate_limited(f"192.0.2.{i}") is False
+
+        assert list(auth_routes._pw_attempts.keys()) == [
+            "192.0.2.2",
+            "192.0.2.3",
+            "192.0.2.4",
+        ]
+
+    def test_expired_buckets_pruned_before_evicting_live_bucket(self, monkeypatch):
+        _reset_password_rate_limit()
+        monkeypatch.setattr(auth_routes, "_PW_RATE_MAX_BUCKETS", 2)
+        now = time.monotonic()
+        auth_routes._pw_attempts["expired"] = auth_routes.deque([
+            now - auth_routes._PW_RATE_WINDOW_SEC - 1,
+        ])
+        auth_routes._pw_attempts["live"] = auth_routes.deque([now])
+
+        assert auth_routes._password_rate_limited("192.0.2.99") is False
+
+        assert "expired" not in auth_routes._pw_attempts
+        assert "live" in auth_routes._pw_attempts
+        assert "192.0.2.99" in auth_routes._pw_attempts
 
 
 # ---------------------------------------------------------------------------

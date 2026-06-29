@@ -160,6 +160,18 @@ class TestBuildCallKwargsMaxTokens:
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
 
+    def test_keeps_max_tokens_for_nvidia_nim(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nvidia",
+            model="minimaxai/minimax-m3",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=4096,
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        assert kwargs["max_tokens"] == 4096
+
 
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):

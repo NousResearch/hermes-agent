@@ -191,7 +191,15 @@ jobs:
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
-          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+          # ignore-error: fork PRs get a read-only GITHUB_TOKEN regardless of
+          # the workflow's `permissions: packages: write` declaration, so the
+          # cache-to export to ghcr.io is denied and — without ignore-error —
+          # fails the whole job even though the image build and tests succeed.
+          # The github.repository == 'NousResearch/hermes-agent' guard on this
+          # job doesn't help: a fork→upstream PR runs in the upstream repo's
+          # context, so the guard passes. Same-repo events still write the
+          # cache normally; fork PRs simply skip the cache write.
+          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max,ignore-error=true
 
       - name: Install uv for docker tests
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0

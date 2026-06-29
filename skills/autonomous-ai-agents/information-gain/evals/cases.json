@@ -1,0 +1,37 @@
+{
+  "_comment": "Eval cases for the information-gain skill. 'underspecified' problems should yield several genuinely high-value questions; 'well-specified' ones should yield few or none (the skill must not manufacture questions). Bounds feed the deterministic calibration check; the adjudicator judges quality.",
+  "cases": [
+    {
+      "id": "usaw-calendar",
+      "problem": "Build a service to sync USAW events into our team calendar.",
+      "expectation": "underspecified",
+      "expect_min_bucket": 2,
+      "expect_max_bucket": 7,
+      "notes": "Source format/API, auth, sync cadence, dedup, and which calendar are all unstated."
+    },
+    {
+      "id": "microservice-monitoring",
+      "problem": "Set up monitoring and alerting for our microservices.",
+      "expectation": "underspecified",
+      "expect_min_bucket": 2,
+      "expect_max_bucket": 7,
+      "notes": "Stack, SLOs, on-call routing, hosting, and data-residency constraints are unknown."
+    },
+    {
+      "id": "internal-doc-search",
+      "problem": "Add search to our internal documentation site.",
+      "expectation": "underspecified",
+      "expect_min_bucket": 2,
+      "expect_max_bucket": 7,
+      "notes": "Corpus size, ranking-quality bar, infra budget, and access control are unstated."
+    },
+    {
+      "id": "reverse-string",
+      "problem": "Write a Python function reverse(s: str) -> str that returns s reversed. Pure function, standard library only, no I/O and no external dependencies; treat the input as a sequence of Unicode code points and reverse them as-is; reverse('') must return ''.",
+      "expectation": "well-specified",
+      "expect_min_bucket": 0,
+      "expect_max_bucket": 2,
+      "notes": "Fully specified. A good analysis surfaces few or no high-value questions (calibration test)."
+    }
+  ]
+}

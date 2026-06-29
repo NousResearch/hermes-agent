@@ -133,11 +133,34 @@ the `ask` skill isn't installed, the scripts exit with a clear message.
 - **Cost scales with rounds × questions × 2 calls.** Cloud judge/gen models add latency; switch to
   local aliases (`--question-gen-model qwen --value-judge-model qwen`) for fast/cheap runs.
 
+## Evaluating output quality (adjudicated evals)
+
+`evals/` holds an adjudicator harness that decides whether the skill's output is *acceptable*,
+not just well-formed. `evals/run_evals.py` runs the skill on `evals/cases.json` (a mix of
+underspecified and well-specified problems) and applies two layers:
+
+- **structural checks** (deterministic) — values in [0,1], ranked order, valid recommendations,
+  no surviving duplicate `target`s, and per-case **calibration** (an underspecified problem must
+  yield several questions; a well-specified one must yield few/none).
+- **an LLM adjudicator** (`evals/adjudicator.py`) — a *different, stronger* model than the
+  generation stages (default `deepseek` judging `fast`-generated output, to avoid self-judging
+  bias) scores framing accuracy, question relevance, value justification, diversity, and calibration.
+
+```bash
+# all cases (exit non-zero if any unacceptable — usable as a CI gate)
+python3 ${HERMES_SKILL_DIR}/evals/run_evals.py --gen-model fast --judge-model deepseek
+python3 ${HERMES_SKILL_DIR}/evals/run_evals.py --case reverse-string --json
+```
+
+Weak runs are expected to fail (e.g. `fast` + 1 round on a hard problem); stronger generation
+(`--gen-model glm --max-rounds 2`) should clear the bar. That two-sided behavior is the point.
+
 ## Verification Checklist
 
-- [ ] `python3 -m py_compile scripts/*.py` passes.
-- [ ] `uv run --with pytest python3 -m pytest tests/ -v -k "not live"` is green (pure logic).
+- [ ] `python3 -m py_compile scripts/*.py evals/*.py` passes.
+- [ ] `uv run --with pytest python3 -m pytest tests/ -v -k "not live"` is green (pure logic + adjudicator logic).
 - [ ] `--dry-run` prints all four stage prompts (confirms `model_utils` import + builders).
 - [ ] With Ollama up, a live run on a vague problem returns a ranked bucket and a "pre-answer" list.
 - [ ] A deliberately well-specified problem yields a small/empty bucket with the "well-specified" note.
+- [ ] `evals/run_evals.py` rates the well-specified case acceptable (bucket≈0) and flags shallow runs.
 - [ ] Frontmatter validates (starts at byte 0 with `---`, has `name` + `description`).

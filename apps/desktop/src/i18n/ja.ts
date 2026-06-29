@@ -286,6 +286,13 @@ export const ja = defineLocale({
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
+      embedsTitle: 'インライン埋め込み',
+      embedsDesc:
+        'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
+      embedsAsk: '確認',
+      embedsAlways: '常に',
+      embedsOff: 'オフ',
+      embedsReset: (count: number) => `許可した${count}件のサービスをリセット`,
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -1164,6 +1171,7 @@ export const ja = defineLocale({
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',
     title: 'プロファイル',
     count: count => `${count} プロファイル`,
+    search: 'プロファイルを検索...',
     loading: 'プロファイルを読み込み中...',
     newProfile: '新しいプロファイル',
     allProfiles: 'すべてのプロファイル',
@@ -1237,6 +1245,8 @@ export const ja = defineLocale({
 
   cron: {
     close: 'Cron を閉じる',
+    title: 'スケジュール済みジョブ',
+    count: count => `${count} 件のジョブ`,
     search: 'Cron ジョブを検索...',
     loading: 'Cron ジョブを読み込み中...',
     states: {
@@ -1997,6 +2007,10 @@ export const ja = defineLocale({
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
     terminalHide: 'ターミナルを非表示',
+    terminalsAria: 'ターミナル',
+    terminalNew: '新しいターミナル',
+    terminalCloseOthers: '他を閉じる',
+    terminalCloseAll: 'すべて閉じる',
     addToChat: 'チャットに追加'
   },
 
@@ -2182,6 +2196,7 @@ export const ja = defineLocale({
         reading: '読み取り中',
         opened: 'オープン済み',
         opening: 'オープン中',
+        failedToOpen: 'オープン失敗',
         searched: '検索完了',
         searching: '検索中',
         ran: '実行完了',

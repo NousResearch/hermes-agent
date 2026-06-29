@@ -28,6 +28,20 @@ from agent.skill_utils import is_excluded_skill_path
 _console = Console()
 
 
+def _display_source(r) -> str:
+    """Human-facing source label for a result row.
+
+    GitHub-tap skills are stored under source="github"; surface their per-tap
+    provider label (NVIDIA / OpenAI / ...) when present so the table reflects
+    the real origin instead of the generic "github".
+    """
+    if r.source == "github":
+        provider = (getattr(r, "extra", None) or {}).get("provider")
+        if provider:
+            return provider
+    return r.source
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
@@ -303,7 +317,7 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         table.add_row(
             r.name,
             r.description[:60] + ("..." if len(r.description) > 60 else ""),
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
@@ -380,6 +394,16 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
+    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their
+    # per-tap ``extra.provider`` label (the runtime index stores them all under
+    # source="github"). Real source ids were already filtered upstream.
+    from tools.skills_hub import _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+    if source.strip().lower() in _PROVIDER_FILTER_VALUES:
+        all_results = _filter_results_by_provider(all_results, source)
+        if not all_results:
+            c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
+            return
+
     # Deduplicate by identifier, preferring higher trust.
     # identifier is always unique per skill; name is not (browse-sh skills from different
     # sites can share the same task name, e.g. "search-listings" on Airbnb and Booking.com).
@@ -444,7 +468,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
             str(i),
             r.name,
             desc,
-            r.source,
+            _display_source(r),
             f"[{trust_style}]{trust_label}[/]",
             r.identifier,
         )
@@ -1797,10 +1821,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N] [--json]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|github|official|nvidia|openai|anthropic|huggingface] [--limit N] [--json]\n")
             return
         source = "all"
-        limit = 10
+        limit = 25
         as_json = False
         query_parts = []
         i = 0

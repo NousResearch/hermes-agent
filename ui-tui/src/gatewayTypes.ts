@@ -658,6 +658,12 @@ export type GatewayEvent =
       session_id?: string
       type: 'reasoning.delta' | 'reasoning.available'
     }
+  | {
+      payload: { count?: number; index?: number; label?: string; text?: string }
+      session_id?: string
+      type: 'moa.reference'
+    }
+  | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {

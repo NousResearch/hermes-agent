@@ -208,6 +208,18 @@ def _strip_mdv2(text: str) -> str:
 _TABLE_SEPARATOR_RE = re.compile(
     r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
 )
+_TASK_LIST_RE = re.compile(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+")
+_HEADING_RE = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
+_LIST_RE = re.compile(r"(?m)^\s{0,3}(?:[-+*]\s+|\d+[.)]\s+)\S")
+_BLOCKQUOTE_RE = re.compile(r"(?m)^\s{0,3}>\s*\S")
+_FENCE_RE = re.compile(r"(?m)^\s*```")
+_DIVIDER_RE = re.compile(r"(?m)^\s*---+\s*$")
+_FOOTNOTE_RE = re.compile(r"\[\^[^\]]+\](?::)?")
+_HTML_RICH_TAG_RE = re.compile(r"</?(?:u|sub|sup)\b", re.IGNORECASE)
+_INLINE_MATH_RE = re.compile(r"(?<!\\)\$[^$\n]+(?<!\\)\$")
+_CJK_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]"
+)
 
 
 def _is_table_row(line: str) -> bool:
@@ -344,6 +356,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    RICH_MESSAGE_MAX_CHARS = 32768
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -409,6 +422,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -859,6 +873,185 @@ class TelegramAdapter(BasePlatformAdapter):
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
+
+    def _rich_delivery_enabled(self) -> bool:
+        """Return True only when rich Telegram delivery is explicitly enabled."""
+        return bool(getattr(self, "_rich_messages_enabled", False))
+
+    def _rich_safety_allows(self, content: str) -> bool:
+        if utf16_len(content) > self.RICH_MESSAGE_MAX_CHARS:
+            return False
+        lowered = content.lower()
+        if "<details" in lowered and "$$" in content:
+            return False
+        # Keep legacy MarkdownV2 safer for CJK-heavy content until the rich
+        # endpoint's escaping/segmentation behavior is proven across clients.
+        if _CJK_RE.search(content):
+            return False
+        return True
+
+    def _needs_rich_rendering(self, content: str) -> bool:
+        """Return whether content should use Telegram rich-message delivery.
+
+        Rich delivery changes both endpoint routing and Markdown semantics, so
+        it is strictly opt-in via ``platforms.telegram.extra.rich_messages``.
+        """
+        if not content:
+            return False
+        if not self._rich_delivery_enabled():
+            return False
+        if not self._rich_safety_allows(content):
+            return False
+
+        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+            return True
+        if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
+            return True
+        if _TASK_LIST_RE.search(content):
+            return True
+        lowered = content.lower()
+        if "<details" in lowered:
+            return True
+        if "$$" in content:
+            return True
+        if _HEADING_RE.search(content):
+            return True
+        if _LIST_RE.search(content):
+            return True
+        if _BLOCKQUOTE_RE.search(content):
+            return True
+        if _FENCE_RE.search(content):
+            return True
+        if _DIVIDER_RE.search(content):
+            return True
+        if _FOOTNOTE_RE.search(content):
+            return True
+        if "==" in content:
+            return True
+        if _HTML_RICH_TAG_RE.search(content):
+            return True
+        if _INLINE_MATH_RE.search(content):
+            return True
+        return False
+
+    @staticmethod
+    def _clean_rich_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {key: value for key, value in payload.items() if value is not None}
+
+    @staticmethod
+    def _extract_message_id(response: Any) -> Optional[str]:
+        if response is None:
+            return None
+        if isinstance(response, dict):
+            message_id = response.get("message_id")
+            if message_id is None and isinstance(response.get("result"), dict):
+                message_id = response["result"].get("message_id")
+            return str(message_id) if message_id is not None else None
+        message_id = getattr(response, "message_id", None)
+        return str(message_id) if message_id is not None else None
+
+    async def _rich_api_request(self, method: str, payload: Dict[str, Any]) -> Any:
+        api_request = getattr(self._bot, "do_api_request", None)
+        if not callable(api_request):
+            raise RuntimeError("Telegram Bot does not expose do_api_request")
+        payload = self._clean_rich_payload(payload)
+        try:
+            return await api_request(method, data=payload)
+        except TypeError:
+            return await api_request(method, payload)
+
+    def _rich_link_preview_payload(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        for key, value in self._link_preview_kwargs().items():
+            if key == "link_preview_options" and hasattr(value, "to_dict"):
+                payload[key] = value.to_dict()
+            else:
+                payload[key] = value
+        return payload
+
+    async def _send_rich_message(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        thread_id = self._metadata_thread_id(metadata)
+        metadata_reply_to = self._metadata_reply_to_message_id(metadata)
+        private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+        dm_topic_reply_to_off = (
+            private_dm_topic_send
+            and self._reply_to_mode == "off"
+            and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+        )
+        reply_to_source = reply_to or (
+            str(metadata_reply_to)
+            if private_dm_topic_send and metadata_reply_to is not None
+            else None
+        )
+        if private_dm_topic_send:
+            should_thread = reply_to_source is not None and self._reply_to_mode != "off"
+        else:
+            should_thread = self._should_thread_reply(reply_to_source, 0)
+        reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+        if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
+            return SendResult(
+                success=False,
+                error=self._dm_topic_missing_anchor_error(),
+                retryable=False,
+            )
+
+        thread_kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            thread_id,
+            metadata,
+            reply_to_message_id=reply_to_id,
+            reply_to_mode=self._reply_to_mode,
+        )
+        payload = {
+            "chat_id": int(chat_id),
+            "text": content,
+            "reply_to_message_id": reply_to_id,
+            **thread_kwargs,
+            **self._rich_link_preview_payload(),
+            **self._notification_kwargs(metadata),
+        }
+        try:
+            response = await self._rich_api_request("sendRichMessage", payload)
+        except Exception as exc:
+            logger.debug("[%s] Rich Telegram send failed, falling back: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc), retryable=False)
+
+        return SendResult(
+            success=True,
+            message_id=self._extract_message_id(response),
+            raw_response={"rich": True, "response": response},
+        )
+
+    async def _edit_rich_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        payload = {
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+            "text": content,
+            **self._rich_link_preview_payload(),
+            **self._notification_kwargs(metadata),
+        }
+        try:
+            response = await self._rich_api_request("editRichMessage", payload)
+        except Exception as exc:
+            logger.debug("[%s] Rich Telegram edit failed, falling back: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc), retryable=False)
+        return SendResult(
+            success=True,
+            message_id=self._extract_message_id(response) or message_id,
+            raw_response={"rich": True, "response": response},
+        )
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
@@ -1820,6 +2013,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        if self._needs_rich_rendering(content):
+            rich_result = await self._send_rich_message(
+                chat_id, content, reply_to=reply_to, metadata=metadata,
+            )
+            if rich_result.success:
+                try:
+                    await self.send_typing(chat_id, metadata=metadata)
+                except Exception:
+                    pass
+                return rich_result
         
         try:
             # Format and split message if needed
@@ -2128,6 +2332,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        if finalize and self._needs_rich_rendering(content):
+            rich_result = await self._edit_rich_message(
+                chat_id, message_id, content, metadata=metadata,
+            )
+            if rich_result.success:
+                return rich_result
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.

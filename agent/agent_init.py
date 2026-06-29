@@ -53,7 +53,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from model_tools import check_toolset_requirements, get_tool_definitions
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -1041,6 +1041,26 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    if not isinstance(_agent_cfg, dict):
+        _agent_cfg = {}
+
+    # Session-stable platform prompt controls. These are intentionally read
+    # once at agent construction so live config edits do not mutate a cached
+    # prompt mid-conversation.
+    _platform_hint_overrides = _agent_cfg.get("platform_hints", {})
+    agent._platform_hint_overrides = (
+        _platform_hint_overrides if isinstance(_platform_hint_overrides, dict) else {}
+    )
+    agent._telegram_rich_messages_enabled = is_truthy_value(
+        cfg_get(
+            _agent_cfg,
+            "platforms",
+            "telegram",
+            "extra",
+            "rich_messages",
+        ),
+        default=False,
+    )
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

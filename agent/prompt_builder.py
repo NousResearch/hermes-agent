@@ -404,6 +404,33 @@ COMPUTER_USE_GUIDANCE = (
 # message representation stays consistent ("system" everywhere).
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
+TELEGRAM_MEDIA_GUIDANCE = (
+    "You can send media files natively: to deliver a file to the user, "
+    "include MEDIA:/absolute/path/to/file in your response. Images "
+    "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
+    "bubbles, and videos (.mp4) play inline. You can also include image "
+    "URLs in markdown format ![alt](url) and they will be sent as native photos."
+)
+
+TELEGRAM_RICH_PLATFORM_HINT = (
+    "You are on a text messaging communication platform, Telegram. "
+    "Standard Markdown is automatically converted to Telegram formatting. "
+    "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
+    "`inline code`, ```code blocks```, [links](url), and ## headers. "
+    "This Telegram gateway has rich messages enabled, so lean into rich Markdown "
+    "when it makes the answer clearer or easier to scan: real Markdown tables, "
+    "bullet and numbered lists, task lists, headings, nested blockquotes, "
+    "collapsible details, footnotes/references, math/formulas, underline, "
+    "subscript/superscript, marked/highlighted text, and anchors. "
+    "Default to structured formatting over dense paragraphs for comparisons, "
+    "steps, key/value summaries, and tabular data. For status/update summaries, "
+    "investigations, QA/results, confirmations of changed items, and multi-part "
+    "answers, include a compact table and/or task-list checklist unless the "
+    "answer is truly a one-sentence reply. Prefer real Markdown tables and task "
+    "lists over hand-built substitutes. "
+    f"{TELEGRAM_MEDIA_GUIDANCE}"
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
@@ -424,11 +451,7 @@ PLATFORM_HINTS = {
         "key: value pairs over pipe tables (any tables you do emit are "
         "auto-rewritten into row-group bullets, which you can produce "
         "directly for cleaner output). "
-        "You can send media files natively: to deliver a file to the user, "
-        "include MEDIA:/absolute/path/to/file in your response. Images "
-        "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
-        "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        f"{TELEGRAM_MEDIA_GUIDANCE}"
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "

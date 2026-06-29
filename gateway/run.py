@@ -1385,6 +1385,19 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _append_progress_repeat_counter(message: str, repeat_count: int) -> str:
+    """Append a repeat counter without corrupting fenced code blocks."""
+    text = str(message)
+    suffix = f" (×{repeat_count})"
+    lines = text.splitlines()
+    if lines and lines[-1].strip() == "```":
+        if lines[0].strip() and not lines[0].lstrip().startswith("```"):
+            lines[0] = f"{lines[0]}{suffix}"
+            return "\n".join(lines)
+        return f"{text}\n{suffix.strip()}"
+    return f"{text}{suffix}"
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -16169,7 +16182,7 @@ class GatewayRunner:
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
                         if progress_lines:
-                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            progress_lines[-1] = _append_progress_repeat_counter(base_msg, count + 1)
                         msg = progress_lines[-1] if progress_lines else base_msg
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
@@ -16291,7 +16304,7 @@ class GatewayRunner:
                             if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                                 _, base_msg, count = raw
                                 if progress_lines:
-                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                    progress_lines[-1] = _append_progress_repeat_counter(base_msg, count + 1)
                                     await _roll_progress_overflow_if_needed()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off

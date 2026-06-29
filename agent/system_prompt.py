@@ -37,6 +37,7 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    TELEGRAM_RICH_PLATFORM_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
@@ -55,6 +56,27 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> str:
+    """Apply optional per-platform hint replacement/appends to a default hint."""
+    overrides = getattr(agent, "_platform_hint_overrides", None)
+    if not isinstance(overrides, dict):
+        return default_hint
+
+    platform_override = overrides.get(platform_key)
+    if not isinstance(platform_override, dict):
+        return default_hint
+
+    replace = platform_override.get("replace")
+    if isinstance(replace, str) and replace.strip():
+        return replace.strip()
+
+    append = platform_override.get("append")
+    if isinstance(append, str) and append.strip():
+        return f"{default_hint.rstrip()}\n\n{append.strip()}"
+
+    return default_hint
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -241,7 +263,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
-        stable_parts.append(PLATFORM_HINTS[platform_key])
+        default_hint = (
+            TELEGRAM_RICH_PLATFORM_HINT
+            if platform_key == "telegram"
+            and getattr(agent, "_telegram_rich_messages_enabled", False)
+            else PLATFORM_HINTS[platform_key]
+        )
+        stable_parts.append(_resolve_platform_hint(agent, platform_key, default_hint))
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:

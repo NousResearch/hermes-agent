@@ -27,6 +27,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
+    TELEGRAM_RICH_PLATFORM_HINT,
     WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
@@ -790,6 +791,17 @@ class TestPromptBuilderConstants:
         assert "cli" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
+
+    def test_telegram_rich_hint_is_not_default(self):
+        default_hint = PLATFORM_HINTS["telegram"]
+        assert "Telegram has NO table syntax" in default_hint
+        assert "rich messages enabled" not in default_hint
+        assert "status/update" not in default_hint
+
+        assert "rich messages enabled" in TELEGRAM_RICH_PLATFORM_HINT
+        assert "status/update" in TELEGRAM_RICH_PLATFORM_HINT
+        assert "task-list checklist" in TELEGRAM_RICH_PLATFORM_HINT
+        assert "MEDIA:/absolute/path/to/file" in TELEGRAM_RICH_PLATFORM_HINT
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging

@@ -21,6 +21,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.run import _append_progress_repeat_counter
 from gateway.session import SessionSource
 
 
@@ -109,6 +110,24 @@ class ProgressAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class RepeatedTerminalAgent:
+    """Emits the same terminal progress event twice to exercise dedup."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            args = {"command": "cd /tmp/hermes-agent"}
+            cb("tool.started", "terminal", "cd /tmp/hermes-agent", args)
+            time.sleep(0.35)
+            cb("tool.started", "terminal", "cd /tmp/hermes-agent", args)
+            time.sleep(0.1)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class FailingAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -186,6 +205,65 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_progress_repeat_counter_stays_outside_headered_code_fence():
+    message = "💻 terminal\n```\ncd /tmp/hermes-agent\n```"
+
+    rendered = _append_progress_repeat_counter(message, 2)
+
+    assert rendered.splitlines()[0] == "💻 terminal (×2)"
+    assert "``` (×2)" not in rendered
+    assert not any(
+        line.lstrip().startswith("```") and "(×" in line
+        for line in rendered.splitlines()
+    )
+
+
+def test_progress_repeat_counter_stays_after_bare_code_fence():
+    message = "```\ncd /tmp/hermes-agent\n```"
+
+    rendered = _append_progress_repeat_counter(message, 2)
+
+    assert rendered == "```\ncd /tmp/hermes-agent\n```\n(×2)"
+    assert "``` (×2)" not in rendered
+    assert not any(
+        line.lstrip().startswith("```") and "(×" in line
+        for line in rendered.splitlines()
+    )
+
+
+@pytest.mark.asyncio
+async def test_repeated_terminal_progress_counter_stays_outside_code_fence(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter()
+    adapter.supports_code_blocks = True
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, RepeatedTerminalAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-repeat-terminal",
+        session_key=session_key,
+    )
+
+    rendered = "\n".join(
+        [entry["content"] for entry in adapter.sent]
+        + [entry["content"] for entry in adapter.edits]
+    )
+    assert result["final_response"] == "done"
+    assert "(×2)" in rendered
+    assert "``` (×2)" not in rendered
+    assert not any(
+        line.lstrip().startswith("```") and "(×" in line
+        for line in rendered.splitlines()
+    )
 
 
 @pytest.mark.asyncio

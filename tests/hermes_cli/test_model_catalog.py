@@ -52,6 +52,24 @@ def _valid_manifest() -> dict:
     }
 
 
+class _FakeCatalogResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> "_FakeCatalogResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        if size is None or size < 0:
+            return self.body
+        return self.body[:size]
+
+
 class TestValidation:
     def test_accepts_well_formed_manifest(self, isolated_home):
         from hermes_cli.model_catalog import _validate_manifest
@@ -95,6 +113,50 @@ class TestValidation:
 
 
 class TestFetchSuccess:
+    def test_fetch_manifest_bounds_response_read(self, isolated_home, monkeypatch):
+        from hermes_cli import model_catalog
+
+        response = _FakeCatalogResponse(json.dumps(_valid_manifest()).encode())
+        captured = []
+
+        def _urlopen(req, timeout):
+            captured.append((req, timeout))
+            return response
+
+        monkeypatch.setattr(model_catalog.urllib.request, "urlopen", _urlopen)
+
+        assert model_catalog._fetch_manifest(
+            "https://catalog.example.test/model-catalog.json",
+            timeout=2.0,
+        ) == _valid_manifest()
+        assert response.read_sizes == [
+            model_catalog._MAX_CATALOG_RESPONSE_BYTES + 1
+        ]
+        assert captured[0][0].full_url == (
+            "https://catalog.example.test/model-catalog.json"
+        )
+        assert captured[0][1] == 2.0
+
+    def test_fetch_manifest_rejects_oversized_response(self, isolated_home, monkeypatch):
+        from hermes_cli import model_catalog
+
+        response = _FakeCatalogResponse(
+            b"x" * (model_catalog._MAX_CATALOG_RESPONSE_BYTES + 1)
+        )
+        monkeypatch.setattr(
+            model_catalog.urllib.request,
+            "urlopen",
+            lambda *args, **kwargs: response,
+        )
+
+        assert model_catalog._fetch_manifest(
+            "https://catalog.example.test/model-catalog.json",
+            timeout=2.0,
+        ) is None
+        assert response.read_sizes == [
+            model_catalog._MAX_CATALOG_RESPONSE_BYTES + 1
+        ]
+
     def test_fetch_and_cache_writes_disk(self, isolated_home):
         from hermes_cli import model_catalog
         manifest = _valid_manifest()

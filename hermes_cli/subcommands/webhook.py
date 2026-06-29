@@ -46,6 +46,11 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         help="Target chat ID for cross-platform delivery",
     )
     wh_sub.add_argument(
+        "--deliver-user-id",
+        default="",
+        help="Target user ID to associate with delivered session context",
+    )
+    wh_sub.add_argument(
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"
     )
     wh_sub.add_argument(
@@ -54,6 +59,11 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         help="Skip the agent — deliver the rendered prompt directly as the "
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').",
+    )
+    wh_sub.add_argument(
+        "--attach-to-session",
+        action="store_true",
+        help="For --deliver-only routes, attach delivered event to the target session for reply continuity.",
     )
 
     webhook_subparsers.add_parser(

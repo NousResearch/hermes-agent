@@ -2891,6 +2891,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        try:
+            from gateway.proactive_events import get_proactive_event_store
+
+            self.proactive_event_store = get_proactive_event_store()
+        except Exception:
+            logger.debug("could not initialise proactive event store", exc_info=True)
+            self.proactive_event_store = None
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
@@ -10499,6 +10506,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        try:
+            from gateway.proactive_events import build_proactive_context_prompt
+
+            _proactive_block = build_proactive_context_prompt(
+                self.proactive_event_store,
+                session_key,
+            ) if getattr(self, "proactive_event_store", None) is not None else ""
+            if _proactive_block:
+                context_prompt = (
+                    f"{context_prompt}\n\n{_proactive_block}"
+                    if context_prompt else _proactive_block
+                )
+        except Exception as _proactive_err:
+            logger.debug("Proactive event context injection failed: %s", _proactive_err)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -15674,6 +15695,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_evicted_agent_soft(agent)
             except Exception:
                 pass
+
+    def invalidate_proactive_event_context(self, session_key: str, *, reason: str = "proactive_event") -> None:
+        """Invalidate live per-session agent cache after proactive context changes."""
+        logger.info("Invalidating agent cache for %s after %s", session_key, reason)
+        self._evict_cached_agent(session_key)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:

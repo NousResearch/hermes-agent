@@ -33,6 +33,8 @@ def _make_args(**kwargs):
         "skills": "",
         "deliver": "log",
         "deliver_chat_id": "",
+        "deliver_user_id": "",
+        "attach_to_session": False,
         "secret": "",
         "payload": "",
     }
@@ -65,6 +67,25 @@ class TestSubscribe:
         assert route["prompt"] == "Issue: {issue.title}"
         assert route["deliver"] == "telegram"
         assert route["deliver_extra"] == {"chat_id": "12345"}
+
+    def test_deliver_only_can_attach_to_session_with_user_id(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="email-alerts",
+            prompt="[Email alert: {urgency}] {canonical_summary}",
+            deliver="whatsapp",
+            deliver_chat_id="{chat_id}",
+            deliver_user_id="{user_id}",
+            deliver_only=True,
+            attach_to_session=True,
+        ))
+        route = _load_subscriptions()["email-alerts"]
+        assert route["deliver_only"] is True
+        assert route["attach_to_session"] is True
+        assert route["deliver_extra"] == {
+            "chat_id": "{chat_id}",
+            "user_id": "{user_id}",
+        }
 
     def test_custom_secret(self):
         webhook_command(_make_args(

@@ -54,6 +54,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.session import SessionSource, build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -628,7 +629,16 @@ class WebhookAdapter(BasePlatformAdapter):
                 delivery_id,
             )
             try:
-                result = await self._direct_deliver(prompt, delivery)
+                result = await (
+                    self._direct_deliver_and_attach(
+                        prompt,
+                        delivery,
+                        route_name=route_name,
+                        delivery_id=delivery_id,
+                    )
+                    if route_config.get("attach_to_session")
+                    else self._direct_deliver(prompt, delivery)
+                )
             except Exception:
                 logger.exception(
                     "[webhook] direct-deliver failed route=%s delivery=%s",
@@ -1012,6 +1022,109 @@ class WebhookAdapter(BasePlatformAdapter):
         return await self._deliver_cross_platform(
             deliver_type, content, delivery
         )
+
+    def _proactive_source_for_delivery(self, platform_name: str, delivery: dict) -> SessionSource | None:
+        extra = delivery.get("deliver_extra", {}) or {}
+        chat_id = str(extra.get("chat_id") or "").strip()
+        if not chat_id and self.gateway_runner:
+            try:
+                home = self.gateway_runner.config.get_home_channel(Platform(platform_name))
+                if home:
+                    chat_id = str(home.chat_id)
+            except Exception:
+                chat_id = ""
+        if not chat_id:
+            return None
+        return SessionSource(
+            platform=Platform(platform_name),
+            chat_id=chat_id,
+            chat_type=str(extra.get("chat_type") or "dm"),
+            thread_id=str(extra.get("thread_id") or extra.get("message_thread_id") or "").strip() or None,
+            user_id=str(extra.get("user_id") or chat_id).strip() or None,
+            user_name=str(extra.get("user_name") or "").strip() or None,
+        )
+
+    async def _direct_deliver_and_attach(
+        self,
+        content: str,
+        delivery: dict,
+        *,
+        route_name: str,
+        delivery_id: str,
+    ) -> SendResult:
+        """Direct-deliver a notification and attach it as proactive context.
+
+        This is the gateway-native alert rail: visible adapter send and durable
+        conversation context are one saga, so a later user reply like "draft
+        that" can resolve against the machine-authored alert without the user
+        pasting it back.
+        """
+        deliver_type = str(delivery.get("deliver") or "log")
+        source = self._proactive_source_for_delivery(deliver_type, delivery)
+        payload = delivery.get("payload", {}) if isinstance(delivery.get("payload"), dict) else {}
+
+        if source is None:
+            return SendResult(success=False, error="No target source for proactive attach")
+        if not self.gateway_runner:
+            return SendResult(success=False, error="No gateway runner for proactive attach")
+
+        conversation_id = build_session_key(source)
+        store = getattr(self.gateway_runner, "proactive_event_store", None)
+        if store is None:
+            from gateway.proactive_events import get_proactive_event_store
+
+            store = get_proactive_event_store()
+            setattr(self.gateway_runner, "proactive_event_store", store)
+
+        idempotency_key = str(payload.get("idempotency_key") or delivery_id or "").strip()
+        alert_id = str(payload.get("alert_id") or idempotency_key or delivery_id).strip()
+        event_type = str(payload.get("event_type") or payload.get("type") or route_name).strip()
+        canonical_summary = str(
+            payload.get("canonical_summary")
+            or payload.get("summary")
+            or content[:500]
+        ).strip()
+        source_ref = str(payload.get("source_ref") or "").strip() or None
+
+        event = store.create_or_get_event(
+            conversation_id=conversation_id,
+            platform=deliver_type,
+            chat_id=source.chat_id,
+            user_id=source.user_id,
+            thread_id=source.thread_id,
+            event_type=event_type,
+            alert_id=alert_id,
+            idempotency_key=idempotency_key,
+            canonical_summary=canonical_summary,
+            rendered_message=content,
+            source_ref=source_ref,
+            payload=payload,
+        )
+
+        result = await self._direct_deliver(content, delivery)
+        if not result.success:
+            store.mark_failed(event.event_id, "failed_send", result.error or "delivery failed")
+            return result
+
+        store.mark_sent(event.event_id, transport_id=getattr(result, "message_id", None))
+        try:
+            # Ensure the gateway session exists before the next user turn.
+            self.gateway_runner.session_store.get_or_create_session(source)
+        except Exception:
+            logger.debug("proactive session get/create failed", exc_info=True)
+        store.mark_attached(event.event_id)
+        invalidate = getattr(self.gateway_runner, "invalidate_proactive_event_context", None)
+        if callable(invalidate):
+            invalidate(conversation_id, reason="proactive_event_attached")
+        else:
+            cache = getattr(self.gateway_runner, "_agent_cache", None)
+            if cache is not None:
+                try:
+                    cache.pop(conversation_id, None)
+                except Exception:
+                    pass
+        store.mark_context_ready(event.event_id)
+        return result
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict

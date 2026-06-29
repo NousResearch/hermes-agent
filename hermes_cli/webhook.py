@@ -189,8 +189,19 @@ def _cmd_subscribe(args):
             return
         route["deliver_only"] = True
 
+    if getattr(args, "attach_to_session", False):
+        if not route.get("deliver_only"):
+            print("Error: --attach-to-session currently requires --deliver-only.")
+            return
+        route["attach_to_session"] = True
+
+    deliver_extra = {}
     if args.deliver_chat_id:
-        route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
+        deliver_extra["chat_id"] = args.deliver_chat_id
+    if getattr(args, "deliver_user_id", ""):
+        deliver_extra["user_id"] = args.deliver_user_id
+    if deliver_extra:
+        route["deliver_extra"] = deliver_extra
 
     subs[name] = route
     _save_subscriptions(subs)

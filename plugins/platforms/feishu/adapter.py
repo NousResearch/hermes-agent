@@ -1295,13 +1295,80 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+class _ThreadLocalLoopProxy:
+    """Thread-routing stand-in for ``lark_oapi.ws.client.loop``.
+
+    Why this exists: the upstream SDK stores its asyncio event loop in a
+    module-level global and reads it inside ``Client.start()`` /
+    ``_connect()`` / ``_receive_message_loop()`` via module-globals lookup.
+    That global is process-wide, so when the gateway multiplexes two or
+    more feishu websocket adapters (one per profile) the second worker
+    thread overwrites the loop the first one registered, and the first
+    adapter's receive loop crashes with::
+
+        Task ... got Future ... attached to a different loop
+
+    This proxy takes the place of that module global *once* (see
+    ``_install_thread_local_ws_loop_proxy``). Each feishu worker thread
+    then registers its own loop via ``set_thread_loop``; every attribute
+    access on the proxy is forwarded to the calling thread's loop, so
+    ``loop.run_until_complete(...)`` and ``loop.create_task(...)`` inside
+    the SDK always reach the loop that is actually running in *this*
+    thread — never the one another worker thread installed.
+    """
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def set_thread_loop(self, loop: Any) -> None:
+        self._local.loop = loop
+
+    def get_thread_loop(self) -> Any:
+        return getattr(self._local, "loop", None)
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for attributes Python doesn't find normally — i.e. all
+        # asyncio loop methods (run_until_complete, create_task, is_closed,
+        # …). Forward to the thread's registered loop.
+        loop = getattr(self._local, "loop", None)
+        if loop is None:
+            raise RuntimeError(
+                f"_ThreadLocalLoopProxy.{name} accessed from a thread that "
+                f"never called set_thread_loop(). Each feishu websocket "
+                f"worker thread must register its loop before invoking the "
+                f"Lark SDK."
+            )
+        return getattr(loop, name)
+
+
+_WS_LOOP_PROXY_LOCK = threading.Lock()
+
+
+def _install_thread_local_ws_loop_proxy() -> None:
+    """Replace ``lark_oapi.ws.client.loop`` with a thread-local proxy.
+
+    Idempotent (checks the current module attribute each call) and safe
+    to call from any thread. After the first call the SDK's
+    module-global ``loop`` is a :class:`_ThreadLocalLoopProxy`; each
+    feishu worker thread is then expected to register its own loop via
+    ``ws_client_module.loop.set_thread_loop(loop)`` before invoking the
+    SDK.
+    """
+    with _WS_LOOP_PROXY_LOCK:
+        import lark_oapi.ws.client as ws_client_module
+        if not isinstance(ws_client_module.loop, _ThreadLocalLoopProxy):
+            ws_client_module.loop = _ThreadLocalLoopProxy()
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
 
+    _install_thread_local_ws_loop_proxy()
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    ws_client_module.loop = loop
+    ws_client_module.loop.set_thread_loop(loop)
     adapter._ws_thread_loop = loop
 
     original_connect = ws_client_module.websockets.connect

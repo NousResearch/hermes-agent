@@ -1590,6 +1590,12 @@ class SessionDB:
         only filling columns that are still NULL, never overwriting values an
         earlier writer already set (so a later bare call with source="unknown"
         can't clobber a real source/model).
+
+        ``chat_id``/``thread_id`` record the messaging origin (the chat/room and
+        thread the session was started in) so that gateway ``/resume`` can prove
+        a persisted, now-inactive row belongs to the caller's chat/thread before
+        switching to it (IDOR scoping — without them the ``sessions`` table has
+        no chat/thread to compare).
         """
         def _do(conn):
             conn.execute(

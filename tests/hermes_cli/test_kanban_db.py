@@ -2083,7 +2083,7 @@ def test_respawn_guard_blocker_auth_on_authentication_error(kanban_home):
 
 
 def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
-    """Full word 'authorization' triggers blocker_auth (regex covers auth\\w*)."""
+    """Full word 'authorization' triggers blocker_auth (regex covers auth\w*)."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="authz-task", assignee="alice")
         conn.execute(
@@ -2092,6 +2092,230 @@ def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "blocker_auth"
+
+
+# ------------------------------------------------------------------
+# Bounded deferral window for blocker_auth (t_7f4b0ff2, 2026-06-29)
+#
+# Without a TTL, the regex-based blocker_auth guard parks a task in
+# ``ready`` indefinitely when the last failure is stale but matches a
+# quota/auth pattern. The deferral path does not bump
+# ``consecutive_failures`` so the auto-block circuit breaker cannot
+# free the task either. The window (default 1800s, env-tunable via
+# ``HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS``) gives a stale 429
+# room to clear and lets the dispatcher take a fresh probe once the
+# failure is old enough that the regex's verdict is no longer fresh.
+# ------------------------------------------------------------------
+
+
+def test_respawn_guard_blocker_auth_within_window_deferred(kanban_home):
+    """A quota error within the window stays deferred as blocker_auth.
+
+    The fresh-failure path must NOT release the guard: a real ongoing
+    quota wall still warrants deferring the spawn so the dispatcher
+    doesn't thrash on it every tick. Only stale failures (older than
+    the window) release.
+    """
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh-quota", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = ? "
+            "WHERE id = ?",
+            ("quota exceeded", now - 60, t),  # 60s ago, well inside default 1800s
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_outside_window_released(kanban_home):
+    """A quota error older than the window releases the guard.
+
+    Regression test for t_7f4b0ff2: the dispatcher stuck at 0 spawned
+    for 21.9h on two ready tasks whose ``last_failure_error`` still
+    matched the 429 pattern from a credential issue that had already
+    been resolved hours earlier. With the bounded window the guard
+    releases and the dispatcher takes a fresh probe.
+    """
+    now = int(time.time())
+    window = kb.DEFAULT_RESPAWN_BLOCKER_WINDOW_SECONDS  # 1800
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-quota", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = ? "
+            "WHERE id = ?",
+            ("429 too many requests", now - (window + 60), t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_blocker_auth_exactly_at_window_released(kanban_home):
+    """A failure exactly at the window edge releases the guard.
+
+    The implementation uses ``>=`` (``now - failed_at >= window``) so
+    a failure of EXACTLY the window age should already be released.
+    Lock the boundary so a future flip to strict ``>`` doesn't
+    silently re-introduce the t_7f4b0ff2 stuck condition.
+    """
+    now = int(time.time())
+    window = kb.DEFAULT_RESPAWN_BLOCKER_WINDOW_SECONDS
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="boundary", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = ? "
+            "WHERE id = ?",
+            ("403 forbidden", now - window, t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_blocker_auth_window_env_override(kanban_home, monkeypatch):
+    """HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS overrides the default window.
+
+    Operators running a tight quota wall (sub-minute resets) want a
+    shorter window so the dispatcher probes again sooner. The helper
+    reads the env var on every call so monkeypatch.setenv works
+    without a process restart.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS", "120")
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="tight-window", assignee="alice")
+        # 90s old — under the 120s env-overridden window → still deferred
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = ? "
+            "WHERE id = ?",
+            ("quota exhausted", now - 90, t),
+        )
+        assert kb.check_respawn_guard(conn, t) == "blocker_auth"
+        # Bump age past the env-overridden window → released
+        conn.execute(
+            "UPDATE tasks SET last_failure_at = ? WHERE id = ?",
+            (now - 240, t),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_blocker_auth_window_zero_disables_guard(
+    kanban_home, monkeypatch
+):
+    """HERMES_KANBAN_BLOCKER_WINDOW_SECONDS=0 disables the guard entirely.
+
+    Tests and operators who prefer the auto-block circuit breaker as
+    the sole gatekeeper use 0 to disable the deferral. The guard must
+    always return None so the dispatcher attempts a fresh probe.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS", "0")
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="disabled-guard", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = ? "
+            "WHERE id = ?",
+            ("auth failure on every credential", now - 1, t),  # brand-new
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_blocker_auth_legacy_null_failure_at_uses_created_at(
+    kanban_home,
+):
+    """Legacy rows with last_failure_at=NULL fall back to created_at.
+
+    The migration backfills ``last_failure_at`` from the latest failure
+    event for tasks that already had a ``spawn_failed``/``gave_up`` row
+    — but the fallback path still matters for tests and for any future
+    rollback that re-introduces a NULL. The fallback must be
+    conservative: if ``created_at`` is ALSO newer than the window, the
+    guard still releases (the task is just old enough that the legacy
+    data should not trap it).
+    """
+    now = int(time.time())
+    window = kb.DEFAULT_RESPAWN_BLOCKER_WINDOW_SECONDS
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="legacy", assignee="alice")
+        # created_at is old (well past the window), last_failure_at is
+        # NULL to simulate a pre-migration row.
+        old_created = now - (window * 4)
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = NULL, "
+            "created_at = ? WHERE id = ?",
+            ("quota wall", old_created, t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_blocker_auth_legacy_null_failure_at_recent_keeps_deferral(
+    kanban_home,
+):
+    """Recent created_at + NULL last_failure_at still defers.
+
+    Mirror of the test above: if the fallback anchor (``created_at``)
+    is itself inside the window, the guard should NOT release — we
+    have no better signal than ``created_at`` and a freshly-created
+    task with a quota-style error is almost certainly still under
+    the quota wall.
+    """
+    now = int(time.time())
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="fresh-legacy", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = NULL, "
+            "created_at = ? WHERE id = ?",
+            ("429 rate limit hit", now - 30, t),  # created 30s ago, inside window
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+def test_respawn_guard_blocker_auth_dispatch_once_integration(
+    kanban_home, monkeypatch
+):
+    """End-to-end: dispatch_once auto-spawns a task once the window elapses.
+
+    Without the bounded window the dispatcher would defer the task
+    forever (regression of t_7f4b0ff2). With the window, a task with a
+    stale failure older than the window appears in the spawned list on
+    the next dispatcher tick.
+    """
+    import hermes_cli.kanban_db as kb_mod
+
+    # Stub spawn_fn so we can drive dispatch_once without spawning a
+    # real subprocess. The stub records every (task_id, assignee,
+    # workspace) triple it would have spawned.
+    spawned_calls: list[tuple[str, str, str]] = []
+
+    def fake_spawn(task, workspace, *, board=None):  # noqa: ARG001
+        spawned_calls.append((task.id, task.assignee or "", workspace))
+        return 12345  # pretend PID
+
+    now = int(time.time())
+    window = kb.DEFAULT_RESPAWN_BLOCKER_WINDOW_SECONDS
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="integration", assignee="alice")
+        # Stamp a 429 error and age it past the window. Without the
+        # fix this task sits in ``ready`` forever; with the fix the
+        # next dispatch_once picks it up.
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ?, last_failure_at = ? "
+            "WHERE id = ?",
+            ("429 too many requests", now - (window + 120), t),
+        )
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            board=None,
+            max_in_progress_per_profile=None,
+        )
+
+    assert any(call[0] == t for call in spawned_calls), (
+        f"expected task to be auto-spawned after window elapsed; "
+        f"spawned={spawned_calls!r} result={result!r}"
+    )
 
 
 def test_respawn_guard_recent_success(kanban_home):

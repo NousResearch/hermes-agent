@@ -63,10 +63,110 @@ from hermes_cli.fallback_config import get_fallback_chain
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
 # memory providers, etc.).  LRU order + idle TTL eviction are enforced
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
-_AGENT_CACHE_MAX_SIZE = 128
+#
+# Defaults are the floor; operators can override per-deployment via
+# ``gateway.agent_cache`` in config.yaml (see _resolve_agent_cache_config).
+# The previous hardcoded MAX_SIZE=128 was suspected as the RSS-bloat root
+# cause when many sessions were simultaneously mid-turn (cap eviction
+# intentionally skips active agents — see _enforce_agent_cache_cap).
+_AGENT_CACHE_MAX_SIZE = 96
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_AGENT_CACHE_SWEEP_INTERVAL_SECS = 60.0  # idle-TTL sweep cadence (was 300s)
+# Memory-based soft cap: when the gateway RSS exceeds this many MiB the
+# cache cap is tightened (proportionally) and an extra sweep is fired.
+# 0 disables the memory guardrail — the count cap is the only bound.
+# Default 2 GiB; targets the 25.5 GB peak observed on long-lived gateways
+# by clamping growth before it escapes to swap.
+_AGENT_CACHE_MAX_RSS_MIB = 2048
+_AGENT_CACHE_RSS_OVERRIDE_RATIO = 0.5  # halve the cap when over the RSS floor
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+
+
+def _resolve_agent_cache_config() -> dict:
+    """Read ``gateway.agent_cache`` overrides from config.yaml.
+
+    Returns a dict with keys ``max_size`` (int), ``idle_ttl_secs`` (float),
+    ``sweep_interval_secs`` (float), ``max_rss_mib`` (int), and
+    ``rss_override_ratio`` (float).  Missing keys fall back to the
+    module-level defaults above so behaviour never regresses when the
+    block is absent.  Invalid values (non-numeric, negative) are
+    discarded and the default is used.
+    """
+    result: dict = {
+        "max_size": _AGENT_CACHE_MAX_SIZE,
+        "idle_ttl_secs": _AGENT_CACHE_IDLE_TTL_SECS,
+        "sweep_interval_secs": _AGENT_CACHE_SWEEP_INTERVAL_SECS,
+        "max_rss_mib": _AGENT_CACHE_MAX_RSS_MIB,
+        "rss_override_ratio": _AGENT_CACHE_RSS_OVERRIDE_RATIO,
+    }
+    try:
+        from hermes_cli.config import cfg_get, load_config as _load_cfg
+        cfg = _load_cfg()
+        block = cfg_get(cfg, "gateway", "agent_cache")
+    except Exception:
+        block = None
+    if not isinstance(block, dict):
+        return result
+
+    raw_max = block.get("max_size")
+    if isinstance(raw_max, int) and not isinstance(raw_max, bool) and 1 <= raw_max <= 100_000:
+        result["max_size"] = raw_max
+
+    raw_idle = block.get("idle_ttl_secs")
+    if isinstance(raw_idle, (int, float)) and not isinstance(raw_idle, bool) and 0 < raw_idle <= 86_400:
+        result["idle_ttl_secs"] = float(raw_idle)
+
+    raw_sweep = block.get("sweep_interval_secs")
+    if isinstance(raw_sweep, (int, float)) and not isinstance(raw_sweep, bool) and 0 < raw_sweep <= 3_600:
+        result["sweep_interval_secs"] = float(raw_sweep)
+
+    raw_rss = block.get("max_rss_mib")
+    if isinstance(raw_rss, int) and not isinstance(raw_rss, bool) and 0 <= raw_rss <= 1_048_576:
+        result["max_rss_mib"] = raw_rss
+
+    raw_ratio = block.get("rss_override_ratio")
+    if isinstance(raw_ratio, (int, float)) and not isinstance(raw_ratio, bool) and 0 < raw_ratio <= 1:
+        result["rss_override_ratio"] = float(raw_ratio)
+    return result
+
+
+def _read_rss_mib() -> int | None:
+    """Return the gateway's RSS in MiB, or ``None`` if unavailable.
+
+    Reads /proc/self/statm so it works on Linux without psutil.  Used
+    by the memory-guardrail path; intentionally best-effort — a failure
+    here must NEVER take down the gateway.
+    """
+    try:
+        with open("/proc/self/statm", "r") as f:
+            parts = f.read().split()
+        # statm: size resident shared text lib data dt
+        pages = int(parts[1])
+        # Linux page size is 4 KiB on every supported arch for hermes-agent
+        return (pages * 4096) // (1024 * 1024)
+    except Exception:
+        return None
+
+
+def _effective_agent_cache_cap() -> int:
+    """Return the cap to use RIGHT NOW, honouring the RSS guardrail.
+
+    When RSS exceeds ``max_rss_mib`` the cap is shrunk to
+    ``max(1, int(max_size * rss_override_ratio))`` so the next sweep is
+    more aggressive.  Drops back to ``max_size`` once RSS is back under
+    the floor.
+    """
+    cfg = _resolve_agent_cache_config()
+    cap = cfg["max_size"]
+    rss_floor = cfg["max_rss_mib"]
+    if rss_floor <= 0:
+        return cap
+    rss = _read_rss_mib()
+    if rss is None or rss <= rss_floor:
+        return cap
+    shrunk = max(1, int(cap * cfg["rss_override_ratio"]))
+    return shrunk
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -6609,15 +6709,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             err = getattr(result, "error", "send returned success=False")
             raise RuntimeError(f"adapter.send failed: {err}")
 
-    async def _session_expiry_watcher(self, interval: int = 300):
-        """Background task that finalizes expired sessions.
+    async def _session_expiry_watcher(self, interval: float | None = None):
+        """Background task that finalizes expired sessions and sweeps idle cache.
 
-        Runs every ``interval`` seconds (default 5 min).  For each session
-        whose reset policy has expired, invokes ``on_session_finalize``
-        hooks, cleans up the cached AIAgent's tool resources, evicts the
-        cache entry so it can be garbage-collected, and marks the session
-        so it won't be finalized again.
+        Runs every ``interval`` seconds (default from
+        ``gateway.agent_cache.sweep_interval_secs`` in config.yaml,
+        falling back to ``_AGENT_CACHE_SWEEP_INTERVAL_SECS`` = 60s, was
+        hardcoded 300s).  For each session whose reset policy has expired,
+        invokes ``on_session_finalize`` hooks, cleans up the cached
+        AIAgent's tool resources, evicts the cache entry so it can be
+        garbage-collected, and marks the session so it won't be finalized
+        again.
+
+        The faster sweep cadence (60s vs the old 5 min) closes the
+        eviction gap that let idle cached agents accumulate past the LRU
+        cap when many sessions were simultaneously mid-turn.
         """
+        if interval is None:
+            interval = _resolve_agent_cache_config()["sweep_interval_secs"]
         await asyncio.sleep(60)  # initial delay — let the gateway fully start
         _finalize_failures: dict[str, int] = {}  # session_id -> consecutive failure count
         _MAX_FINALIZE_RETRIES = 3
@@ -6781,11 +6890,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._last_session_store_prune_ts = time.time()
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
-            # Sleep in small increments so we can stop quickly
-            for _ in range(interval):
+            # Sleep in small increments so we can stop quickly.
+            # interval is float seconds from config; cast for the per-second
+            # tick loop and the final tail-sleep below.
+            _resolved_interval: float = float(interval) if interval is not None else _resolve_agent_cache_config()["sweep_interval_secs"]
+            _interval_int = max(1, int(_resolved_interval))
+            for _ in range(_interval_int):
                 if not self._running:
                     break
                 await asyncio.sleep(1)
+            # Final fractional tail-sleep so a 90.5s interval still hits
+            # the configured cadence rather than rounding down to 90s.
+            _tail = _resolved_interval - _interval_int
+            if _tail > 0 and self._running:
+                await asyncio.sleep(_tail)
 
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
@@ -14649,7 +14767,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # already-cached long-running one.  The cache may therefore stay
         # temporarily over cap; it will re-check on the next insert,
         # after active turns have finished.
-        excess = max(0, len(_cache) - _AGENT_CACHE_MAX_SIZE)
+        #
+        # The cap is read via _effective_agent_cache_cap() so it honours
+        # any ``gateway.agent_cache`` config override AND the RSS-based
+        # soft cap when memory pressure is high.
+        cap = _effective_agent_cache_cap()
+        excess = max(0, len(_cache) - cap)
         evict_plan: List[tuple] = []  # [(key, agent), ...]
         if excess > 0:
             ordered_keys = list(_cache.keys())
@@ -14663,12 +14786,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for key, _ in evict_plan:
             _cache.pop(key, None)
 
-        remaining_over_cap = len(_cache) - _AGENT_CACHE_MAX_SIZE
+        remaining_over_cap = len(_cache) - cap
         if remaining_over_cap > 0:
             logger.warning(
                 "Agent cache over cap (%d > %d); %d excess slot(s) held by "
                 "mid-turn agents — will re-check on next insert.",
-                len(_cache), _AGENT_CACHE_MAX_SIZE, remaining_over_cap,
+                len(_cache), cap, remaining_over_cap,
             )
 
         for key, agent in evict_plan:
@@ -14706,6 +14829,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for a in getattr(self, "_running_agents", {}).values()
             if a is not None and a is not _AGENT_PENDING_SENTINEL
         }
+        # Read the configured idle TTL via _resolve_agent_cache_config so
+        # operators can raise it (e.g. for high-traffic gateways) without a
+        # code change.  Falls through to _AGENT_CACHE_IDLE_TTL_SECS when
+        # the config block is absent or invalid.
+        idle_ttl = _resolve_agent_cache_config()["idle_ttl_secs"]
         with _lock:
             for key, entry in list(_cache.items()):
                 agent = entry[0] if isinstance(entry, tuple) and entry else None
@@ -14716,7 +14844,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_activity = getattr(agent, "_last_activity_ts", None)
                 if last_activity is None:
                     continue
-                if (now - last_activity) > _AGENT_CACHE_IDLE_TTL_SECS:
+                if (now - last_activity) > idle_ttl:
                     to_evict.append((key, agent))
             for key, _ in to_evict:
                 _cache.pop(key, None)
@@ -18097,6 +18225,26 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
 
+    # ── Periodic memory monitoring ────────────────────────────────────
+    # Spin up the RSS sampler + heap-dump-on-threshold thread early so it
+    # is alive across the gateway's full lifetime.  Configured via
+    # ``logging.memory_monitor`` in config.yaml — see gateway/memory_monitor.py.
+    # Idempotent: returns False if already running (e.g. tests / re-import).
+    # Also registered with atexit so the final snapshot + clean stop fires
+    # on every exit path (SIGTERM, SystemExit, KeyboardInterrupt, normal return).
+    try:
+        import atexit
+        from gateway.memory_monitor import (
+            start_memory_monitoring,
+            stop_memory_monitoring,
+        )
+        start_memory_monitoring()
+        # Idempotent — atexit only fires once even with multiple registrations,
+        # but stop_memory_monitoring itself is also idempotent.
+        atexit.register(stop_memory_monitoring)
+    except Exception as e:
+        logger.warning("[MEMORY] Failed to start memory monitor: %s", e)
+
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile
@@ -18600,6 +18748,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "manager relaunches the gateway."
         )
         raise SystemExit(75)
+
+    # Final memory snapshot + monitor thread shutdown is handled by the
+    # atexit handler registered at the top of start_gateway.
 
     return True
 

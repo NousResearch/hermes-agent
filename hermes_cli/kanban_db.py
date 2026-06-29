@@ -274,6 +274,39 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+def _resolve_blocker_auth_window_seconds() -> int:
+    """Return the max age (seconds) of a ``last_failure_error`` after which
+    the ``blocker_auth`` respawn guard releases and the dispatcher attempts
+    a fresh probe.
+
+    Reads ``HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS`` from the
+    environment; falls back to ``DEFAULT_RESPAWN_BLOCKER_WINDOW_SECONDS``
+    when absent, empty, non-integer, or negative. A value of 0 disables
+    the guard entirely (always allow a probe — useful for tests or for
+    operators who prefer to let the auto-block circuit breaker be the
+    sole gatekeeper).
+
+    Rationale: the regex-based ``blocker_auth`` guard is intentionally
+    silent — it does not bump ``consecutive_failures`` — so a one-time
+    stale failure parks a task in ``ready`` until either the operator
+    unblocks it or the breaker trips. Without this TTL the only way out
+    of ``blocker_auth`` was a manual ``hermes kanban unblock``. Reported
+    in t_7f4b0ff2 (2026-06-29): two ready tasks with stale ``429``
+    text sat for 21.9h while the live credential pool was healthy.
+    """
+    raw = os.environ.get(
+        "HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_RESPAWN_BLOCKER_WINDOW_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -1946,6 +1979,39 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "last_failure_at" not in cols:
+        # Timestamp of the most recent failure recorded by
+        # ``_record_task_failure``. NULL on legacy rows that predate the
+        # column. Used by ``check_respawn_guard`` to release the
+        # ``blocker_auth`` deferral after
+        # ``HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS`` (default 1800s);
+        # without this timestamp the regex would defer a stale failure
+        # forever and the silent deferral would never bump
+        # ``consecutive_failures`` for the auto-block circuit breaker to
+        # trip (t_7f4b0ff2, 2026-06-29). Backfill from the latest
+        # ``spawn_failed`` ``task_events`` row when one exists, so old
+        # tasks unstick as soon as their failure ages past the window.
+        _add_column_if_missing(
+            conn, "tasks", "last_failure_at", "last_failure_at INTEGER"
+        )
+        conn.execute(
+            """
+            UPDATE tasks
+               SET last_failure_at = (
+                   SELECT MAX(e.created_at)
+                     FROM task_events e
+                    WHERE e.task_id = tasks.id
+                      AND e.kind IN ('spawn_failed', 'gave_up', 'crashed', 'timed_out')
+               )
+             WHERE last_failure_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM task_events e
+                    WHERE e.task_id = tasks.id
+                      AND e.kind IN ('spawn_failed', 'gave_up', 'crashed', 'timed_out')
+               )
+            """
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -5600,6 +5666,22 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
+# Max age (seconds) of the last failure error before the ``blocker_auth``
+# guard releases and the dispatcher attempts a fresh probe. Without
+# this, a one-time preflight failure on a profile whose credentials
+# later recovered would park the task in ``ready`` indefinitely —
+# the regex never changes its mind on its own, and the deferral path
+# does not bump ``consecutive_failures`` so the auto-block circuit
+# breaker cannot trip either. Reported in t_7f4b0ff2 (2026-06-29):
+# two ready tasks with stale ``429`` text sat for 21.9h while the live
+# credential pool was healthy. Default 30 min — long enough to give a
+# quota window time to reset, short enough that an operator who
+# rotated keys sees the board recover on its own instead of having to
+# ``hermes kanban unblock`` every stuck task. Overridable via
+# ``HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS``; 0 disables the
+# guard entirely (always allow a probe).
+DEFAULT_RESPAWN_BLOCKER_WINDOW_SECONDS = 1800  # 30 minutes
+
 # Pattern matching a GitHub PR URL in task comments.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
@@ -6524,6 +6606,11 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
+    # Stamped onto ``tasks.last_failure_at`` in every branch below so the
+    # respawn guard can age out a stale ``blocker_auth`` deferral
+    # (t_7f4b0ff2). Captured once so all four UPDATEs share an exact
+    # timestamp rather than drifting by millisecond rounding.
+    failure_at = int(time.time())
     with write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries "
@@ -6553,9 +6640,10 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "last_failure_at = ? "
                     "WHERE id = ? AND status IN ('running', 'ready')",
-                    (failures, error[:500], task_id),
+                    (failures, error[:500], failure_at, task_id),
                 )
             else:
                 # Timeout/crash path: task is already at ``ready``
@@ -6563,9 +6651,10 @@ def _record_task_failure(
                 # counter fields.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "last_failure_at = ? "
                     "WHERE id = ? AND status IN ('ready', 'running')",
-                    (failures, error[:500], task_id),
+                    (failures, error[:500], failure_at, task_id),
                 )
             run_id = None
             if end_run:
@@ -6601,17 +6690,19 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
+                    "consecutive_failures = ?, last_failure_error = ?, "
+                    "last_failure_at = ? "
                     "WHERE id = ? AND status = 'running'",
-                    (failures, error[:500], task_id),
+                    (failures, error[:500], failure_at, task_id),
                 )
             else:
                 # Timeout/crash path: task is already at ``ready`` via
                 # its own UPDATE. Just bookkeep the counter + last error.
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
-                    (failures, error[:500], task_id),
+                    "last_failure_error = ?, last_failure_at = ? "
+                    "WHERE id = ?",
+                    (failures, error[:500], failure_at, task_id),
                 )
             if end_run:
                 # Spawn path: close the open run with outcome.
@@ -6682,7 +6773,8 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET consecutive_failures = 0, "
-            "last_failure_error = NULL WHERE id = ?",
+            "last_failure_error = NULL, last_failure_at = NULL "
+            "WHERE id = ?",
             (task_id,),
         )
 
@@ -6722,6 +6814,20 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         blocks via the normal path — but a transient 429 gets a few
         ticks of recovery first.
 
+        The deferral is bounded by ``_RESPAWN_BLOCKER_WINDOW_SECONDS``
+        (default 1800s, env-tunable via
+        ``HERMES_KANBAN_BLOCKER_AUTH_WINDOW_SECONDS``): if the failure
+        is older than that window, the guard releases and the
+        dispatcher attempts a fresh probe. Without this, a one-time
+        preflight failure on a profile whose credentials later
+        recovered would park the task in ``ready`` indefinitely —
+        the regex never changes its mind on its own, and the
+        deferral path does not bump ``consecutive_failures`` so the
+        auto-block circuit breaker cannot trip either. This was the
+        symptom reported in t_7f4b0ff2 (2026-06-29): two ready
+        tasks with stale ``429`` text sat for 21.9h while the live
+        credential pool was healthy.
+
     ``"recent_success"``
         A completed run exists within ``_RESPAWN_GUARD_SUCCESS_WINDOW``
         seconds.  Useful work already succeeded for this task; wait for
@@ -6738,7 +6844,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, last_failure_at, created_at FROM tasks "
+        "WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -6785,7 +6892,46 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     # 2. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+        # Bounded by _RESPAWN_BLOCKER_WINDOW_SECONDS so a one-time
+        # preflight failure whose underlying credential problem later
+        # recovered cannot park the task in ``ready`` indefinitely.
+        # Without this, the regex would defer forever and the silent
+        # deferral would never bump ``consecutive_failures`` for the
+        # auto-block circuit breaker to trip (t_7f4b0ff2).
+        blocker_window = _resolve_blocker_auth_window_seconds()
+        if blocker_window <= 0:
+            # Guard disabled — always allow a probe.
+            err = None
+        else:
+            # ``last_failure_at`` is the source of truth; fall back to
+            # ``created_at`` only for legacy rows that predate the
+            # migration (NULL last_failure_at). The fallback is
+            # conservative: it uses the OLDER of the two, so we never
+            # release the guard sooner than either timestamp implies.
+            failed_at = row["last_failure_at"]
+            if failed_at is None:
+                fallback_at = row["created_at"]
+                age_source = "created_at"
+            else:
+                fallback_at = int(failed_at)
+                age_source = "last_failure_at"
+            if fallback_at is not None and (now - int(fallback_at)) >= blocker_window:
+                # Failure is older than the window — release the guard
+                # and let the dispatcher take a fresh probe. The probe
+                # itself will re-run ``_spawn_preflight_credentials``;
+                # if the credential pool is STILL broken, the next
+                # attempt raises and ``_record_spawn_failure`` will
+                # bump ``consecutive_failures`` toward the breaker
+                # threshold normally.
+                _log.debug(
+                    "kanban respawn_guard: releasing blocker_auth deferral "
+                    "for task=%s after %s window (age=%ds source=%s); "
+                    "allowing fresh probe",
+                    task_id, blocker_window, now - int(fallback_at), age_source,
+                )
+                err = None
+        if err:
+            return "blocker_auth"
 
     # 3. Completed run within guard window — proof of recent success.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW

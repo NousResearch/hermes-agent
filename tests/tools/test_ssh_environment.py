@@ -44,13 +44,37 @@ class TestBuildSSHCommand:
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
         monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
+        monkeypatch.setattr("tools.environments.ssh.shutil.which", lambda _: "/usr/bin/ssh")
 
-    def test_base_flags(self):
+    def test_base_flags(self, monkeypatch):
+        # On Linux/macOS, ControlMaster defaults to true
+        monkeypatch.setattr("tools.environments.ssh.sys.platform", "linux")
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
-        for flag in ("ControlMaster=auto", "ControlPersist=300",
+        for flag in ("ControlMaster=true", "ControlPersist=300",
                       "BatchMode=yes", "StrictHostKeyChecking=accept-new"):
             assert flag in cmd
+        assert "ControlPath=" in cmd
+
+    def test_base_flags_windows(self, monkeypatch):
+        # On Windows, ControlMaster defaults to false (disabled)
+        # We patch sys.platform globally since _is_windows() reads it directly
+        import sys as _sys
+        original_platform = _sys.platform
+        _sys.platform = "win32"
+        try:
+            env = SSHEnvironment(host="h", user="u")
+            cmd = " ".join(env._build_ssh_command())
+            # On Windows with ControlMaster disabled, we should NOT include
+            # ControlMaster/ControlPath/ControlPersist options at all
+            assert "ControlMaster=" not in cmd
+            assert "ControlPath=" not in cmd
+            assert "ControlPersist=" not in cmd
+            # But other flags should still be present
+            for flag in ("BatchMode=yes", "StrictHostKeyChecking=accept-new"):
+                assert flag in cmd
+        finally:
+            _sys.platform = original_platform
 
     def test_custom_port(self):
         env = SSHEnvironment(host="h", user="u", port=2222)

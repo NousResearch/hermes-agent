@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -19,6 +20,29 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Windows native OpenSSH doesn't support ControlMaster/ControlPath (Unix domain sockets)
+# Users can override via TERMINAL_SSH_CONTROLMASTER=true if they know their
+# SSH client supports it (e.g., WSL, MSYS2, Git for Windows with OpenSSH).
+_DEFAULT_CONTROLMASTER_ENV = "TERMINAL_SSH_CONTROLMASTER"
+
+
+def _is_windows() -> bool:
+    """Check if running on Windows (for dynamic platform detection)."""
+    return sys.platform == "win32"
+
+
+def _get_default_controlmaster() -> bool:
+    """Get the default ControlMaster setting based on platform."""
+    return not _is_windows()
+
+
+def _get_control_master_setting() -> str:
+    """Get ControlMaster setting from env or platform default."""
+    return os.environ.get(
+        _DEFAULT_CONTROLMASTER_ENV,
+        "true" if _get_default_controlmaster() else "false",
+    ).lower()
 
 
 def _ensure_ssh_available() -> None:
@@ -39,7 +63,7 @@ class SSHEnvironment(BaseEnvironment):
     Spawn-per-call: every execute() spawns a fresh ``ssh ... bash -c`` process.
     Session snapshot preserves env vars across calls.
     CWD persists via in-band stdout markers.
-    Uses SSH ControlMaster for connection reuse.
+    Uses SSH ControlMaster for connection reuse (disabled by default on Windows).
     """
 
     def __init__(self, host: str, user: str, cwd: str = "~",
@@ -50,6 +74,7 @@ class SSHEnvironment(BaseEnvironment):
         self.port = port
         self.key_path = key_path
 
+        # On Windows without ControlMaster, we don't need a control socket path
         self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
         self.control_dir.mkdir(parents=True, exist_ok=True)
         # Keep the socket filename short and deterministic so the full path
@@ -82,9 +107,14 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
+        control_master = _get_control_master_setting()
+
+        # Only add ControlPath/ControlMaster/ControlPersist if ControlMaster is enabled
+        if control_master != "false":
+            cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            cmd.extend(["-o", f"ControlMaster={control_master}"])
+            cmd.extend(["-o", "ControlPersist=300"])
+
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])
@@ -157,7 +187,7 @@ class SSHEnvironment(BaseEnvironment):
     # _get_sync_files provided via iter_sync_files in FileSyncManager init
 
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
-        """Upload a single file via scp over ControlMaster."""
+        """Upload a single file via scp."""
         parent = str(Path(remote_path).parent)
         mkdir_cmd = self._build_ssh_command()
         mkdir_cmd.append(f"mkdir -p {shlex.quote(parent)}")
@@ -169,7 +199,11 @@ class SSHEnvironment(BaseEnvironment):
             stdin=subprocess.DEVNULL,
         )
 
-        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        control_master = _get_control_master_setting()
+        scp_cmd = ["scp"]
+        if control_master != "false":
+            scp_cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            scp_cmd.extend(["-o", f"ControlMaster={control_master}"])
         if self.port != 22:
             scp_cmd.extend(["-P", str(self.port)])
         if self.key_path:
@@ -357,7 +391,9 @@ class SSHEnvironment(BaseEnvironment):
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()
 
-        if self.control_socket.exists():
+        # Only try to close ControlMaster if it was enabled
+        control_master = _get_control_master_setting()
+        if control_master != "false" and self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",
                        "-O", "exit", f"{self.user}@{self.host}"]

@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useSidebar } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -54,6 +55,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
+  const { toggleSidebar } = useSidebar()
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -83,7 +85,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       label: leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar,
       onSelect: () => {
         triggerHaptic('tap')
-        leftEdge.toggle()
+        // toggleSidebar from useSidebar routes to setOpenMobile when isMobile=true
+        // so the Sheet drawer opens; falls through to leftEdge.toggle() for desktop.
+        toggleSidebar()
       }
     },
     {

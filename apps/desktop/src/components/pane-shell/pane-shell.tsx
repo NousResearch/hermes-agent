@@ -217,6 +217,15 @@ function paneIsOpen(pane: CollectedPane, states: PaneStoreState) {
 }
 
 function trackForPane(pane: CollectedPane, states: PaneStoreState) {
+  // Mobile owns the whole screen: every rail collapses to 0px so the main
+  // pane fills 100%. The sidebar still renders as a Sheet drawer via shadcn's
+  // <Sidebar isMobile>, which portals out of the pane track.
+  if (
+    typeof window !== 'undefined' &&
+    (window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__
+  ) {
+    return { open: false, track: '0px' }
+  }
   const open = paneIsOpen(pane, states)
 
   if (!open) {

@@ -129,7 +129,10 @@ function ChatHeader({
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // are compact side panels — they drop the session-actions header + border
   // entirely. A brand-new draft has nothing to pin/delete/rename either.
-  if (isSecondaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
+  // Mobile owns the top strip via OS chrome; the desktop session-title row docked under it wastes vertical space.
+  const isMobileStandalone =
+    typeof window !== 'undefined' && (window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__
+  if (isMobileStandalone || isSecondaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
     return null
   }
 

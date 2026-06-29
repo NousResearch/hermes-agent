@@ -1,36 +1,50 @@
-import './styles.css'
+import '@/styles.css'
 // Side-effect: applies the persisted window translucency on load.
-import './store/translucency'
+import '@/store/translucency'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 
-import App from './hermes-app'
-import { ErrorBoundary } from './components/error-boundary'
-import { HapticsProvider } from './components/haptics-provider'
-import { I18nProvider } from './i18n'
-import { installClipboardShim } from './lib/clipboard'
-import { queryClient } from './lib/query-client'
-import { ThemeProvider } from './themes/context'
+import App from '@/app'
+import { ErrorBoundary } from '@/components/error-boundary'
+import { HapticsProvider } from '@/components/haptics-provider'
+import { I18nProvider } from '@/i18n'
+import { installClipboardShim } from '@/lib/clipboard'
+import { queryClient } from '@/lib/query-client'
+import { setPaneOpen } from '@/store/panes'
+import { ThemeProvider } from '@/themes/context'
+
+// ponytail: mark mobile-standalone so desktop's mobile gates engage.
+if (typeof window !== 'undefined') {
+  ;(window as unknown as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__ = true
+  document.documentElement.classList.add('hermes-mobile-standalone')
+  // Persistent overlay/route state from previous sessions can land the WebView
+  // deep inside the app. Reset to root so the boot view is always the intro.
+  if (window.location.hash && window.location.hash !== '#/') window.location.hash = ''
+}
+
+// Mobile: collapse desktop's docked sidebar + right-rail at boot so the empty
+// intro owns the screen. Reopen via the hamburger / pane controls on demand.
+setPaneOpen('chat-sidebar', false)
+setPaneOpen('preview', false)
+
+
+
+
+
+
+
 
 installClipboardShim()
 
-// Dev-only: install __PERF_DRIVE__ + __PERF_PROBE__ on window so the
-// scripts/ harnesses can drive a synthetic stream + record render cost.
-// Tree-shaken out of production builds. (Uses MODE rather than DEV because
-// our Vite setup currently bundles with PROD=true even in `vite dev`; see
-// scripts/dev-no-hmr.mjs for the surrounding workarounds.)
 if (import.meta.env.MODE !== 'production') {
-  import('./hermes-app/chat/perf-probe')
+  import('@/app/chat/perf-probe')
 }
 
-// The pet overlay rides this same bundle (`?win=overlay`) but mounts a tiny,
-// transparent, gateway-less surface instead of the full app. Branch before any
-// app-shell work so the overlay window stays cheap.
 if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
-  void import('./hermes-app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
+  void import('@/app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
 } else {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
@@ -50,3 +64,4 @@ if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
     </StrictMode>
   )
 }
+

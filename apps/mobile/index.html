@@ -174,6 +174,17 @@
       }
     </style>
     <script>
+      // ponytail: dev-only seeding so the setup form auto-fills; remove before merging.
+      window.__HERMES_DASHBOARD_URL__ = 'https://hermes-desktop.pmxt.dev';
+      window.__HERMES_DASHBOARD_TOKEN__ = 'bFQK9Tx_Kx0-wX7gLeLppb3mMMUCLDoNwMii4SBdxvk';
+      // Mirror into localStorage so the native bridge's readConnection (which
+      // doesn't see the window vars) picks up the same creds.
+      try {
+        localStorage.setItem('hermesDashboardUrl', window.__HERMES_DASHBOARD_URL__);
+        localStorage.setItem('hermesDashboardToken', window.__HERMES_DASHBOARD_TOKEN__);
+      } catch (_) {}
+    </script>
+    <script>
       (function () {
         const noop = function () {};
         const unsub = function () {};
@@ -214,6 +225,33 @@
           url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
           if (token) url.searchParams.set('token', token);
           return url.toString();
+        }
+
+        // Gated gateways reject `?token=` on the WS upgrade — they require a
+        // single-use ticket minted via POST /api/auth/ws-ticket. Loopback
+        // gateways still accept the long-lived token. Try the ticket flow
+        // first and fall back to the token URL if the gateway is loopback
+        // (ticket endpoint 401s) or unreachable.
+        async function mintWsUrl(baseUrl, token) {
+          const cleanUrl = cleanBaseUrl(baseUrl);
+          if (!cleanUrl) return '';
+          try {
+            const res = await fetch(cleanUrl + '/api/auth/ws-ticket', {
+              method: 'POST',
+              headers: token ? { 'X-Hermes-Session-Token': token, 'accept': 'application/json' } : { 'accept': 'application/json' }
+            });
+            if (res.ok) {
+              const body = await res.json();
+              const ticket = body && body.ticket;
+              if (ticket) {
+                const url = new URL('/api/ws', cleanUrl);
+                url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+                url.searchParams.set('ticket', String(ticket));
+                return url.toString();
+              }
+            }
+          } catch (_) {}
+          return toWsUrl(baseUrl, token);
         }
 
         function disposable() {
@@ -382,7 +420,7 @@
           },
           getGatewayWsUrl: async () => {
             const conn = readConnection();
-            return toWsUrl(conn.baseUrl, conn.token);
+            return await mintWsUrl(conn.baseUrl, conn.token);
           },
           openExternal: async (url) => { location.href = url; },
           fetchLinkTitle: async () => '',
@@ -432,6 +470,25 @@
         window.desktop = desktop;
         window.__HERMES_MOBILE_SHELL__ = true;
         window.__HERMES_MOBILE_CONNECTION__ = { readConnection, saveConnection, clearConnection, toWsUrl };
+
+        // Replace the native bridge's getGatewayWsUrl with a mint-via-bridge flow.
+        // Gated gateways reject `?token=` on the WS upgrade and require a
+        // single-use ticket from POST /api/auth/ws-ticket. The bridge's `api`
+        // method routes the REST call through React Native, side-stepping the
+        // WebView's same-origin CORS check (the gateway doesn't ship CORS).
+        nativeDesktop.getGatewayWsUrl = async function () {
+          const conn = readConnection();
+          try {
+            const body = await desktop.api({ method: 'POST', path: '/api/auth/ws-ticket' });
+            if (body && body.ticket) {
+              const url = new URL('/api/ws', cleanBaseUrl(conn.baseUrl));
+              url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+              url.searchParams.set('ticket', String(body.ticket));
+              return url.toString();
+            }
+          } catch (_) {}
+          return toWsUrl(conn.baseUrl, conn.token);
+        };
       })();
     </script>
   </head>

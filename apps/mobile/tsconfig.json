@@ -7,12 +7,24 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@/app/*": ["src/hermes-app/*"],
-      "@/*": ["src/*"],
-      "@hermes/shared": ["src/mobile-shims/hermes-shared"]
+      "@/app/*": ["src/hermes-app/*", "../desktop/src/app/*"],
+      "@/app": ["src/hermes-app", "../desktop/src/app"],
+      "@/*": ["src/*", "../desktop/src/*"],
+      "@hermes/shared": ["../shared/src"],
+      "react-arborist": ["src/mobile-shims/react-arborist.tsx"],
+      "react-shiki": ["src/mobile-shims/react-shiki.tsx"],
+      "use-stick-to-bottom": ["src/mobile-shims/use-stick-to-bottom.tsx"]
     },
     "types": ["react", "react-dom"]
   },
-  "include": ["App.tsx", "App.native.tsx", "index.ts", "src/mobile-shims/**/*.ts", "src/**/*.native.ts", "src/**/*.native.tsx", "scripts/**/*.mjs"],
+  "include": [
+    "App.tsx",
+    "App.native.tsx",
+    "index.ts",
+    "src/mobile-shims/**/*.ts",
+    "src/**/*.native.ts",
+    "src/**/*.native.tsx",
+    "scripts/**/*.mjs"
+  ],
   "exclude": ["node_modules", "ios", "android", "src/**/*.test.ts", "src/**/*.test.tsx"]
 }

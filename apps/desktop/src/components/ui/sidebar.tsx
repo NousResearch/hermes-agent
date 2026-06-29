@@ -81,6 +81,13 @@ function SidebarProvider({
     document.cookie = `${SIDEBAR_COOKIE_NAME}=${open}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
   }, [open])
 
+  // On mobile the docked sidebar is hidden and a Sheet drawer (openMobile)
+  // takes over. External controls toggle the desktop `open` prop, so mirror
+  // it into openMobile so the existing hamburger / Cmd-B path opens the Sheet.
+  React.useEffect(() => {
+    if (isMobile) setOpenMobile(open)
+  }, [isMobile, open])
+
   // Helper to toggle the sidebar.
   const toggleSidebar = React.useCallback(() => {
     return isMobile ? setOpenMobile(open => !open) : setOpen(open => !open)
@@ -143,7 +150,10 @@ function Sidebar({
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
   const { t } = useI18n()
 
-  if (collapsible === 'none') {
+  // collapsible="none" is the desktop "always-docked" mode — bypass it on
+  // mobile so the Sheet drawer still wins (otherwise the chat sidebar paints
+  // as a 0-width docked column forever and the hamburger does nothing).
+  if (collapsible === 'none' && !isMobile) {
     return (
       <div
         className={cn('flex h-full w-(--sidebar-width) flex-col bg-sidebar text-sidebar-foreground', className)}

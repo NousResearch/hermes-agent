@@ -1173,8 +1173,11 @@ export function ChatSidebar({
       })
     )
 
+  const isMobileStandalone =
+    typeof window !== 'undefined' && (window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__
   return (
     <Sidebar
+      data-mobile-drawer={isMobileStandalone ? '' : undefined}
       className={cn(
         'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
         panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',

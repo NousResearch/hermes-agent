@@ -1,5 +1,12 @@
-@import 'tailwindcss';
+@import 'tailwindcss' source(none);
 @plugin '@tailwindcss/typography';
+/* Tailwind v4 auto-source-scan from this CSS file only sees apps/mobile/src/,
+   but the mobile bundle imports almost every component from apps/desktop/src
+   via the @/ alias. Disable the default scan and re-declare the explicit
+   roots so every utility class used by the desktop tree compiles. */
+@source "../";
+@source "../../desktop/src";
+@source "../../shared/src";
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
@@ -1565,15 +1572,18 @@ html.hermes-mobile-standalone [data-slot='aui_intro'] > div {
    no status strip below it, and enough hit-target for thumb use. */
 html.hermes-mobile-standalone [data-slot='composer-root'] {
   position: fixed !important;
-  left: 50% !important;
-  right: auto !important;
+  left: 0.625rem !important;
+  right: 0.625rem !important;
   bottom: max(0.7rem, env(safe-area-inset-bottom)) !important;
-  width: calc(100vw - 1.25rem) !important;
-  max-width: 28rem !important;
-  margin-inline: 0 !important;
+  width: auto !important;
+  max-width: none !important;
+  margin-inline: auto !important;
   padding: 0 !important;
   border-radius: 2rem !important;
-  transform: translateX(-50%) translateY(calc(-1 * var(--keyboard-inset, 0px))) !important;
+  /* Override the desktop `-translate-x-1/2` Tailwind class that Tailwind v4
+     now compiles via @source. Without this the dock shifts off-screen left. */
+  --tw-translate-x: 0px !important;
+  transform: translateY(calc(-1 * var(--keyboard-inset, 0px))) !important;
 }
 
 html.hermes-mobile-standalone [data-slot='composer-drag-region'],
@@ -1599,7 +1609,15 @@ html.hermes-mobile-standalone [data-slot='composer-rich-input'] {
 }
 
 html.hermes-mobile-standalone [data-slot='composer-rich-input']:empty::before {
+  /* Re-implement the desktop `empty:before:content-[attr(data-placeholder)]`
+     class — Tailwind v4 auto-source-scan doesn't see the desktop composer
+     file from the mobile CSS root, so this arbitrary-value class drops and
+     the placeholder vanishes. */
+  content: attr(data-placeholder) !important;
+  color: color-mix(in srgb, var(--dt-foreground) 38%, transparent);
   font-size: 1rem;
+  line-height: 1.35rem;
+  pointer-events: none;
 }
 
 /* Touch chrome: the top-right desktop tool cluster is hidden in React; make the
@@ -1619,12 +1637,45 @@ html.hermes-mobile-standalone [aria-label='Window controls'] a {
   -webkit-backdrop-filter: blur(8px) saturate(140%);
 }
 
-/* Mobile sidebar reads like a real drawer: full-bleed dark panel, larger rows,
-   and safe-area-aware top padding. */
-html.hermes-mobile-standalone [data-sidebar='sidebar'] {
-  background: #151516 !important;
-  color: #f5f5f3 !important;
-  border-color: color-mix(in srgb, #fff 10%, transparent) !important;
+/* Mobile sidebar drawer + every Radix-portaled overlay (dropdown menus,
+   selects, popovers, sheets) follows the active surface theme so it matches
+   the rest of the app. The old hardcoded dark #151516 caused a jarring
+   light↔dark flip in light mode. Radix portals these overlays to <body>, so
+   we target the slots directly — `html.hermes-mobile-standalone` still
+   matches because <html> is the standalone wrapper's ancestor. */
+html.hermes-mobile-standalone [data-sidebar='sidebar'],
+html.hermes-mobile-standalone [data-slot='sheet-content'],
+html.hermes-mobile-standalone [data-slot='dropdown-menu-content'],
+html.hermes-mobile-standalone [data-slot='select-content'],
+html.hermes-mobile-standalone [data-slot='dialog-content'],
+html.hermes-mobile-standalone [data-slot='popover-content'],
+html.hermes-mobile-standalone [data-radix-popper-content-wrapper] > * {
+  background: var(--ui-sidebar-surface-background) !important;
+  color: var(--dt-foreground) !important;
+  border-color: var(--ui-stroke-secondary) !important;
+}
+
+/* The top nav rows ("New session" / "Skills & Tools" / "Messaging" /
+   "Artifacts") in ChatSidebar use `text-(--ui-text-secondary)` which mixes
+   the *current* foreground at 74%. Inside the mobile drawer the old fork
+   forced a dark surface + cream text, so children mixed cream and ended up
+   invisible on the new light surface. Force these rows back to the live
+   foreground so they read on either theme. The KBD chip + its border
+   ride the same currentColor so they recover too. */
+html.hermes-mobile-standalone [data-sidebar='sidebar'] [data-slot='sidebar-menu-button'],
+html.hermes-mobile-standalone [data-slot='sheet-content'] [data-slot='sidebar-menu-button'],
+html.hermes-mobile-standalone [data-sidebar='sidebar'] [data-slot='sidebar-group-label'],
+html.hermes-mobile-standalone [data-slot='sheet-content'] [data-slot='sidebar-group-label'] {
+  color: var(--ui-text-secondary, var(--dt-foreground)) !important;
+}
+html.hermes-mobile-standalone [data-sidebar='sidebar'] [data-slot='sidebar-menu-button']:hover,
+html.hermes-mobile-standalone [data-slot='sheet-content'] [data-slot='sidebar-menu-button']:hover {
+  color: var(--dt-foreground) !important;
+}
+html.hermes-mobile-standalone [data-sidebar='sidebar'] kbd,
+html.hermes-mobile-standalone [data-slot='sheet-content'] kbd {
+  color: var(--ui-text-tertiary) !important;
+  border-color: var(--ui-stroke-tertiary) !important;
 }
 
 html.hermes-mobile-standalone [data-sidebar='content'] {
@@ -1788,3 +1839,133 @@ html.hermes-mobile-standalone [data-slot='composer-surface'] {
   width: 100% !important;
   box-sizing: border-box !important;
 }
+
+/* The chat sidebar + right-rail panes render as <Sidebar isMobile> drawers on
+   mobile — they portal out of the docked pane track. Force the docked tracks
+   to display:none so any width-0 wrapper doesn't paint, and let the drawers
+   own the screen when opened via the hamburger / pane controls. */
+html.hermes-mobile-standalone [data-pane-id='chat-sidebar'],
+html.hermes-mobile-standalone [data-pane-id='preview'],
+html.hermes-mobile-standalone [data-pane-id='file-browser'],
+html.hermes-mobile-standalone [data-pane-id='review'] {
+  display: none !important;
+}
+
+/* Hide the chat-drop-overlay's resting state — it only needs to be visible
+   during an active filesystem drag, which doesn't happen on iOS. */
+html.hermes-mobile-standalone [data-slot='chat-drop-overlay'] {
+  display: none !important;
+}
+
+/* Statusbar (footer with Gateway/Backend/Agents/Cron pills) is a desktop chrome
+   that sits below the composer. On phone the iOS home indicator owns that
+   strip — hide the statusbar so the composer dock can sit at the bottom edge. */
+html.hermes-mobile-standalone main > footer {
+  display: none !important;
+}
+
+/* Titlebar pane/system tool clusters are mouse-driven affordances that
+   duplicate the iOS Dynamic Island visually. The hamburger trigger lives
+   inside [aria-label='Window controls'] which the existing rule (line 1607)
+   already restyles into a tap-friendly chip. */
+html.hermes-mobile-standalone [aria-label='Pane controls'],
+html.hermes-mobile-standalone [aria-label='App controls'] {
+  display: none !important;
+}
+
+/* Leave only the first window-control (sidebar trigger / hamburger). */
+html.hermes-mobile-standalone [aria-label='Window controls'] > *:not(:first-child) {
+  display: none !important;
+}
+
+/* The gateway-connecting overlay paints a faux-CONNECTING wordmark on top of
+   the real Intro once the gateway is "open". Hide it on mobile — the real
+   Intro from <Thread> is the source of truth. */
+html.hermes-mobile-standalone [data-slot='gateway-connecting-overlay'] {
+  display: none !important;
+}
+
+/* Composer-fade flex-col stretch is breaking on phone: the inner grid
+   (input + menu + controls) collapses to the input's intrinsic width
+   instead of the full 380px surface. Force every flex/grid child of the
+   fade to fill horizontally so the menu/+ stays at the far left and the
+   controls/send stay at the far right. */
+html.hermes-mobile-standalone [data-slot='composer-fade'] > div {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+
+/* Intro: keep the desktop fit-text auto-size logic intact (it reads container
+   inline-size, so it scales fine once the container is full-width on phone).
+   We only re-clamp --fit-min smaller because the desktop 2.75rem floor is too
+   wide for ~400px viewports and forces overflow. */
+html.hermes-mobile-standalone [data-slot='aui_intro'] .fit-text {
+  --fit-min: 2rem !important;
+  font-family: 'Collapse', 'Times New Roman', serif !important;
+  color: var(--theme-primary, #0053fd) !important;
+  mix-blend-mode: normal !important;
+}
+
+html.hermes-mobile-standalone [data-slot='aui_intro'] p:not(.fit-text) {
+  max-width: 28rem !important;
+  margin: 0.5rem auto !important;
+  text-align: center !important;
+  font-size: 0.95rem !important;
+  line-height: 1.4rem !important;
+}
+
+/* The thread viewport + content live inside a shadcn `mx-auto max-w-*` wrapper
+   that on a small phone column collapses to a narrow inline-size. Force full
+   width so fit-text reads the real viewport width and the tagline wraps as a
+   paragraph instead of a one-word column. */
+html.hermes-mobile-standalone [data-slot='aui_thread-viewport'],
+html.hermes-mobile-standalone [data-slot='aui_thread-content'] {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin-inline: 0 !important;
+}
+
+/* The desktop Thread wrapper sets `contain: layout paint`, which makes it the
+   containing block for `position: fixed` descendants — so the composer's
+   `left: 50%` becomes relative to that narrow wrapper instead of the viewport.
+   Drop the containment on mobile so the composer dock anchors to the screen. */
+html.hermes-mobile-standalone main *,
+html.hermes-mobile-standalone main {
+  contain: none !important;
+}
+
+/* PaneShell's grid (and its main pane) doesn't stretch to its flex-col parent
+   on phone — it collapses to the intrinsic width of the main column's content.
+   Force it to fill the viewport so the chat content gets the full 402px and
+   fit-text scales correctly. */
+html.hermes-mobile-standalone [data-pane-shell],
+html.hermes-mobile-standalone [data-pane-main='true'] {
+  width: 100% !important;
+  min-width: 100% !important;
+}
+
+/* Equal horizontal padding so the wordmark is geometrically centered. The
+   hamburger button is position:fixed and overlays — it doesn't share the
+   intro's inline-axis flow, so asymmetric padding here just shifted the
+   centered text 12px right. */
+html.hermes-mobile-standalone [data-slot='aui_thread-content'] {
+  padding-inline: 1.5rem !important;
+  /* Force the grid to fill the viewport so the intro can center in it. */
+  min-height: 100dvh !important;
+  height: 100dvh !important;
+}
+
+/* The desktop empty-state wrapper has pt-[var(--composer-measured-height)]
+   which pushes the intro down by the composer's height — on phone that's
+   ~120px and visually glues the wordmark to the top. Zero it and use the
+   grid row to center vertically instead. The composer floats fixed at the
+   bottom so we don't need that padding to clear it. */
+html.hermes-mobile-standalone [data-slot='aui_thread-content'] > div {
+  padding-top: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  align-self: stretch !important;
+  justify-self: stretch !important;
+}
+

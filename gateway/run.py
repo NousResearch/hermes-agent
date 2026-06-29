@@ -5106,6 +5106,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
 
+        # Suppress ONLY the home-channel broadcast when the drain that is ending
+        # in this shutdown asked us to be quiet (e.g. a NAS auto-update image
+        # migration — drain-gated, then the machine is recreated). On the
+        # always-on Hermes Cloud fleet that broadcast would otherwise fire on
+        # every routine auto-update, spamming home channels with operator-
+        # flavoured "gateway shutting down" pings the user doesn't care about.
+        # The per-active-session interrupt pings above are deliberately NOT
+        # gated: on a drained shutdown they're empty by construction, and in the
+        # force-interrupt (deadline-exceeded) case they carry the genuinely
+        # useful "your task was cut off, message me to resume" hint. The flag is
+        # only honoured for a CURRENT-epoch marker (drain_notification_suppressed
+        # reuses the NS-570 staleness check), so an orphaned marker can never
+        # silence a fresh gateway's legitimate broadcast.
+        try:
+            from gateway.drain_control import drain_notification_suppressed
+            if drain_notification_suppressed():
+                logger.info(
+                    "Home-channel shutdown broadcast suppressed by drain marker "
+                    "(suppress_notification=true)"
+                )
+                return
+        except Exception as e:
+            # Never let the suppression check block the shutdown broadcast —
+            # fail toward the louder, more-visible behaviour.
+            logger.debug("drain_notification_suppressed check failed: %s", e)
+
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal
         # elsewhere), which would otherwise trigger

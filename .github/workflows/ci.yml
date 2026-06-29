@@ -111,6 +111,11 @@ jobs:
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker.yml
     secrets: inherit
+    with:
+      # Fork PR tokens are read-only (packages:read); passing is_fork lets
+      # docker.yml's build-arm64 job fall back to the gha cache backend
+      # instead of failing on the registry cache export.
+      is_fork: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true }}
 
   supply-chain:
     name: Supply-chain scan

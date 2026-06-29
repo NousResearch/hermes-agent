@@ -4,6 +4,14 @@ on:
   release:
     types: [published]
   workflow_call:
+    inputs:
+      # True when the triggering PR originates from a fork.  Fork PR tokens
+      # are read-only (packages:read), so the arm64 registry-cache export
+      # (cache-to type=registry → ghcr.io) is skipped in favour of the gha
+      # cache backend — same as build-amd64 already uses.
+      is_fork:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -165,7 +173,13 @@ jobs:
       # token, which expired mid-build on slow cold-cache arm64 runs and
       # crashed the build before the tests ran (the reason the gha cache
       # was removed from arm64 PRs in the first place).
+      #
+      # Fork PR tokens are read-only (packages:read); logging in still
+      # succeeds but cache-to type=registry would be denied.  On fork PRs
+      # we skip this login and use the gha cache instead (see the build
+      # step below).
       - name: Log in to ghcr.io (build cache)
+        if: inputs.is_fork == false
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
@@ -180,6 +194,12 @@ jobs:
       # cache that previously broke here: its credential is the job-lifetime
       # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
       # token failure mode cannot recur.
+      #
+      # On fork PRs the GITHUB_TOKEN is read-only (packages:read), so
+      # cache-to type=registry is denied.  We fall back to the gha cache
+      # backend (same as build-amd64 uses) — safe for PR runs because the
+      # gha SAS expiry that broke upstream arm64 cold-cache builds does not
+      # affect shorter PR runs with warm layers from cache-from.
       - name: Build image (arm64, cached publish)
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
@@ -190,8 +210,8 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
-          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
-          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
+          cache-from: ${{ inputs.is_fork == false && 'type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64' || 'type=gha,scope=docker-arm64' }}
+          cache-to: ${{ inputs.is_fork == false && 'type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max' || 'type=gha,mode=max,scope=docker-arm64' }}
 
       - name: Install uv for docker tests
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0

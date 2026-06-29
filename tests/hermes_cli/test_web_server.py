@@ -5226,6 +5226,31 @@ class TestDeleteSessionEndpoint:
         assert resp.json().get("ok") is True
         assert not self._exists("20260618_abcdef_unique")
 
+    def test_delete_removes_transcript_files_on_disk(self):
+        """Deleting a session via the HTTP endpoint must also remove on-disk
+        transcript and request-dump files, matching the CLI delete behaviour."""
+        from hermes_constants import get_hermes_home
+
+        sid = "transcript_test_session"
+        self._seed([sid])
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create transcript and request-dump files that should be cleaned up
+        (sessions_dir / f"{sid}.json").write_text("{}")
+        (sessions_dir / f"{sid}.jsonl").write_text("")
+        (sessions_dir / f"request_dump_{sid}_abc.json").write_text("{}")
+
+        resp = self.auth_client.delete(f"/api/sessions/{sid}")
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        assert not self._exists(sid)
+
+        # Transcript files must be removed
+        assert not (sessions_dir / f"{sid}.json").exists()
+        assert not (sessions_dir / f"{sid}.jsonl").exists()
+        assert not (sessions_dir / f"request_dump_{sid}_abc.json").exists()
+
 
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the

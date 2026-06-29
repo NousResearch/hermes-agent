@@ -762,4 +762,36 @@ def resolve_provider_full(
     except Exception:
         pass
 
+    # 4. Plugin-registered providers (providers/ module registry).
+    #    Providers registered via register_provider() in
+    #    plugins/model-providers/<name>/__init__.py live in the runtime
+    #    registry but not in models.dev or config.yaml.  This step bridges
+    #    the gap so /model, doctor, and --provider all recognise them.
+    try:
+        from providers import get_provider_profile as _get_plugin_profile
+        for _candidate in (canonical, raw):
+            plugin_profile = _get_plugin_profile(_candidate)
+            if plugin_profile is not None:
+                _api_key_vars = tuple(
+                    v for v in plugin_profile.env_vars
+                    if not v.endswith("_BASE_URL") and not v.endswith("_URL")
+                )
+                _base_url_var = next(
+                    (v for v in plugin_profile.env_vars
+                     if v.endswith("_BASE_URL") or v.endswith("_URL")),
+                    None,
+                )
+                return ProviderDef(
+                    id=plugin_profile.name,
+                    name=plugin_profile.display_name or plugin_profile.name,
+                    transport="openai_chat",
+                    api_key_env_vars=_api_key_vars or plugin_profile.env_vars,
+                    base_url=plugin_profile.base_url,
+                    base_url_env_var=_base_url_var or "",
+                    auth_type=plugin_profile.auth_type,
+                    source="plugin",
+                )
+    except Exception:
+        pass
+
     return None

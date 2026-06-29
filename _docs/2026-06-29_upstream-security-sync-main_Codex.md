@@ -66,9 +66,9 @@ GitHub Actions:
 
 ## Runtime note
 
-このログをmainへ反映した後、ログ込みの最終HEADで Desktop を再パックし、
-`HERMES_DASHBOARD_READY` の最新ポートと `/api/status` を再確認する。
-ユーザー指定に従い、`llama-server` / `llama.cpp` 系プロセスは起動しない。
+初回ログ時点では、ログ込みHEADでの Desktop 再パックと
+`HERMES_DASHBOARD_READY` の再確認が残っていた。
+最終確認結果は末尾の「最終CICD/Runtime確認」に記録する。
 
 ## 追記: 追加upstream追随
 
@@ -125,3 +125,30 @@ SOPログ初回コミット後、公式 `upstream/main` がさらに進んだた
 - `uv lock --check`: passed
 - `uv run --with cbor2==6.1.2 --with msgpack==1.2.1 --with pydantic-settings==2.14.2 python - <<'PY' ...`: imports ok
 - `uv run --extra dev python -m pytest tests/test_project_metadata.py tests/test_windows_subprocess_no_window_flags.py tests/gateway/test_slack_group_dm_scope_warning.py tests/hermes_cli/test_slack_cli.py -q`: `40 passed`
+
+## 最終CICD/Runtime確認
+
+最終コードHEAD `77e2d97871353df4f0af8dcce47f88efefe9468c` で以下を確認した。
+
+- `git rev-list --left-right --count HEAD...upstream/main`: `460 0`
+- GitHub Actions CI:
+  `https://github.com/zapabob/hermes-agent/actions/runs/28357939833`
+  = `completed / success`
+- GitHub Actions Dependency Graph:
+  `https://github.com/zapabob/hermes-agent/actions/runs/28357942249`
+  = `completed / success`
+- GitHub Dependabot open alerts: `0`
+- `npm --workspace apps/desktop run pack`: passed,
+  build stamp `77e2d9787135 (main)`
+- `uv run python -m hermes_cli.main gateway restart`: passed,
+  gateway PID `11996`
+- Desktop 起動後の最新 `HERMES_DASHBOARD_READY`:
+  `port=63448`
+- `http://127.0.0.1:63448/api/status`: `version=0.17.0`,
+  `gateway_running=true`, `gateway_state=running`, `gateway_pid=11996`
+- `llama-server.exe` / `llama.exe` / `llamacpp.exe` 実体プロセス:
+  `0`
+
+Photon は `SIDECAR_FAILED` の stale status が残る。`npm ci` / patch 適用 /
+`npm audit` は通過済みで、sidecar dependency 修復後も SDK 初期化前後の外部状態に
+起因する起動失敗として別途追跡する。

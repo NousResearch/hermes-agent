@@ -570,3 +570,89 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     assert install_cmd[:2] == ["/bin/npm", "install"]
     # cwd must be tui_dir (standalone), not parent
     assert calls[0][1]["cwd"] == str(tui_dir)
+
+
+# ── digest-stamp fast path (scoped --workspace install) ──────────────
+
+
+def _write_lock(root: Path, packages: dict) -> Path:
+    import json as _json
+
+    lock = root / "package-lock.json"
+    lock.write_text(_json.dumps({"packages": packages}))
+    return lock
+
+
+def test_no_reinstall_for_scoped_install_when_stamp_matches(
+    tmp_path: Path, main_mod
+) -> None:
+    """Regression: a scoped ``npm install --workspace ui-tui`` produces a hidden
+    lock that legitimately omits the other workspaces (apps/desktop, web), so the
+    full root lock lists packages absent from the hidden lock — which used to
+    force a reinstall on EVERY launch. A digest stamp from the last install must
+    short-circuit that."""
+    _touch_ink(tmp_path)
+    lock = _write_lock(
+        tmp_path,
+        {
+            "node_modules/foo": {"version": "1.0.0"},
+            "apps/desktop": {"version": "1.0.0"},
+            "apps/desktop/node_modules/electron": {"version": "30.0.0"},
+        },
+    )
+    # Hidden lock from the scoped install: only the ui-tui-relevant package.
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{"node_modules/foo":{"version":"1.0.0"}}}'
+    )
+    # Without a stamp this is a guaranteed (false-positive) reinstall...
+    assert main_mod._tui_need_npm_install(tmp_path) is True
+    # ...but once the last install's digest is recorded, it's a no-op.
+    main_mod._tui_install_stamp(tmp_path).write_text(main_mod._lock_digest(lock))
+    assert main_mod._tui_need_npm_install(tmp_path) is False
+
+
+def test_stale_stamp_falls_through_to_comparison(tmp_path: Path, main_mod) -> None:
+    """A stamp that doesn't match the current lockfile must NOT mask a genuinely
+    needed reinstall — the check falls through to the hidden-lock comparison."""
+    _touch_ink(tmp_path)
+    _write_lock(
+        tmp_path,
+        {
+            "node_modules/foo": {"version": "1.0.0"},
+            "node_modules/bar": {"version": "1.0.0"},
+        },
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        '{"packages":{"node_modules/foo":{"version":"1.0.0"}}}'
+    )
+    main_mod._tui_install_stamp(tmp_path).write_text("stale-digest")
+    # bar is required but missing from the hidden lock → still reinstall.
+    assert main_mod._tui_need_npm_install(tmp_path) is True
+
+
+def test_install_writes_digest_stamp(tmp_path: Path, main_mod, monkeypatch) -> None:
+    """After a successful TUI install, _make_tui_argv records the lockfile digest
+    so the next launch's fast path can skip the comparison."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "dist").mkdir()
+    (tui_dir / "dist" / "entry.js").write_text("console.log('tui')")
+    lock = _write_lock(tmp_path, {"node_modules/foo": {"version": "1.0.0"}})
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    stamp = main_mod._tui_install_stamp(tmp_path)
+    assert stamp.is_file()
+    assert stamp.read_text().strip() == main_mod._lock_digest(lock)

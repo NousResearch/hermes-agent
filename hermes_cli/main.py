@@ -1438,6 +1438,22 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+def _tui_install_stamp(ws_root: Path) -> Path:
+    """Sentinel under the hoisted ``node_modules`` recording the
+    ``package-lock.json`` digest of the last successful TUI dependency install."""
+    return ws_root / "node_modules" / ".hermes-tui-install"
+
+
+def _lock_digest(lock: Path) -> Optional[str]:
+    """Hex SHA-256 of the lockfile bytes, or ``None`` if it cannot be read."""
+    import hashlib
+
+    try:
+        return hashlib.sha256(lock.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -1451,6 +1467,12 @@ def _tui_need_npm_install(root: Path) -> bool:
     ``ui-tui/`` directory).  The lockfile / ink / marker checks use that
     workspace root; only the prebuilt-bundle sentinel stays relative to
     *root* (``ui-tui/dist/entry.js``).
+
+    Fast path: a digest sentinel (``node_modules/.hermes-tui-install``) written
+    after a successful install records the lockfile content that was installed.
+    When it still matches, the comparison below is skipped — without it, a SCOPED
+    ``--workspace ui-tui`` install (whose hidden lock omits the other workspaces'
+    packages, e.g. apps/desktop and web) would reinstall on every launch.
 
     Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
     (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
@@ -1483,6 +1505,22 @@ def _tui_need_npm_install(root: Path) -> bool:
         return True
     if not lock.is_file():
         return False
+
+    # Fast path: a successful install records the lockfile's digest (see
+    # _make_tui_argv). If it still matches, nothing to do. This short-circuits
+    # the hidden-lock package-set comparison below, which yields false positives
+    # for SCOPED installs (``npm install --workspace ui-tui``): the hidden lock
+    # then legitimately omits the other workspaces' packages (apps/desktop,
+    # web, …), so the comparison would otherwise reinstall on every launch.
+    digest = _lock_digest(lock)
+    stamp = _tui_install_stamp(ws_root)
+    if digest is not None and stamp.is_file():
+        try:
+            if stamp.read_text(encoding="utf-8").strip() == digest:
+                return False
+        except OSError:
+            pass
+
     marker = ws_root / "node_modules" / ".package-lock.json"
     if not marker.is_file():
         return True
@@ -1819,6 +1857,18 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 print(preview)
             sys.exit(1)
         did_install = True
+        # Record the lockfile digest so the next launch's _tui_need_npm_install
+        # fast-path can skip the hidden-lock comparison (which is unsafe for the
+        # scoped --workspace install above). Best-effort; never fatal.
+        _ws_root = _workspace_root(tui_dir)
+        _digest = _lock_digest(_ws_root / "package-lock.json")
+        if _digest is not None:
+            try:
+                _stamp = _tui_install_stamp(_ws_root)
+                _stamp.parent.mkdir(parents=True, exist_ok=True)
+                _stamp.write_text(_digest, encoding="utf-8")
+            except OSError:
+                pass
 
     if tui_dev:
         # Keep the local @hermes/ink package exports in sync with source.

@@ -150,18 +150,51 @@ class TestGenerateTitle:
 
 
 class TestAutoTitleSession:
-    """Tests for auto_title_session() — the sync worker function."""
+    """Tests for auto_title_session() — the sync LLM worker function."""
 
     def test_skips_if_no_session_db(self):
         auto_title_session(None, "sess-1", "hi", "hello")  # should not crash
 
-    def test_skips_if_title_exists(self):
+    def test_overwrites_heuristic_placeholder(self):
+        """auto_title_session overwrites the heuristic placeholder with the LLM title."""
         db = MagicMock()
-        db.get_session_title.return_value = "Existing Title"
+        db.get_session_title.return_value = "Heuristic Placeholder"
 
-        with patch("agent.title_generator.generate_title") as gen:
-            auto_title_session(db, "sess-1", "hi", "hello")
+        with patch("agent.title_generator.generate_title", return_value="LLM Title"):
+            auto_title_session(db, "sess-1", "hi", "hello",
+                               heuristic_placeholder="Heuristic Placeholder")
+            db.set_session_title.assert_called_once_with("sess-1", "LLM Title")
+
+    def test_skips_overwrite_when_user_renamed(self):
+        """LLM thread must not overwrite a title the user set in the interim."""
+        db = MagicMock()
+        db.get_session_title.return_value = "User's Custom Title"
+
+        with patch("agent.title_generator.generate_title", return_value="LLM Title") as gen:
+            auto_title_session(db, "sess-1", "hi", "hello",
+                               heuristic_placeholder="Heuristic Placeholder")
             gen.assert_not_called()
+            db.set_session_title.assert_not_called()
+
+    def test_overwrites_when_no_placeholder(self):
+        """Without heuristic_placeholder, LLM always overwrites (legacy behavior)."""
+        db = MagicMock()
+        db.get_session_title.return_value = "Any Title"
+
+        with patch("agent.title_generator.generate_title", return_value="LLM Title"):
+            auto_title_session(db, "sess-1", "hi", "hello",
+                               heuristic_placeholder=None)
+            db.set_session_title.assert_called_once_with("sess-1", "LLM Title")
+
+    def test_overwrites_when_title_matches_placeholder(self):
+        """LLM overwrites when current title still matches the placeholder."""
+        db = MagicMock()
+        db.get_session_title.return_value = "Heuristic Placeholder"
+
+        with patch("agent.title_generator.generate_title", return_value="LLM Title"):
+            auto_title_session(db, "sess-1", "hi", "hello",
+                               heuristic_placeholder="Heuristic Placeholder")
+            db.set_session_title.assert_called_once_with("sess-1", "LLM Title")
 
     def test_generates_and_sets_title(self):
         db = MagicMock()
@@ -239,6 +272,7 @@ class TestMaybeAutoTitle:
                 failure_callback=None,
                 main_runtime=None,
                 title_callback=None,
+                heuristic_placeholder="Hello",
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -265,6 +299,7 @@ class TestMaybeAutoTitle:
                 failure_callback=_cb,
                 main_runtime=None,
                 title_callback=None,
+                heuristic_placeholder="Hello",
             )
 
     def test_skips_if_no_response(self):
@@ -273,3 +308,33 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+    def test_sets_heuristic_title_synchronously(self):
+        """maybe_auto_title sets a heuristic placeholder before spawning the LLM thread."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "Fix the dropdown menu"},
+            {"role": "assistant", "content": "Sure, let me check..."},
+        ]
+
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(db, "sess-1", "Fix the dropdown menu", "Sure, let me check...", history)
+            # Heuristic title should be set synchronously
+            db.set_session_title.assert_called_once()
+            assert db.set_session_title.call_args[0][0] == "sess-1"
+            heuristic = db.set_session_title.call_args[0][1]
+            assert "dropdown" in heuristic.lower()
+
+    def test_skips_heuristic_if_title_exists(self):
+        """If the user already set a title, the heuristic should not overwrite it."""
+        db = MagicMock()
+        db.get_session_title.return_value = "User Set Title"
+        history = [
+            {"role": "user", "content": "Fix the dropdown"},
+            {"role": "assistant", "content": "Sure"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(db, "sess-1", "Fix the dropdown", "Sure", history)
+            db.set_session_title.assert_not_called()

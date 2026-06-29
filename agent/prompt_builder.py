@@ -225,17 +225,18 @@ SKILLS_GUIDANCE = (
 
 SKILL_GRAPH_GUIDANCE = (
     "Skill discovery: This profile uses a knowledge graph for dynamic skill "
-    "discovery. Do NOT use skills_list() — the flat index is intentionally "
-    "empty. Instead, call skill_graph_search(query) to find the right skill "
+    "discovery. Call skill_graph_search(query) to find the right skill "
     "by describing what you need in natural language, then load it with "
     "skill_load(name). "
+    "skills_list() can be used as a fallback for profile-local skills "
+    "(zero-latency, limited scope) when graph search returns poor results. "
     "Before calling skill_manage(action='create') to create a new skill, "
     "always verify with skill_graph_search(list_all=True) or a broader query "
     "that no existing skill can be updated to meet the need. "
     "Only create after confirming a genuine gap. "
     "Load the skill-graph companion first for task classification "
-    "and routing. After completing the main work, call skill_load(\"quality-gate\") "
-    "for final validation."
+    "and routing. After completing the main work, run your post-response "
+    "checks."
 )
 
 # Injected into the identity tier (same weight as SOUL.md) when
@@ -244,7 +245,8 @@ SKILL_GRAPH_GUIDANCE = (
 SKILL_GRAPH_IDENTITY = (
     "## Operating Protocol\n"
     "\n"
-    "This profile has NO pre-installed skills.  Follow this protocol "
+    "Skills are discovered at runtime through the skill-graph plugin — "
+    "search, don't guess.  Follow this protocol "
     "for EVERY user input, in order:\n"
     "\n"
     "1. Load the skill-graph companion:\n"
@@ -255,10 +257,18 @@ SKILL_GRAPH_IDENTITY = (
     "4. Call skill_graph_search() with the query from step 3.\n"
     "5. skill_load(\"returned-skill-name\") for full instructions.\n"
     "6. Follow its instructions to complete the task.\n"
-    "7. Call skill_load(\"quality-gate\") for final validation.\n"
+    "7. After completing the main work, run your post-response checks.\n"
     "\n"
-    "Never use skills_list(), search_files, ls, or cat before step 4.\n"
-    "Never plan from scratch — the graph has the skills you need.\n"
+    "skills_list() vs skill_graph_search():\n"
+    "- skill_graph_search() preferred — FTS + relationship traversal, "
+    "300+ skills\n"
+    "- skills_list() as fallback — local profile skills only, "
+    "zero-latency\n"
+    "- When search returns poor results → "
+    "skills_list(category=\"<domain>\")\n"
+    "\n"
+    "Do NOT plan from scratch — always search.\n"
+    "Do NOT guess skill names without a search.\n"
 )
 
 KANBAN_GUIDANCE = (

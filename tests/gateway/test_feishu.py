@@ -4415,9 +4415,11 @@ class TestFeishuExtractMessageContent(unittest.TestCase):
 
 class TestFeishuProcessInboundMessage(unittest.TestCase):
     def _build_adapter(self):
+        from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter.config = PlatformConfig()
         adapter._bot_open_id = "ou_bot"
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
@@ -4705,9 +4707,11 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
     """High-level scenarios from the design spec — verify the full pipeline."""
 
     def _build_adapter(self):
+        from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter.config = PlatformConfig()
         adapter._bot_open_id = "ou_bot"
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"

@@ -488,6 +488,21 @@ platforms:
 | Reconnect interval | `ws_reconnect_interval` | 120s | How long to wait between reconnection attempts |
 | Ping interval | `ws_ping_interval` | _(SDK default)_ | Frequency of WebSocket keepalive pings |
 
+## Per-Chat Channel Prompts
+
+Configure per-chat ephemeral system prompts via `channel_prompts`, keyed by `open_chat_id` (`oc_xxx`):
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      channel_prompts:
+        "oc_research_chat_id": "Research mode — cite sources, be concise."
+        "oc_casual_chat_id": "Relaxed tone, short replies."
+```
+
+Hermes also auto-appends an @-mention syntax hint so the agent can write `<at user_id="ou_xxx">Name</at>` correctly. No extra configuration needed.
+
 ## Per-Group Access Control
 
 Beyond the global `FEISHU_GROUP_POLICY`, you can set fine-grained rules per group chat using `group_rules` in config.yaml:

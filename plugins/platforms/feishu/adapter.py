@@ -140,6 +140,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_bytes,
     cache_image_from_bytes,
+    resolve_channel_prompt,
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -161,6 +162,10 @@ _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+# A leading text-message <at> tag (as written by the model). In a post message
+# the at must be a structured element, not an inline string in an `md` element,
+# or it renders as literal text and never notifies the peer.
+_LEADING_AT_RE = re.compile(r'^<at user_id="([^"]+)">.*?</at>[ \t]*')
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -568,7 +573,31 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     appears inside one large markdown element. Split the reply at real fence
     lines so prose before/after the code block remains visible while code stays
     in a dedicated row.
+
+    A leading text-message ``<at>`` tag is lifted into a structured ``at``
+    element so a bot-to-bot reply that carries markdown still actually notifies
+    the peer (an inline ``<at>`` string inside an ``md`` element does not).
     """
+    at_element, content = _split_leading_at_tag(content)
+    rows = _build_markdown_md_rows(content)
+    if at_element:
+        logger.info(
+            "[Feishu] lifted leading <at> into structured post element user=%s",
+            at_element.get("user_id"),
+        )
+        rows[0] = [at_element, *rows[0]]
+    return rows
+
+
+def _split_leading_at_tag(content: str) -> tuple[Optional[Dict[str, str]], str]:
+    """Pop a leading ``<at user_id="X">…</at>`` into a structured post element."""
+    match = _LEADING_AT_RE.match(content)
+    if not match:
+        return None, content
+    return {"tag": "at", "user_id": match.group(1)}, content[match.end():]
+
+
+def _build_markdown_md_rows(content: str) -> List[List[Dict[str, str]]]:
     if not content:
         return [[{"tag": "md", "text": ""}]]
     if "```" not in content:
@@ -1172,6 +1201,48 @@ def _unique_lines(lines: List[str]) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Channel prompt composition
+# ---------------------------------------------------------------------------
+
+
+_FEISHU_AT_TUTORIAL = (
+    'To @-mention someone in this Feishu chat: '
+    '<at user_id="ou_xxx">Name</at> (Name optional)'
+)
+
+
+def _build_self_identity_prompt(bot_open_id: str) -> str:
+    """Tell the agent which open_id is itself, so it can tell self-mentions apart.
+
+    Group-only context: when a message @mentions several entities, the agent
+    needs to know which mention is *it* (vs other people/bots) to avoid mistaking
+    a bystander mention for being addressed, or @mentioning itself back.
+    """
+    return (
+        f'Your own Feishu open_id is "{bot_open_id}". A mention '
+        f'<at user_id="{bot_open_id}"> refers to you — distinguish it from '
+        "mentions of other people or bots."
+    )
+
+
+def _compose_channel_prompt_for_chat(
+    extra: Dict[str, Any],
+    chat_id: str,
+    *,
+    bot_open_id: str = "",
+    is_group: bool = False,
+) -> str:
+    parts: List[str] = []
+    configured = resolve_channel_prompt(extra, chat_id) or ""
+    if configured:
+        parts.append(configured)
+    if is_group and bot_open_id:
+        parts.append(_build_self_identity_prompt(bot_open_id))
+    parts.append(_FEISHU_AT_TUTORIAL)
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Mention helpers
 # ---------------------------------------------------------------------------
 
@@ -1235,6 +1306,37 @@ def _build_mention_hint(mentions: Sequence[FeishuMentionRef]) -> str:
         else:
             parts.append(ref.name or "unknown")
     return f"[Mentioned: {', '.join(parts)}]" if parts else ""
+
+
+def _build_bot_sender_notice(*, name: str, open_id: str) -> str:
+    """System annotation telling the agent a peer bot sent this message.
+
+    A bot sender only receives a group reply that @mentions it, and its open_id
+    is not surfaced anywhere else in the body, so without this the agent cannot
+    build the tag to reach it. Injected only for bot senders in groups — never
+    human senders.
+
+    Deliberately does NOT command "you MUST @mention it": that fought the
+    loop-prevention strategy, where the model ends a bot-to-bot exchange by
+    *omitting* the @ (no @ → Feishu never delivers our reply to the peer → the
+    loop dies on our side). So this gives the model both levers — @ to continue,
+    omit to stop — plus explicit guidance on when to stop.
+
+    Carries NO inline ``<at>`` example: a copyable tag template here made the
+    model wrap its whole reply inside the tag (malformed, renders as literal
+    text, never delivered). The @ syntax is taught once by the channel tutorial;
+    this notice only supplies the open_id (in the prefix) and the continue/stop
+    guidance.
+    """
+    display = name or "the sender"
+    return (
+        f'[System: "{display}" (open_id: {open_id}) is a bot. In this Feishu group '
+        "it only receives your reply if you @mention it. If you want to continue "
+        "the exchange, @mention it. If the conversation is just repeating, trading "
+        "pleasantries, or has reached a natural conclusion, end it: reply without "
+        "the @mention, or don't reply. Don't reply out of politeness if there's "
+        "nothing substantive to add.]"
+    )
 
 
 def _strip_edge_self_mentions(
@@ -1831,6 +1933,26 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
+
+    def _augment_inbound_for_bot_peer(
+        self,
+        *,
+        text: str,
+        is_group: bool,
+        is_bot: bool,
+        open_id: str,
+        name: str,
+    ) -> str:
+        """For a group bot sender, prepend a notice carrying its open_id.
+
+        The notice gives the agent the peer's open_id plus continue/stop guidance
+        (@mention to continue, omit to end). Human senders are never annotated
+        (the mention-cascade red line).
+        """
+        if is_group and is_bot and open_id:
+            notice = _build_bot_sender_notice(name=name, open_id=open_id)
+            return f"{notice}\n\n{text}" if text else notice
+        return text
 
     async def send(
         self,
@@ -3213,6 +3335,22 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
+
+        # Bot-to-bot: for a non-command group message from a peer bot, prepend a
+        # notice carrying the peer's open_id and continue/stop guidance so the
+        # model can @mention it to continue (or omit to end). Commands keep their
+        # raw text so slash parsing works.
+        sender_open_id = getattr(sender_id, "open_id", None) or ""
+        is_group_chat = chat_type != "p2p"
+        if inbound_type != MessageType.COMMAND:
+            text = self._augment_inbound_for_bot_peer(
+                text=text,
+                is_group=is_group_chat,
+                is_bot=is_bot,
+                open_id=sender_open_id,
+                name=sender_profile["user_name"] or "",
+            )
+
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
@@ -3233,6 +3371,12 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
+            channel_prompt=_compose_channel_prompt_for_chat(
+                self.config.extra,
+                chat_id,
+                bot_open_id=self._bot_open_id,
+                is_group=is_group_chat,
+            ),
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)

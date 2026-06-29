@@ -87,6 +87,7 @@ AUTHOR_MAP = {
     "poli.koltsova@gmail.com": "wnuuee1",  # upstream sync author mapping (desktop tooltip styling)
     "128256017+chriswesley4@users.noreply.github.com": "chriswesley4",  # PR #53185 salvage (re-enable titleBarOverlay on plain Linux; missing min/max/close regression)
     "rafael.millan@gmail.com": "RafaelMiMi",  # PR #42229 salvage (no-sandbox fallback for AppArmor-restricted Linux desktop launch)
+    "christianpersico98@gmail.com": "chrispersico",  # upstream sync author mapping (docs web search instructions)
     "jeevesassistant00@gmail.com": "jeeves-assistant",  # PR #50771 (computer-use CuaDriver vision capture routing)
     "21178861+ScotterMonk@users.noreply.github.com": "ScotterMonk",  # PR #50145 salvage (cron output truncation: adapter-aware chunking, #50126)
     "rrandqua@gmail.com": "TutkuEroglu",  # PR #50481 salvage (AGENTS.md stale token-lock adapter path)

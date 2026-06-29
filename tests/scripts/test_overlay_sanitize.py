@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +15,17 @@ if str(MERGE_TOOLS) not in sys.path:
     sys.path.insert(0, str(MERGE_TOOLS))
 
 from overlay_sanitize import load_overlay_sanitizers, sanitize_fork_overlay_text  # noqa: E402
+
+
+def _has_git_blob(ref: str, path: str) -> bool:
+    proc = subprocess.run(
+        ["git", "cat-file", "-e", f"{ref}:{path}"],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode == 0
 
 
 def test_strategy_defines_toolsets_sanitizer():
@@ -73,6 +85,16 @@ def test_toolsets_three_way_overlay_clean_after_sanitize(
     fork_ref: str, merge_base: str, upstream_ref: str,
 ):
     from apply_three_way_overlay import three_way_merge  # noqa: E402
+
+    missing_refs = [
+        ref
+        for ref in (fork_ref, merge_base, upstream_ref)
+        if not _has_git_blob(ref, "toolsets.py")
+    ]
+    if missing_refs:
+        pytest.skip(
+            "historical toolsets.py merge fixtures are unavailable in this checkout"
+        )
 
     path = MERGE_TOOLS / "hermes-merge-conflict-strategies.json"
     sanitizers = load_overlay_sanitizers(json.loads(path.read_text(encoding="utf-8")))

@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -54,15 +55,89 @@ def _module_registers_tools(module_path: Path) -> bool:
     return any(_is_registry_register_call(stmt) for stmt in tree.body)
 
 
-def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
-    """Import built-in self-registering tool modules and return their module names."""
+def _default_manifest_cache_path() -> Optional[Path]:
+    """Return the default manifest cache path under HERMES_HOME, or None."""
+    try:
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+    except Exception:
+        return None
+    return Path(hermes_home) / "cache" / "tool_manifest.json"
+
+
+def _collect_tool_file_mtimes(tools_dir: Path) -> Dict[str, float]:
+    """Return ``{relative_name: mtime}`` for every candidate tool file."""
+    mtimes: Dict[str, float] = {}
+    for path in sorted(tools_dir.glob("*.py")):
+        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        try:
+            mtimes[path.name] = path.stat().st_mtime
+        except OSError:
+            pass
+    return mtimes
+
+
+def _save_manifest_cache(cache_path: Path, tools_dir: Path, module_names: List[str]) -> None:
+    """Persist the AST-scan result so the next startup can skip it."""
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "tools_dir": str(tools_dir),
+            "module_names": module_names,
+            "mtimes": _collect_tool_file_mtimes(tools_dir),
+        }
+        cache_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except Exception:
+        logger.debug("Failed to save tool manifest cache", exc_info=True)
+
+
+def _load_manifest_cache(cache_path: Path, tools_dir: Path) -> Optional[List[str]]:
+    """Return cached module names if the cache is valid, else ``None``."""
+    if cache_path is None:
+        return None
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1:
+        return None
+    cached_mtimes = data.get("mtimes", {})
+    current_mtimes = _collect_tool_file_mtimes(tools_dir)
+    if cached_mtimes != current_mtimes:
+        return None
+    module_names = data.get("module_names")
+    if not isinstance(module_names, list):
+        return None
+    return module_names
+
+
+def discover_builtin_tools(tools_dir: Optional[Path] = None, manifest_cache_path: Optional[Path] = None) -> List[str]:
+    """Import built-in self-registering tool modules and return their module names.
+
+    When *manifest_cache_path* is set (and ``HERMES_NO_TOOL_CACHE`` is not
+    ``"1"``), the function checks the mtime-based manifest cache first.  On a
+    hit the AST scan of every ``tools/*.py`` file is skipped entirely, saving
+    ~500 ms on cold startup.
+    """
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
-    module_names = [
-        f"tools.{path.stem}"
-        for path in sorted(tools_path.glob("*.py"))
-        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-        and _module_registers_tools(path)
-    ]
+    if manifest_cache_path is None:
+        manifest_cache_path = _default_manifest_cache_path()
+
+    module_names: Optional[List[str]] = None
+    if not os.environ.get("HERMES_NO_TOOL_CACHE"):
+        module_names = _load_manifest_cache(manifest_cache_path, tools_path)
+
+    if module_names is None:
+        module_names = [
+            f"tools.{path.stem}"
+            for path in sorted(tools_path.glob("*.py"))
+            if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
+            and _module_registers_tools(path)
+        ]
+        if manifest_cache_path is not None:
+            _save_manifest_cache(manifest_cache_path, tools_path, module_names)
 
     imported: List[str] = []
     for mod_name in module_names:

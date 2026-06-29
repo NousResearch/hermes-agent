@@ -1,0 +1,6 @@
+name: storecrm-qa
+version: 0.1.0
+description: "Hermes-owned local QA control plane and SQLite job store for StoreCRM autotest runner orchestration."
+author: NousResearch
+kind: qa-control-plane
+hooks: []

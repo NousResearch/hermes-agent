@@ -2,11 +2,14 @@ import json
 import os
 import stat
 import threading
+import email.message
+import urllib.error
 
 import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
+    _SupermemoryClient,
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
@@ -17,11 +20,21 @@ from plugins.memory.supermemory import (
 
 
 class FakeClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float,
+        container_tag: str,
+        search_mode: str = "hybrid",
+        conversation_ingest_timeout: float | None = None,
+        conversation_ingest_retries: int = 0,
+    ):
         self.api_key = api_key
         self.timeout = timeout
         self.container_tag = container_tag
         self.search_mode = search_mode
+        self.conversation_ingest_timeout = conversation_ingest_timeout
+        self.conversation_ingest_retries = conversation_ingest_retries
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
@@ -371,6 +384,134 @@ def test_invalid_search_mode_falls_back_to_default(monkeypatch, tmp_path):
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
     assert p._search_mode == "hybrid"
+
+
+# -- Conversation ingest timeout/retry tests ---------------------------------
+
+
+def test_conversation_ingest_config_defaults_preserve_existing_timeout(tmp_path):
+    cfg = _load_supermemory_config(str(tmp_path))
+    assert cfg["conversation_ingest_timeout"] == 8.0
+    assert cfg["conversation_ingest_retries"] == 0
+
+
+def test_conversation_ingest_config_yaml_override_and_clamp(tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n"
+        "  supermemory:\n"
+        "    conversation_ingest_timeout: 600\n"
+        "    conversation_ingest_retries: 99\n",
+        encoding="utf-8",
+    )
+    cfg = _load_supermemory_config(str(tmp_path))
+    assert cfg["conversation_ingest_timeout"] == 300.0
+    assert cfg["conversation_ingest_retries"] == 5
+
+
+def test_conversation_ingest_config_passed_to_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n"
+        "  supermemory:\n"
+        "    conversation_ingest_timeout: 60\n"
+        "    conversation_ingest_retries: 2\n",
+        encoding="utf-8",
+    )
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._conversation_ingest_timeout == 60.0
+    assert p._conversation_ingest_retries == 2
+    assert p._client.conversation_ingest_timeout == 60.0
+    assert p._client.conversation_ingest_retries == 2
+
+
+def test_ingest_conversation_uses_dedicated_timeout(monkeypatch):
+    seen = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(req, timeout):
+        seen.append(timeout)
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes"
+    client._conversation_ingest_timeout = 60.0
+    client._conversation_ingest_retries = 0
+    client.ingest_conversation("s1", [{"role": "user", "content": "hello"}])
+    assert seen == [60.0]
+
+
+def test_ingest_conversation_retries_transient_failure(monkeypatch):
+    attempts = []
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(req, timeout):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            raise TimeoutError("slow")
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes"
+    client._conversation_ingest_timeout = 30.0
+    client._conversation_ingest_retries = 2
+    client.ingest_conversation("s1", [{"role": "user", "content": "hello"}])
+    assert attempts == [30.0, 30.0]
+
+
+def test_ingest_conversation_does_not_retry_http_400(monkeypatch):
+    attempts = []
+
+    def fake_urlopen(req, timeout):
+        attempts.append(timeout)
+        raise urllib.error.HTTPError(req.full_url, 400, "bad request", hdrs=email.message.Message(), fp=None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes"
+    client._conversation_ingest_timeout = 30.0
+    client._conversation_ingest_retries = 2
+    with pytest.raises(urllib.error.HTTPError):
+        client.ingest_conversation("s1", [{"role": "user", "content": "hello"}])
+    assert attempts == [30.0]
+
+
+def test_ingest_conversation_exhausts_retryable_http_503(monkeypatch):
+    attempts = []
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+    def fake_urlopen(req, timeout):
+        attempts.append(timeout)
+        raise urllib.error.HTTPError(req.full_url, 503, "unavailable", hdrs=email.message.Message(), fp=None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes"
+    client._conversation_ingest_timeout = 30.0
+    client._conversation_ingest_retries = 2
+    with pytest.raises(urllib.error.HTTPError):
+        client.ingest_conversation("s1", [{"role": "user", "content": "hello"}])
+    assert attempts == [30.0, 30.0, 30.0]
 
 
 # -- Multi-container tests ----------------------------------------------------

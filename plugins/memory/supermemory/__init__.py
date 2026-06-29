@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -29,6 +30,13 @@ _DEFAULT_CAPTURE_MODE = "all"
 _DEFAULT_SEARCH_MODE = "hybrid"
 _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
 _DEFAULT_API_TIMEOUT = 5.0
+_DEFAULT_CONVERSATION_INGEST_TIMEOUT = _DEFAULT_API_TIMEOUT + 3.0
+_DEFAULT_CONVERSATION_INGEST_RETRIES = 0
+_MIN_CONVERSATION_INGEST_TIMEOUT = 1.0
+_MAX_CONVERSATION_INGEST_TIMEOUT = 300.0
+_MIN_CONVERSATION_INGEST_RETRIES = 0
+_MAX_CONVERSATION_INGEST_RETRIES = 5
+_RETRYABLE_CONVERSATION_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
 _CONVERSATIONS_URL = "https://api.supermemory.ai/v4/conversations"
@@ -65,6 +73,8 @@ def _default_config() -> dict:
         "search_mode": _DEFAULT_SEARCH_MODE,
         "entity_context": _DEFAULT_ENTITY_CONTEXT,
         "api_timeout": _DEFAULT_API_TIMEOUT,
+        "conversation_ingest_timeout": _DEFAULT_CONVERSATION_INGEST_TIMEOUT,
+        "conversation_ingest_retries": _DEFAULT_CONVERSATION_INGEST_RETRIES,
         "enable_custom_container_tags": False,
         "custom_containers": [],
         "custom_container_instructions": "",
@@ -107,6 +117,21 @@ def _load_supermemory_config(hermes_home: str) -> dict:
         except Exception:
             logger.debug("Failed to parse %s", config_path, exc_info=True)
 
+    yaml_config_path = Path(hermes_home) / "config.yaml"
+    if yaml_config_path.exists():
+        try:
+            import yaml
+            raw_yaml = yaml.safe_load(yaml_config_path.read_text(encoding="utf-8")) or {}
+            if isinstance(raw_yaml, dict):
+                memory_cfg = raw_yaml.get("memory") or {}
+                supermemory_cfg = memory_cfg.get("supermemory") if isinstance(memory_cfg, dict) else None
+                if isinstance(supermemory_cfg, dict):
+                    for key in ("conversation_ingest_timeout", "conversation_ingest_retries"):
+                        if supermemory_cfg.get(key) is not None:
+                            config[key] = supermemory_cfg[key]
+        except Exception:
+            logger.debug("Failed to parse %s", yaml_config_path, exc_info=True)
+
     # Keep raw container_tag — template variables like {identity} are resolved
     # in initialize(), and _sanitize_tag runs AFTER resolution.
     raw_tag = str(config.get("container_tag", _DEFAULT_CONTAINER_TAG)).strip()
@@ -129,6 +154,26 @@ def _load_supermemory_config(hermes_home: str) -> dict:
         config["api_timeout"] = max(0.5, min(15.0, float(config.get("api_timeout", _DEFAULT_API_TIMEOUT))))
     except Exception:
         config["api_timeout"] = _DEFAULT_API_TIMEOUT
+    try:
+        config["conversation_ingest_timeout"] = max(
+            _MIN_CONVERSATION_INGEST_TIMEOUT,
+            min(
+                _MAX_CONVERSATION_INGEST_TIMEOUT,
+                float(config.get("conversation_ingest_timeout", _DEFAULT_CONVERSATION_INGEST_TIMEOUT)),
+            ),
+        )
+    except Exception:
+        config["conversation_ingest_timeout"] = _DEFAULT_CONVERSATION_INGEST_TIMEOUT
+    try:
+        config["conversation_ingest_retries"] = max(
+            _MIN_CONVERSATION_INGEST_RETRIES,
+            min(
+                _MAX_CONVERSATION_INGEST_RETRIES,
+                int(config.get("conversation_ingest_retries", _DEFAULT_CONVERSATION_INGEST_RETRIES)),
+            ),
+        )
+    except Exception:
+        config["conversation_ingest_retries"] = _DEFAULT_CONVERSATION_INGEST_RETRIES
 
     # Multi-container support
     config["enable_custom_container_tags"] = _as_bool(config.get("enable_custom_container_tags"), False)
@@ -263,7 +308,15 @@ def _is_trivial_message(text: str) -> bool:
 
 
 class _SupermemoryClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float,
+        container_tag: str,
+        search_mode: str = "hybrid",
+        conversation_ingest_timeout: float = _DEFAULT_CONVERSATION_INGEST_TIMEOUT,
+        conversation_ingest_retries: int = _DEFAULT_CONVERSATION_INGEST_RETRIES,
+    ):
         # Lazy-install the supermemory SDK on demand. ensure() honors
         # security.allow_lazy_installs (default true) and, on a sealed Docker
         # venv, redirects the install to the durable target. On failure we
@@ -283,6 +336,14 @@ class _SupermemoryClient:
         self._container_tag = container_tag
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
         self._timeout = timeout
+        self._conversation_ingest_timeout = max(
+            _MIN_CONVERSATION_INGEST_TIMEOUT,
+            min(_MAX_CONVERSATION_INGEST_TIMEOUT, float(conversation_ingest_timeout)),
+        )
+        self._conversation_ingest_retries = max(
+            _MIN_CONVERSATION_INGEST_RETRIES,
+            min(_MAX_CONVERSATION_INGEST_RETRIES, int(conversation_ingest_retries)),
+        )
         self._client = Supermemory(
             api_key=api_key,
             timeout=timeout,
@@ -387,18 +448,30 @@ class _SupermemoryClient:
         if metadata:
             payload["metadata"] = self._merge_metadata(metadata)
 
-        req = urllib.request.Request(
-            _CONVERSATIONS_URL,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-                "x-sm-source": "hermes",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self._timeout + 3):
-            return
+        data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "x-sm-source": "hermes",
+        }
+        attempts = self._conversation_ingest_retries + 1
+        for attempt in range(attempts):
+            req = urllib.request.Request(
+                _CONVERSATIONS_URL,
+                data=data,
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self._conversation_ingest_timeout):
+                    return
+            except urllib.error.HTTPError as exc:
+                if exc.code not in _RETRYABLE_CONVERSATION_HTTP_CODES or attempt >= attempts - 1:
+                    raise
+            except (TimeoutError, urllib.error.URLError):
+                if attempt >= attempts - 1:
+                    raise
+            time.sleep(min(5.0, 0.5 * (2 ** attempt)))
 
 
 def _resolve_container_tag_for_setup(hermes_home: str, *, identity: str = "default") -> str:
@@ -432,6 +505,8 @@ def _probe_supermemory_connection(api_key: str, hermes_home: str, *, identity: s
             timeout=config["api_timeout"],
             container_tag=status["container_tag"],
             search_mode=config["search_mode"],
+            conversation_ingest_timeout=config["conversation_ingest_timeout"],
+            conversation_ingest_retries=config["conversation_ingest_retries"],
         )
         profile = client.get_profile()
         facts = [
@@ -531,6 +606,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._search_mode = _DEFAULT_SEARCH_MODE
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
         self._api_timeout = _DEFAULT_API_TIMEOUT
+        self._conversation_ingest_timeout = _DEFAULT_CONVERSATION_INGEST_TIMEOUT
+        self._conversation_ingest_retries = _DEFAULT_CONVERSATION_INGEST_RETRIES
         self._hermes_home = ""
         self._write_enabled = True
         self._active = False
@@ -645,6 +722,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._search_mode = self._config["search_mode"]
         self._entity_context = self._config["entity_context"]
         self._api_timeout = self._config["api_timeout"]
+        self._conversation_ingest_timeout = self._config["conversation_ingest_timeout"]
+        self._conversation_ingest_retries = self._config["conversation_ingest_retries"]
         self._enable_custom_containers = self._config["enable_custom_container_tags"]
         self._custom_containers = self._config["custom_containers"]
         self._custom_container_instructions = self._config["custom_container_instructions"]
@@ -663,6 +742,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
                     timeout=self._api_timeout,
                     container_tag=self._container_tag,
                     search_mode=self._search_mode,
+                    conversation_ingest_timeout=self._conversation_ingest_timeout,
+                    conversation_ingest_retries=self._conversation_ingest_retries,
                 )
             except Exception:
                 logger.warning("Supermemory initialization failed", exc_info=True)

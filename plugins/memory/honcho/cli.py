@@ -1094,6 +1094,65 @@ def cmd_compartments(args) -> None:
     print()
 
 
+def _format_compartment_allowlist(names: list[str]) -> str:
+    return ", ".join(names) if names else "(none)"
+
+
+def cmd_agents(args) -> None:
+    """List or configure agent -> compartment allowlists."""
+    cfg = _read_config()
+    host = _host_key()
+    hosts = cfg.setdefault("hosts", {})
+    block = hosts.setdefault(host, {})
+    action = getattr(args, "agent_action", None) or "list"
+
+    if action == "set":
+        name = (getattr(args, "name", "") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            print("  Agent name must contain only letters, numbers, '.', '_' or '-'.")
+            return
+
+        compartments = [
+            str(item).strip()
+            for item in (getattr(args, "compartments", None) or [])
+            if str(item).strip()
+        ]
+        if not compartments:
+            print("  --compartments requires at least one compartment name.")
+            return
+        invalid = [item for item in compartments if not re.fullmatch(r"[A-Za-z0-9_-]+", item)]
+        if invalid:
+            print("  Compartment names must contain only letters, numbers, '_' or '-'.")
+            return
+
+        # Preserve first-seen order while removing duplicates.
+        unique_compartments = list(dict.fromkeys(compartments))
+        block.setdefault("agents", {})[name] = unique_compartments
+        _write_config(cfg)
+        print(f"  Agent '{name}' can access: {_format_compartment_allowlist(unique_compartments)}")
+        return
+
+    agents = block.get("agents") or {}
+    print(f"\nHoncho agent compartment access [{host}]\n" + "─" * 55)
+    if not agents:
+        print("  No agent allowlists configured.")
+        print("  Example:")
+        print("    hermes honcho agents set echo --compartments ops\n")
+        return
+
+    print(f"  {'Agent':<20} Compartments")
+    print(f"  {'─' * 20} {'─' * 28}")
+    for name in sorted(agents):
+        values = agents[name]
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            values = []
+        compartments = [str(item) for item in values]
+        print(f"  {name:<20} {_format_compartment_allowlist(compartments)}")
+    print()
+
+
 def cmd_status(args) -> None:
     """Show current Honcho config and connection status."""
     show_all = getattr(args, "all", False)
@@ -1818,6 +1877,8 @@ def honcho_command(args) -> None:
         cmd_status(args)
     elif sub == "compartments":
         cmd_compartments(args)
+    elif sub == "agents":
+        cmd_agents(args)
     elif sub == "peers":
         cmd_peers(args)
     elif sub == "sessions":
@@ -1844,7 +1905,7 @@ def honcho_command(args) -> None:
         cmd_sync(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: status, compartments, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
+        print("  Available: status, compartments, agents, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
 
 
 def register_cli(subparser) -> None:
@@ -1895,6 +1956,22 @@ def register_cli(subparser) -> None:
         help="Override session strategy for this compartment",
     )
     set_parser.add_argument("--manual-session-name", help="Manual session name when using manual strategy")
+
+    agents_parser = subs.add_parser(
+        "agents", help="List or set agent compartment allowlists",
+    )
+    agent_subs = agents_parser.add_subparsers(dest="agent_action")
+    agent_subs.add_parser("list", help="List agent compartment allowlists")
+    agent_set_parser = agent_subs.add_parser(
+        "set", help="Create or update an agent compartment allowlist",
+    )
+    agent_set_parser.add_argument("name", help="Agent name, e.g. echo, bandit, miloh")
+    agent_set_parser.add_argument(
+        "--compartments",
+        nargs="+",
+        required=True,
+        help="Allowed compartment names for this agent, e.g. ops personal",
+    )
 
     subs.add_parser("peers", help="Show peer identities across all profiles")
     subs.add_parser("sessions", help="List known Honcho session mappings")

@@ -82,3 +82,63 @@ def test_cmd_compartments_list_shows_file_backed_compartment_without_secret(tmp_
     finally:
         cli._profile_override = old_profile
         reset_hermes_home_override(token)
+
+
+def test_cmd_agents_set_writes_host_scoped_compartment_allowlist(tmp_path, capsys):
+    token = _with_home(tmp_path)
+    old_profile = cli._profile_override
+    cli._profile_override = None
+    try:
+        (tmp_path / "honcho.json").write_text(
+            json.dumps({"hosts": {"hermes": {"workspace": "primary"}}}),
+            encoding="utf-8",
+        )
+
+        cli.cmd_agents(
+            Namespace(
+                agent_action="set",
+                name="echo",
+                compartments=["ops"],
+            )
+        )
+
+        cfg = json.loads((tmp_path / "honcho.json").read_text(encoding="utf-8"))
+        assert cfg["hosts"]["hermes"]["agents"] == {"echo": ["ops"]}
+        assert "Agent 'echo' can access: ops" in capsys.readouterr().out
+    finally:
+        cli._profile_override = old_profile
+        reset_hermes_home_override(token)
+
+
+def test_cmd_agents_list_shows_allowlists(tmp_path, capsys):
+    token = _with_home(tmp_path)
+    old_profile = cli._profile_override
+    cli._profile_override = None
+    try:
+        (tmp_path / "honcho.json").write_text(
+            json.dumps(
+                {
+                    "hosts": {
+                        "hermes": {
+                            "workspace": "primary",
+                            "agents": {
+                                "echo": ["ops"],
+                                "miloh": ["ops", "personal"],
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        cli.cmd_agents(Namespace(agent_action="list"))
+
+        output = capsys.readouterr().out
+        assert "echo" in output
+        assert "ops" in output
+        assert "miloh" in output
+        assert "ops, personal" in output
+    finally:
+        cli._profile_override = old_profile
+        reset_hermes_home_override(token)

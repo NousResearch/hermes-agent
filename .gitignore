@@ -82,3 +82,7 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+
+# knowledge-graph-3d: vendored lib + generated data (keep source only)
+tools/knowledge-graph-3d/3d-force-graph.min.js
+tools/knowledge-graph-3d/graph.json

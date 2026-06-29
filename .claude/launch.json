@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "knowledge-graph-3d",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd 'tools/knowledge-graph-3d' && exec python3 -m http.server 8778 --bind 127.0.0.1"
+      ],
+      "port": 8778
+    }
+  ]
+}

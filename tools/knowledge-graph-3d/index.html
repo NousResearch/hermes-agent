@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hermes Knowledge — 3D Graph (ตัวอย่าง)</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d12;color:#e8eaed;font-family:-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+  #graph{position:fixed;inset:0}
+  .panel{position:fixed;z-index:10;background:rgba(18,21,28,.92);border:1px solid #2a2f3a;border-radius:10px;backdrop-filter:blur(6px)}
+  #top{top:14px;left:14px;padding:12px 14px;width:280px}
+  #top h1{font-size:14px;margin:0 0 8px}
+  #top .stat{font-size:12px;color:#9aa3b2;margin-bottom:10px}
+  #search{width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;border:1px solid #2a2f3a;background:#0e1118;color:#e8eaed;font-size:13px}
+  #legend{margin-top:10px;max-height:34vh;overflow:auto;font-size:11.5px}
+  #legend div{display:flex;align-items:center;gap:6px;padding:2px 0}
+  #legend i{width:10px;height:10px;border-radius:50%;display:inline-block;flex:0 0 auto}
+  #detail{bottom:14px;left:14px;padding:14px 16px;width:300px;display:none}
+  #detail .name{font-size:15px;font-weight:600;margin-bottom:4px;word-break:break-word}
+  #detail .path{font-size:11px;color:#7e8696;margin-bottom:8px;word-break:break-all}
+  #detail .links{font-size:12px;color:#9aa3b2;margin-bottom:10px}
+  #detail a{display:inline-block;font-size:12.5px;color:#7cc4ff;text-decoration:none;border:1px solid #2f4a63;padding:6px 10px;border-radius:7px}
+  #detail a:hover{background:#13202c}
+  #hint{position:fixed;bottom:14px;right:16px;z-index:10;font-size:11px;color:#5d6577;text-align:right;line-height:1.6}
+  #close{float:right;color:#7e8696;cursor:pointer;font-size:13px}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;color:#ff8fa3;font-size:14px;text-align:center;padding:40px}
+</style>
+</head>
+<body>
+<div id="graph"></div>
+
+<div id="top" class="panel">
+  <h1>Hermes Knowledge · 3D</h1>
+  <div class="stat" id="stat">กำลังโหลด…</div>
+  <input id="search" placeholder="พิมพ์ชื่อโน้ตเพื่อค้นหา…" autocomplete="off" />
+  <div id="legend"></div>
+</div>
+
+<div id="detail" class="panel">
+  <span id="close">✕</span>
+  <div class="name" id="d-name"></div>
+  <div class="path" id="d-path"></div>
+  <div class="links" id="d-links"></div>
+  <a id="d-open" href="#" target="_blank">เปิดในแอป Obsidian</a>
+</div>
+
+<div id="hint">
+  ลากเมาส์ = หมุนกราฟ · สกอร์ล = ซูม · คลิกจุด = ดูไฟล์<br>
+  ชี้ค้างที่จุด = ไฮไลต์เส้นที่เชื่อม
+</div>
+<div id="err"></div>
+
+<script src="./3d-force-graph.min.js"></script>
+<script>
+const VAULT_NAME = "HermesAgent";
+const palette = ["#7cc4ff","#ff8fa3","#9be6a0","#ffd27c","#c9a3ff","#6fe3d2","#ff9f6b","#a3d9ff",
+                 "#f7a8d8","#b6e36f","#ffc04d","#8fb3ff","#7fe0c0","#e88fff","#ffd9a0","#7df0a8",
+                 "#ff7c8c","#86d0ff","#d4ff7c","#c0c4ff"];
+const groupColor = {}; let colorIdx = 0;
+function colorOf(g){ if(!(g in groupColor)){ groupColor[g]=palette[colorIdx++ % palette.length]; } return groupColor[g]; }
+
+function showErr(msg){ const e=document.getElementById("err"); e.style.display="flex"; e.textContent=msg; }
+if (typeof ForceGraph3D === "undefined") {
+  showErr("โหลดไลบรารี 3d-force-graph ไม่ได้ — ตรวจว่าไฟล์ 3d-force-graph.min.js อยู่ในโฟลเดอร์เดียวกัน");
+}
+
+fetch("./graph.json").then(r=>{ if(!r.ok) throw new Error("graph.json "+r.status); return r.json(); }).then(data=>{
+  document.getElementById("stat").textContent =
+    data.nodes.length + " โน้ต · " + data.links.length + " เส้นเชื่อม";
+
+  const neighbors = {}, linksOf = {};
+  data.nodes.forEach(n=>{ neighbors[n.id]=new Set(); linksOf[n.id]=new Set(); });
+  data.links.forEach(l=>{
+    const s=typeof l.source==="object"?l.source.id:l.source;
+    const t=typeof l.target==="object"?l.target.id:l.target;
+    if(neighbors[s]&&neighbors[t]){ neighbors[s].add(t); neighbors[t].add(s); linksOf[s].add(l); linksOf[t].add(l); }
+  });
+
+  const Graph = ForceGraph3D()(document.getElementById("graph"))
+    .width(window.innerWidth)
+    .height(window.innerHeight)
+    .graphData(data)
+    .backgroundColor("#0b0d12")
+    .nodeLabel(n => `<div style="background:#11151c;padding:4px 8px;border-radius:5px;font-size:12px">${n.name}</div>`)
+    .nodeColor(n => colorOf(n.group))
+    .nodeVal(n => n.val)
+    .nodeRelSize(3)
+    .nodeOpacity(0.95)
+    .linkColor(()=> "rgba(140,150,170,0.18)")
+    .linkWidth(0.4)
+    .warmupTicks(40)
+    .cooldownTime(6000)
+    .onNodeClick(showDetail)
+    .onNodeHover(hoverNode);
+
+  Graph.d3Force("charge").strength(-55);
+
+  const hoverLinks = new Set(); let hovered = null;
+  function hoverNode(node){
+    hovered = node || null;
+    hoverLinks.clear();
+    if(node) linksOf[node.id].forEach(l=>hoverLinks.add(l));
+    Graph
+      .linkColor(l => hoverLinks.has(l) ? "#7cc4ff" : "rgba(140,150,170,0.12)")
+      .linkWidth(l => hoverLinks.has(l) ? 1.6 : 0.4)
+      .nodeColor(n => {
+        if(!hovered) return colorOf(n.group);
+        if(n.id===hovered.id) return "#ffffff";
+        return neighbors[hovered.id].has(n.id) ? colorOf(n.group) : "rgba(120,128,145,0.25)";
+      });
+  }
+
+  function showDetail(node){
+    const d=document.getElementById("detail");
+    document.getElementById("d-name").textContent=node.name;
+    document.getElementById("d-path").textContent=node.path;
+    document.getElementById("d-links").textContent="เชื่อมกับ "+neighbors[node.id].size+" โน้ต";
+    const file=node.path.replace(/\.md$/,"");
+    document.getElementById("d-open").href=
+      "obsidian://open?vault="+encodeURIComponent(VAULT_NAME)+"&file="+encodeURIComponent(file);
+    d.style.display="block";
+    const dist=120, r=Math.hypot(node.x,node.y,node.z)||1;
+    Graph.cameraPosition({x:node.x*(1+dist/r), y:node.y*(1+dist/r), z:node.z*(1+dist/r)}, node, 900);
+  }
+  document.getElementById("close").onclick=()=>document.getElementById("detail").style.display="none";
+
+  document.getElementById("search").addEventListener("input", e=>{
+    const q=e.target.value.trim().toLowerCase();
+    if(!q) return;
+    const hit=data.nodes.find(n=>n.name.toLowerCase().includes(q));
+    if(hit && hit.x!==undefined) showDetail(hit);
+  });
+
+  const counts={};
+  data.nodes.forEach(n=>counts[n.group]=(counts[n.group]||0)+1);
+  const leg=document.getElementById("legend");
+  Object.entries(counts).sort((a,b)=>b[1]-a[1]).forEach(([g,c])=>{
+    const row=document.createElement("div");
+    row.innerHTML=`<i style="background:${colorOf(g)}"></i> ${g} (${c})`;
+    leg.appendChild(row);
+  });
+
+  window.addEventListener("resize", ()=> Graph.width(window.innerWidth).height(window.innerHeight));
+  // จัดกรอบให้พอดีจอหลังฟิสิกส์จัดตำแหน่งเสร็จ (กันเปิดมาแล้วจุดลอยนอกจอ)
+  let framed = false;
+  Graph.onEngineStop(()=>{ if(!framed){ framed = true; Graph.zoomToFit(700, 80); } });
+}).catch(err=> showErr("โหลดข้อมูลกราฟไม่ได้: "+err.message+" — ต้องเปิดผ่านเซิร์ฟเวอร์ในเครื่อง ไม่ใช่เปิดไฟล์ตรงๆ"));
+</script>
+</body>
+</html>

@@ -44,8 +44,23 @@ The center of the app. You get:
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
+- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent.
+
+#### Status bar
+
+The bar along the bottom of the chat shows live session state and exposes quick controls without opening Settings:
+
+- **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
+
+#### Choosing a model
+
+The model picker lives in the **composer**, just left of the microphone. Click it to switch the model, reasoning effort, and fast mode from one dropdown.
+
+- **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
+- **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
+- **Per-model effort/fast presets.** Each model remembers its own reasoning effort and fast-mode choice in the desktop app, re-applied to the session whenever you pick that model. These presets are a desktop convenience and don't change crons or subagents.
 
 ### File browser
 
@@ -59,6 +74,14 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
 
+- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider.
+- **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
+- **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
+- **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal.
+- **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
+
+First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
+
 ### Management panes
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
@@ -69,11 +92,40 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Messaging** — set up gateway channels.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
+### Keyboard & navigation
+
+- **Command palette** — press **Cmd+K** (Ctrl+K on Windows/Linux) to jump to actions and navigate the app from the keyboard.
+- **Rebindable shortcuts** — a shortcuts panel in Settings lets you remap the app's keyboard shortcuts to your own keys.
+- **Custom zoom shortcuts** — zoom the interface in half-step increments for finer control over text size.
+- **UI language switcher** — change the app's interface language in-app, including Simplified Chinese (zh-Hans).
+
+### Sessions & profiles
+
+- **Session-list overhaul** — a reworked session list with archiving and general session hygiene to keep the list manageable as it grows.
+- **Search sessions by id** — find a specific session directly by its id.
+- **Concurrent multi-profile sessions** — run sessions across multiple [profiles](./profiles.md) at the same time, and reference a session in another profile with cross-profile `@session` links.
+
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
+
+## Uninstalling
+
+Open **Settings → About → Danger zone** and pick how much to remove:
+
+- **Uninstall Chat GUI only** — removes the desktop app and its data; the Hermes agent, your config, and your chats stay. (Same as `hermes uninstall --gui`.)
+- **Uninstall GUI + agent, keep my data** — removes the app and the agent but keeps config, chats, and secrets for a future reinstall. (Same as `hermes uninstall`.)
+- **Uninstall everything** — removes the app, the agent, and all user data. (Same as `hermes uninstall --full`.)
+
+The app closes to finish the job (the cleanup runs after it exits so it can remove the running app bundle and its own venv). The agent-removing options are hidden automatically when no local agent is installed (for example, a GUI-only "lite" client connected to a remote backend).
+
+You can do the same from the terminal — `hermes uninstall --gui` for the GUI alone, or `hermes uninstall` / `hermes uninstall --full` for the agent too.
+
+:::note
+Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` dev build) also removes the workspace `node_modules` and `apps/desktop/{dist,release}` build output, since those are GUI build artifacts. They're recoverable with `hermes desktop` (or `npm install` + a rebuild) — but if you're actively hacking on the desktop app, expect to reinstall dependencies afterward.
+:::
 
 ## CLI reference: `hermes desktop`
 
@@ -92,7 +144,7 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 
 ## How it works
 
-The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. The React renderer talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the agent rather than reimplementing it. Install, backend-resolution, and self-update logic live in the Electron main process.
+The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `--ignore-existing` / `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix. The React renderer talks to a `hermes dashboard` backend over the `tui_gateway`/dashboard APIs and reuses the agent runtime rather than embedding `hermes --tui`. Install, backend-resolution, and self-update logic live in the Electron main process.
 
 ## Connecting to a remote backend
 
@@ -154,6 +206,10 @@ The dashboard reads and writes your `.env` (API keys, secrets) and can run agent
 
 You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateway settings panel.
 
+:::note Per-profile remote hosts
+The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
+:::
+
 ### Troubleshooting
 
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
@@ -182,6 +238,26 @@ rm -rf "$HOME/.hermes/hermes-agent/venv"
 
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
+```
+
+### "Build desktop app" stuck on Electron download
+
+The build downloads the Electron runtime (~114&nbsp;MB) from `github.com/electron/electron/releases`. If the installer hangs on the **Build desktop app** step with the live output repeating `retrying attempt=…`, GitHub is being blocked or throttled on your network (firewall, proxy, or region).
+
+The installer self-heals this automatically: on a failed build it (1) clears a corrupt cached Electron zip and retries, then (2) if it still fails and you haven't set `ELECTRON_MIRROR`, retries once more through `npmmirror.com`, the de-facto Electron community mirror. `@electron/get` SHASUM-checks the download, but the checksums come from the same mirror — that catches a corrupt or partial download, not a compromised mirror. If you'd rather not trust a third-party host, pin your own `ELECTRON_MIRROR` (below); the build never overrides one you've set.
+
+To **choose your own mirror** (e.g. a corporate/trusted one), set `ELECTRON_MIRROR` before installing or rebuild manually — the build honors it and won't override it:
+
+```bash
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
+  bash -c 'cd "$HOME/.hermes/hermes-agent/apps/desktop" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'
+```
+
+To clear a corrupt cached zip by hand:
+
+```bash
+rm -f "$HOME/Library/Caches/electron"/electron-*.zip   # macOS
+rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 ```
 
 ## Building from source
@@ -216,7 +292,7 @@ macOS/Windows signing and notarization run automatically when the relevant crede
 ## See also
 
 - [CLI Guide](./cli.md) — the terminal interface
-- [TUI](./tui.md) — the modern terminal UI the desktop backend reuses
+- [TUI](./tui.md) — the modern terminal UI used by `hermes --tui` and the dashboard chat tab
 - [Web Dashboard](./features/web-dashboard.md) — browser admin panel with an embedded chat tab
 - [Configuration](./configuration.md) — config that the desktop app reads and writes
 - [Windows (Native)](./windows-native.md) — native Windows install path

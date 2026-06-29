@@ -148,14 +148,14 @@ class TestEditMessageFinalizeSignature:
     @pytest.mark.parametrize(
         "module_path,class_name",
         [
-            ("gateway.platforms.telegram", "TelegramAdapter"),
+            ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
             ("plugins.platforms.discord.adapter", "DiscordAdapter"),
-            ("gateway.platforms.slack", "SlackAdapter"),
-            ("gateway.platforms.matrix", "MatrixAdapter"),
+            ("plugins.platforms.slack.adapter", "SlackAdapter"),
+            ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
             ("plugins.platforms.mattermost.adapter", "MattermostAdapter"),
-            ("gateway.platforms.feishu", "FeishuAdapter"),
-            ("gateway.platforms.whatsapp", "WhatsAppAdapter"),
-            ("gateway.platforms.dingtalk", "DingTalkAdapter"),
+            ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
+            ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+            ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
         ],
     )
     def test_edit_message_accepts_finalize(self, module_path, class_name):
@@ -359,6 +359,67 @@ class TestStreamRunMediaStripping:
             assert "MEDIA:" not in sent_text, f"MEDIA: leaked into display: {sent_text!r}"
 
         assert consumer.already_sent
+
+
+class TestBeforeFinalizeHook:
+    """Verify the optional pre-finalize hook fires at the right time."""
+
+    @pytest.mark.asyncio
+    async def test_hook_runs_before_finalize_edit(self):
+        """Adapters that require finalize should pause typing before the edit."""
+        events = []
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(
+            side_effect=lambda **_kw: (
+                events.append("send"),
+                SimpleNamespace(success=True, message_id="msg_1"),
+            )[1]
+        )
+        adapter.edit_message = AsyncMock(
+            side_effect=lambda **_kw: (
+                events.append("edit"),
+                SimpleNamespace(success=True, message_id="msg_1"),
+            )[1]
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+            on_before_finalize=lambda: events.append("pause"),
+        )
+        consumer.on_delta("Hello")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert events == ["send", "pause", "edit"]
+
+    @pytest.mark.asyncio
+    async def test_hook_runs_once_when_final_text_already_visible(self):
+        """The hook still fires once even when no final edit is required."""
+        events = []
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+            on_before_finalize=lambda: events.append("pause"),
+        )
+        consumer.on_delta("Hello")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert events == ["pause"]
+        adapter.edit_message.assert_not_called()
 
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────
@@ -794,9 +855,11 @@ class TestSegmentBreakOnToolBoundary:
         )
 
     @pytest.mark.asyncio
-    async def test_fallback_final_deletes_partial_after_chunks_succeed(self):
-        """After fallback chunks land, the frozen partial must be deleted so
-        the user sees only the complete response (#16668)."""
+    async def test_fallback_final_deletes_partial_after_full_resend(self):
+        """After fallback re-sends the COMPLETE response, the frozen partial
+        must be deleted so the user sees only the complete response (#16668).
+        Full resend happens when the visible prefix doesn't match the final
+        text (e.g. post-segment-break content, #10807)."""
         adapter = MagicMock()
         adapter.send = AsyncMock(
             return_value=SimpleNamespace(success=True, message_id="msg_new"),
@@ -810,14 +873,49 @@ class TestSegmentBreakOnToolBoundary:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        # Seed the consumer as if it already edited a partial message that
-        # later got stuck (flood control etc.) — _message_id is the stale id.
+        # The stale partial shows pre-tool text that is NOT a prefix of the
+        # final response — fallback re-sends the complete final text.
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Let me check that for you…"
+
+        await consumer._send_fallback_final("Working on it. Done!")
+
+        adapter.delete_message.assert_awaited_once_with("chat_123", "msg_partial")
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_keeps_partial_after_tail_only_send(self):
+        """When the fallback sends only the missing TAIL (visible prefix
+        matches the final text), the partial message IS the head of the
+        answer — deleting it would leave the user with only the last part
+        of the response (the 'model sent only the second half' bug)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Visible partial is a true prefix of the final response — the
+        # fallback dedup sends only the tail.
         consumer._message_id = "msg_partial"
         consumer._last_sent_text = "Working on i"
 
         await consumer._send_fallback_final("Working on it. Done!")
 
-        adapter.delete_message.assert_awaited_once_with("chat_123", "msg_partial")
+        # Tail was sent...
+        sent_contents = [
+            c.kwargs.get("content", "") for c in adapter.send.call_args_list
+        ]
+        assert any("Done!" in s and "Working on i" not in s for s in sent_contents)
+        # ...and the head-bearing partial was NOT deleted.
+        adapter.delete_message.assert_not_awaited()
         assert consumer._final_response_sent is True
 
     @pytest.mark.asyncio
@@ -956,17 +1054,16 @@ class TestFinalContentDeliveredGuard:
         requiring a second finalize edit even when content is unchanged."""
         adapter = MagicMock()
         adapter.REQUIRES_EDIT_FINALIZE = True  # Telegram adapter behavior
-        # First send (initial streaming message) succeeds
-        # Mid-stream finalize edit succeeds
-        # Final finalize edit FAILS (e.g. flood control on Telegram)
-        adapter.edit_message = AsyncMock(side_effect=[
-            SimpleNamespace(success=True),   # mid-stream edit
-            SimpleNamespace(success=True),   # finalize edit on line 548
-            SimpleNamespace(success=False),  # final finalize on line 580 (FAILS)
+        # First send (initial streaming message) succeeds.
+        # Mid-stream edit succeeds.
+        # Final finalize edit fails, and the consumer's own fallback send also
+        # fails, so no path has confirmed the complete final response reached
+        # the user.
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False))
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=False, error="network down"),
         ])
-        adapter.send = AsyncMock(
-            return_value=SimpleNamespace(success=True, message_id="msg_1"),
-        )
         adapter.MAX_MESSAGE_LENGTH = 4096
 
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
@@ -976,6 +1073,10 @@ class TestFinalContentDeliveredGuard:
         consumer.on_delta("Part one of the response...\n")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)
+        # Keep the second delta buffered until finish so the complete answer is
+        # not already visible before the final edit attempt fails.
+        consumer.cfg.buffer_threshold = 10_000
+        consumer._current_edit_interval = 10.0
 
         consumer.on_delta("Part two, the complete final answer.\n")
         await asyncio.sleep(0.05)
@@ -1907,4 +2008,107 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
+
+
+class TestFreshFinalRespectsAdapterDecline:
+    """Regression: when an adapter explicitly declines fresh-final via
+    ``prefers_fresh_final_streaming = False``, the time-based
+    ``_should_send_fresh_final()`` must NOT override that decision.
+    (#47048 — Telegram rich-message overlap with legacy MarkdownV2 preview)
+    """
+
+    @pytest.mark.asyncio
+    async def test_adapter_decline_fresh_final_overrides_time_threshold(self):
+        """Adapter with prefers_fresh_final_streaming=False must NOT take
+        the fresh-final path even when fresh_final_after_seconds is large."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="rich_msg"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="edit_msg"),
+        )
+        adapter.delete_message = AsyncMock(return_value=True)
+        # Adapter explicitly declines fresh-final (like Telegram)
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=False)
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            fresh_final_after_seconds=1.0,  # time threshold would trigger
+            cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate: first message sent during streaming
+        consumer.on_delta("Hello world")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        # First message should have been sent
+        assert consumer._message_id is not None
+        # Simulate time passing (beyond threshold)
+        consumer._message_created_ts -= 10.0
+
+        # Finalize
+        consumer.on_delta("Hello world final")
+        consumer.finish()
+        await task
+
+        # The adapter declined fresh-final, so send() should NOT have been
+        # called for the final message — only edit_message(finalize=True).
+        adapter.send.assert_called_once()  # Only the initial send
+        adapter.edit_message.assert_called()  # Finalize edit
+        # Verify edit was called with finalize=True
+        edit_calls = [
+            c for c in adapter.edit_message.call_args_list
+            if c.kwargs.get("finalize") or (len(c.args) > 3 and c.args[3])
+        ]
+        assert len(edit_calls) >= 1, (
+            "Expected finalize=True edit call, got none"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_hook_adapter_uses_time_threshold(self):
+        """Adapter WITHOUT prefers_fresh_final_streaming must still use
+        the time-based fresh-final path (backward compat)."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="edit_msg"),
+        )
+        adapter.delete_message = AsyncMock(return_value=True)
+        # No prefers_fresh_final_streaming attribute
+        if hasattr(adapter, "prefers_fresh_final_streaming"):
+            del adapter.prefers_fresh_final_streaming
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01,
+            buffer_threshold=5,
+            fresh_final_after_seconds=1.0,
+            cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate: first message sent during streaming
+        consumer.on_delta("Hello world")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        assert consumer._message_id is not None
+        # Simulate time passing
+        consumer._message_created_ts -= 10.0
+
+        # Finalize
+        consumer.on_delta("Hello world final")
+        consumer.finish()
+        await task
+
+        # Without the hook, time-based fresh-final should trigger:
+        # send() called twice (initial + fresh-final)
+        assert adapter.send.call_count == 2, (
+            f"Expected 2 send calls (initial + fresh-final), got {adapter.send.call_count}"
+        )
 

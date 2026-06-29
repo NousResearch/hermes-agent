@@ -155,6 +155,7 @@ export function GatewaySettings() {
       })
 
     return () => void (cancelled = true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on scope change only; copy is stable
   }, [scope])
 
   // Debounced probe of the entered remote URL. Only runs in remote mode with a
@@ -292,10 +293,7 @@ export function GatewaySettings() {
       notify({
         kind: 'warning',
         title: g.incompleteTitle,
-        message:
-          authMode === 'oauth'
-            ? g.incompleteSignIn
-            : g.incompleteToken
+        message: authMode === 'oauth' ? g.incompleteSignIn : g.incompleteToken
       })
 
       return
@@ -386,10 +384,7 @@ export function GatewaySettings() {
       notify({
         kind: 'warning',
         title: g.incompleteTitle,
-        message:
-          authMode === 'oauth'
-            ? g.incompleteSignInTest
-            : g.incompleteTokenTest
+        message: authMode === 'oauth' ? g.incompleteSignInTest : g.incompleteTokenTest
       })
 
       return
@@ -422,12 +417,7 @@ export function GatewaySettings() {
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {
-    return (
-      <EmptyState
-        description={g.unavailableDesc}
-        title={g.unavailableTitle}
-      />
-    )
+    return <EmptyState description={g.unavailableDesc} title={g.unavailableTitle} />
   }
 
   return (
@@ -470,9 +460,7 @@ export function GatewaySettings() {
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <div>
             <div className="font-medium">{g.envOverrideTitle}</div>
-            <div className="mt-1 leading-5">
-              {g.envOverrideDesc}
-            </div>
+            <div className="mt-1 leading-5">{g.envOverrideDesc}</div>
           </div>
         </div>
       ) : null}
@@ -535,13 +523,13 @@ export function GatewaySettings() {
                     <Check className="size-3" /> {g.signedIn}
                   </Pill>
                   <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
-                    {signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {signingIn ? <Loader2 className="animate-spin" /> : null}
                     {g.signOut}
                   </Button>
                 </div>
               ) : (
                 <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
-                  {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                  {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                   {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                 </Button>
               )
@@ -591,14 +579,14 @@ export function GatewaySettings() {
           size="sm"
           variant="text"
         >
-          {testing ? <Loader2 className="size-4 animate-spin" /> : null}
+          {testing ? <Loader2 className="animate-spin" /> : null}
           {g.testRemote}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(false)} size="sm" variant="textStrong">
           {g.saveForRestart}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
-          {saving ? <Loader2 className="size-4 animate-spin" /> : null}
+          {saving ? <Loader2 className="animate-spin" /> : null}
           {g.saveAndReconnect}
         </Button>
       </div>
@@ -607,7 +595,7 @@ export function GatewaySettings() {
         <ListRow
           action={
             <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
-              <FileText className="size-4" />
+              <FileText />
               {g.openLogs}
             </Button>
           }

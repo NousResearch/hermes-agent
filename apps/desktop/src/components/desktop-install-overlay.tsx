@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Loader } from '@/components/ui/loader'
+import { LogView } from '@/components/ui/log-view'
 import type {
   DesktopBootstrapEvent,
   DesktopBootstrapStageDescriptor,
@@ -350,11 +352,9 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
     return (
       <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md">
-        <div className="w-full max-w-xl rounded-xl border bg-card p-8 shadow-xl">
+        <div className="w-full max-w-xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
           <h2 className="text-2xl font-semibold tracking-tight">{copy.oneTimeTitle}</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {copy.unsupportedDesc(platformLabel)}
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">{copy.unsupportedDesc(platformLabel)}</p>
 
           <div className="mt-4">
             <div className="mb-1.5 text-xs font-medium text-muted-foreground">{copy.installCommand}</div>
@@ -405,21 +405,23 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
   const totalCount = stages.length
   const failed = Boolean(state.error)
-  const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
+  // Count the running stage as half-done so the bar advances *during* a long
+  // stage instead of sitting frozen at the last completed step while its logs
+  // stream (e.g. "0 of 2" pinned at 0% for the whole first stage).
+  const progressUnits = completedCount + (!failed && currentStage ? 0.5 : 0)
+  const progressPct = totalCount > 0 ? Math.round((progressUnits / totalCount) * 100) : 0
   const currentStartedAt = currentStage ? state.stages[currentStage]?.startedAt : null
   const currentElapsed = typeof currentStartedAt === 'number' ? formatElapsed(now - currentStartedAt) : ''
 
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md p-4">
-      <div className="flex w-full max-w-2xl max-h-[90vh] flex-col rounded-xl border bg-card shadow-xl">
+      <div className="flex w-full max-w-2xl max-h-[90vh] flex-col rounded-xl border border-(--stroke-nous) bg-card shadow-nous">
         {/* Header -- always visible, never scrolls */}
         <div className="flex-shrink-0 p-8 pb-4">
           <h2 className="text-2xl font-semibold tracking-tight">
             {failed ? copy.failedTitle : state.active ? copy.settingUpTitle : copy.finishingTitle}
           </h2>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            {failed ? copy.failedDesc : copy.activeDesc}
-          </p>
+          <p className="mt-1.5 text-sm text-muted-foreground">{failed ? copy.failedDesc : copy.activeDesc}</p>
         </div>
 
         {/* Scrollable middle: progress, stages, error block, log */}
@@ -444,8 +446,8 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           )}
 
           {totalCount === 0 && state.active && (
-            <div className="mb-4 flex items-center gap-2 rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
+            <div className="mb-4 flex items-center gap-2.5 text-sm text-muted-foreground">
+              <Loader className="size-5" type="lemniscate-bloom" />
               <span>{copy.fetchingManifest}</span>
             </div>
           )}
@@ -474,53 +476,42 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
             </ol>
           )}
 
-          <div className="border-t pt-3">
-            <button
-              className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          <div className="pt-3">
+            <Button
+              className="-ml-2 text-muted-foreground hover:text-foreground"
               onClick={() => setLogOpen(v => !v)}
+              size="xs"
               type="button"
+              variant="ghost"
             >
               {logOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               <span>{logOpen ? copy.hideOutput : copy.showOutput}</span>
-              <span className="ml-1 tabular-nums">
-                ({copy.lines(state.log.length)})
-              </span>
-            </button>
+              <span className="ml-1 tabular-nums">({copy.lines(state.log.length)})</span>
+            </Button>
 
             {logOpen && (
-              <div
-                className={cn(
-                  'mt-2 overflow-auto rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed',
-                  failed ? 'max-h-96' : 'max-h-64'
-                )}
-              >
+              <LogView className={cn('mt-2', failed ? 'max-h-96' : 'max-h-64')}>
                 {state.log.length === 0 ? (
-                  <div className="text-muted-foreground">{copy.noOutput}</div>
+                  <div>{copy.noOutput}</div>
                 ) : (
                   <>
                     {state.log.map((entry, i) => (
-                      <div
-                        className={cn(
-                          'whitespace-pre-wrap break-words',
-                          entry.stream === 'stderr' && 'text-muted-foreground'
-                        )}
-                        key={i}
-                      >
-                        {entry.stage ? <span className="text-muted-foreground/70">[{entry.stage}] </span> : null}
+                      <div className={cn(entry.stream === 'stderr' && 'text-muted-foreground/70')} key={i}>
+                        {entry.stage ? <span className="text-muted-foreground/60">[{entry.stage}] </span> : null}
                         <span>{entry.line}</span>
                       </div>
                     ))}
                     <div ref={logEndRef} />
                   </>
                 )}
-              </div>
+              </LogView>
             )}
           </div>
         </div>
 
         {/* Active footer: let the user actually cancel a running install. */}
         {state.active && !failed && (
-          <div className="flex-shrink-0 border-t bg-card p-4">
+          <div className="flex-shrink-0 bg-card p-4">
             <div className="flex items-center justify-end">
               <Button
                 disabled={cancelling}
@@ -545,7 +536,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
         {/* Footer -- always visible, never scrolls; only renders on failure */}
         {failed && (
-          <div className="flex-shrink-0 border-t bg-card p-4">
+          <div className="flex-shrink-0 bg-card p-4">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
                 {copy.transcriptSaved}{' '}

@@ -2,8 +2,9 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
-import { BrailleSpinner } from '@/components/ui/braille-spinner'
+import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
@@ -14,7 +15,8 @@ import {
   collapseModelFamilies,
   effectiveVisibleKeys,
   modelVisibilityKey,
-  setVisibleModels
+  setVisibleModels,
+  toggleModelVisibility
 } from '@/store/model-visibility'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
@@ -58,16 +60,7 @@ export function ModelVisibilityDialog({
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
-    const key = modelVisibilityKey(provider.slug, model)
-
-    if (next.has(key)) {
-      next.delete(key)
-    } else {
-      next.add(key)
-    }
-
-    setVisibleModels(next)
+    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
   const q = search.trim().toLowerCase()
@@ -96,7 +89,7 @@ export function ModelVisibilityDialog({
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? <BrailleSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
+              {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
             </div>
           ) : (
             providers.map(provider => {
@@ -135,16 +128,18 @@ export function ModelVisibilityDialog({
         </div>
 
         <div className="px-3 py-2">
-          <button
-            className="text-xs text-(--ui-text-tertiary) transition-colors hover:text-foreground"
+          <Button
+            className="-ml-2 text-(--ui-text-tertiary)"
             onClick={() => {
               onOpenChange(false)
               onOpenProviders()
             }}
+            size="xs"
             type="button"
+            variant="text"
           >
             {copy.addProvider}
-          </button>
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

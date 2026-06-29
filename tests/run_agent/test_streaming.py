@@ -986,11 +986,17 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
-        self, mock_replace, monkeypatch,
+        self, mock_replace, mock_rebuild, monkeypatch,
     ):
-        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
+        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None.
+
+        On the Anthropic-native path the stream-retry cleanup must close + rebuild the
+        Anthropic client, NOT the OpenAI primary client (which would fail with
+        Missing-credentials and leave the wedged stream open). See #28161.
+        """
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1035,7 +1041,11 @@ class TestAnthropicStreamCallbacks:
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert mock_replace.call_count == 1
+        # Anthropic-native cleanup: close + rebuild the Anthropic client, never
+        # the OpenAI primary client.
+        assert mock_replace.call_count == 0
+        assert mock_rebuild.call_count == 1
+        assert agent._anthropic_client.close.call_count == 1
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
@@ -1573,3 +1583,87 @@ class TestCopilotACPStreamingDecision:
             _use_streaming = False
 
         assert _use_streaming is True
+
+
+class TestBedrockIamStreamingFallback:
+    """bedrock_converse streaming branch: IAM denial of
+    InvokeModelWithResponseStream falls back to converse() inline and sets
+    _disable_streaming for the rest of the session."""
+
+    def _make_bedrock_agent(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "bedrock_converse"
+        agent._interrupt_requested = False
+        return agent
+
+    def test_iam_denial_falls_back_inline_and_disables_streaming(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        from botocore.exceptions import ClientError
+
+        agent = self._make_bedrock_agent()
+
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            response = agent._interruptible_streaming_api_call(
+                {"modelId": agent.model, "messages": []}
+            )
+
+        client.converse.assert_called_once()
+        assert response.choices[0].message.content == "hi"
+        assert getattr(agent, "_disable_streaming", False) is True
+
+    def test_other_bedrock_errors_still_propagate(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock tests")
+        from botocore.exceptions import ClientError
+
+        agent = self._make_bedrock_agent()
+
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "ThrottlingException", "Message": "slow down"}
+            },
+            operation_name="ConverseStream",
+        )
+
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ):
+            with pytest.raises(ClientError):
+                agent._interruptible_streaming_api_call(
+                    {"modelId": agent.model, "messages": []}
+                )
+
+        client.converse.assert_not_called()
+        assert getattr(agent, "_disable_streaming", False) is False

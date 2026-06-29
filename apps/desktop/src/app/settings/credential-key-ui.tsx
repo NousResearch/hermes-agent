@@ -17,8 +17,7 @@ export type KeyRowProps = Omit<EnvRowProps, 'info' | 'varKey'>
 /** Matches Advanced / config field controls (ListRow + Input). */
 export const CREDENTIAL_CONTROL_CLASS = cn('h-8', CONTROL_TEXT)
 
-export const isKeyVar = (key: string, info: EnvVarInfo) =>
-  info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
+export const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
 
 export const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
   info.description?.trim() ||
@@ -96,7 +95,7 @@ export function KeyField({
         />
         {dirty && (
           <Button className="h-8 shrink-0" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
-            {busy ? <Loader2 className="size-4 animate-spin" /> : <Save />}
+            {busy ? <Loader2 className="animate-spin" /> : <Save />}
             {busy ? t.settings.credentials.saving : t.common.save}
           </Button>
         )}
@@ -106,9 +105,10 @@ export function KeyField({
           {info.is_set && (
             <>
               <Button
-                className="h-auto px-0 py-0 text-[0.6875rem] text-destructive hover:text-destructive"
+                className="text-[0.6875rem] text-destructive hover:text-destructive"
                 disabled={busy}
                 onClick={() => void onClear(varKey)}
+                size="inline"
                 type="button"
                 variant="text"
               >
@@ -181,10 +181,7 @@ export function CredentialKeyCard({
       <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
         <div className="flex min-w-0 items-center gap-2">
           <span
-            className={cn(
-              'size-2 shrink-0 rounded-full',
-              info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)'
-            )}
+            className={cn('size-2 shrink-0 rounded-full', info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
           />
 
           <span className="min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">

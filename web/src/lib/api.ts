@@ -41,11 +41,60 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
+// ── Global management-profile scope ──────────────────────────────────
+// The dashboard is a machine-level management surface: one header switcher
+// (ProfileProvider in App.tsx) decides which profile the management pages
+// read/write, and fetchJSON transparently appends ?profile=<name> to the
+// profile-scoped endpoint families below. "" = the dashboard process's own
+// profile (legacy behavior). Calls that already carry an explicit profile
+// (e.g. ProfileBuilder writes) are left untouched — explicit beats global.
+let _managementProfile = "";
+
+export function setManagementProfile(name: string): void {
+  _managementProfile = (name || "").trim();
+}
+
+export function getManagementProfile(): string {
+  return _managementProfile;
+}
+
+// Endpoint families that honor ?profile= on the backend (web_server.py
+// _profile_scope or explicit per-profile DB opens). Anything else — ops,
+// pairing, cron (which has its own per-job profile params), profiles
+// themselves — is machine-global or self-scoped and must NOT be rewritten.
+const PROFILE_SCOPED_PREFIXES = [
+  "/api/status",
+  "/api/gateway",
+  "/api/analytics",
+  "/api/skills",
+  "/api/tools/toolsets",
+  "/api/config",
+  "/api/env",
+  "/api/mcp",
+  "/api/messaging/platforms",
+  "/api/messaging/telegram/onboarding",
+  "/api/model/info",
+  "/api/model/set",
+  "/api/model/auxiliary",
+  "/api/model/moa",
+  "/api/model/options",
+];
+
+function withManagementProfile(url: string): string {
+  if (!_managementProfile) return url;
+  if (url.includes("profile=")) return url; // explicit param wins
+  const path = url.split("?")[0];
+  if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+}
+
 export async function fetchJSON<T>(
   url: string,
   init?: RequestInit,
   options?: FetchJSONOptions,
 ): Promise<T> {
+  url = withManagementProfile(url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -249,6 +298,19 @@ export async function buildWsUrl(
   return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
 }
 
+/** Build a ``?profile=<name>`` query suffix, or "" when unset.
+ *
+ * Used by the skills/toolsets endpoints so the dashboard can manage a
+ * profile other than the one the server process runs under. */
+function profileQuery(profile?: string): string {
+  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
+}
+
+function appendProfileParam(url: string, profile?: string): string {
+  if (!profile || url.includes("profile=")) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -283,47 +345,111 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
-  getSessionMessages: (id: string) =>
-    fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessions: (
+    limit = 20,
+    offset = 0,
+    profile = getManagementProfile(),
+    order: "created" | "recent" = "created",
+  ) =>
+    fetchJSON<PaginatedSessions>(
+      appendProfileParam(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
+        profile,
+      ),
+    ),
+  getSessionMessages: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionMessagesResponse>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
+    ),
+  getSessionDetail: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionInfo>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+    ),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
     ),
-  deleteSession: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }),
-  getEmptySessionsCount: () =>
-    fetchJSON<{ count: number }>("/api/sessions/empty/count"),
-  deleteEmptySessions: () =>
-    fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/empty", {
-      method: "DELETE",
-    }),
-  bulkDeleteSessions: (ids: string[]) =>
+  deleteSession: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean }>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+      {
+        method: "DELETE",
+      },
+    ),
+  getEmptySessionsCount: (profile = getManagementProfile()) =>
+    fetchJSON<{ count: number }>(
+      appendProfileParam("/api/sessions/empty/count", profile),
+    ),
+  deleteEmptySessions: (profile = getManagementProfile()) =>
+    fetchJSON<{ ok: boolean; deleted: number }>(
+      appendProfileParam("/api/sessions/empty", profile),
+      {
+        method: "DELETE",
+      },
+    ),
+  bulkDeleteSessions: (ids: string[], profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean; deleted: number }>("/api/sessions/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
-  renameSession: (id: string, title: string) =>
+  renameSession: (id: string, title: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean; title: string }>(
       `/api/sessions/${encodeURIComponent(id)}`,
       {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
+        body: JSON.stringify({ title, profile: profile || undefined }),
       },
     ),
-  getSessionStats: () => fetchJSON<SessionStoreStats>("/api/sessions/stats"),
-  exportSessionUrl: (id: string) =>
-    `/api/sessions/${encodeURIComponent(id)}/export`,
-  pruneSessions: (older_than_days: number, source?: string) =>
+  getSessionStats: (profile = getManagementProfile()) =>
+    fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
+  exportSessionUrl: (id: string, profile = getManagementProfile()) =>
+    appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
+  pruneSessions: (
+    older_than_days: number,
+    source?: string,
+    profile = getManagementProfile(),
+  ) =>
     fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ older_than_days, source }),
+      body: JSON.stringify({ older_than_days, source, profile: profile || undefined }),
+    }),
+  listFiles: (path?: string) => {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
+  },
+  readFile: (path: string) =>
+    fetchJSON<ManagedFileReadResponse>(
+      `/api/files/read?path=${encodeURIComponent(path)}`,
+    ),
+  uploadFile: (path: string, file: File, overwrite = true) => {
+    // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
+    // the browser adds the multipart boundary automatically. Sending the file
+    // as base64 JSON (the old path) inflated the body ~33%, buffered the whole
+    // file in memory, and 502'd on large backup archives behind the proxy
+    // (NS-501).
+    const form = new FormData();
+    form.append("path", path);
+    form.append("overwrite", String(overwrite));
+    form.append("file", file, file.name);
+    return fetchJSON<ManagedFileWriteResponse>("/api/files/upload-stream", {
+      method: "POST",
+      body: form,
+    });
+  },
+  createDirectory: (path: string) =>
+    fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  deleteFile: (path: string, recursive = false) =>
+    fetchJSON<{ ok: boolean; path: string }>("/api/files", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, recursive }),
     }),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
@@ -333,16 +459,28 @@ export const api = {
     if (params.component && params.component !== "all") qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
-  getAnalytics: (days: number) =>
-    fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
-  getModelsAnalytics: (days: number) =>
-    fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
+  getAnalytics: (days: number, profile = getManagementProfile()) =>
+    fetchJSON<AnalyticsResponse>(
+      appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
+    ),
+  getModelsAnalytics: (days: number, profile = getManagementProfile()) =>
+    fetchJSON<ModelsAnalyticsResponse>(
+      appendProfileParam(`/api/analytics/models?days=${days}`, profile),
+    ),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
-  getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
+  getModelOptions: (profile?: string) =>
+    fetchJSON<ModelOptionsResponse>(`/api/model/options${profileQuery(profile)}`),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
+  saveMoaModels: (body: MoaConfigResponse) =>
+    fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   setModelAssignment: (body: ModelAssignmentRequest) =>
     fetchJSON<ModelAssignmentResponse>("/api/model/set", {
       method: "POST",
@@ -355,7 +493,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ config }),
     }),
-  getConfigRaw: () => fetchJSON<{ yaml: string }>("/api/config/raw"),
+  getConfigRaw: () => fetchJSON<{ yaml: string; path?: string }>("/api/config/raw"),
   saveConfigRaw: (yaml_text: string) =>
     fetchJSON<{ ok: boolean }>("/api/config/raw", {
       method: "PUT",
@@ -392,7 +530,7 @@ export const api = {
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
   getCronDeliveryTargets: () =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
+  createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -402,7 +540,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string },
+    updates: CronJobMutation,
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -420,6 +558,19 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
+  // Automation Blueprints — parameterized automation blueprints
+  getAutomationBlueprints: () =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  instantiateAutomationBlueprint: (
+    body: { blueprint: string; values: Record<string, string> },
+    profile = "default",
+  ) =>
+    fetchJSON<CronJob>(`/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -433,14 +584,26 @@ export const api = {
     }),
   createProfile: (body: {
     name: string;
-    clone_from_default: boolean;
+    clone_from?: string | null;
+    clone_from_default?: boolean;
     clone_all?: boolean;
     no_skills?: boolean;
     description?: string;
     provider?: string;
     model?: string;
+    mcp_servers?: McpServerCreate[];
+    keep_skills?: string[];
+    hub_skills?: string[];
   }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>("/api/profiles", {
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      path: string;
+      model_set?: boolean;
+      mcp_written?: number;
+      skills_disabled?: number;
+      hub_installs?: Array<{ identifier: string; pid: number | null }>;
+    }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -505,58 +668,82 @@ export const api = {
     ),
 
   // Skills & Toolsets
-  getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
-  toggleSkill: (name: string, enabled: boolean) =>
+  //
+  // All calls accept an optional ``profile`` so the Skills page can manage
+  // any profile's skills/toolsets — not just the one the dashboard process
+  // runs under. Omitted/empty profile = the dashboard's own profile.
+  getSkills: (profile?: string) =>
+    fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  toggleSkill: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, enabled }),
+      body: JSON.stringify({ name, enabled, profile: profile || undefined }),
     }),
-  getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
-  toggleToolset: (name: string, enabled: boolean) =>
+  getSkillContent: (name: string, profile?: string) =>
+    fetchJSON<SkillContent>(
+      `/api/skills/content?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
+    ),
+  createSkill: (skill: { name: string; content: string; category?: string }, profile?: string) =>
+    fetchJSON<SkillWriteResult>("/api/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...skill, profile: profile || undefined }),
+    }),
+  updateSkillContent: (name: string, content: string, profile?: string) =>
+    fetchJSON<SkillWriteResult>("/api/skills/content", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, content, profile: profile || undefined }),
+    }),
+  getToolsets: (profile?: string) =>
+    fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  toggleToolset: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify({ enabled, profile: profile || undefined }),
       },
     ),
-  getToolsetConfig: (name: string) =>
+  getToolsetConfig: (name: string, profile?: string) =>
     fetchJSON<ToolsetConfig>(
-      `/api/tools/toolsets/${encodeURIComponent(name)}/config`,
+      `/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`,
     ),
-  selectToolsetProvider: (name: string, provider: string) =>
+  selectToolsetProvider: (name: string, provider: string, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; provider: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify({ provider, profile: profile || undefined }),
       },
     ),
-  saveToolsetEnv: (name: string, env: Record<string, string>) =>
+  saveToolsetEnv: (name: string, env: Record<string, string>, profile?: string) =>
     fetchJSON<ToolsetEnvResult>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env }),
+        body: JSON.stringify({ env, profile: profile || undefined }),
       },
     ),
-  runToolsetPostSetup: (name: string, key: string) =>
+  runToolsetPostSetup: (name: string, key: string, profile?: string) =>
     fetchJSON<ActionResponse & { key: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
+        body: JSON.stringify({ key, profile: profile || undefined }),
       },
     ),
 
   // Session search (FTS5)
-  searchSessions: (q: string) =>
-    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+  searchSessions: (q: string, profile = getManagementProfile()) =>
+    fetchJSON<SessionSearchResponse>(
+      appendProfileParam(`/api/sessions/search?q=${encodeURIComponent(q)}`, profile),
+    ),
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -616,7 +803,7 @@ export const api = {
 
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
-    fetchJSON<{ platforms: MessagingPlatform[] }>("/api/messaging/platforms"),
+    fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
     fetchJSON<{ ok: boolean; platform: string }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
@@ -646,7 +833,7 @@ export const api = {
     ),
   applyTelegramOnboarding: (
     pairingId: string,
-    body: { allowed_user_ids: string[] },
+    body: { allowed_user_ids: string[]; profile?: string },
   ) =>
     fetchJSON<TelegramOnboardingApplyResponse>(
       `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
@@ -741,6 +928,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+  getFontPref: () =>
+    fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
+  setFontPref: (font: string) =>
+    fetchJSON<{ ok: boolean; font: string }>("/api/dashboard/font", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ font }),
+    }),
 
   // ── Admin: MCP servers ──────────────────────────────────────────────
   getMcpServers: () => fetchJSON<{ servers: McpServer[] }>("/api/mcp/servers"),
@@ -807,6 +1002,8 @@ export const api = {
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
   getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  enableWebhooks: () =>
+    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
     fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
       method: "POST",
@@ -881,11 +1078,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
-  runImport: (archive: string) =>
+  runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ archive }),
+      body: JSON.stringify({ archive, force }),
     }),
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
@@ -941,26 +1138,34 @@ export const api = {
     fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
 
   // ── Admin: Skills hub ───────────────────────────────────────────────
-  installSkillFromHub: (identifier: string) =>
+  // ``profile`` scopes install/uninstall/update and the installed-state
+  // annotations to that profile (omitted = the dashboard's own profile).
+  installSkillFromHub: (identifier: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/install", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier }),
+      body: JSON.stringify({ identifier, profile: profile || undefined }),
     }),
-  uninstallSkillFromHub: (name: string) =>
+  uninstallSkillFromHub: (name: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, profile: profile || undefined }),
     }),
-  updateSkillsFromHub: () =>
-    fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
-  searchSkillsHub: (q: string, source = "all", limit = 20) =>
+  updateSkillsFromHub: (profile?: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || undefined }),
+    }),
+  searchSkillsHub: (q: string, source = "all", limit = 20, profile?: string) =>
     fetchJSON<SkillHubSearchResponse>(
-      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
     ),
-  getSkillHubSources: () =>
-    fetchJSON<SkillHubSourcesResponse>("/api/skills/hub/sources"),
+  getSkillHubSources: (profile?: string) =>
+    fetchJSON<SkillHubSourcesResponse>(
+      `/api/skills/hub/sources${profileQuery(profile)}`,
+    ),
   previewSkillFromHub: (identifier: string) =>
     fetchJSON<SkillHubPreview>(
       `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
@@ -1117,6 +1322,17 @@ export interface McpCatalogEntry {
   transport: "http" | "stdio";
   auth_type: "api_key" | "oauth" | "none";
   required_env: Array<{ name: string; prompt: string; required: boolean }>;
+  // Transport details — what actually connects (http) or runs (stdio).
+  command: string | null;
+  args: string[];
+  url: string | null;
+  // Git bootstrap (only set for entries that clone + build locally).
+  install_url: string | null;
+  install_ref: string | null;
+  bootstrap: string[];
+  // Default tool pre-selection (null = all tools pre-checked) + guidance text.
+  default_enabled: string[] | null;
+  post_install: string;
   needs_install: boolean;
   installed: boolean;
   enabled: boolean;
@@ -1151,6 +1367,7 @@ export interface MessagingPlatformEnvVar {
   redacted_value: string | null;
   description: string;
   prompt: string;
+  help: string;
   url: string | null;
   is_password: boolean;
   advanced: boolean;
@@ -1166,7 +1383,7 @@ export interface MessagingPlatform {
   gateway_running: boolean;
   /**
    * "connected" | "disabled" | "not_configured" | "pending_restart" |
-   * "gateway_stopped" | "disconnected" | "fatal" | string
+   * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string
    */
   state: string;
   error_code: string | null;
@@ -1174,6 +1391,12 @@ export interface MessagingPlatform {
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
   env_vars: MessagingPlatformEnvVar[];
+}
+
+export interface MessagingPlatformsResponse {
+  env_path: string;
+  gateway_start_command: string;
+  platforms: MessagingPlatform[];
 }
 
 export interface MessagingPlatformUpdate {
@@ -1219,6 +1442,17 @@ export interface WebhooksResponse {
   enabled: boolean;
   base_url: string;
   subscriptions: WebhookRoute[];
+}
+
+export interface WebhookEnableResponse {
+  ok: boolean;
+  platform: "webhook";
+  enabled: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface WebhookCreate {
@@ -1386,6 +1620,9 @@ export interface StatusResponse {
    * Empty in loopback mode; empty + ``auth_required=true`` is a
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
+  /** False when the dashboard is running in a hosted/managed layout where
+   * updates are handled by the outer launcher instead of ``hermes update``. */
+  can_update_hermes?: boolean;
   config_path: string;
   config_version: number;
   env_path: string;
@@ -1467,7 +1704,11 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
-  needs_restart: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface SessionMessage {
@@ -1490,6 +1731,44 @@ export interface SessionMessagesResponse {
 export interface LogsResponse {
   file: string;
   lines: string[];
+}
+
+export interface ManagedFileEntry {
+  name: string;
+  path: string;
+  is_directory: boolean;
+  size: number | null;
+  mtime: number;
+  mime_type: string | null;
+}
+
+export interface ManagedFilesResponse {
+  root: string | null;
+  path: string;
+  parent: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
+  entries: ManagedFileEntry[];
+}
+
+export interface ManagedFileReadResponse {
+  name: string;
+  path: string;
+  size: number;
+  mime_type: string;
+  data_url: string;
+  root: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
+}
+
+export interface ManagedFileWriteResponse {
+  ok: boolean;
+  path: string;
+  entry: ManagedFileEntry;
+  root: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
 }
 
 export interface AnalyticsDailyEntry {
@@ -1617,6 +1896,27 @@ export interface ModelsAnalyticsResponse {
   period_days: number;
 }
 
+export interface CronJobRepeat {
+  times: number | null;
+  completed?: number;
+}
+
+export interface CronJobMutation {
+  name?: string;
+  prompt?: string;
+  schedule?: string;
+  deliver?: string;
+  skills?: string[];
+  provider?: string | null;
+  model?: string | null;
+  base_url?: string | null;
+  script?: string | null;
+  no_agent?: boolean;
+  context_from?: string[] | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
+}
+
 export interface CronJob {
   id: string;
   profile?: string | null;
@@ -1626,14 +1926,25 @@ export interface CronJob {
   name?: string | null;
   prompt?: string | null;
   script?: string | null;
-  schedule?: { kind?: string; expr?: string; display?: string };
+  skills?: string[] | null;
+  schedule?: { kind?: string; expr?: string; run_at?: string; display?: string };
   schedule_display?: string | null;
+  repeat?: CronJobRepeat | null;
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  no_agent?: boolean | null;
+  context_from?: string[] | string | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  last_status?: string | null;
   last_error?: string | null;
+  last_delivery_error?: string | null;
 }
 
 export interface CronDeliveryTarget {
@@ -1643,11 +1954,47 @@ export interface CronDeliveryTarget {
   home_env_var: string | null;
 }
 
+export interface AutomationBlueprintField {
+  name: string;
+  type: "time" | "enum" | "text" | "weekdays";
+  label: string;
+  default: string | null;
+  options: string[];
+  optional: boolean;
+  /** When false, options are suggestions — any value is accepted. */
+  strict?: boolean;
+  help: string;
+}
+
+export interface AutomationBlueprint {
+  key: string;
+  title: string;
+  description: string;
+  category: string;
+  tags: string[];
+  fields: AutomationBlueprintField[];
+  command: string;
+  appUrl: string;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
   category: string;
   enabled: boolean;
+}
+
+export interface SkillContent {
+  name: string;
+  content: string;
+  path: string;
+}
+
+export interface SkillWriteResult {
+  success: boolean;
+  message?: string;
+  path?: string;
+  error?: string;
 }
 
 export interface ToolsetInfo {
@@ -1734,6 +2081,7 @@ export interface ModelOptionProvider {
   is_user_defined?: boolean;
   source?: string;
   warning?: string;
+  authenticated?: boolean;
 }
 
 export interface ModelOptionsResponse {
@@ -1754,10 +2102,37 @@ export interface AuxiliaryModelsResponse {
   main: { provider: string; model: string };
 }
 
+export interface MoaModelSlot {
+  provider: string;
+  model: string;
+}
+
+export interface MoaConfigResponse {
+  default_preset: string;
+  active_preset: string;
+  presets: Record<string, {
+    reference_models: MoaModelSlot[];
+    aggregator: MoaModelSlot;
+    reference_temperature: number;
+    aggregator_temperature: number;
+    max_tokens: number;
+    enabled: boolean;
+  }>;
+  reference_models: MoaModelSlot[];
+  aggregator: MoaModelSlot;
+  reference_temperature: number;
+  aggregator_temperature: number;
+  max_tokens: number;
+  enabled: boolean;
+}
+
 export interface ModelAssignmentRequest {
+  confirm_expensive_model?: boolean;
   scope: "main" | "auxiliary";
   provider: string;
   model: string;
+  /** Optional OpenAI-compatible endpoint URL for custom/local main providers. */
+  base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
 }
@@ -1771,6 +2146,8 @@ export interface StaleAuxAssignment {
 }
 
 export interface ModelAssignmentResponse {
+  confirm_message?: string;
+  confirm_required?: boolean;
   ok: boolean;
   scope?: string;
   provider?: string;
@@ -1855,6 +2232,11 @@ export interface DashboardThemeSummary {
 export interface DashboardThemesResponse {
   active: string;
   themes: DashboardThemeSummary[];
+}
+
+export interface DashboardFontResponse {
+  /** Active font-override id, or "theme" when no override is set. */
+  font: string;
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────

@@ -7,6 +7,7 @@ from tools.url_safety import (
     is_safe_url,
     async_is_safe_url,
     is_always_blocked_url,
+    normalize_url_for_request,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -14,6 +15,32 @@ from tools.url_safety import (
 
 import ipaddress
 import pytest
+
+
+class TestNormalizeUrlForRequest:
+    def test_percent_encodes_non_ascii_path(self):
+        assert (
+            normalize_url_for_request("https://wttr.in/Köln")
+            == "https://wttr.in/K%C3%B6ln"
+        )
+
+    def test_preserves_existing_percent_escapes(self):
+        assert (
+            normalize_url_for_request("https://wttr.in/K%C3%B6ln")
+            == "https://wttr.in/K%C3%B6ln"
+        )
+
+    def test_preserves_reserved_query_syntax(self):
+        assert (
+            normalize_url_for_request("https://example.com/search?q=Köln&lang=de")
+            == "https://example.com/search?q=K%C3%B6ln&lang=de"
+        )
+
+    def test_idna_encodes_hostname(self):
+        assert (
+            normalize_url_for_request("https://münich.example/Köln")
+            == "https://xn--mnich-kva.example/K%C3%B6ln"
+        )
 
 
 class TestIsSafeUrl:
@@ -136,6 +163,31 @@ class TestIsSafeUrl:
             (10, 1, 6, "", ("::ffff:169.254.169.254", 0, 0, 0)),
         ]):
             assert is_safe_url("http://[::ffff:169.254.169.254]/") is False
+
+    def test_ipv6_scope_id_link_local_blocked(self):
+        """fe80::1%eth0 — a scope-ID-bearing link-local address must not bypass
+        the guard. ``ipaddress.ip_address`` rejects the ``%scope`` suffix, so
+        the scope must be stripped before the block check rather than skipped.
+        """
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("fe80::1%eth0", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[fe80::1%eth0]/") is False
+
+    def test_ipv6_scope_id_loopback_blocked(self):
+        """::1%lo — scoped IPv6 loopback must still be blocked."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::1%lo", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://[::1%lo]/") is False
+
+    def test_unparseable_ip_after_scope_strip_fails_closed(self):
+        """An address that is still unparseable after stripping the scope ID
+        must fail closed (block), not be silently skipped."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("not-an-ip%garbage", 0, 0, 0)),
+        ]):
+            assert is_safe_url("http://example.invalid/") is False
 
     def test_unspecified_address_blocked(self):
         """0.0.0.0 — unspecified address, can bind to all interfaces."""
@@ -462,6 +514,15 @@ class TestIsAlwaysBlockedUrl:
         """Attacker-controlled hostname resolving to IMDS still blocks."""
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("169.254.169.254", 0)),
+        ]):
+            assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
+
+    def test_scope_id_imds_in_floor_blocked(self):
+        """A scope-ID suffix on an IPv4-mapped IMDS address resolving in the
+        always-blocked floor must be caught after the scope is stripped, not
+        skipped as unparseable."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("::ffff:169.254.169.254%eth0", 0, 0, 0)),
         ]):
             assert is_always_blocked_url("http://attacker-controlled.example.com/") is True
 

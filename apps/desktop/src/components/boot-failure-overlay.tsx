@@ -2,9 +2,11 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { ErrorIcon } from '@/components/ui/error-state'
+import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
+import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -172,11 +174,9 @@ export function BootFailureOverlay() {
 
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
-        <div className="flex items-start gap-3 border-b border-(--ui-stroke-tertiary) px-5 py-4">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
-            <AlertTriangle className="size-5" />
-          </div>
+      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+        <div className="flex items-start gap-3 px-5 py-4">
+          <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
               {remoteReauth ? copy.remoteTitle : copy.title}
@@ -196,49 +196,45 @@ export function BootFailureOverlay() {
             <div className="flex flex-wrap gap-2">
               {remoteReauth ? (
                 <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
-                  {busy === 'signin' ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                  {busy === 'signin' ? <Loader2 className="animate-spin" /> : <LogIn />}
                   {label}
                 </Button>
               ) : (
                 <Button disabled={Boolean(busy)} onClick={() => void retry()}>
-                  {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                  {busy === 'retry' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   {copy.retry}
                 </Button>
               )}
               {!remoteReauth ? (
-                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
-                  {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
+                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
+                  {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
                   {copy.repairInstall}
                 </Button>
               ) : null}
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
-                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
+              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
+                {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
                 {copy.useLocalGateway}
               </Button>
               <Button onClick={openLogs} variant="ghost">
-                <FileText className="size-4" />
+                <FileText />
                 {copy.openLogs}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              {remoteReauth ? copy.remoteSignInHint : copy.repairHint}
-            </p>
+            <p className="text-xs text-muted-foreground">{remoteReauth ? copy.remoteSignInHint : copy.repairHint}</p>
           </div>
 
           {logs.length > 0 ? (
             <div className="grid gap-2">
-              <button
-                className="self-start text-xs font-medium text-muted-foreground transition hover:text-foreground"
+              <Button
+                className="-ml-2 self-start font-medium"
                 onClick={() => setShowLogs(v => !v)}
+                size="xs"
                 type="button"
+                variant="text"
               >
                 {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
-              </button>
-              {showLogs ? (
-                <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">
-                  {logs.slice(-40).join('')}
-                </pre>
-              ) : null}
+              </Button>
+              {showLogs ? <LogView className="max-h-48">{logs.slice(-40).join('')}</LogView> : null}
             </div>
           ) : null}
         </div>

@@ -24,6 +24,7 @@ Mounting
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import socket
@@ -98,6 +99,19 @@ class WSTransport:
                 self._closed = True
                 return False
             fut.result(timeout=_WS_WRITE_TIMEOUT_S)
+            return not self._closed
+        except concurrent.futures.TimeoutError:  # builtin TimeoutError on 3.11+
+            # The event loop is stalled (GIL-heavy agent turn, delegation
+            # running N children), NOT the socket dead. The send coroutine is
+            # already scheduled and will flush once the loop breathes — latching
+            # _closed here permanently silenced live windows after one slow
+            # write (the "subagent window shows zero streaming" bug). Unblock
+            # the worker thread and keep the transport alive; _safe_send latches
+            # on a real socket error when the frame actually fails.
+            _log.warning(
+                "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
+                _WS_WRITE_TIMEOUT_S, self._peer,
+            )
             return not self._closed
         except Exception as exc:
             self._closed = True
@@ -175,6 +189,22 @@ async def handle_ws(ws: Any) -> None:
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+
+        # The desktop app and dashboard chat reach the agent through this WS
+        # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
+        # spawns the background MCP discovery thread). Without starting it here,
+        # discovery never runs in this process: _make_agent only *waits* on the
+        # thread (wait_for_mcp_discovery), which no-ops when it was never
+        # created, so the agent snapshots an MCP-less tool list and the only way
+        # to surface MCP tools is a manual /reload-mcp. Start it once per
+        # process here (idempotent, config-gated) before gateway.ready so the
+        # first agent build can pick up already-spawning servers. (#38945)
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+        start_background_mcp_discovery(
+            logger=_log,
+            thread_name="tui-ws-mcp-discovery",
+        )
 
         ready_ok = await transport.write_async(
             {
@@ -283,45 +313,44 @@ async def handle_ws(ws: Any) -> None:
                 )
                 break
     finally:
+        reaped_sessions = 0
         detached_sessions = 0
-        reaped_scheduled = 0
         if transport is not None:
             transport.close()
 
-            # Detach the transport from any sessions it owned so later emits
-            # fall back to stdio instead of crashing into a closed socket.
+            # Reap sessions this transport owned (close_on_disconnect sidecar
+            # sessions) or detach the rest to the drop sentinel so later emits
+            # don't crash into a closed socket or fall through to desktop stdout
+            # logs. Detached sessions are handed to the grace-windowed WS-orphan
+            # reaper inside _close_sessions_for_transport (a quick reconnect /
+            # session.resume cancels it). This is the single WS-disconnect
+            # teardown path.
             #
-            # In the dashboard's in-process gateway that stdio fallback has no
-            # real reader, so a detached session would otherwise sit forever
-            # holding its _SlashWorker subprocess open (one leaked python proc
-            # per browser refresh — #38591 fallout). Schedule a grace-delayed
-            # reap; a quick reconnect / session.resume re-binds a live
-            # transport and cancels it (see _ws_session_is_orphaned).
-            for _sid, sess in list(server._sessions.items()):
-                if sess.get("transport") is transport:
-                    sess["transport"] = server._stdio_transport
-                    detached_sessions += 1
-                    try:
-                        server._schedule_ws_orphan_reap(_sid)
-                        reaped_scheduled += 1
-                    except Exception:
-                        _log.exception(
-                            "ws orphan-reap schedule failed peer=%s sid=%s",
-                            peer,
-                            _sid,
-                        )
+            # Offloaded: _close_session_by_id does a blocking worker.close()
+            # (terminate + waits) plus a synchronous DB write — inline that
+            # would freeze the uvicorn event loop for every other live
+            # connection.
+            try:
+                reaped_sessions, detached_sessions = await asyncio.to_thread(
+                    server._close_sessions_for_transport,
+                    transport,
+                    end_reason="ws_disconnect",
+                )
+            except Exception:
+                _log.exception("ws transport teardown failed peer=%s", peer)
         try:
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d detached_sessions=%d",
+            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
             peer,
             disconnect_reason,
             messages,
             parse_errors,
             dispatch_crashes,
             send_failures,
+            reaped_sessions,
             detached_sessions,
         )

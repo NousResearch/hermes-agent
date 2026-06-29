@@ -66,6 +66,28 @@ from .whatsapp_identity import (
 )
 from utils import atomic_replace
 
+# Session keys/ids flow into filesystem paths downstream (e.g.
+# ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
+# filenames in agent_runtime_helpers). Any value that could escape the
+# sessions directory as a path must be rejected at the entry boundary.
+# Rejects: parent traversal (``..``), a path separator anywhere (``/`` or
+# ``\``, so a non-leading Windows separator can't slip through), and a
+# leading Windows drive letter (``C:``). Legitimate session keys are
+# colon-delimited multi-segment ids (``agent:main:<platform>:...``) and
+# never contain these, so there are no false positives in practice.
+def _is_path_unsafe(value: object) -> bool:
+    """Return True if ``value`` could traverse outside the sessions dir."""
+    if not value:
+        return False
+    s = str(value)
+    if ".." in s or "/" in s or "\\" in s:
+        return True
+    # Leading Windows drive path, e.g. "C:\..." or "d:/...". A bare "x:"
+    # with no following separator isn't a usable absolute path, and the
+    # separator forms are already caught above — but keep an explicit guard
+    # for the drive-letter prefix in case a separator was normalized away.
+    return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
+
 
 @dataclass
 class SessionSource:
@@ -91,7 +113,26 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
-    
+    role_authorized: bool = False  # True when adapter granted access via role (not user ID)
+    # Profile this inbound message is routed to in a multiplexing gateway
+    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
+    # None => the gateway's active/default profile. Drives both session-key
+    # namespacing and the per-turn config/credential scope.
+    profile: Optional[str] = None
+
+    # Internal, wire-INVISIBLE trust signal: True when this event was delivered
+    # to the gateway over the per-instance-authenticated relay WebSocket (the
+    # Team Gateway connector). The connector authenticates the gateway's socket
+    # with a per-instance secret and resolves owner-only author bindings BEFORE
+    # delivering, so a relay-delivered event is already authorized as this
+    # instance's bound user. ``platform`` carries the UNDERLYING platform
+    # (e.g. ``discord``) for session-keying/egress, NOT ``relay`` — so authz
+    # must key the upstream-trust decision off THIS flag, not off ``platform``.
+    # Set locally by the relay transport (``ws_transport._event_from_wire``);
+    # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
+    # forge it across the wire or have it restored from persistence.
+    delivered_via_upstream_relay: bool = False
+
     @property
     def description(self) -> str:
         """Human-readable description of the source."""
@@ -134,6 +175,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.profile:
+            d["profile"] = self.profile
         return d
 
     @classmethod
@@ -152,6 +195,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            profile=data.get("profile"),
         )
     
 
@@ -293,6 +337,22 @@ def build_session_context_prompt(
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
+    if context.source.platform == Platform.MATRIX:
+        src = context.source
+        room_name = src.chat_name or src.chat_id
+        room_id = _hash_chat_id(src.chat_id) if redact_pii else src.chat_id
+        lines.append("")
+        lines.append(f"**Matrix Room:** {room_name}")
+        lines.append(f"**Matrix Room ID:** {room_id}")
+        if src.thread_id:
+            thread_id = _hash_chat_id(src.thread_id) if redact_pii else src.thread_id
+            lines.append(f"**Matrix Thread:** {thread_id}")
+        lines.append(
+            "**Matrix room boundary:** Treat this turn as scoped to the current "
+            "Matrix room/thread only. Do not assume unresolved references are "
+            "about other Matrix rooms or projects unless the user explicitly says so."
+        )
+
     # User identity.
     # In shared multi-user sessions (shared threads OR shared non-thread groups
     # when group_sessions_per_user=False), multiple users contribute to the same
@@ -369,9 +429,10 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Yuanbao. "
-            "You CAN send private (DM) messages via the send_message tool. "
-            "Use target='yuanbao:direct:<account_id>' for DM "
-            "and target='yuanbao:group:<group_code>' for group chat."
+            "To send a private (DM) message to a user in the current group, "
+            "use the yb_send_dm tool (look up the recipient by name or pass "
+            "their user_id). Your normal reply is delivered to the group you "
+            "are responding in."
         )
 
     # Connected platforms
@@ -529,7 +590,7 @@ class SessionEntry:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionEntry":
         origin = None
-        if "origin" in data and data["origin"]:
+        if "origin" in data and isinstance(data["origin"], dict):
             origin = SessionSource.from_dict(data["origin"])
         
         platform = None
@@ -547,9 +608,19 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        session_key = data["session_key"]
+        session_id = data["session_id"]
+
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
+        for _field, _val in (("session_key", session_key), ("session_id", session_id)):
+            if _is_path_unsafe(_val):
+                raise ValueError(
+                    f"Invalid {_field}: potential directory traversal detected"
+                )
+
         return cls(
-            session_key=data["session_key"],
-            session_id=data["session_id"],
+            session_key=session_key,
+            session_id=session_id,
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
             origin=origin,
@@ -597,14 +668,40 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _session_key_namespace(profile: Optional[str]) -> str:
+    """Return the ``agent:<ns>`` namespace prefix for a session key.
+
+    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
+    ``main`` is a static namespace literal (NOT a branch name — branching keys
+    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
+    slot to carry the profile:
+
+    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
+      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
+      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
+    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
+      layout, just a different namespace, so two profiles serving the same
+      platform/chat never collide.
+    """
+    if not profile or profile == "default":
+        return "agent:main"
+    return f"agent:{profile}"
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    profile: Optional[str] = None,
 ) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
+
+    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
+    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
+    that don't multiplex produce byte-identical keys to before. Only the
+    multiplexing gateway passes a non-default profile.
 
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
@@ -625,6 +722,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -633,11 +731,27 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_chat_id}"
+        # No chat_id — fall back to the sender's own identifier before the
+        # bare per-platform sink.  Without this, every DM from every user that
+        # arrives without a chat_id (non-standard adapters / synthetic sources)
+        # collapses into one shared "<ns>:<platform>:dm" session, and a
+        # single cached agent ends up serving multiple people's conversations —
+        # cross-user history bleed.  participant_id keeps DMs isolated per user.
+        dm_participant_id = source.user_id_alt or source.user_id
+        if dm_participant_id and source.platform == Platform.WHATSAPP:
+            dm_participant_id = (
+                canonical_whatsapp_identifier(str(dm_participant_id))
+                or dm_participant_id
+            )
+        if dm_participant_id:
+            if source.thread_id:
+                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{ns}:{platform}:dm:{source.thread_id}"
+        return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -645,7 +759,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -707,17 +821,84 @@ class SessionStore:
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    for key, entry_data in data.items():
-                        try:
-                            self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
-                            # Skip entries with unknown/removed platform values
-                            continue
+                for key, entry_data in data.items():
+                    # Keys starting with "_" are documentation/metadata sentinels
+                    # (e.g. the "_README" note written by _save), not session
+                    # entries. Skip them so they never reach SessionEntry.from_dict.
+                    if key.startswith("_"):
+                        continue
+                    # Skip non-dict entries (corrupted sessions.json, e.g. a
+                    # bare bool or string where a dict is expected). Without
+                    # this, from_dict raises TypeError on `"origin" in data`
+                    # which escapes the inner except (ValueError, KeyError) and
+                    # aborts loading ALL remaining sessions (#46994).
+                    if not isinstance(entry_data, dict):
+                        logger.warning(
+                            "Skipping invalid session entry %r: "
+                            "expected dict, got %s",
+                            key, type(entry_data).__name__,
+                        )
+                        continue
+                    try:
+                        self._entries[key] = SessionEntry.from_dict(entry_data)
+                    except (ValueError, KeyError, TypeError) as e:
+                        logger.warning("Skipping invalid session entry %r: %s", key, e)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
         self._loaded = True
-    
+
+        # Prune any sessions.json entries that point to sessions already ended
+        # in state.db. A hard gateway crash (exit code 1) skips the graceful
+        # shutdown path, so sessions.json is never cleared and is left pointing
+        # at ended sessions. On the next startup those stale entries act as live
+        # routing keys, but get_or_create_session() reuses them as long as the
+        # time/policy reset checks pass — it never consults end_reason — so every
+        # incoming message is silently routed into a closed session. Pruning here
+        # (lock already held) is cheap: one lookup per routing key, once at
+        # startup, and self-heals into a fresh session on the next message.
+        self._prune_stale_sessions_locked()
+
+    def _prune_stale_sessions_locked(self) -> None:
+        """Remove sessions.json entries whose session has ended in state.db.
+
+        Called once during startup (from ``_ensure_loaded_locked``, lock held).
+        A ``session_id`` is stale when state.db reports ``end_reason IS NOT
+        NULL`` for it. Sessions absent from the DB (never persisted / pre-SQLite
+        legacy) are left alone, and a ``None`` DB handle (SQLite unavailable) is
+        a no-op. DB errors are non-fatal — startup must never fail here.
+        """
+        db = getattr(self, "_db", None)
+        if not db or not self._entries:
+            return
+
+        stale_keys: list = []
+        try:
+            for key, entry in self._entries.items():
+                row = db.get_session(entry.session_id)
+                # row is None        -> not in DB (legacy / pre-SQLite) — keep
+                # end_reason is None  -> session alive — keep
+                # end_reason not None -> session ended — prune
+                if row is not None and row.get("end_reason") is not None:
+                    logger.warning(
+                        "gateway.session: pruning stale sessions.json entry "
+                        "%r -> %s (end_reason=%r); left by a crashed gateway",
+                        key, entry.session_id, row["end_reason"],
+                    )
+                    stale_keys.append(key)
+        except Exception as exc:
+            logger.warning(
+                "gateway.session: stale-entry pruning skipped due to DB error: %s",
+                exc,
+            )
+            return
+
+        for key in stale_keys:
+            del self._entries[key]
+
+        if stale_keys:
+            self._save()
+
     def _save(self) -> None:
         """Save sessions index to disk (kept for session key -> ID mapping)."""
         import tempfile
@@ -725,6 +906,22 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
 
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
+        # Self-documenting sentinel so anyone who inspects this file directly
+        # understands what it is and where CLI/TUI sessions actually live. Keys
+        # starting with "_" are skipped on load (see _ensure_loaded_locked), so
+        # this never round-trips into a SessionEntry. Ordered first via a fresh
+        # dict so it renders at the top of the pretty-printed JSON.
+        data = {
+            "_README": (
+                "Gateway routing index ONLY: maps messaging session keys "
+                "(agent:main:<platform>:...) to active session IDs. This is NOT "
+                "the session list. ALL sessions (CLI, TUI, and gateway) live in "
+                "~/.hermes/state.db and are shown by `hermes sessions list` and "
+                "`/sessions`. Seeing only gateway entries here is expected and "
+                "does not mean CLI sessions are missing."
+            ),
+            **data,
+        }
         fd, tmp_path = tempfile.mkstemp(
             dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
         )
@@ -741,13 +938,120 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
+    def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
+        """Return the profile namespace for session keys, or None when off.
+
+        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
+        keys stay in the legacy ``agent:main`` namespace — byte-identical to
+        before. When enabled, prefers the profile the inbound source was routed
+        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
+        per-credential adapter), falling back to the active profile name.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        if source is not None and source.profile:
+            return source.profile
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return None
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=self._resolve_profile_for_key(source),
         )
+
+    def _create_entry_from_recovered_row(
+        self,
+        *,
+        row: Dict[str, Any],
+        session_key: str,
+        source: SessionSource,
+        now: datetime,
+    ) -> SessionEntry:
+        started_at = row.get("started_at")
+        try:
+            created_at = datetime.fromtimestamp(float(started_at)) if started_at else now
+        except (TypeError, ValueError, OSError):
+            created_at = now
+        return SessionEntry(
+            session_key=session_key,
+            session_id=str(row["id"]),
+            created_at=created_at,
+            updated_at=now,
+            origin=source,
+            display_name=source.chat_name,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+
+    def _recover_session_from_db(
+        self,
+        *,
+        session_key: str,
+        source: SessionSource,
+        now: datetime,
+    ) -> Optional[SessionEntry]:
+        """Rebuild a missing session-key mapping from durable state.db data."""
+        if not self._db:
+            return None
+        finder = getattr(self._db, "find_latest_gateway_session_for_peer", None)
+        if not callable(finder):
+            return None
+        try:
+            recovered = finder(
+                source=source.platform.value,
+                user_id=source.user_id,
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+            )
+        except Exception as exc:
+            logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
+            return None
+        if not recovered:
+            return None
+        try:
+            self._db.reopen_session(str(recovered["id"]))
+        except Exception as exc:
+            logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
+        return self._create_entry_from_recovered_row(
+            row=recovered,
+            session_key=session_key,
+            source=source,
+            now=now,
+        )
+
+    def _record_gateway_session_peer(
+        self,
+        session_id: str,
+        session_key: str,
+        source: Optional[SessionSource],
+    ) -> None:
+        """Persist the routing peer for an existing gateway session row."""
+        if not self._db or not source:
+            return
+        recorder = getattr(self._db, "record_gateway_session_peer", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                session_id,
+                source=source.platform.value,
+                user_id=source.user_id,
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+            )
+        except Exception as exc:
+            logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -758,6 +1062,10 @@ class SessionStore:
         """
         if self._has_active_processes_fn:
             if self._has_active_processes_fn(entry.session_key):
+                logger.debug(
+                    "Session %s not expired — active background processes",
+                    entry.session_key,
+                )
                 return False
 
         policy = self.config.get_reset_policy(
@@ -799,6 +1107,10 @@ class SessionStore:
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
+                logger.debug(
+                    "Session reset skipped for %s — active background processes",
+                    session_key,
+                )
                 return None
 
         policy = self.config.get_reset_policy(
@@ -888,14 +1200,13 @@ class SessionStore:
                     reset_reason = "suspended"
                 elif entry.resume_pending:
                     # Restart-interrupted session: preserve the session_id
-                    # and return the existing entry so the transcript
-                    # reloads intact.  ``resume_pending`` is cleared after
-                    # the NEXT successful turn completes (not here), which
-                    # means a re-interrupted retry keeps trying — the
-                    # stuck-loop counter handles terminal escalation.
-                    entry.updated_at = now
-                    self._save()
-                    return entry
+                    # and return the existing entry so the transcript reloads
+                    # intact, but still honour normal daily/idle reset policy.
+                    reset_reason = self._should_reset(entry, source)
+                    if not reset_reason:
+                        entry.updated_at = now
+                        self._save()
+                        return entry
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
@@ -913,6 +1224,17 @@ class SessionStore:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+
+            if not force_new and not db_end_session_id:
+                recovered_entry = self._recover_session_from_db(
+                    session_key=session_key,
+                    source=source,
+                    now=now,
+                )
+                if recovered_entry is not None:
+                    self._entries[session_key] = recovered_entry
+                    self._save()
+                    return recovered_entry
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -937,6 +1259,10 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "session_key": session_key,
+                "chat_id": source.chat_id,
+                "chat_type": source.chat_type,
+                "thread_id": source.thread_id,
             }
 
         # SQLite operations outside the lock
@@ -949,6 +1275,11 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+                self._record_gateway_session_peer(
+                    session_id,
+                    session_key,
+                    source,
+                )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
@@ -969,6 +1300,11 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+                self._record_gateway_session_peer(
+                    entry.session_id,
+                    session_key,
+                    entry.origin,
+                )
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
@@ -1163,6 +1499,10 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "session_key": session_key,
+                "chat_id": old_entry.origin.chat_id if old_entry.origin else None,
+                "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
+                "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:
@@ -1174,6 +1514,11 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+                self._record_gateway_session_peer(
+                    session_id,
+                    session_key,
+                    old_entry.origin,
+                )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -1231,6 +1576,11 @@ class SessionStore:
                 self._db.reopen_session(target_session_id)
             except Exception as e:
                 logger.debug("Session DB reopen_session failed: %s", e)
+            self._record_gateway_session_peer(
+                target_session_id,
+                session_key,
+                new_entry.origin if new_entry else None,
+            )
 
         return new_entry
 
@@ -1247,6 +1597,17 @@ class SessionStore:
         entries.sort(key=lambda e: e.updated_at, reverse=True)
 
         return entries
+
+    def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:
+        """Return the active session entry for a persisted session ID, if any."""
+        if not session_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.session_id == session_id:
+                    return entry
+        return None
     
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite).
@@ -1278,10 +1639,30 @@ class SessionStore:
                         message.get("platform_message_id") or message.get("message_id")
                     ),
                     observed=bool(message.get("observed")),
+                    timestamp=message.get("timestamp"),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
     
+    def has_platform_message_id(
+        self, session_id: str, platform_message_id: str
+    ) -> bool:
+        """Check if a message with the given platform_message_id is persisted.
+
+        Thin wrapper over SessionDB.has_platform_message_id(). Returns False
+        when no DB is available (in-memory sessions). Used by the gateway's
+        transient-failure dedupe guard (#47237).
+        """
+        if not self._db:
+            return False
+        try:
+            return self._db.has_platform_message_id(
+                session_id, platform_message_id
+            )
+        except Exception:
+            logger.debug("has_platform_message_id lookup failed", exc_info=True)
+            return False
+
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
 

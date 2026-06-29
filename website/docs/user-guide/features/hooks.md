@@ -202,8 +202,8 @@ Create `~/.hermes/BOOT.md`. Write it as if you were giving instructions to a hum
 # Startup Checklist
 
 1. Run `hermes cron list` and check if any scheduled jobs failed overnight.
-2. If any failed, send a summary to Discord #ops using the `send_message` tool.
-3. Check if `/opt/app/deploy.log` has any ERROR lines from the last 24 hours. If yes, summarize them and include in the same Discord message.
+2. If any failed, summarize them for Discord #ops (the hook delivers your final response to its configured target).
+3. Check if `/opt/app/deploy.log` has any ERROR lines from the last 24 hours. If yes, summarize them and include in the same report.
 4. If nothing went wrong, reply with only `[SILENT]` so no message is sent.
 ```
 
@@ -247,8 +247,9 @@ def _build_prompt(content: str) -> str:
         "---\n"
         f"{content}\n"
         "---\n\n"
-        "Execute each instruction. Use the send_message tool to deliver any "
-        "messages to platforms like Discord or Slack.\n"
+        "Execute each instruction. Put any user-facing summary in your "
+        "final response — the hook delivers it to the configured channel "
+        "(e.g. Discord or Slack); you do not send messages yourself.\n"
         "If nothing needs attention and there is nothing to report, reply "
         "with ONLY: [SILENT]"
     )
@@ -274,8 +275,8 @@ def _run_boot_agent(content: str) -> None:
             max_iterations=20,
         )
         result = agent.run_conversation(_build_prompt(content))
-        response = result.get("final_response", "")
-        if response and "[SILENT]" not in response:
+        response = (result.get("final_response", "") or "").strip()
+        if response.upper() not in {"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"}:
             logger.info("boot-md completed: %s", response[:200])
         else:
             logger.info("boot-md completed (nothing to report)")
@@ -323,7 +324,7 @@ Watch the logs:
 hermes logs --follow --level INFO | grep boot-md
 ```
 
-You should see `Running BOOT.md (N chars)` followed by either `boot-md completed: ...` (summary of what the agent did) or `boot-md completed (nothing to report)` when the agent replied `[SILENT]`.
+You should see `Running BOOT.md (N chars)` followed by either `boot-md completed: ...` (summary of what the agent did) or `boot-md completed (nothing to report)` when the agent replied with an exact silence token such as `[SILENT]`.
 
 Delete `~/.hermes/BOOT.md` to disable the checklist — the hook stays loaded but silently skips when the file isn't there.
 
@@ -385,6 +386,7 @@ def register(ctx):
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
+| [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
@@ -806,6 +808,77 @@ def my_callback(session_id: str, platform: str, **kwargs):
 ---
 
 See the **[Build a Plugin guide](/guides/build-a-hermes-plugin)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+
+---
+
+### `subagent_start`
+
+Fires **once per child agent** after `delegate_task` has constructed the child `AIAgent` and before that child is run. Whether you delegate a single task or a batch of three, this hook fires once for each child.
+
+This hook is specific to delegation/subagent lifecycle. It is not a universal "before any agent invocation" gate for gateway, CLI, cron, batch, MoA, or other runner-originated agent executions.
+
+**Callback signature:**
+
+```python
+def my_callback(parent_session_id: str | None,
+                parent_turn_id: str,
+                parent_subagent_id: str | None,
+                child_session_id: str | None,
+                child_subagent_id: str,
+                child_role: str,
+                child_goal: str,
+                **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `parent_session_id` | `str \| None` | Session ID of the delegating parent agent. |
+| `parent_turn_id` | `str` | Turn ID of the parent agent turn that requested delegation, if available. |
+| `parent_subagent_id` | `str \| None` | Parent subagent ID when this child was spawned by another subagent; `None` for top-level parent agents. |
+| `child_session_id` | `str \| None` | Session ID allocated for the child agent. |
+| `child_subagent_id` | `str` | Stable subagent ID used by delegation observability and controls. |
+| `child_role` | `str` | Effective child role after delegation policy is applied, for example `"leaf"` or `"orchestrator"`. |
+| `child_goal` | `str` | Delegated goal/prompt that the child agent will execute. |
+
+**Fires:** In `tools/delegate_tool.py`, inside `_build_child_agent()`, after the child `AIAgent` has been constructed and annotated with subagent identity metadata, and before `_run_single_child()` runs the child.
+
+**Return value:** Ignored. This is an observer hook only; returning a value does not block or mutate the child agent run.
+
+**Use cases:** Logging subagent creation, mapping parent/child session relationships, tracking nested delegation trees, emitting pre-run audit records, pre-allocating per-child observability resources.
+
+**Example — log subagent creation:**
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+def log_subagent_start(
+    parent_session_id,
+    parent_turn_id,
+    child_session_id,
+    child_subagent_id,
+    child_role,
+    child_goal,
+    **kwargs,
+):
+    logger.info(
+        "SUBAGENT_START parent=%s turn=%s child_session=%s child=%s role=%s goal=%r",
+        parent_session_id,
+        parent_turn_id,
+        child_session_id,
+        child_subagent_id,
+        child_role,
+        child_goal[:200],
+    )
+
+def register(ctx):
+    ctx.register_hook("subagent_start", log_subagent_start)
+```
+
+:::info
+`subagent_start` is useful for delegation observability, but it is not a blocking policy hook. To block delegation before a child is built, use [`pre_tool_call`](#pre_tool_call) to block the `delegate_task` tool call.
+:::
 
 ---
 
@@ -1312,6 +1385,23 @@ Three escape hatches bypass the interactive prompt — any one is sufficient:
 Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning.
 
 **Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
+
+#### Manual allowlisting
+
+Manual allowlisting is useful for non-TTY or service-account deployments where an operator cannot answer the first-use prompt interactively. The allowlist file is `~/.hermes/shell-hooks-allowlist.json`, and the expected format is an `approvals` array. Each approval records the hook `event` and the exact `command` string:
+
+```json
+{
+  "approvals": [
+    {
+      "event": "post_llm_call",
+      "command": "/home/hermes/.hermes/hooks/my-hook.py"
+    }
+  ]
+}
+```
+
+The command string must match the configured hook command exactly. A path-keyed object with a `sha256` field is not the expected format and will not approve the hook. Verify manual entries with `hermes hooks list`.
 
 ### The `hermes hooks` CLI
 

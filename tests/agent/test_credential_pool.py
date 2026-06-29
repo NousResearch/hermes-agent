@@ -1179,7 +1179,10 @@ def test_load_pool_falls_back_to_os_environ_when_dotenv_empty(tmp_path, monkeypa
     assert entry.access_token == "sk-or-from-runtime-env"
 
 
-def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
+def test_load_pool_preserves_env_seeded_entry_when_env_is_missing(tmp_path, monkeypatch):
+    # Regression for #9331: load_pool() is a non-destructive read. A process
+    # that lacks the seeding env var must NOT delete the persisted pool entry
+    # that another process correctly seeded.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     _write_auth_store(
@@ -1206,10 +1209,54 @@ def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
 
     pool = load_pool("openrouter")
 
-    assert pool.entries() == []
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "env:OPENROUTER_API_KEY"
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
-    assert auth_payload["credential_pool"]["openrouter"] == []
+    persisted = auth_payload["credential_pool"]["openrouter"]
+    assert len(persisted) == 1
+    assert persisted[0]["source"] == "env:OPENROUTER_API_KEY"
+
+
+def test_load_pool_missing_env_does_not_overwrite_other_process_seed(tmp_path, monkeypatch):
+    # The exact cross-process oscillation described in #9331: a process without
+    # MINIMAX_API_KEY must leave the on-disk entry intact for processes that
+    # do have it.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "minimax": [
+                    {
+                        "id": "minimax-env",
+                        "label": "MINIMAX_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:MINIMAX_API_KEY",
+                        "access_token": "seeded-by-other-process",
+                        "base_url": "https://api.minimaxi.chat/v1",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("minimax")
+
+    assert pool.has_credentials()
+    assert len(pool.entries()) == 1
+    assert pool.entries()[0].source == "env:MINIMAX_API_KEY"
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["minimax"]
+    assert len(persisted) == 1
+    assert persisted[0]["source"] == "env:MINIMAX_API_KEY"
 
 
 def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
@@ -2998,3 +3045,104 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
+    """Regression for #19566: stale rotation writes keep concurrent entries."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-A",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-A",
+                    },
+                    {
+                        "id": "cred-B",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-B",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+    pool = load_pool("anthropic")
+    assert {entry.id for entry in pool.entries()} == {"cred-A", "cred-B"}
+
+    disk_snapshot = read_credential_pool("anthropic")
+    disk_snapshot.append(
+        {
+            "id": "cred-C",
+            "label": "added-concurrently",
+            "auth_type": "api_key",
+            "priority": 2,
+            "source": "manual",
+            "access_token": "sk-C",
+        }
+    )
+    write_credential_pool("anthropic", disk_snapshot)
+
+    pool.mark_exhausted_and_rotate(status_code=429)
+
+    final = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    final_ids = [entry["id"] for entry in final["credential_pool"]["anthropic"]]
+    assert set(final_ids) == {"cred-A", "cred-B", "cred-C"}
+    persisted_a = next(
+        entry
+        for entry in final["credential_pool"]["anthropic"]
+        if entry["id"] == "cred-A"
+    )
+    assert persisted_a["last_status"] == "exhausted"
+
+
+def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-A",
+                        "label": "keep",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-A",
+                    },
+                    {
+                        "id": "cred-B",
+                        "label": "drop",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-B",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    pool.remove_index(2)
+
+    final = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    final_ids = [entry["id"] for entry in final["credential_pool"]["anthropic"]]
+    assert final_ids == ["cred-A"]

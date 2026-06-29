@@ -19,10 +19,16 @@ from agent.prompt_builder import (
     build_nous_subscription_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
+    _dynamic_context_file_max_chars,
+    _get_context_file_max_chars,
+    _CONTEXT_FILE_DYNAMIC_CEILING,
     DEFAULT_AGENT_IDENTITY,
+    drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -113,6 +119,18 @@ class TestScanContextContent:
 
 
 class TestTruncateContent:
+    @pytest.fixture(autouse=True)
+    def _reset_truncation_state(self, monkeypatch):
+        drain_truncation_warnings()
+
+        def default_load_config():
+            return {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", default_load_config)
+
+    def test_context_file_max_chars_default_matches_upstream_limit(self):
+        assert CONTEXT_FILE_MAX_CHARS == 20_000
+
     def test_short_content_unchanged(self):
         content = "Short content"
         result = _truncate_content(content, "test.md")
@@ -137,6 +155,138 @@ class TestTruncateContent:
         content = "x" * CONTEXT_FILE_MAX_CHARS
         result = _truncate_content(content, "exact.md")
         assert result == content
+
+    def test_configured_context_file_max_chars_controls_truncation(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "HEAD" + "x" * 160 + "TAIL"
+
+        result = _truncate_content(content, "config.md")
+
+        assert result != content
+        assert "truncated config.md" in result
+        assert "kept 84+24" in result
+        assert "HEAD" in result
+        assert "TAIL" in result
+
+    def test_explicit_max_chars_overrides_config(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        result = _truncate_content(content, "explicit.md", max_chars=200)
+
+        assert result == content
+
+    def test_truncation_warning_points_to_config_key(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        _truncate_content("x" * 180, "warning.md")
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        assert "context_file_max_chars" in warnings[0]
+        assert "CONTEXT_FILE_MAX_CHARS" not in warnings[0]
+
+    def test_warnings_isolated_across_contexts(self, monkeypatch):
+        """Truncation warnings accumulate per-context — a concurrent build in
+        a separate context must not see or drain this context's warnings."""
+        import contextvars
+
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        # Generate a warning in a fresh child context, then assert it did NOT
+        # leak into the parent context's accumulator.
+        def _child():
+            _truncate_content("x" * 180, "child.md")
+            # Inside the child context, the warning is visible & drainable.
+            assert any("child.md" in w for w in drain_truncation_warnings())
+
+        contextvars.copy_context().run(_child)
+
+        # Parent context never saw the child's warning.
+        assert drain_truncation_warnings() == []
+
+        # And a warning raised in the parent stays in the parent.
+        _truncate_content("y" * 180, "parent.md")
+        parent_warnings = drain_truncation_warnings()
+        assert len(parent_warnings) == 1
+        assert "parent.md" in parent_warnings[0]
+
+
+class TestDynamicContextFileCap:
+    """B — cap scales with the model's context window when not pinned.
+    C — truncation marker points the agent at the full file to read_file."""
+
+    @pytest.fixture(autouse=True)
+    def _no_explicit_config(self, monkeypatch):
+        # No explicit context_file_max_chars → dynamic path is eligible.
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+    def test_dynamic_floor_for_small_window(self):
+        # A small context window never drops below the historical 20K floor.
+        assert _dynamic_context_file_max_chars(8_000) == CONTEXT_FILE_MAX_CHARS
+
+    def test_dynamic_scales_above_floor_for_large_window(self):
+        # 200K-token window → ~48K (200000 * 4 * 0.06), well above the floor
+        # and above Codex's 32 KiB project_doc default.
+        cap = _dynamic_context_file_max_chars(200_000)
+        assert cap == 48_000
+        assert cap > CONTEXT_FILE_MAX_CHARS
+
+    def test_dynamic_respects_ceiling(self):
+        # An enormous window is clamped to the ceiling.
+        assert _dynamic_context_file_max_chars(100_000_000) == _CONTEXT_FILE_DYNAMIC_CEILING
+
+    def test_none_context_length_falls_back_to_flat_default(self):
+        assert _dynamic_context_file_max_chars(None) == CONTEXT_FILE_MAX_CHARS
+        assert _dynamic_context_file_max_chars(0) == CONTEXT_FILE_MAX_CHARS
+
+    def test_get_context_file_max_chars_uses_context_length(self):
+        # With no explicit config, the resolver derives the cap from context.
+        assert _get_context_file_max_chars(200_000) == 48_000
+        assert _get_context_file_max_chars(None) == CONTEXT_FILE_MAX_CHARS
+
+    def test_explicit_config_beats_dynamic(self, monkeypatch):
+        # An explicit value always wins, even when a big window is available.
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_file_max_chars": 1_000},
+        )
+        assert _get_context_file_max_chars(200_000) == 1_000
+
+    def test_large_window_avoids_truncation_of_midsize_doc(self):
+        # A 30K-char AGENTS.md is truncated at the flat default but survives
+        # whole on a large-context model (dynamic cap ~48K).
+        content = "z" * 30_000
+        small = _truncate_content(content, "AGENTS.md", context_length=8_000)
+        big = _truncate_content(content, "AGENTS.md", context_length=200_000)
+        assert "truncated" in small.lower()
+        assert big == content
+
+    def test_marker_points_to_read_path(self):
+        content = "h" * 50_000
+        result = _truncate_content(
+            content, "AGENTS.md", context_length=8_000,
+            read_path="/proj/AGENTS.md",
+        )
+        assert "read_file" in result
+        assert "/proj/AGENTS.md" in result
+
+    def test_marker_defaults_to_filename_without_read_path(self):
+        result = _truncate_content("h" * 50_000, "AGENTS.md", context_length=8_000)
+        assert "read_file" in result
+        assert "AGENTS.md" in result
 
 
 # =========================================================================
@@ -275,6 +425,54 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         # "search" should appear only once per category
         assert result.count("- search") == 1
+
+    def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
+        """Posture-driven demotion keeps every skill NAME visible.
+
+        Demoted categories lose their descriptions, never their entries —
+        full pruning caused silent capability loss in a real workflow
+        (agent-created skills are the model's project memory, and models
+        don't rediscover them via skills_list once the index goes quiet).
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Does {name} things\n---\n"
+            )
+
+        result = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
+        )
+        # Coding-adjacent category keeps its full entry.
+        assert "pr-review" in result and "Does pr-review things" in result
+        # Demoted category: name stays visible, description is dropped.
+        assert "tweet-stuff" in result
+        assert "Does tweet-stuff things" not in result
+        assert "social-media [names only]" in result
+        # Disclosure note explains the demotion and how to load.
+        assert "skill_view" in result
+
+    def test_compact_categories_demote_nested_and_miss_cache_separately(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: thread-writer\ndescription: Write threads\n---\n"
+        )
+        # Nested category ("social-media/twitter") demoted via its parent:
+        # name visible, description gone.
+        compact = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
+        )
+        assert "thread-writer" in compact
+        assert "Write threads" not in compact
+        # Unfiltered call must not be served from the compacted cache entry.
+        full = build_skills_system_prompt()
+        assert "Write threads" in full
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
@@ -442,6 +640,7 @@ class TestBuildNousSubscriptionPrompt:
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
                     "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
                     "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                     "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
                 },
@@ -452,7 +651,7 @@ class TestBuildNousSubscriptionPrompt:
 
         assert "Browser Use" in prompt
         assert "Modal execution is optional" in prompt
-        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
+        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys" in prompt
 
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
@@ -467,6 +666,7 @@ class TestBuildNousSubscriptionPrompt:
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
                     "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, False, False, False, False, True, ""),
                     "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
                     "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
                 },
@@ -785,12 +985,51 @@ class TestPromptBuilderConstants:
 
     def test_platform_hints_known_platforms(self):
         assert "whatsapp" in PLATFORM_HINTS
+        assert "whatsapp_cloud" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+        assert "tui" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
+
+    def test_cli_and_tui_hints_flag_local_only_cron(self):
+        """#51568 — cron jobs from CLI/TUI sessions don't deliver back into
+        the session, so the agent must be told up front not to promise it."""
+        for key in ("cli", "tui"):
+            hint = PLATFORM_HINTS[key]
+            assert "LOCAL-ONLY" in hint
+            assert "deliver" in hint
+
+    def test_whatsapp_cloud_hint_mentions_24h_window(self):
+        """The Cloud API's 24-hour conversation window is a hard rule the
+        agent should know about. Phase 5 (template fallback) was deferred,
+        so the model needs to know free-form replies outside the window
+        will fail with Graph error 131047 — otherwise it'll cheerfully
+        try to schedule delayed messages that silently break."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "24-hour" in hint or "24h" in hint or "24 hour" in hint
+        assert "131047" in hint
+
+    def test_whatsapp_cloud_hint_advertises_media(self):
+        """Cloud adapter supports the same MEDIA:/path/ convention as
+        Baileys for outbound attachments."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "MEDIA:" in hint
+
+    def test_markdown_converting_platform_hints_do_not_forbid_markdown(self):
+        """#12224 — WhatsApp (Baileys) and Signal adapters actively convert
+        markdown to native formatting (gateway/platforms/whatsapp_common.py
+        format_message + signal_format.markdown_to_signal: bold, italic,
+        strikethrough, headers, bullets). Their hints previously told the
+        agent "do not use markdown", which made it strip bullets/bold the
+        adapter would have rendered. The hint must affirm markdown, not
+        forbid it."""
+        for key in ("whatsapp", "signal"):
+            hint = PLATFORM_HINTS[key]
+            assert "do not use markdown" not in hint.lower()
+            assert "markdown" in hint.lower()
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
@@ -809,6 +1048,23 @@ class TestPromptBuilderConstants:
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+
+    def test_telegram_hint_encourages_rich_markdown(self):
+        # Telegram Bot API 10.1 rich messages are default-on, so the hint must
+        # encourage native structured markdown instead of forbidding tables.
+        hint = PLATFORM_HINTS["telegram"]
+        lowered = hint.lower()
+        assert "Telegram has NO table syntax" not in hint
+        assert "rich markdown" in lowered
+        assert "table" in lowered
+        assert "task list" in lowered
+        assert "math" in lowered
+        # Hint should proactively steer toward structured formatting, not just
+        # permit it: bullet + numbered lists for scannable, structured output.
+        assert "bullet" in lowered
+        assert "numbered" in lowered
+        # Local media delivery guidance must remain intact.
+        assert "include MEDIA:" in hint
 
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
@@ -962,6 +1218,46 @@ class TestEnvironmentHints:
         assert "Terminal backend: modal" in result
         assert "Linux 6.8.0" in result
         assert "/workspace" in result
+
+    def test_probe_remote_backend_imports_real_factory(self, monkeypatch):
+        """Regression for #53667: the probe imported a nonexistent
+        ``get_environment`` from ``tools.environments`` and always died with
+        ``ImportError: cannot import name 'get_environment'`` (cosmetic — it
+        only dropped the live backend description to a static fallback). The
+        real factory is ``_create_environment`` in ``tools.terminal_tool``;
+        the probe must import and call THAT, returning a parsed line instead
+        of None."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/root\n"
+                        "cwd=/workspace\nuser=root\n"
+                    ),
+                }
+
+        created = {}
+
+        def _fake_create_environment(*, env_type, **kwargs):
+            created["env_type"] = env_type
+            return _FakeEnv()
+
+        # Patch the REAL factory in tools.terminal_tool — the probe imports it
+        # locally, so the import itself must succeed (the bug was here).
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        line = _pb._probe_remote_backend("docker")
+        assert created.get("env_type") == "docker"
+        assert line is not None
+        assert "Linux 6.8.0" in line
+        assert "root" in line
 
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
@@ -1263,6 +1559,49 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+class TestParallelToolCallGuidance:
+    """Behavior contracts for the universal parallel-tool-call guidance block.
+
+    Asserts the invariants the block must satisfy (steer batching, scope to
+    independent calls, stay short for the cached prompt) rather than freezing
+    its exact wording.
+    """
+
+    def test_is_nonempty_string(self):
+        assert isinstance(PARALLEL_TOOL_CALL_GUIDANCE, str)
+        assert PARALLEL_TOOL_CALL_GUIDANCE.strip()
+
+    def test_steers_batching_into_one_response(self):
+        text = PARALLEL_TOOL_CALL_GUIDANCE.lower()
+        # Must tell the model to group independent calls together — accept any
+        # phrasing that means "one turn" without freezing exact wording.
+        assert "single response" in text or ("same" in text and "turn" in text)
+        assert "independent" in text
+
+    def test_carves_out_dependent_calls(self):
+        # Must NOT tell the model to batch dependent calls — that would break
+        # ordering (read-before-patch). The block has to acknowledge the
+        # serialize-when-dependent case.
+        text = PARALLEL_TOOL_CALL_GUIDANCE.lower()
+        assert "depend" in text
+
+    def test_stays_short_for_cached_prompt(self):
+        # Shipped in every cached system prompt — keep it tight. The existing
+        # task-completion block is ~600 chars; allow generous headroom but
+        # guard against accidental essay growth.
+        assert len(PARALLEL_TOOL_CALL_GUIDANCE) < 900
+
+    def test_has_a_heading(self):
+        # Heading delimits it as its own section in the assembled prompt.
+        assert PARALLEL_TOOL_CALL_GUIDANCE.lstrip().startswith("#")
+
+    def test_not_duplicated_in_google_guidance(self):
+        # The universal block is now the single source of parallel-batching
+        # steer. The Google-only block must NOT carry its own copy, otherwise
+        # Gemini/Gemma would receive the instruction twice in one prompt.
+        assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
 
 
 # =========================================================================

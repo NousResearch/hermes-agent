@@ -175,6 +175,31 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
     assert "req_abc" not in sanitized
 
 
+def test_telegram_final_response_sanitizes_unexpected_status_auth_error():
+    """Provider 401 envelopes that start with "unexpected status" are errors."""
+    raw = (
+        "unexpected status 401 Unauthorized: Missing bearer or basic "
+        "authentication in header"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "authentication failed" in sanitized.lower()
+    assert "Missing bearer" not in sanitized
+    assert "401 Unauthorized" not in sanitized
+
+
+def test_telegram_final_response_keeps_prose_about_unexpected_status():
+    """Long explanatory prose mentioning unexpected status codes is normal text."""
+    answer = (
+        "If a service says unexpected status 401, it usually means the request "
+        "was not authenticated. Check whether your Authorization header was sent "
+        "and whether the token has expired before retrying the request."
+    )
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
 def test_telegram_final_response_redacts_auth_secrets():
     """Authentication errors should be useful without leaking key material."""
     raw = (

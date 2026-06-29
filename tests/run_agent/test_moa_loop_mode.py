@@ -1013,3 +1013,46 @@ moa:
     facade.consume_and_save_trace(session_id="sess-off")
 
     assert not (home / "moa-traces").exists()
+
+
+def test_reference_guidance_appended_at_end_in_tool_loop():
+    """In an agentic loop the reference block must land at the END of the prompt.
+
+    The most recent user turn is the original task near the top of the context;
+    merging the per-turn (volatile) reference block into it would diverge the
+    prompt prefix early and defeat the server's KV-cache reuse, forcing a full
+    re-prefill of the whole conversation on every tool-loop step.
+    """
+    from agent.moa_loop import _attach_reference_guidance
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "ORIGINAL TASK"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "tool result", "tool_call_id": "1"},
+    ]
+    _attach_reference_guidance(messages, "REFERENCE BLOCK")
+
+    # The original (top-of-context) user turn is untouched, so the prefix stays
+    # cache-reusable across steps.
+    assert messages[1]["content"] == "ORIGINAL TASK"
+    # The reference block is appended as a new trailing turn, not merged upstream.
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == "REFERENCE BLOCK"
+    assert len(messages) == 5
+
+
+def test_reference_guidance_merges_into_trailing_user_in_plain_chat():
+    """Plain chat ends on the user turn, so the block merges there (still at end)."""
+    from agent.moa_loop import _attach_reference_guidance
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "hello"},
+    ]
+    _attach_reference_guidance(messages, "REFERENCE BLOCK")
+
+    # No extra message; the block joins the trailing user turn (which is the end).
+    assert len(messages) == 2
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == "hello\n\nREFERENCE BLOCK"

@@ -254,6 +254,8 @@ _ONBOARD_OPEN_URLS = {
 }
 _REGISTRATION_PATH = "/oauth/v1/app/registration"
 _ONBOARD_REQUEST_TIMEOUT_S = 10
+_FEISHU_ONBOARD_JSON_BODY_MAX_BYTES = 1024 * 1024
+_FEISHU_ONBOARD_ERROR_BODY_MAX_BYTES = 64 * 1024
 
 # ---------------------------------------------------------------------------
 # Fallback display strings
@@ -4965,6 +4967,22 @@ def _onboard_open_base_url(domain: str) -> str:
     return _ONBOARD_OPEN_URLS.get(domain, _ONBOARD_OPEN_URLS["feishu"])
 
 
+class _FeishuOnboardResponseTooLarge(ValueError):
+    """Raised when a Feishu onboarding HTTP response exceeds its read cap."""
+
+
+def _read_onboard_response_body(resp: Any, limit: int, *, label: str) -> bytes:
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise _FeishuOnboardResponseTooLarge(f"{label} exceeded {limit} bytes")
+    return body
+
+
+def _read_onboard_json_response(resp: Any, *, limit: int, label: str) -> dict:
+    body = _read_onboard_response_body(resp, limit, label=label)
+    return json.loads(body.decode("utf-8"))
+
+
 def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
     """POST form-encoded data to the registration endpoint, return parsed JSON.
 
@@ -4977,9 +4995,20 @@ def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
     req = Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
         with urlopen(req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return _read_onboard_json_response(
+                resp,
+                limit=_FEISHU_ONBOARD_JSON_BODY_MAX_BYTES,
+                label="Feishu registration response body",
+            )
     except HTTPError as exc:
-        body_bytes = exc.read()
+        try:
+            body_bytes = _read_onboard_response_body(
+                exc,
+                _FEISHU_ONBOARD_ERROR_BODY_MAX_BYTES,
+                label="Feishu registration error response body",
+            )
+        except _FeishuOnboardResponseTooLarge:
+            raise exc from None
         if body_bytes:
             try:
                 return json.loads(body_bytes.decode("utf-8"))
@@ -5054,7 +5083,7 @@ def _poll_registration(
                 "device_code": device_code,
                 "tp": "ob_app",
             })
-        except (URLError, OSError, json.JSONDecodeError):
+        except (URLError, OSError, json.JSONDecodeError, _FeishuOnboardResponseTooLarge):
             time.sleep(interval)
             continue
 
@@ -5190,7 +5219,11 @@ def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]
             headers={"Content-Type": "application/json"},
         )
         with urlopen(token_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            token_res = json.loads(resp.read().decode("utf-8"))
+            token_res = _read_onboard_json_response(
+                resp,
+                limit=_FEISHU_ONBOARD_JSON_BODY_MAX_BYTES,
+                label="Feishu tenant token response body",
+            )
 
         access_token = token_res.get("tenant_access_token")
         if not access_token:
@@ -5204,10 +5237,14 @@ def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]
             },
         )
         with urlopen(bot_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            bot_res = json.loads(resp.read().decode("utf-8"))
+            bot_res = _read_onboard_json_response(
+                resp,
+                limit=_FEISHU_ONBOARD_JSON_BODY_MAX_BYTES,
+                label="Feishu bot info response body",
+            )
 
         return _parse_bot_response(bot_res)
-    except (URLError, OSError, KeyError, json.JSONDecodeError) as exc:
+    except (URLError, OSError, KeyError, json.JSONDecodeError, _FeishuOnboardResponseTooLarge) as exc:
         logger.debug("[Feishu onboard] HTTP probe failed: %s", exc)
         return None
 
@@ -5235,7 +5272,13 @@ def qr_register(
     """
     try:
         return _qr_register_inner(initial_domain=initial_domain, timeout_seconds=timeout_seconds)
-    except (RuntimeError, URLError, OSError, json.JSONDecodeError) as exc:
+    except (
+        RuntimeError,
+        URLError,
+        OSError,
+        json.JSONDecodeError,
+        _FeishuOnboardResponseTooLarge,
+    ) as exc:
         logger.warning("[Feishu onboard] Registration failed: %s", exc)
         return None
 

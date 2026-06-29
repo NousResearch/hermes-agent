@@ -10,6 +10,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from plugins.study_os.schemas import (
+    DEFAULT_PROMPT_POLICY,
+    PROJECT_ID_RE,
+    SCHEDULE_ID_RE,
+    validate_study_project,
+    validate_study_schedule,
+)
+
 try:
     import yaml
 except Exception:  # pragma: no cover - PyYAML is a project dependency.
@@ -88,6 +96,84 @@ def _study_dir(vault: Path) -> Path:
         raise ValueError(".StudyOS path escapes vault") from exc
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _study_projects_dir(vault: Path) -> Path:
+    path = _study_dir(vault) / "projects"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _validate_project_id(project_id: Any) -> str:
+    value = str(project_id or "").strip()
+    if not PROJECT_ID_RE.match(value):
+        raise ValueError("project_id must match ^[a-z0-9][a-z0-9-]{2,63}$")
+    return value
+
+
+def _validate_schedule_id(schedule_id: Any) -> str:
+    value = str(schedule_id or "").strip()
+    if not SCHEDULE_ID_RE.match(value):
+        raise ValueError("schedule_id must match ^[a-z0-9][a-z0-9-]{2,79}$")
+    return value
+
+
+def _project_dir(vault: Path, project_id: str) -> Path:
+    project_id = _validate_project_id(project_id)
+    path = (_study_projects_dir(vault) / project_id).resolve()
+    try:
+        path.relative_to(_study_projects_dir(vault))
+    except ValueError as exc:
+        raise ValueError(f"Project path escapes vault: {project_id}") from exc
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _active_project_path(vault: Path) -> Path:
+    return _study_projects_dir(vault) / "active.json"
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    data = json.loads(_read_text(path))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name} must contain a JSON object")
+    return data
+
+
+def _resolve_project_id(vault: Path, project_id: Any = None) -> str:
+    if project_id:
+        return _validate_project_id(project_id)
+    active_path = _active_project_path(vault)
+    if not active_path.exists():
+        raise FileNotFoundError("No active StudyOS project selected")
+    active = _read_json_file(active_path)
+    return _validate_project_id(active.get("project_id"))
+
+
+def _project_manifest_path(vault: Path, project_id: str) -> Path:
+    return _project_dir(vault, project_id) / "manifest.json"
+
+
+def _read_project_manifest(vault: Path, project_id: Any = None) -> dict[str, Any]:
+    resolved_id = _resolve_project_id(vault, project_id)
+    path = _project_manifest_path(vault, resolved_id)
+    if not path.exists():
+        raise FileNotFoundError(f"StudyOS project not found: {resolved_id}")
+    data = _read_json_file(path)
+    ok, validated = validate_study_project(data)
+    if not ok:
+        raise ValueError("; ".join(validated))
+    return validated
+
+
+def _schedule_dir(vault: Path, project_id: str) -> Path:
+    path = _project_dir(vault, project_id) / "schedules"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _schedule_path(vault: Path, project_id: str, schedule_id: str) -> Path:
+    return _schedule_dir(vault, project_id) / f"{_validate_schedule_id(schedule_id)}.json"
 
 
 def _read_text(path: Path) -> str:
@@ -2287,5 +2373,350 @@ STUDY_LIST_CURRICULA_SCHEMA = {
             "vault_path": _VAULT_PROP,
             "topic": {"type": "string", "description": "Filter by topic name."},
         },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# StudyOS projects, schedules, and prompt context
+# ---------------------------------------------------------------------------
+
+_PROJECT_DEFAULT_SUBJECTS = [
+    {"id": "math", "label": "数学", "target_score": 120},
+    {"id": "english", "label": "英语一", "target_score": 75},
+    {"id": "politics", "label": "政治", "target_score": 75},
+]
+
+_VALID_PROMPT_INTENTS = {
+    "planning",
+    "organizing",
+    "reviewing",
+    "assessment",
+    "error_analysis",
+    "schedule_adjustment",
+}
+
+_INTENT_SKILL = {
+    "planning": "study-plan",
+    "schedule_adjustment": "study-plan",
+    "organizing": "study-organize",
+    "reviewing": "study-review",
+    "assessment": "study-assessment",
+    "error_analysis": "study-assessment",
+}
+
+
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _default_project_manifest(args: dict[str, Any]) -> dict[str, Any]:
+    now = _now_iso()
+    return {
+        "schema_version": "study_project.v1",
+        "project_id": str(args.get("project_id") or "kaoyan-2027").strip(),
+        "title": str(args.get("title") or "2027 考研学习计划").strip(),
+        "domain": str(args.get("domain") or "kaoyan").strip(),
+        "exam_type": str(args.get("exam_type") or "考研").strip(),
+        "exam_date": str(args.get("exam_date") or "2027-12-20").strip(),
+        "timezone": str(args.get("timezone") or "Asia/Shanghai").strip(),
+        "phase": str(args.get("phase") or "foundation").strip(),
+        "domain_pack": str(args.get("domain_pack") or "kaoyan.v1").strip(),
+        "subjects": args.get("subjects") if isinstance(args.get("subjects"), list) else list(_PROJECT_DEFAULT_SUBJECTS),
+        "prompt_policy": dict(DEFAULT_PROMPT_POLICY),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def handle_study_project(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        action = str(args.get("action") or "status").strip()
+        if action == "init":
+            manifest = _default_project_manifest(args)
+            ok, validated = validate_study_project(manifest)
+            if not ok:
+                return _err("VALIDATION_FAILED", "; ".join(validated))
+            project_id = validated["project_id"]
+            manifest_path = _project_manifest_path(vault, project_id)
+            _write_text(manifest_path, _json(validated))
+            active_path = _active_project_path(vault)
+            _write_text(active_path, _json({"project_id": project_id}))
+            return _ok(
+                {
+                    "project": validated,
+                    "path": manifest_path.relative_to(vault).as_posix(),
+                    "active_path": active_path.relative_to(vault).as_posix(),
+                }
+            )
+        if action == "select":
+            project_id = _validate_project_id(args.get("project_id"))
+            manifest = _read_project_manifest(vault, project_id)
+            active_path = _active_project_path(vault)
+            _write_text(active_path, _json({"project_id": project_id}))
+            return _ok({"project": manifest, "active_path": active_path.relative_to(vault).as_posix()})
+        if action == "status":
+            manifest = _read_project_manifest(vault, args.get("project_id"))
+            project_id = manifest["project_id"]
+            prompt_summary = _project_dir(vault, project_id) / "prompt_summary.md"
+            schedules = sorted(_schedule_dir(vault, project_id).glob("*.json"))
+            return _ok(
+                {
+                    "project": manifest,
+                    "active": _resolve_project_id(vault, None) == project_id if _active_project_path(vault).exists() else False,
+                    "prompt_summary_exists": prompt_summary.exists(),
+                    "schedule_count": len(schedules),
+                }
+            )
+        if action == "update_prompt_summary":
+            manifest = _read_project_manifest(vault, args.get("project_id"))
+            summary = str(args.get("summary") or "")
+            max_chars = int(manifest.get("prompt_policy", {}).get("project_summary_max_chars", 1200))
+            warnings: list[str] = []
+            if len(summary) > max_chars:
+                summary = summary[:max_chars]
+                warnings.append(f"summary truncated to {max_chars} characters")
+            path = _project_dir(vault, manifest["project_id"]) / "prompt_summary.md"
+            _write_text(path, summary)
+            return _ok({"project_id": manifest["project_id"], "path": path.relative_to(vault).as_posix(), "char_count": len(summary)}, warnings)
+        return _err("INVALID_ACTION", f"Unsupported study_project action: {action}")
+    except ValueError as exc:
+        return _err("VALIDATION_FAILED", str(exc))
+    except FileNotFoundError as exc:
+        return _err("PROJECT_NOT_FOUND", str(exc))
+    except Exception as exc:
+        return _err("STUDY_PROJECT_FAILED", str(exc))
+
+
+def _schedule_template(project: dict[str, Any]) -> dict[str, Any]:
+    project_id = project["project_id"]
+    return {
+        "schema_version": "study_schedule.v1",
+        "schedule_id": f"{project_id}-master-plan",
+        "project_id": project_id,
+        "title": f"{project.get('title', project_id)} 学习计划",
+        "timezone": project.get("timezone", "Asia/Shanghai"),
+        "range": {"start": "2026-07-01", "end": "2026-07-31"},
+        "phases": [
+            {
+                "id": project.get("phase", "foundation"),
+                "title": "基础阶段",
+                "start": "2026-07-01",
+                "end": "2026-09-30",
+                "goal": "完成核心考点覆盖",
+            }
+        ],
+        "events": [
+            {
+                "id": "evt-20260701-math-derivative",
+                "title": "数学：导数定义整理",
+                "subject_id": "math",
+                "type": "learning",
+                "start": "2026-07-01T19:00:00+08:00",
+                "end": "2026-07-01T21:00:00+08:00",
+                "duration_minutes": 120,
+                "goals": ["整理导数定义例题"],
+                "source_curriculum": "一元函数微分学",
+                "status": "planned",
+            }
+        ],
+    }
+
+
+def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        action = str(args.get("action") or "list").strip()
+        if action == "template":
+            project = _read_project_manifest(vault, args.get("project_id"))
+            return _ok({"schedule": _schedule_template(project)})
+        if action == "validate":
+            project = _read_project_manifest(vault, args.get("project_id") or (args.get("data") or {}).get("project_id"))
+            data = args.get("data")
+            ok, validated = validate_study_schedule(data, project=project)
+            if not ok:
+                return _err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
+            return _ok({"schedule": validated})
+        if action == "save":
+            data = args.get("data")
+            if not isinstance(data, dict):
+                return _err("VALIDATION_FAILED", "data must be a JSON object")
+            project = _read_project_manifest(vault, args.get("project_id") or data.get("project_id"))
+            ok, validated = validate_study_schedule(data, project=project)
+            if not ok:
+                return _err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
+            path = _schedule_path(vault, project["project_id"], validated["schedule_id"])
+            _write_text(path, _json(validated))
+            return _ok({"schedule": validated, "path": path.relative_to(vault).as_posix()})
+        if action == "list":
+            project = _read_project_manifest(vault, args.get("project_id"))
+            schedules = []
+            for path in sorted(_schedule_dir(vault, project["project_id"]).glob("*.json")):
+                try:
+                    data = _read_json_file(path)
+                    ok, validated = validate_study_schedule(data, project=project)
+                    if not ok:
+                        continue
+                    schedules.append(
+                        {
+                            "schedule_id": validated["schedule_id"],
+                            "project_id": validated["project_id"],
+                            "title": validated["title"],
+                            "timezone": validated["timezone"],
+                            "range": validated["range"],
+                            "event_count": len(validated.get("events", [])),
+                            "path": path.relative_to(vault).as_posix(),
+                        }
+                    )
+                except Exception:
+                    continue
+            return _ok({"project_id": project["project_id"], "schedules": schedules})
+        if action == "read":
+            project = _read_project_manifest(vault, args.get("project_id"))
+            schedule_id = _validate_schedule_id(args.get("schedule_id"))
+            path = _schedule_path(vault, project["project_id"], schedule_id)
+            if not path.exists():
+                return _err("SCHEDULE_NOT_FOUND", f"StudyOS schedule not found: {schedule_id}")
+            data = _read_json_file(path)
+            ok, validated = validate_study_schedule(data, project=project)
+            if not ok:
+                return _err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
+            return _ok({"schedule": validated, "path": path.relative_to(vault).as_posix()})
+        return _err("INVALID_ACTION", f"Unsupported study_schedule action: {action}")
+    except ValueError as exc:
+        return _err("VALIDATION_FAILED", str(exc))
+    except FileNotFoundError as exc:
+        return _err("PROJECT_NOT_FOUND", str(exc))
+    except Exception as exc:
+        return _err("STUDY_SCHEDULE_FAILED", str(exc))
+
+
+def _skill_path(skill_name: str) -> Path:
+    return Path(__file__).resolve().parent / "skills" / skill_name / "SKILL.md"
+
+
+def _read_prompt_fragment(kind: str, path: Path, max_chars: int) -> tuple[dict[str, Any] | None, str | None]:
+    if not path.exists():
+        return None, f"{kind} prompt source missing: {path.relative_to(Path(__file__).resolve().parent)}"
+    content = _read_text(path)
+    if len(content) > max_chars:
+        return None, f"{kind} prompt source exceeds {max_chars} characters"
+    return {"kind": kind, "source": path.as_posix(), "char_count": len(content), "content": content}, None
+
+
+def handle_study_prompt_context(args: dict[str, Any], **_kwargs) -> str:
+    try:
+        vault = resolve_vault_path(args.get("vault_path"))
+        intent = str(args.get("intent") or "").strip()
+        if intent not in _VALID_PROMPT_INTENTS:
+            return _err("INVALID_INTENT", f"Unsupported StudyOS intent: {intent}")
+        project = _read_project_manifest(vault, args.get("project_id"))
+        policy = {**DEFAULT_PROMPT_POLICY, **project.get("prompt_policy", {})}
+        domain_pack = str(args.get("domain_pack") or project.get("domain_pack") or "").strip()
+        fragments: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for kind, path, cap in (
+            ("base", _skill_path("study-os"), int(policy["base_max_chars"])),
+            ("intent", _skill_path(_INTENT_SKILL[intent]), int(policy["intent_max_chars"])),
+        ):
+            fragment, warning = _read_prompt_fragment(kind, path, cap)
+            if warning:
+                return _err("PROMPT_CONTEXT_TOO_LARGE" if "exceeds" in warning else "PROMPT_CONTEXT_SOURCE_MISSING", warning)
+            if fragment:
+                fragments.append(fragment)
+        if domain_pack == "kaoyan.v1":
+            fragment, warning = _read_prompt_fragment("domain", _skill_path("study-kaoyan"), int(policy["domain_max_chars"]))
+            if warning:
+                return _err("PROMPT_CONTEXT_TOO_LARGE" if "exceeds" in warning else "PROMPT_CONTEXT_SOURCE_MISSING", warning)
+            if fragment:
+                fragments.append(fragment)
+        summary_path = _project_dir(vault, project["project_id"]) / "prompt_summary.md"
+        if summary_path.exists():
+            content = _read_text(summary_path)
+            max_chars = int(policy["project_summary_max_chars"])
+            if len(content) > max_chars:
+                content = content[:max_chars]
+                warnings.append(f"project_summary truncated to {max_chars} characters")
+            fragments.append(
+                {
+                    "kind": "project_summary",
+                    "source": summary_path.relative_to(vault).as_posix(),
+                    "char_count": len(content),
+                    "content": content,
+                }
+            )
+        total = sum(fragment["char_count"] for fragment in fragments)
+        if total > int(policy["total_max_chars"]):
+            return _err("PROMPT_CONTEXT_TOO_LARGE", f"prompt context exceeds {policy['total_max_chars']} total characters")
+        return _ok(
+            {
+                "intent": intent,
+                "project_id": project["project_id"],
+                "domain_pack": domain_pack,
+                "fragments": fragments,
+                "total_char_count": total,
+            },
+            warnings,
+        )
+    except ValueError as exc:
+        return _err("VALIDATION_FAILED", str(exc))
+    except FileNotFoundError as exc:
+        return _err("PROJECT_NOT_FOUND", str(exc))
+    except Exception as exc:
+        return _err("STUDY_PROMPT_CONTEXT_FAILED", str(exc))
+
+
+STUDY_PROJECT_SCHEMA = {
+    "description": "Manage versioned StudyOS learning projects under the current vault.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "action": {"type": "string", "enum": ["init", "select", "status", "update_prompt_summary"]},
+            "project_id": {"type": "string", "description": "StudyOS project id, e.g. kaoyan-2027."},
+            "title": {"type": "string"},
+            "domain": {"type": "string"},
+            "exam_type": {"type": "string"},
+            "exam_date": {"type": "string"},
+            "timezone": {"type": "string"},
+            "phase": {"type": "string"},
+            "domain_pack": {"type": "string"},
+            "subjects": {"type": "array", "items": {"type": "object"}},
+            "summary": {"type": "string", "description": "Prompt summary markdown for update_prompt_summary."},
+        },
+        "required": ["action"],
+    },
+}
+
+STUDY_SCHEDULE_SCHEMA = {
+    "description": "Template, validate, save, list, or read validated StudyOS schedule artifacts.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "action": {"type": "string", "enum": ["template", "validate", "save", "list", "read"]},
+            "project_id": {"type": "string"},
+            "schedule_id": {"type": "string"},
+            "data": {"type": "object", "description": "study_schedule.v1 artifact for validate/save."},
+        },
+        "required": ["action"],
+    },
+}
+
+STUDY_PROMPT_CONTEXT_SCHEMA = {
+    "description": "Return capped StudyOS prompt fragments for one project intent without mutating prompts.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault_path": _VAULT_PROP,
+            "intent": {
+                "type": "string",
+                "enum": ["planning", "organizing", "reviewing", "assessment", "error_analysis", "schedule_adjustment"],
+            },
+            "project_id": {"type": "string"},
+            "domain_pack": {"type": "string"},
+        },
+        "required": ["intent"],
     },
 }

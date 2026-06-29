@@ -35,7 +35,7 @@ import {
 } from '@/store/updates'
 import type { StatusResponse } from '@/types/hermes'
 
-import { CRON_ROUTE } from '../../routes'
+import { CRON_ROUTE, STUDY_ROUTE } from '../../routes'
 import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
@@ -330,6 +330,14 @@ export function useStatusbarItems({
         label: copy.cron,
         title: copy.openCron,
         to: CRON_ROUTE,
+        variant: 'action'
+      },
+      {
+        icon: <Codicon name="book" size="0.75rem" />,
+        id: 'study',
+        label: 'StudyOS',
+        title: 'Open StudyOS',
+        to: STUDY_ROUTE,
         variant: 'action'
       }
     ],

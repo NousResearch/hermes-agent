@@ -68,6 +68,418 @@ def _loads(result: str) -> dict:
     return json.loads(result)
 
 
+def _valid_study_project() -> dict:
+    return {
+        "schema_version": "study_project.v1",
+        "project_id": "kaoyan-2027",
+        "title": "2027 考研学习计划",
+        "domain": "kaoyan",
+        "exam_type": "考研",
+        "exam_date": "2027-12-20",
+        "timezone": "Asia/Shanghai",
+        "phase": "foundation",
+        "domain_pack": "kaoyan.v1",
+        "subjects": [
+            {"id": "math", "label": "数学", "target_score": 120},
+            {"id": "english", "label": "英语一", "target_score": 75},
+            {"id": "politics", "label": "政治", "target_score": 75},
+        ],
+        "prompt_policy": {
+            "base_max_chars": 2000,
+            "intent_max_chars": 2500,
+            "domain_max_chars": 2000,
+            "project_summary_max_chars": 1200,
+            "total_max_chars": 6000,
+            "updates_apply": "next_session",
+        },
+        "created_at": "2026-06-28T00:00:00+08:00",
+        "updated_at": "2026-06-28T00:00:00+08:00",
+    }
+
+
+def _valid_study_schedule() -> dict:
+    return {
+        "schema_version": "study_schedule.v1",
+        "schedule_id": "kaoyan-2027-master-plan",
+        "project_id": "kaoyan-2027",
+        "title": "2027 考研数学基础阶段计划",
+        "timezone": "Asia/Shanghai",
+        "range": {"start": "2026-07-01", "end": "2026-07-31"},
+        "phases": [
+            {
+                "id": "foundation",
+                "title": "基础阶段",
+                "start": "2026-07-01",
+                "end": "2026-09-30",
+                "goal": "完成核心考点覆盖",
+            }
+        ],
+        "events": [
+            {
+                "id": "evt-20260701-math-derivative",
+                "title": "数学：导数定义整理",
+                "subject_id": "math",
+                "type": "learning",
+                "start": "2026-07-01T19:00:00+08:00",
+                "end": "2026-07-01T21:00:00+08:00",
+                "duration_minutes": 120,
+                "goals": ["整理导数定义例题"],
+                "source_curriculum": "一元函数微分学",
+                "status": "planned",
+            }
+        ],
+    }
+
+
+def test_study_project_schema_accepts_kaoyan_manifest():
+    from plugins.study_os.schemas import validate_study_project
+
+    project = _valid_study_project()
+    project["unknown_future_field"] = {"kept": True}
+
+    ok, data_or_errors = validate_study_project(project)
+
+    assert ok is True
+    assert data_or_errors is project
+    assert data_or_errors["unknown_future_field"] == {"kept": True}
+
+
+@pytest.mark.parametrize("project_id", ["../bad", "Kaoyan", "xy"])
+def test_study_project_schema_rejects_invalid_project_ids(project_id: str):
+    from plugins.study_os.schemas import validate_study_project
+
+    project = _valid_study_project()
+    project["project_id"] = project_id
+
+    ok, errors = validate_study_project(project)
+
+    assert ok is False
+    assert any("project_id must match" in error for error in errors)
+
+
+def test_study_schedule_schema_accepts_kaoyan_schedule():
+    from plugins.study_os.schemas import validate_study_schedule
+
+    schedule = _valid_study_schedule()
+    schedule["unknown_future_field"] = "kept"
+
+    ok, data_or_errors = validate_study_schedule(schedule, project=_valid_study_project())
+
+    assert ok is True
+    assert data_or_errors is schedule
+    assert data_or_errors["unknown_future_field"] == "kept"
+
+
+def test_study_schedule_schema_rejects_datetime_without_timezone():
+    from plugins.study_os.schemas import validate_study_schedule
+
+    schedule = _valid_study_schedule()
+    schedule["events"][0]["start"] = "2026-07-01T19:00:00"
+
+    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+
+    assert ok is False
+    assert "events[0].start must include timezone offset" in errors
+
+
+def test_study_schedule_schema_rejects_mismatched_cross_midnight_duration():
+    from plugins.study_os.schemas import validate_study_schedule
+
+    schedule = _valid_study_schedule()
+    schedule["events"][0]["start"] = "2026-07-01T23:30:00+08:00"
+    schedule["events"][0]["end"] = "2026-07-02T00:15:00+08:00"
+    schedule["events"][0]["duration_minutes"] = 120
+
+    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+
+    assert ok is False
+    assert "events[0].duration_minutes does not match start/end" in errors
+
+
+def test_study_schedule_schema_rejects_unknown_project_subject():
+    from plugins.study_os.schemas import validate_study_schedule
+
+    schedule = _valid_study_schedule()
+    schedule["events"][0]["subject_id"] = "physics"
+
+    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+
+    assert ok is False
+    assert "events[0].subject_id must exist in project subjects" in errors
+
+
+def test_study_project_init_and_schedule_save(vault: Path):
+    from plugins.study_os.tools import handle_study_project, handle_study_schedule
+
+    init = _loads(handle_study_project({"vault_path": str(vault), "action": "init"}))
+    status = _loads(handle_study_project({"vault_path": str(vault), "action": "status"}))
+    schedule = _valid_study_schedule()
+    save = _loads(handle_study_schedule({"vault_path": str(vault), "action": "save", "data": schedule}))
+    read = _loads(
+        handle_study_schedule(
+            {
+                "vault_path": str(vault),
+                "action": "read",
+                "project_id": "kaoyan-2027",
+                "schedule_id": "kaoyan-2027-master-plan",
+            }
+        )
+    )
+
+    assert init["ok"] is True
+    assert init["data"]["path"] == ".StudyOS/projects/kaoyan-2027/manifest.json"
+    assert init["data"]["active_path"] == ".StudyOS/projects/active.json"
+    assert status["ok"] is True
+    assert status["data"]["project"]["project_id"] == "kaoyan-2027"
+    assert save["ok"] is True
+    assert save["data"]["path"] == ".StudyOS/projects/kaoyan-2027/schedules/kaoyan-2027-master-plan.json"
+    assert read["ok"] is True
+    assert read["data"]["schedule"]["events"][0]["title"] == "数学：导数定义整理"
+    assert (vault / ".StudyOS" / "projects" / "kaoyan-2027" / "manifest.json").exists()
+    assert (vault / ".StudyOS" / "projects" / "active.json").exists()
+    assert (vault / ".StudyOS" / "projects" / "kaoyan-2027" / "schedules" / "kaoyan-2027-master-plan.json").exists()
+
+
+def test_study_schedule_read_returns_not_found(vault: Path):
+    from plugins.study_os.tools import handle_study_project, handle_study_schedule
+
+    init = _loads(handle_study_project({"vault_path": str(vault), "action": "init"}))
+    missing = _loads(
+        handle_study_schedule(
+            {
+                "vault_path": str(vault),
+                "action": "read",
+                "project_id": "kaoyan-2027",
+                "schedule_id": "kaoyan-2027-missing",
+            }
+        )
+    )
+
+    assert init["ok"] is True
+    assert missing["ok"] is False
+    assert missing["error"]["code"] == "SCHEDULE_NOT_FOUND"
+
+
+def test_study_project_and_prompt_context_reject_invalid_inputs(vault: Path):
+    from plugins.study_os.tools import handle_study_project, handle_study_prompt_context
+
+    traversal = _loads(handle_study_project({"vault_path": str(vault), "action": "init", "project_id": "../escape"}))
+    invalid_intent = _loads(
+        handle_study_prompt_context(
+            {
+                "vault_path": str(vault),
+                "intent": "motivation-hype",
+                "project_id": "kaoyan-2027",
+            }
+        )
+    )
+
+    assert traversal["ok"] is False
+    assert traversal["error"]["code"] == "VALIDATION_FAILED"
+    assert invalid_intent["ok"] is False
+    assert invalid_intent["error"]["code"] == "INVALID_INTENT"
+    assert not (vault.parent / "escape").exists()
+
+
+def test_study_prompt_context_truncates_project_summary(vault: Path):
+    from plugins.study_os.tools import handle_study_project, handle_study_prompt_context
+
+    init = _loads(
+        handle_study_project(
+            {
+                "vault_path": str(vault),
+                "action": "init",
+                "project_id": "general-2027",
+                "domain": "general",
+                "domain_pack": "general.v1",
+            }
+        )
+    )
+    summary = _loads(
+        handle_study_project(
+            {
+                "vault_path": str(vault),
+                "action": "update_prompt_summary",
+                "project_id": "general-2027",
+                "summary": "x" * 2000,
+            }
+        )
+    )
+    context = _loads(
+        handle_study_prompt_context(
+            {
+                "vault_path": str(vault),
+                "intent": "reviewing",
+                "project_id": "general-2027",
+            }
+        )
+    )
+
+    assert init["ok"] is True
+    assert summary["ok"] is True
+    assert summary["warnings"] == ["summary truncated to 1200 characters"]
+    (vault / ".StudyOS" / "projects" / "general-2027" / "prompt_summary.md").write_text("y" * 2000, encoding="utf-8")
+    context = _loads(
+        handle_study_prompt_context(
+            {
+                "vault_path": str(vault),
+                "intent": "reviewing",
+                "project_id": "general-2027",
+            }
+        )
+    )
+    assert context["ok"] is True
+    assert context["warnings"] == ["project_summary truncated to 1200 characters"]
+    fragments = {fragment["kind"]: fragment for fragment in context["data"]["fragments"]}
+    assert fragments["project_summary"]["char_count"] == 1200
+
+
+def test_study_os_registers_modular_skills(monkeypatch):
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from plugins import study_os
+    from tools.registry import registry
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    manifest = PluginManifest(name="study_os", version="0.1.0", description="study", source="bundled")
+    ctx = PluginContext(manifest, manager)
+
+    try:
+        study_os.register(ctx)
+        for name in (
+            "study-os",
+            "study-plan",
+            "study-organize",
+            "study-review",
+            "study-assessment",
+            "study-kaoyan",
+        ):
+            assert manager.find_plugin_skill(f"study_os:{name}") is not None
+    finally:
+        for name in (
+            "study_list_notes",
+            "study_read_note",
+            "study_extract_concepts",
+            "study_log_error",
+            "study_create_review_task",
+            "study_generate_weekly_report",
+            "study_export_anki_candidates",
+            "study_due_reviews",
+            "study_record_review",
+            "study_sync_memory",
+            "study_concept_graph",
+            "study_review_stats",
+            "study_learning_queue",
+            "study_log_session",
+            "study_update_concept_state",
+            "study_import_plan",
+            "study_plan_progress",
+            "study_create_curriculum",
+            "study_list_curricula",
+            "study_project",
+            "study_schedule",
+            "study_prompt_context",
+        ):
+            registry.deregister(name)
+
+
+def test_study_os_skill_descriptions_and_budgets(monkeypatch):
+    from hermes_cli import plugins as plugins_mod
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from plugins import study_os
+    from tools.registry import registry
+
+    manager = PluginManager()
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    manifest = PluginManifest(name="study_os", version="0.1.0", description="study", source="bundled")
+    ctx = PluginContext(manifest, manager)
+
+    try:
+        study_os.register(ctx)
+        expected = {
+            "study-os": ("Route StudyOS learning workflows.", 6000),
+            "study-plan": ("Plan StudyOS projects and schedules.", 9000),
+            "study-organize": ("Organize problems into StudyOS notes.", 9000),
+            "study-review": ("Run StudyOS spaced repetition reviews.", 9000),
+            "study-assessment": ("Analyze StudyOS exams and mistakes.", 9000),
+            "study-kaoyan": ("Guide 考研 learning with StudyOS.", 9000),
+        }
+        all_text = ""
+        for name, (description, max_chars) in expected.items():
+            entry = manager._plugin_skills[f"study_os:{name}"]
+            assert entry["description"] == description
+            assert len(description) <= 60
+            assert description.endswith(".")
+            assert description.count(".") == 1
+            body = Path(entry["path"]).read_text(encoding="utf-8")
+            all_text += body
+            assert len(body) <= max_chars, name
+            assert "study_prompt_context" in body
+            assert "mutate system prompts" in body
+        for term in ("艾宾浩斯", "整理", "错题", "weekly", "curriculum", "考研"):
+            assert term in all_text
+    finally:
+        for name in (
+            "study_list_notes",
+            "study_read_note",
+            "study_extract_concepts",
+            "study_log_error",
+            "study_create_review_task",
+            "study_generate_weekly_report",
+            "study_export_anki_candidates",
+            "study_due_reviews",
+            "study_record_review",
+            "study_sync_memory",
+            "study_concept_graph",
+            "study_review_stats",
+            "study_learning_queue",
+            "study_log_session",
+            "study_update_concept_state",
+            "study_import_plan",
+            "study_plan_progress",
+            "study_create_curriculum",
+            "study_list_curricula",
+            "study_project",
+            "study_schedule",
+            "study_prompt_context",
+        ):
+            registry.deregister(name)
+
+
+def test_study_toolset_is_opt_in():
+    from toolsets import TOOLSETS, _HERMES_CORE_TOOLS
+
+    expected_tools = [
+        "study_list_notes",
+        "study_read_note",
+        "study_extract_concepts",
+        "study_log_error",
+        "study_create_review_task",
+        "study_generate_weekly_report",
+        "study_export_anki_candidates",
+        "study_due_reviews",
+        "study_record_review",
+        "study_sync_memory",
+        "study_concept_graph",
+        "study_review_stats",
+        "study_learning_queue",
+        "study_log_session",
+        "study_update_concept_state",
+        "study_import_plan",
+        "study_plan_progress",
+        "study_create_curriculum",
+        "study_list_curricula",
+        "study_project",
+        "study_schedule",
+        "study_prompt_context",
+    ]
+
+    assert TOOLSETS["study"]["tools"] == expected_tools
+    for tool in expected_tools:
+        assert tool not in _HERMES_CORE_TOOLS
+
+
 def test_list_notes_reads_obsidian_frontmatter(vault: Path):
     from plugins.study_os.tools import handle_study_list_notes
 
@@ -250,6 +662,9 @@ def test_plugin_registers_tools_and_skill(monkeypatch):
         assert registry.get_toolset_for_tool("study_plan_progress") == "study"
         assert registry.get_toolset_for_tool("study_create_curriculum") == "study"
         assert registry.get_toolset_for_tool("study_list_curricula") == "study"
+        assert registry.get_toolset_for_tool("study_project") == "study"
+        assert registry.get_toolset_for_tool("study_schedule") == "study"
+        assert registry.get_toolset_for_tool("study_prompt_context") == "study"
         assert manager.find_plugin_skill("study_os:study-os") is not None
     finally:
         for name in (
@@ -272,5 +687,8 @@ def test_plugin_registers_tools_and_skill(monkeypatch):
             "study_plan_progress",
             "study_create_curriculum",
             "study_list_curricula",
+            "study_project",
+            "study_schedule",
+            "study_prompt_context",
         ):
             registry.deregister(name)

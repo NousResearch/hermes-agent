@@ -10,7 +10,7 @@ describe('isDesktopToolsetVisible', () => {
   })
 
   it('keeps ordinary user-facing toolsets', () => {
-    for (const name of ['web', 'browser', 'terminal', 'file', 'memory', 'vision', 'image_gen']) {
+    for (const name of ['web', 'browser', 'terminal', 'file', 'memory', 'vision', 'image_gen', 'study']) {
       expect(isDesktopToolsetVisible(name)).toBe(true)
     }
   })

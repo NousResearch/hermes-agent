@@ -212,6 +212,35 @@ TOOLSETS = {
         "includes": []
     },
 
+    "study": {
+        "description": "StudyOS learning tools for Obsidian notes, projects, curricula, reviews, and schedules",
+        "tools": [
+            "study_list_notes",
+            "study_read_note",
+            "study_extract_concepts",
+            "study_log_error",
+            "study_create_review_task",
+            "study_generate_weekly_report",
+            "study_export_anki_candidates",
+            "study_due_reviews",
+            "study_record_review",
+            "study_sync_memory",
+            "study_concept_graph",
+            "study_review_stats",
+            "study_learning_queue",
+            "study_log_session",
+            "study_update_concept_state",
+            "study_import_plan",
+            "study_plan_progress",
+            "study_create_curriculum",
+            "study_list_curricula",
+            "study_project",
+            "study_schedule",
+            "study_prompt_context",
+        ],
+        "includes": []
+    },
+
     "context_engine": {
         "description": "Runtime tools exposed by the active context engine",
         "tools": [],

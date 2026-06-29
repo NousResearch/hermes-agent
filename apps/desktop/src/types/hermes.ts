@@ -45,6 +45,168 @@ export interface OAuthProviderStatus {
   token_preview?: null | string
 }
 
+export interface StudySubject {
+  id: string
+  label: string
+  target_score?: number
+}
+
+export interface StudyProject {
+  schema_version: 'study_project.v1'
+  project_id: string
+  title: string
+  domain: string
+  exam_type: string
+  exam_date: string
+  timezone: string
+  phase: string
+  domain_pack: string
+  subjects: StudySubject[]
+  prompt_policy: {
+    base_max_chars: number
+    intent_max_chars: number
+    domain_max_chars: number
+    project_summary_max_chars: number
+    total_max_chars: number
+    updates_apply: 'next_session'
+  }
+  created_at: string
+  updated_at: string
+  [key: string]: unknown
+}
+
+export interface StudySchedulePhase {
+  id: string
+  title: string
+  start: string
+  end: string
+  goal: string
+}
+
+export interface StudyScheduleEvent {
+  id: string
+  title: string
+  subject_id: string
+  type: string
+  start: string
+  end: string
+  duration_minutes: number
+  goals: string[]
+  source_curriculum?: string
+  status: string
+  [key: string]: unknown
+}
+
+export interface StudySchedule {
+  schema_version: 'study_schedule.v1'
+  schedule_id: string
+  project_id: string
+  title: string
+  timezone: string
+  range: {
+    start: string
+    end: string
+  }
+  phases: StudySchedulePhase[]
+  events: StudyScheduleEvent[]
+  [key: string]: unknown
+}
+
+export interface StudyScheduleSummary {
+  schedule_id: string
+  project_id: string
+  title: string
+  timezone: string
+  range: {
+    start: string
+    end: string
+  }
+  event_count: number
+}
+
+export interface StudyProjectsResponse {
+  configured: boolean
+  message?: string
+  projects: StudyProject[]
+  vault_path?: string
+}
+
+export interface StudySchedulesResponse {
+  project_id: string
+  schedules: StudyScheduleSummary[]
+}
+
+export interface StudyReviewItem {
+  path: string
+  title: string
+  review_level: number
+  review_count: number
+  last_reviewed_at: string | null
+  next_review_at: string | null
+  concepts: string[]
+  tags: string[]
+  difficulty: string | null
+}
+
+export interface StudyReviewDueResponse {
+  vault_path: string | null
+  configured: boolean
+  date: string
+  count: number
+  due: StudyReviewItem[]
+}
+
+export interface StudyReviewStatsResponse {
+  total: number
+  by_level: Record<string, number>
+  progress: number
+  concept_stats: Record<
+    string,
+    { avg: number; min: number; max: number; count: number; due: number }
+  >
+  review_streak: number
+  due_count: number
+  cached: boolean
+}
+
+export interface StudyLearningItem {
+  path: string
+  title: string
+  review_level?: number
+  difficulty?: string | null
+  concepts?: string[]
+  tags?: string[]
+  source?: string | null
+  learning_state?: string
+  prerequisites?: string[]
+}
+
+export interface StudyReviewQueueResponse {
+  vault_path: string
+  new_concepts: StudyLearningItem[]
+  new_concepts_total: number
+  new_examples: StudyLearningItem[]
+  new_examples_total: number
+}
+
+export interface StudyConceptNode {
+  title: string
+  learning_state: string
+  prerequisites: string[]
+  example_count: number
+  avg_level: number
+}
+
+export interface StudyReviewConceptsResponse {
+  concepts: StudyConceptNode[]
+}
+
+export interface StudyProfile {
+  daily_review_limit: number
+  review_level_filter: number | null
+  subject_filter: string | null
+}
+
 export interface OAuthProvider {
   cli_command: string
   /** Shell command that clears an external provider's credentials, run in the

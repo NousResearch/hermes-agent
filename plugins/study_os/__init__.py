@@ -24,9 +24,12 @@ from plugins.study_os.tools import (
     STUDY_LOG_ERROR_SCHEMA,
     STUDY_LOG_SESSION_SCHEMA,
     STUDY_PLAN_PROGRESS_SCHEMA,
+    STUDY_PROJECT_SCHEMA,
+    STUDY_PROMPT_CONTEXT_SCHEMA,
     STUDY_READ_NOTE_SCHEMA,
     STUDY_RECORD_REVIEW_SCHEMA,
     STUDY_REVIEW_STATS_SCHEMA,
+    STUDY_SCHEDULE_SCHEMA,
     STUDY_SYNC_MEMORY_SCHEMA,
     STUDY_UPDATE_CONCEPT_STATE_SCHEMA,
     handle_study_concept_graph,
@@ -43,9 +46,12 @@ from plugins.study_os.tools import (
     handle_study_log_error,
     handle_study_log_session,
     handle_study_plan_progress,
+    handle_study_project,
+    handle_study_prompt_context,
     handle_study_read_note,
     handle_study_record_review,
     handle_study_review_stats,
+    handle_study_schedule,
     handle_study_sync_memory,
     handle_study_update_concept_state,
 )
@@ -71,6 +77,9 @@ _TOOLS = (
     ("study_plan_progress", STUDY_PLAN_PROGRESS_SCHEMA, handle_study_plan_progress, "study"),
     ("study_create_curriculum", STUDY_CREATE_CURRICULUM_SCHEMA, handle_study_create_curriculum, "study"),
     ("study_list_curricula", STUDY_LIST_CURRICULA_SCHEMA, handle_study_list_curricula, "study"),
+    ("study_project", STUDY_PROJECT_SCHEMA, handle_study_project, "study"),
+    ("study_schedule", STUDY_SCHEDULE_SCHEMA, handle_study_schedule, "study"),
+    ("study_prompt_context", STUDY_PROMPT_CONTEXT_SCHEMA, handle_study_prompt_context, "study"),
 )
 
 
@@ -85,9 +94,13 @@ def register(ctx) -> None:
             emoji="📚",
         )
 
-    skill_md = Path(__file__).resolve().parent / "skills" / "study-os" / "SKILL.md"
-    ctx.register_skill(
-        "study-os",
-        skill_md,
-        "Use Study OS tools to review Obsidian learning notes, log mistakes, plan reviews, and export Anki candidates.",
-    )
+    skills_root = Path(__file__).resolve().parent / "skills"
+    for name, description in (
+        ("study-os", "Route StudyOS learning workflows."),
+        ("study-plan", "Plan StudyOS projects and schedules."),
+        ("study-organize", "Organize problems into StudyOS notes."),
+        ("study-review", "Run StudyOS spaced repetition reviews."),
+        ("study-assessment", "Analyze StudyOS exams and mistakes."),
+        ("study-kaoyan", "Guide 考研 learning with StudyOS."),
+    ):
+        ctx.register_skill(name, skills_root / name / "SKILL.md", description)

@@ -53,6 +53,19 @@ import type {
   SkillInfo,
   StarmapGraph,
   StatusResponse,
+  StudyConceptNode,
+  StudyLearningItem,
+  StudyProfile,
+  StudyProject,
+  StudyProjectsResponse,
+  StudyReviewConceptsResponse,
+  StudyReviewDueResponse,
+  StudyReviewItem,
+  StudyReviewQueueResponse,
+  StudyReviewStatsResponse,
+  StudySchedule,
+  StudyScheduleSummary,
+  StudySchedulesResponse,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModelsResponse
@@ -162,6 +175,19 @@ export type {
   StaleAuxAssignment,
   StarmapGraph,
   StatusResponse,
+  StudyConceptNode,
+  StudyLearningItem,
+  StudyProfile,
+  StudyProject,
+  StudyProjectsResponse,
+  StudyReviewConceptsResponse,
+  StudyReviewDueResponse,
+  StudyReviewItem,
+  StudyReviewQueueResponse,
+  StudyReviewStatsResponse,
+  StudySchedule,
+  StudyScheduleSummary,
+  StudySchedulesResponse,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,
@@ -762,6 +788,84 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`,
     method: 'DELETE'
+  })
+}
+
+export function getStudyProjects(): Promise<StudyProjectsResponse> {
+  return window.hermesDesktop.api<StudyProjectsResponse>({
+    path: '/api/study/projects'
+  })
+}
+
+export function getStudyProject(projectId: string): Promise<StudyProject> {
+  return window.hermesDesktop.api<StudyProject>({
+    path: `/api/study/projects/${encodeURIComponent(projectId)}`
+  })
+}
+
+export function getStudySchedules(projectId: string): Promise<StudySchedulesResponse> {
+  return window.hermesDesktop.api<StudySchedulesResponse>({
+    path: `/api/study/projects/${encodeURIComponent(projectId)}/schedules`
+  })
+}
+
+export function getStudySchedule(projectId: string, scheduleId: string): Promise<StudySchedule> {
+  return window.hermesDesktop.api<StudySchedule>({
+    path: `/api/study/projects/${encodeURIComponent(projectId)}/schedules/${encodeURIComponent(scheduleId)}`
+  })
+}
+
+export function getStudyReviewDue(params?: {
+  subject?: string
+  level?: number
+  limit?: number
+}): Promise<StudyReviewDueResponse> {
+  const search = new URLSearchParams()
+  if (params?.subject) search.set('subject', params.subject)
+  if (params?.level !== undefined) search.set('level', String(params.level))
+  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+  const qs = search.toString()
+  return window.hermesDesktop.api<StudyReviewDueResponse>({
+    path: `/api/study/review/due${qs ? `?${qs}` : ''}`
+  })
+}
+
+export function getStudyReviewStats(): Promise<StudyReviewStatsResponse> {
+  return window.hermesDesktop.api<StudyReviewStatsResponse>({
+    path: '/api/study/review/stats'
+  })
+}
+
+export function getStudyReviewQueue(params?: {
+  state?: string
+  limit?: number
+}): Promise<StudyReviewQueueResponse> {
+  const search = new URLSearchParams()
+  if (params?.state) search.set('state', params.state)
+  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+  const qs = search.toString()
+  return window.hermesDesktop.api<StudyReviewQueueResponse>({
+    path: `/api/study/review/queue${qs ? `?${qs}` : ''}`
+  })
+}
+
+export function getStudyReviewConcepts(): Promise<StudyReviewConceptsResponse> {
+  return window.hermesDesktop.api<StudyReviewConceptsResponse>({
+    path: '/api/study/review/concepts'
+  })
+}
+
+export function getStudyProfile(): Promise<StudyProfile> {
+  return window.hermesDesktop.api<StudyProfile>({
+    path: '/api/study/profile'
+  })
+}
+
+export function updateStudyProfile(profile: Partial<StudyProfile>): Promise<StudyProfile> {
+  return window.hermesDesktop.api<StudyProfile>({
+    path: '/api/study/profile',
+    method: 'PUT',
+    body: profile
   })
 }
 

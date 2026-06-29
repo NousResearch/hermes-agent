@@ -6,6 +6,7 @@ export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
+export const STUDY_ROUTE = '/study'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
@@ -21,6 +22,7 @@ export type AppView =
   | 'settings'
   | 'skills'
   | 'starmap'
+  | 'study'
 
 export type AppRouteId =
   | 'agents'
@@ -33,6 +35,7 @@ export type AppRouteId =
   | 'settings'
   | 'skills'
   | 'starmap'
+  | 'study'
 
 export interface AppRoute {
   id: AppRouteId
@@ -48,6 +51,7 @@ export const APP_ROUTES = [
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
+  { id: 'study', path: STUDY_ROUTE, view: 'study' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
   { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
@@ -65,7 +69,8 @@ export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
   'cron',
   'profiles',
   'settings',
-  'starmap'
+  'starmap',
+  'study'
 ])
 
 export function isOverlayView(view: AppView): boolean {

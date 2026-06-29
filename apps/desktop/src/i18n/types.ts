@@ -1922,6 +1922,56 @@ export interface Translations {
     }
   }
 
+  study: {
+    title: string
+    subtitle: string
+    close: string
+    projectList: string
+    scheduleList: string
+    notConfigured: string
+    noProjects: string
+    noSchedules: string
+    invalidSchedule: string
+    loading: string
+    retry: string
+    examDate: string
+    phase: string
+    timezone: string
+    range: string
+    events: string
+    goals: string
+    source: string
+    status: string
+    readOnly: string
+    calendarTab: string
+    reviewTab: string
+    reviewTitle: string
+    dueReviews: string
+    newMaterial: string
+    stats: string
+    noDueReviews: string
+    noDueReviewsDesc: string
+    reviewLevel: string
+    lastReviewed: string
+    neverReviewed: string
+    dailyQuota: string
+    reviewed: string
+    of: string
+    filterBySubject: string
+    filterByLevel: string
+    allLevels: string
+    streak: string
+    days: string
+    masteryProgress: string
+    learningState: string
+    prerequisites: string
+    newConcepts: string
+    newExamples: string
+    noNewConcepts: string
+    noNewExamples: string
+    conceptGraph: string
+  }
+
   prompts: {
     gatewayDisconnected: string
     sudoSendFailed: string

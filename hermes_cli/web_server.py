@@ -8427,6 +8427,525 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
+def _study_validation_error(message: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=message)
+
+
+def _study_resolve_vault():
+    try:
+        from plugins.study_os.tools import resolve_vault_path
+
+        return resolve_vault_path(None)
+    except FileNotFoundError:
+        return None
+
+
+def _study_project_manifest_path(vault: Path, project_id: str) -> Path:
+    from plugins.study_os.schemas import PROJECT_ID_RE
+
+    if not PROJECT_ID_RE.match(project_id):
+        raise _study_validation_error("Invalid project_id")
+    root = (vault / ".StudyOS" / "projects").resolve()
+    path = (root / project_id / "manifest.json").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise _study_validation_error("Invalid project_id") from exc
+    return path
+
+
+def _study_schedule_path(vault: Path, project_id: str, schedule_id: str) -> Path:
+    from plugins.study_os.schemas import SCHEDULE_ID_RE
+
+    if not SCHEDULE_ID_RE.match(schedule_id):
+        raise _study_validation_error("Invalid schedule_id")
+    project_path = _study_project_manifest_path(vault, project_id)
+    root = (project_path.parent / "schedules").resolve()
+    path = (root / f"{schedule_id}.json").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise _study_validation_error("Invalid schedule_id") from exc
+    return path
+
+
+def _study_read_json_object(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {path.name}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail=f"Expected JSON object: {path.name}")
+    return data
+
+
+def _study_read_project(vault: Path, project_id: str) -> Dict[str, Any]:
+    from plugins.study_os.schemas import validate_study_project
+
+    path = _study_project_manifest_path(vault, project_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    data = _study_read_json_object(path)
+    ok, validated = validate_study_project(data)
+    if not ok:
+        raise HTTPException(status_code=400, detail={"code": "VALIDATION_FAILED", "errors": validated})
+    return validated
+
+
+def _study_read_schedule(vault: Path, project: Dict[str, Any], schedule_id: str) -> Dict[str, Any]:
+    from plugins.study_os.schemas import validate_study_schedule
+
+    path = _study_schedule_path(vault, str(project["project_id"]), schedule_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    data = _study_read_json_object(path)
+    ok, validated = validate_study_schedule(data, project=project)
+    if not ok:
+        raise HTTPException(status_code=400, detail={"code": "VALIDATION_FAILED", "errors": validated})
+    return validated
+
+
+@app.get("/api/study/projects")
+async def list_study_projects():
+    vault = _study_resolve_vault()
+    if vault is None:
+        return {"projects": [], "configured": False, "message": "StudyOS vault not configured"}
+
+    projects_root = (vault / ".StudyOS" / "projects").resolve()
+    if not projects_root.exists():
+        return {"projects": [], "configured": True, "vault_path": str(vault)}
+
+    projects: List[Dict[str, Any]] = []
+    for manifest_path in sorted(projects_root.glob("*/manifest.json")):
+        try:
+            project_id = manifest_path.parent.name
+            project = _study_read_project(vault, project_id)
+            projects.append(project)
+        except HTTPException:
+            continue
+        except Exception:
+            _log.exception("Failed to read StudyOS project manifest %s", manifest_path)
+    return {"projects": projects, "configured": True, "vault_path": str(vault)}
+
+
+@app.get("/api/study/projects/{project_id}")
+async def get_study_project(project_id: str):
+    vault = _study_resolve_vault()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    return _study_read_project(vault, project_id)
+
+
+@app.get("/api/study/projects/{project_id}/schedules")
+async def list_study_schedules(project_id: str):
+    vault = _study_resolve_vault()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    project = _study_read_project(vault, project_id)
+    schedules_root = (_study_project_manifest_path(vault, project_id).parent / "schedules").resolve()
+    schedules: List[Dict[str, Any]] = []
+    if schedules_root.exists():
+        for schedule_path in sorted(schedules_root.glob("*.json")):
+            try:
+                schedule_id = schedule_path.stem
+                schedule = _study_read_schedule(vault, project, schedule_id)
+                schedules.append(
+                    {
+                        "schedule_id": schedule["schedule_id"],
+                        "project_id": schedule["project_id"],
+                        "title": schedule["title"],
+                        "timezone": schedule["timezone"],
+                        "range": schedule["range"],
+                        "event_count": len(schedule.get("events", [])),
+                    }
+                )
+            except HTTPException:
+                continue
+            except Exception:
+                _log.exception("Failed to read StudyOS schedule %s", schedule_path)
+    return {"project_id": project_id, "schedules": schedules}
+
+
+@app.get("/api/study/projects/{project_id}/schedules/{schedule_id}")
+async def get_study_schedule(project_id: str, schedule_id: str):
+    vault = _study_resolve_vault()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    project = _study_read_project(vault, project_id)
+    return _study_read_schedule(vault, project, schedule_id)
+
+
+# =========================================================================
+# StudyOS Review REST API endpoints — spaced repetition, stats, queue,
+# concept tree, and per-vault profile config.
+# =========================================================================
+
+
+@app.get("/api/study/review/due")
+async def get_study_due_reviews(subject: str = "", level: Optional[int] = None, limit: int = 20):
+    """List example notes due for spaced-repetition review, sorted by priority.
+
+    Query params:
+      subject — filter by tag or concept (case-insensitive, partial match).
+      level   — filter by exact review_level (0–5).
+      limit   — max results (default 20, max 500).
+    """
+    vault = _study_resolve_vault()
+    if vault is None:
+        return {"vault_path": None, "configured": False, "date": "", "count": 0, "due": []}
+
+    from datetime import date as _date
+
+    from plugins.study_os.tools import (
+        _is_due,
+        _iter_markdown_notes,
+        _read_review_state,
+        parse_note,
+    )
+
+    today = _date.today()
+    limit = max(1, min(limit, 500))
+    subject_q = subject.strip().casefold() if subject else ""
+    level_q = level if level is not None else None
+
+    due: list[dict[str, Any]] = []
+    for path in _iter_markdown_notes(vault, folder="examples"):
+        note, _ = parse_note(path, vault, include_body=False)
+        if note.get("layer") != "example":
+            continue
+        if not _is_due(note, today):
+            continue
+        if subject_q:
+            tags = {t.lstrip("#").casefold() for t in note.get("tags", [])}
+            concepts = {c.casefold() for c in note.get("concepts", [])}
+            if subject_q not in tags and not any(subject_q in c for c in concepts):
+                continue
+
+        fm = note.get("frontmatter", {})
+        rl = int(fm.get("review_level", 0))
+        if level_q is not None and rl != level_q:
+            continue
+
+        state = _read_review_state(note)
+        due.append(
+            {
+                "path": note["path"],
+                "title": note["title"],
+                "review_level": rl,
+                "review_count": state["review_count"],
+                "last_reviewed_at": state["last_reviewed_at"] or None,
+                "next_review_at": state["next_review_at"] or None,
+                "concepts": note.get("concepts", []),
+                "tags": note.get("tags", []),
+                "difficulty": fm.get("difficulty"),
+            }
+        )
+        if len(due) >= limit:
+            break
+
+    due.sort(key=lambda d: (d["review_level"], d["last_reviewed_at"] or "0000-00-00"))
+
+    return {
+        "vault_path": str(vault),
+        "configured": True,
+        "date": today.isoformat(),
+        "count": len(due),
+        "due": due,
+    }
+
+
+@app.get("/api/study/review/stats")
+async def get_study_review_stats(rebuild: bool = False):
+    """Aggregated review statistics from .StudyOS/review_stats.json cache.
+
+    Query params:
+      rebuild — force rebuild the cache instead of using cached data.
+    """
+    vault = _study_resolve_vault()
+    if vault is None:
+        return {"vault_path": None, "configured": False, "total": 0, "by_level": {}, "progress": 0.0,
+                "concept_stats": {}, "review_streak": 0, "due_count": 0, "cached": False}
+
+    from plugins.study_os.tools import (
+        _build_review_stats,
+        _load_review_stats,
+        _save_review_stats,
+    )
+
+    cached = None if rebuild else _load_review_stats(vault)
+    if cached is not None:
+        return {
+            "vault_path": str(vault),
+            "configured": True,
+            "total": cached.get("total_examples", 0),
+            "by_level": {int(k): v for k, v in cached.get("by_review_level", {}).items()},
+            "progress": cached.get("progress_pct", 0.0),
+            "concept_stats": cached.get("concepts", {}),
+            "review_streak": cached.get("review_streak_days", 0),
+            "due_count": cached.get("due_today", 0),
+            "cached": True,
+        }
+
+    stats = _build_review_stats(vault)
+    _save_review_stats(vault, stats)
+    return {
+        "vault_path": str(vault),
+        "configured": True,
+        "total": stats.get("total_examples", 0),
+        "by_level": {int(k): v for k, v in stats.get("by_review_level", {}).items()},
+        "progress": stats.get("progress_pct", 0.0),
+        "concept_stats": stats.get("concepts", {}),
+        "review_streak": stats.get("review_streak_days", 0),
+        "due_count": stats.get("due_today", 0),
+        "cached": False,
+    }
+
+
+@app.get("/api/study/review/queue")
+async def get_study_review_queue(state: str = "", limit: int = 30):
+    """New material that hasn't entered spaced-repetition review yet.
+
+    Query params:
+      state — filter by learning_state (未开始, 学习中, 已理解).
+      limit — max items per section (default 30, max 500).
+    """
+    vault = _study_resolve_vault()
+    if vault is None:
+        return {"vault_path": None, "configured": False, "new_concepts": [], "new_concepts_total": 0,
+                "new_examples": [], "new_examples_total": 0}
+
+    from plugins.study_os.tools import (
+        _concept_ancestors,
+        _concept_learning_state,
+        _get_concept_graph,
+        _iter_markdown_notes,
+        _strip_wikilink,
+        parse_note,
+    )
+
+    graph = _get_concept_graph(vault)
+    state_q = state.strip()
+    limit = max(1, min(limit, 500))
+
+    new_concepts: list[dict[str, Any]] = []
+    new_examples: list[dict[str, Any]] = []
+
+    for path in _iter_markdown_notes(vault):
+        note, _ = parse_note(path, vault, include_body=False)
+        layer = note.get("layer", "note")
+        fm = note.get("frontmatter", {})
+
+        if layer in ("concept", "pattern"):
+            ls = _concept_learning_state(note)
+            if state_q and ls != state_q:
+                continue
+            if ls in ("已掌握",):
+                continue
+            deps = graph.get("prerequisites", {}).get(
+                _strip_wikilink(note.get("title", "")), []
+            )
+            new_concepts.append(
+                {
+                    "path": note["path"],
+                    "title": note["title"],
+                    "learning_state": ls,
+                    "prerequisites": deps or [],
+                    "tags": note.get("tags", []),
+                }
+            )
+
+        elif layer == "example":
+            rc = int(fm.get("review_count", 0))
+            if rc > 0:
+                continue
+            if state_q:
+                rl = int(fm.get("review_level", 0))
+                if state_q == "学习中" and rl != 0:
+                    continue
+                if state_q == "已理解" and rl == 0:
+                    continue
+            new_examples.append(
+                {
+                    "path": note["path"],
+                    "title": note["title"],
+                    "review_level": int(fm.get("review_level", 0)),
+                    "difficulty": fm.get("difficulty"),
+                    "concepts": note.get("concepts", []),
+                    "tags": note.get("tags", []),
+                    "source": fm.get("source"),
+                }
+            )
+
+    new_examples.sort(
+        key=lambda e: (
+            {"easy": 1, "medium": 2, "hard": 3}.get(str(e.get("difficulty", "")).lower(), 2),
+            e["title"],
+        )
+    )
+
+    def _concept_order_key(c: dict[str, Any]) -> tuple[int, str]:
+        deps_depth = max(
+            (len(chain) for chain in _concept_ancestors(c["title"], graph)),
+            default=0,
+        )
+        return (deps_depth, c["title"])
+
+    new_concepts.sort(key=_concept_order_key)
+
+    return {
+        "vault_path": str(vault),
+        "configured": True,
+        "new_concepts": new_concepts[:limit],
+        "new_concepts_total": len(new_concepts),
+        "new_examples": new_examples[:limit],
+        "new_examples_total": len(new_examples),
+    }
+
+
+@app.get("/api/study/review/concepts")
+async def get_study_concept_tree():
+    """Build a flat concept list with learning state, prerequisites, and stats.
+
+    Uses the cached concept graph (auto-refreshed hourly).
+    """
+    vault = _study_resolve_vault()
+    if vault is None:
+        return {"vault_path": None, "configured": False, "concepts": []}
+
+    from plugins.study_os.tools import (
+        _concept_learning_state,
+        _get_concept_graph,
+        _iter_markdown_notes,
+        parse_note,
+    )
+
+    graph = _get_concept_graph(vault)
+
+    all_names = sorted(
+        set(graph.get("prerequisites", {}))
+        | set(graph.get("dependents", {}))
+        | set(graph.get("exercised_by", {}))
+    )
+
+    state_map: dict[str, str] = {}
+    for path in _iter_markdown_notes(vault):
+        note, _ = parse_note(path, vault, include_body=False)
+        if note.get("layer") not in ("concept", "pattern"):
+            continue
+        name = note.get("title", "")
+        state_map[name] = _concept_learning_state(note)
+
+    concepts: list[dict[str, Any]] = []
+    for name in all_names:
+        rl_info = graph.get("review_levels", {}).get(name, {})
+        concepts.append(
+            {
+                "title": name,
+                "learning_state": state_map.get(name, "未开始"),
+                "prerequisites": graph.get("prerequisites", {}).get(name, []),
+                "example_count": graph.get("note_count", {}).get(name, 0),
+                "avg_level": rl_info.get("avg"),
+            }
+        )
+
+    return {
+        "vault_path": str(vault),
+        "configured": True,
+        "concepts": concepts,
+    }
+
+
+@app.get("/api/study/profile")
+async def get_study_profile():
+    """Read .StudyOS/config.json, returning defaults when absent."""
+    vault = _study_resolve_vault()
+    if vault is None:
+        return {
+            "vault_path": None,
+            "configured": False,
+            "daily_review_limit": 20,
+            "review_level_filter": None,
+            "subject_filter": None,
+        }
+
+    from plugins.study_os.tools import _study_dir as _study_os_dir
+
+    config_path = _study_os_dir(vault) / "config.json"
+    defaults: dict[str, Any] = {
+        "daily_review_limit": 20,
+        "review_level_filter": None,
+        "subject_filter": None,
+    }
+
+    if not config_path.exists():
+        return {"vault_path": str(vault), "configured": True, **defaults}
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError):
+        return {"vault_path": str(vault), "configured": True, **defaults}
+
+    if not isinstance(data, dict):
+        return {"vault_path": str(vault), "configured": True, **defaults}
+
+    return {
+        "vault_path": str(vault),
+        "configured": True,
+        "daily_review_limit": data.get("daily_review_limit", defaults["daily_review_limit"]),
+        "review_level_filter": data.get("review_level_filter", defaults["review_level_filter"]),
+        "subject_filter": data.get("subject_filter", defaults["subject_filter"]),
+    }
+
+
+class StudyProfileUpdate(BaseModel):
+    daily_review_limit: Optional[int] = None
+    review_level_filter: Optional[int] = None
+    subject_filter: Optional[str] = None
+
+
+@app.put("/api/study/profile")
+async def put_study_profile(body: StudyProfileUpdate):
+    """Write .StudyOS/config.json with review preferences."""
+    vault = _study_resolve_vault()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+
+    from plugins.study_os.tools import _study_dir as _study_os_dir
+
+    config_path = _study_os_dir(vault) / "config.json"
+    defaults: dict[str, Any] = {
+        "daily_review_limit": 20,
+        "review_level_filter": None,
+        "subject_filter": None,
+    }
+
+    existing: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            pass
+    if not isinstance(existing, dict):
+        existing = {}
+
+    merged = {**defaults, **existing}
+    if body.daily_review_limit is not None:
+        if body.daily_review_limit < 1:
+            raise HTTPException(status_code=400, detail="daily_review_limit must be >= 1")
+        merged["daily_review_limit"] = body.daily_review_limit
+    if body.review_level_filter is not None:
+        if body.review_level_filter < 0 or body.review_level_filter > 5:
+            raise HTTPException(status_code=400, detail="review_level_filter must be 0–5")
+        merged["review_level_filter"] = body.review_level_filter
+    if body.subject_filter is not None:
+        merged["subject_filter"] = body.subject_filter or None
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    return {"vault_path": str(vault), "configured": True, **merged}
+
+
 @app.get("/api/cron/jobs")
 async def list_cron_jobs(profile: str = "all"):
     requested = (profile or "all").strip()

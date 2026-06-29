@@ -2439,26 +2439,44 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 sink.on_commentary(event.text)
 
-    def format_tool_event(self, event: Any, *, mode: str = "all",
-                          preview_max_len: int = 40) -> Optional[str]:
+    def format_tool_event(
+        self,
+        event: Any,
+        *,
+        mode: str = "all",
+        preview_max_len: int = 40,
+        tool_labels: Optional[dict] = None,
+        trim_path_previews: bool = True,
+    ) -> Optional[str]:
         """Return the rendered chrome for a ToolCallChunk, or None to eat it.
 
         Reproduces the gateway's historical tool-progress formatting: an emoji
-        for the tool, the tool name, and a short argument preview (or the full
-        args dict in ``verbose`` mode).  Adapters that cannot render tool chrome
-        (no message editing, plain-text only) should override to return None so
-        the event is dropped rather than spamming separate bubbles.
+        for the tool, the tool name (or operator-configured friendly label),
+        and a short argument preview (or the full args dict in ``verbose``
+        mode).  Adapters that cannot render tool chrome (no message editing,
+        plain-text only) should override to return None so the event is
+        dropped rather than spamming separate bubbles.
 
-        ``mode`` is the resolved tool-progress mode ("all" / "new" / "verbose");
+        ``mode`` is the resolved tool-progress mode ("all" / "new" / "verbose").
         ``preview_max_len`` mirrors the ``tool_preview_length`` config (0 means
         "no cap" in verbose mode).
+        ``tool_labels`` is the ``display.tool_labels`` config map (raw name →
+        friendly label).  When None / empty / missing entry, the raw tool name
+        is shown unchanged — backwards-compatible default.
+        ``trim_path_previews`` mirrors the same config knob; when True (default)
+        file-path tools' previews show only the basename in chat.
         """
         from gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
 
-        from agent.display import get_tool_emoji
+        from agent.display import (
+            get_tool_emoji,
+            apply_tool_label,
+            format_friendly_preview,
+        )
         emoji = get_tool_emoji(event.tool_name, default="⚙️")
+        label = apply_tool_label(event.tool_name, tool_labels)
 
         if mode == "verbose":
             if event.args:
@@ -2466,20 +2484,26 @@ class BasePlatformAdapter(ABC):
                 args_str = json.dumps(event.args, ensure_ascii=False, default=str)
                 if preview_max_len > 0 and len(args_str) > preview_max_len:
                     args_str = args_str[:preview_max_len - 3] + "..."
+                # Verbose mode keeps the raw tool name visible alongside the
+                # friendly label so operator debugging surfaces still see the
+                # canonical identifier.
+                if label != event.tool_name:
+                    return f"{emoji} {label} [{event.tool_name}]({list(event.args.keys())})\n{args_str}"
                 return f"{emoji} {event.tool_name}({list(event.args.keys())})\n{args_str}"
             if event.preview:
-                return f"{emoji} {event.tool_name}: \"{event.preview}\""
-            return f"{emoji} {event.tool_name}..."
+                _p = format_friendly_preview(event.tool_name, event.preview, trim_path_previews)
+                return f"{emoji} {label}: \"{_p}\""
+            return f"{emoji} {label}..."
 
         # "all" / "new": short preview, capped (default 40 to keep gateway
         # progress bubbles compact — they persist as permanent messages).
-        preview = event.preview
+        preview = format_friendly_preview(event.tool_name, event.preview, trim_path_previews)
         if preview:
             cap = preview_max_len if preview_max_len > 0 else 40
             if len(preview) > cap:
                 preview = preview[:cap - 3] + "..."
-            return f"{emoji} {event.tool_name}: \"{preview}\""
-        return f"{emoji} {event.tool_name}..."
+            return f"{emoji} {label}: \"{preview}\""
+        return f"{emoji} {label}..."
 
     @property
     def has_fatal_error(self) -> bool:

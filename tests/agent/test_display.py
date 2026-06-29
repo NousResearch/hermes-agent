@@ -5,9 +5,11 @@ import pytest
 from unittest.mock import MagicMock
 
 from agent.display import (
+    apply_tool_label,
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    format_friendly_preview,
     get_cute_tool_message,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
@@ -401,3 +403,82 @@ class TestEditDiffPreview:
         assert any("a/file2.py" in line for line in rendered)
         assert not any("a/file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+class TestApplyToolLabel:
+    """Operator-configured ``display.tool_labels`` mapping from raw tool names
+    to human-readable labels. Default behavior (None / empty / missing entry)
+    returns the raw tool name unchanged so existing operators see no change."""
+
+    def test_none_label_map_passes_through(self):
+        assert apply_tool_label("read_file", None) == "read_file"
+
+    def test_empty_label_map_passes_through(self):
+        assert apply_tool_label("read_file", {}) == "read_file"
+
+    def test_missing_entry_passes_through(self):
+        assert apply_tool_label("read_file", {"web_search": "Searching"}) == "read_file"
+
+    def test_exact_match_returns_label(self):
+        assert apply_tool_label("read_file", {"read_file": "Reading info"}) == "Reading info"
+
+    def test_label_is_used_verbatim(self):
+        """No re-casing, no quoting, no emoji injection — what the operator
+        configured is what's rendered."""
+        assert apply_tool_label("mcp_x_y", {"mcp_x_y": "  Hello, World!  "}) == "  Hello, World!  "
+
+
+class TestFormatFriendlyPreview:
+    """File-path tool previews trim to the basename when ``trim_paths`` is on
+    (the operator-configured ``display.trim_path_previews``). Non-path tools
+    pass through unchanged regardless. Falsy previews pass through."""
+
+    def test_none_preview_passes_through(self):
+        assert format_friendly_preview("read_file", None, True) is None
+
+    def test_empty_preview_passes_through(self):
+        assert format_friendly_preview("read_file", "", True) == ""
+
+    def test_path_tool_trimmed(self):
+        assert (
+            format_friendly_preview("read_file", "/long/abs/path/STATUS_QUERY.md", True)
+            == "STATUS_QUERY.md"
+        )
+
+    def test_path_tool_trim_off_keeps_full(self):
+        assert (
+            format_friendly_preview("read_file", "/long/abs/path/STATUS_QUERY.md", False)
+            == "/long/abs/path/STATUS_QUERY.md"
+        )
+
+    def test_non_path_tool_passes_through(self):
+        # query strings, slugs, URLs etc. should not be trimmed
+        assert (
+            format_friendly_preview("web_search", "https://example.com/a/b", True)
+            == "https://example.com/a/b"
+        )
+        assert (
+            format_friendly_preview("mcp_gbrain_query", "Project X status", True)
+            == "Project X status"
+        )
+
+    def test_path_with_no_slash_passes_through(self):
+        """A bare filename has no path to trim — return it intact rather than
+        coercing to PurePosixPath().name (which would be the same anyway)."""
+        assert format_friendly_preview("read_file", "STATUS_QUERY.md", True) == "STATUS_QUERY.md"
+
+    def test_truncated_preview_with_ellipsis_still_handled(self):
+        """The gateway may pre-truncate previews to 'first N chars...'. The
+        helper should not crash on these; basename of a truncated path is
+        the trailing segment of whatever survived (even if it includes the
+        '...' marker)."""
+        out = format_friendly_preview("read_file", "/long/path/STA...", True)
+        # Don't assert exact output (depends on PurePosixPath semantics) —
+        # just assert no exception and a non-empty string came back.
+        assert isinstance(out, str) and out
+
+    def test_each_path_tool_recognised(self):
+        for t in ("read_file", "write_file", "edit_file", "patch", "list_files"):
+            assert (
+                format_friendly_preview(t, "/long/path/foo.txt", True) == "foo.txt"
+            ), f"path-tool {t} should trim"

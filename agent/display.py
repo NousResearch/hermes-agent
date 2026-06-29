@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
@@ -134,6 +134,63 @@ def get_skin_tool_prefix() -> str:
     if skin:
         return skin.tool_prefix
     return "┊"
+
+
+def apply_tool_label(tool_name: str, label_map: Optional[dict] = None) -> str:
+    """Map a raw tool name to a human-readable label via operator config.
+
+    Chat platforms (WhatsApp / Slack / Telegram / Discord) render tool-progress
+    lines like ``⚙️ mcp_gbrain_query: "..."`` — the raw tool name reads like an
+    internal ID to non-technical users. Operators can override per tool via
+    the ``display.tool_labels`` config map (e.g. ``mcp_gbrain_query: "Searching
+    information"``) so chat surfaces show plain-English verbs instead.
+
+    When ``label_map`` is None / empty / does not contain ``tool_name``, the
+    raw name is returned unchanged. Default behavior is therefore unchanged
+    for any operator who hasn't configured overrides.
+
+    Resolution is a single ``dict.get(tool_name, tool_name)`` — no precedence
+    ladder, no skin-style overlay. The intent is "operator config is the only
+    source of truth" so a missing entry is unambiguous.
+    """
+    if not label_map:
+        return tool_name
+    return label_map.get(tool_name, tool_name)
+
+
+def format_friendly_preview(
+    tool_name: str,
+    raw_preview: Optional[str],
+    trim_paths: bool = True,
+) -> Optional[str]:
+    """Tighten a tool-call preview for non-technical chat display.
+
+    The gateway's default tool-progress preview is the first ~40 chars of the
+    primary argument. For most tools that's fine (a query string, a slug,
+    a URL). For file-path tools it leaks a full absolute path like
+    ``/datadrive/long/workspace/rules/STATUS_QUERY.md`` — only the basename
+    is useful in chat. When ``trim_paths`` is True (default), file-path
+    tools' previews are trimmed to the basename; everything else passes
+    through unchanged.
+
+    Tools recognised as file-path-shaped: ``read_file``, ``write_file``,
+    ``edit_file``, ``patch``, ``list_files``. These are the names the
+    built-in tool registry uses; operators with custom file tools can
+    extend the set via PR or local subclass.
+    """
+    if not raw_preview or not trim_paths:
+        return raw_preview
+    _PATH_TOOLS = {"read_file", "write_file", "edit_file", "patch", "list_files"}
+    if tool_name in _PATH_TOOLS:
+        # Path may have been pre-truncated with "..." — strip dirs only if we
+        # still have a real basename after the last "/". Fall back to the raw
+        # preview when the path shape is unrecognisable.
+        from pathlib import PurePosixPath
+        try:
+            return PurePosixPath(raw_preview).name or raw_preview
+        except Exception:
+            return raw_preview
+    return raw_preview
 
 
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:

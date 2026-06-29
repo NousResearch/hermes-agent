@@ -15345,6 +15345,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+        # Resolve the new operator-friendly label / path-trim settings — used
+        # below by the progress-callback formatter. Defaults: empty map (raw
+        # tool names shown unchanged) + trim paths ON (file tools show
+        # basenames instead of absolute paths). Both safe to evaluate per
+        # platform.
+        _tool_labels = resolve_display_setting(
+            user_config, platform_key, "tool_labels", {}
+        ) or {}
+        _trim_paths = bool(resolve_display_setting(
+            user_config, platform_key, "trim_path_previews", True
+        ))
+
         # Tool progress mode — resolved per-platform with env var fallback
         _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
@@ -15554,9 +15566,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             last_tool[0] = tool_name
             
-            # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
+            # Build progress message with primary argument preview.
+            # ``apply_tool_label`` looks up ``display.tool_labels`` (operator
+            # config). When the operator hasn't supplied a label the helper
+            # returns the raw name — pre-existing behavior unchanged.
+            # ``format_friendly_preview`` trims file-path tools to basenames
+            # when ``display.trim_path_previews`` is on (default).
+            from agent.display import (
+                get_tool_emoji,
+                apply_tool_label,
+                format_friendly_preview,
+            )
             emoji = get_tool_emoji(tool_name, default="⚙️")
+            label = apply_tool_label(tool_name, _tool_labels)
 
             # Markdown-capable platforms render a terminal command as a fenced
             # code block instead of the compact `terminal: "cmd…"` preview.
@@ -15621,11 +15643,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # detail.  Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                    # Verbose mode keeps the raw tool name visible alongside
+                    # the friendly label so operator debug surfaces still see
+                    # the canonical identifier.
+                    if label != tool_name:
+                        msg = f"{emoji} {label} [{tool_name}]({list(args.keys())})\n{args_str}"
+                    else:
+                        msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
                 elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    _p = format_friendly_preview(tool_name, preview, _trim_paths) or preview
+                    msg = f"{emoji} {label}: \"{_p}\""
                 else:
-                    msg = f"{emoji} {tool_name}..."
+                    msg = f"{emoji} {label}..."
                 progress_queue.put(msg)
                 return
             
@@ -15641,12 +15670,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                # Trim path noise FIRST (e.g. /long/path/STATUS_QUERY.md →
+                # STATUS_QUERY.md), then apply the length cap.
+                _friendly = format_friendly_preview(tool_name, preview, _trim_paths) or preview
+                if len(_friendly) > _cap:
+                    _friendly = _friendly[:_cap - 3] + "..."
+                msg = f"{emoji} {label}: \"{_friendly}\""
                 last_was_terminal_block[0] = False
             else:
-                msg = f"{emoji} {tool_name}..."
+                msg = f"{emoji} {label}..."
                 last_was_terminal_block[0] = False
             
             # Dedup: collapse consecutive identical progress messages.

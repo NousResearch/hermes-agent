@@ -33,6 +33,25 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    # Operator-supplied mapping from raw tool names to human-readable labels
+    # shown in chat tool-progress lines. Default empty → raw names are shown
+    # unchanged (current behavior). Operators populate per platform's audience:
+    #
+    #   display:
+    #     tool_labels:
+    #       read_file:       "Reading information"
+    #       web_search:      "Searching the web"
+    #       mcp_<server>_<tool>: "<plain-English verb>"
+    #
+    # A missing entry passes through; no precedence ladder, no implicit
+    # category mapping — what the operator types is what chat shows.
+    "tool_labels": {},
+    # When True, trim file-path tool previews (read_file / write_file /
+    # edit_file / patch / list_files) to just the basename so chat shows
+    # "STATUS_QUERY.md" instead of "/datadrive/long/path/.../STATUS_QUERY.md".
+    # Default ON because the basename is almost always what users want; can
+    # be disabled per-platform if operators prefer the full path.
+    "trim_path_previews": True,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
@@ -259,4 +278,14 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "trim_path_previews":
+        if isinstance(value, str):
+            return value.lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+    if setting == "tool_labels":
+        # Must be a mapping of str→str; anything else collapses to empty so a
+        # malformed config can't poison the render loop.
+        if isinstance(value, dict):
+            return {str(k): str(v) for k, v in value.items()}
+        return {}
     return value

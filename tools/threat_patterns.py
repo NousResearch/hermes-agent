@@ -92,7 +92,13 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Known C2 / red-team framework names (near-zero false positive
     #    outside security research; warn-only by default) ─────────────
-    (r'\b(?:praxis|cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
+    # NOTE: do not add common English words here. Every token must be a
+    # distinctive offensive-security tool brand, otherwise legitimate
+    # AGENTS.md / SOUL.md content false-positives and the whole file is
+    # blocked. "praxis" was removed for exactly this reason — it's a common
+    # word and a legitimate agent name (Greek for practice/action), not a
+    # C2-specific tell like the brands below.
+    (r'\b(?:cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
     (r'\bc2\s+(?:server|channel|infrastructure|beacon)\b', "c2_explicit", "context"),
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 

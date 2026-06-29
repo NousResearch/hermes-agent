@@ -7,6 +7,7 @@ Subcommands:
     setup              full first-time setup (device login + project + user + sidecar)
     status             show login + project + sidecar dep state
     install-sidecar    npm install inside plugins/platforms/photon/sidecar/
+    telemetry          show or toggle Spectrum SDK telemetry (on/off)
 
 The device-code login runs automatically as the first step of ``setup``;
 there is no standalone ``login`` verb (matching how every other Hermes
@@ -58,6 +59,15 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     subs.add_parser("status", help="Show login + project + sidecar dep state")
     subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
 
+    p_telemetry = subs.add_parser(
+        "telemetry",
+        help="Show or toggle Spectrum SDK telemetry (on/off)",
+    )
+    p_telemetry.add_argument(
+        "state", nargs="?", choices=("on", "off"),
+        help="Turn telemetry on or off (omit to show the current state)",
+    )
+
     parser.set_defaults(func=dispatch)
 
 
@@ -75,6 +85,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return _cmd_status(args)
     if sub == "install-sidecar":
         return _cmd_install_sidecar(args)
+    if sub == "telemetry":
+        return _cmd_telemetry(args)
     print(f"unknown subcommand: {sub}", file=sys.stderr)
     return 2
 
@@ -152,16 +164,14 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print("could not resolve a Photon project id", file=sys.stderr)
         return 1
 
-    # 3. Enable Spectrum, fetch the spectrum project id, rotate the secret,
-    #    and persist both (runtime creds -> ~/.hermes/.env, ids -> auth.json).
+    # 3. Rotate the project secret and persist creds (runtime -> ~/.hermes/.env,
+    #    ids -> auth.json). Spectrum is always enabled and provisioned at
+    #    create-time, and the dashboard project id *is* the Spectrum project id
+    #    (ids unified), so there's nothing to enable — the id we already have is
+    #    the Spectrum id.
     try:
-        print("[3/5] Enabling Spectrum and provisioning credentials...")
-        proj = photon_auth.ensure_spectrum_enabled(token, dashboard_id)
-        spectrum_id = proj.get("spectrumProjectId")
-        if not spectrum_id:
-            print("spectrum provisioning failed: no spectrum project id", file=sys.stderr)
-            return 1
-        spectrum_id = str(spectrum_id)
+        print("[3/5] Provisioning Spectrum credentials...")
+        spectrum_id = dashboard_id
         secret = photon_auth.regenerate_project_secret(token, dashboard_id)
         photon_auth.store_project_credentials(
             spectrum_project_id=spectrum_id,
@@ -170,7 +180,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             name=name,
         )
         # spectrum_id is an opaque non-secret id; safe to show.
-        print(f"  ✓ Spectrum enabled (project id {spectrum_id}) — secret saved")
+        print(f"  ✓ Spectrum ready (project id {spectrum_id}) — secret saved")
     except Exception as e:
         print(f"spectrum provisioning failed: {e}", file=sys.stderr)
         return 1
@@ -262,7 +272,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     print()
     print("✓ Photon setup complete.")
-    print("  Start the gateway:  hermes gateway start --platform photon")
+    print("  Start the gateway:  hermes gateway start")
     return 0
 
 
@@ -303,6 +313,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
+    print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
     return 0
 
 
@@ -323,6 +334,37 @@ def _cmd_install_sidecar(_args: argparse.Namespace) -> int:
     return _install_sidecar()
 
 
+def _telemetry_enabled() -> bool:
+    """Read PHOTON_TELEMETRY from the env / ~/.hermes/.env.
+
+    Mirrors the sidecar's truthy set (index.mjs) so the state shown here
+    always matches what the sidecar will actually do.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+        raw = get_env_value("PHOTON_TELEMETRY")
+    except ImportError:
+        raw = os.getenv("PHOTON_TELEMETRY")
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _cmd_telemetry(args: argparse.Namespace) -> int:
+    state = getattr(args, "state", None)
+    if state is None:
+        print(f"Photon telemetry: {'on' if _telemetry_enabled() else 'off'}")
+        print("  Toggle with `hermes photon telemetry on` / `hermes photon telemetry off`.")
+        return 0
+    try:
+        from hermes_cli.config import save_env_value
+        save_env_value("PHOTON_TELEMETRY", "true" if state == "on" else "false")
+    except Exception as e:
+        print(f"could not save PHOTON_TELEMETRY: {e}", file=sys.stderr)
+        return 1
+    print(f"✓ Spectrum telemetry turned {state} (PHOTON_TELEMETRY in ~/.hermes/.env)")
+    print("  Restart the gateway for the sidecar to pick it up:  hermes gateway restart")
+    return 0
+
+
 def _install_sidecar() -> int:
     npm = shutil.which("npm") or "npm"
     if not shutil.which(npm):
@@ -332,16 +374,27 @@ def _install_sidecar() -> int:
             file=sys.stderr,
         )
         return 1
-    # Always pull the newest published spectrum-ts so every setup runs against
-    # the latest SDK. `spectrum-ts@latest` bumps package.json + package-lock.json
-    # to the current release before installing — a plain `npm install` would
-    # stay pinned to whatever the committed lockfile already resolved.
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} install spectrum-ts@latest")
+    # spectrum-ts is pinned exactly in package.json/package-lock.json because
+    # the SDK ships breaking majors (v2 removed defineFusorPlatform; v3
+    # reworked space construction; v5 split it into @spectrum-ts/* packages).
+    # Upgrades are deliberate: bump the pin, migrate sidecar/index.mjs, re-run
+    # the photon tests — never `@latest` (see README "Upgrading spectrum-ts").
+    # `npm ci` installs the committed lockfile verbatim; fall back to
+    # `npm install` when the lockfile is missing or drifted (e.g. a dev
+    # checkout mid-upgrade).
+    print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
     proc = subprocess.run(  # noqa: S603
-        [npm, "install", "spectrum-ts@latest"],
+        [npm, "ci"],
         cwd=str(_SIDECAR_DIR),
         check=False,
     )
+    if proc.returncode != 0:
+        print(f"  npm ci failed — falling back to:  {npm} install")
+        proc = subprocess.run(  # noqa: S603
+            [npm, "install"],
+            cwd=str(_SIDECAR_DIR),
+            check=False,
+        )
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
     return proc.returncode

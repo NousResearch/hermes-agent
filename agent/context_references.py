@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -246,7 +247,14 @@ def _expand_file_reference(
     if not path.is_file():
         return f"{ref.raw}: path is not a file", None
     if _is_binary_file(path):
-        return f"{ref.raw}: binary files are not supported", None
+        # A binary file can't be inlined as text, but it IS on disk (the agent's
+        # tools run where this resolves — the local cwd, or the staged copy in a
+        # remote session workspace). Returning a bare "not supported" warning
+        # with no content was a dead end: the model saw a failure and gave up
+        # (told the user the file type wasn't supported). Instead, hand it an
+        # actionable block — the path, type, size, and a nudge to use its tools —
+        # so it can read/convert/view the file itself.
+        return None, _binary_reference_block(ref, path)
 
     text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
@@ -283,6 +291,7 @@ def _expand_git_reference(
     args: list[str],
     label: str,
 ) -> tuple[str | None, str | None]:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             ["git", *args],
@@ -291,6 +300,7 @@ def _expand_git_reference(
             text=True,
             timeout=30,
             stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
@@ -318,9 +328,9 @@ async def _fetch_url_content(
 async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
 
-    raw = await web_extract_tool([url], format="markdown", use_llm_processing=True)
+    raw = await web_extract_tool([url], format="markdown")
     payload = json.loads(raw)
-    docs = payload.get("data", {}).get("documents", [])
+    docs = payload.get("results", [])
     if not docs:
         return ""
     doc = docs[0]
@@ -476,6 +486,7 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
 
 
 def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             ["rg", "--files", str(path.relative_to(cwd))],
@@ -484,6 +495,7 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
@@ -491,6 +503,30 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
         return None
     files = [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
     return files[:limit]
+
+
+def _human_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _binary_reference_block(ref: ContextReference, path: Path) -> str:
+    mime, _ = mimetypes.guess_type(path.name)
+    mime = mime or "application/octet-stream"
+    try:
+        size = _human_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
+    return (
+        f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
+        f"It is available on disk at `{path}`. Use your tools to work with it "
+        f"(read or convert it, extract its text, or view/render it as needed); "
+        f"do not tell the user the file type is unsupported."
+    )
 
 
 def _file_metadata(path: Path) -> str:

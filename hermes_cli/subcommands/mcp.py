@@ -6,6 +6,7 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
@@ -52,7 +53,10 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "--command", dest="mcp_command", help="Stdio command (e.g. npx)"
     )
     mcp_add_p.add_argument(
-        "--args", nargs="*", default=[], help="Arguments for stdio command"
+        "--args",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help="Arguments for stdio command; must be the last option",
     )
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")
@@ -81,6 +85,19 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         help="Force re-authentication for an OAuth-based MCP server",
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+
+    mcp_reauth_p = mcp_sub.add_parser(
+        "reauth",
+        help="Re-authenticate one OAuth MCP server, or all of them (--all)",
+    )
+    mcp_reauth_p.add_argument(
+        "name", nargs="?", help="Server name to re-authenticate (omit with --all)"
+    )
+    mcp_reauth_p.add_argument(
+        "--all",
+        action="store_true",
+        help="Re-authenticate every OAuth server in config, one at a time",
+    )
 
     # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
     mcp_sub.add_parser(

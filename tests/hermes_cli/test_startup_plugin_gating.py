@@ -32,6 +32,7 @@ from hermes_cli.main import (
     _BUILTIN_SUBCOMMANDS,
     _first_positional_argv,
     _plugin_cli_discovery_needed,
+    _resolve_deferred_platform_cli_command,
 )
 
 
@@ -178,3 +179,73 @@ def test_builtin_set_has_no_phantom_entries():
         f"_BUILTIN_SUBCOMMANDS has entries that are not registered as "
         f"top-level subparsers: {sorted(phantom)}"
     )
+
+
+# ── _resolve_deferred_platform_cli_command (issue #54678) ──────────────────
+
+
+def test_deferred_platform_cli_resolution_targets_matching_platform():
+    """The slow path must import the deferred platform whose name matches the
+    invoked command, so its register_cli_command side effect fires.
+
+    Photon registers ``hermes photon`` only when its adapter module is
+    imported; on the unknown-command slow path the platform is still a
+    deferred entry, so without this resolution step the CLI command stays
+    absent and argparse rejects ``photon`` (issue #54678).
+    """
+    from hermes_cli import main as _main
+
+    class _FakeRegistry:
+        def __init__(self):
+            self.resolved: list[str] = []
+
+        def get(self, name):
+            self.resolved.append(name)
+            return None
+
+    fake = _FakeRegistry()
+    fake_module = type(sys)("gateway.platform_registry")
+    fake_module.platform_registry = fake
+    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
+        _resolve_deferred_platform_cli_command("photon")
+
+    assert fake.resolved == ["photon"]
+
+
+def test_deferred_platform_cli_resolution_ignores_empty_command():
+    """A None/empty first token (bare ``hermes`` / flags only) must not touch
+    the registry — normal startup stays cheap."""
+    from hermes_cli import main as _main
+
+    class _FakeRegistry:
+        def __init__(self):
+            self.resolved: list[str] = []
+
+        def get(self, name):  # pragma: no cover - must not be called
+            self.resolved.append(name)
+            return None
+
+    fake = _FakeRegistry()
+    fake_module = type(sys)("gateway.platform_registry")
+    fake_module.platform_registry = fake
+    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
+        _resolve_deferred_platform_cli_command(None)
+        _resolve_deferred_platform_cli_command("")
+
+    assert fake.resolved == []
+
+
+def test_deferred_platform_cli_resolution_swallows_registry_errors():
+    """A registry/import failure must be logged-and-ignored, never crash the
+    CLI startup path."""
+    from hermes_cli import main as _main
+
+    class _BoomRegistry:
+        def get(self, name):
+            raise RuntimeError("boom")
+
+    fake_module = type(sys)("gateway.platform_registry")
+    fake_module.platform_registry = _BoomRegistry()
+    with patch.dict(sys.modules, {"gateway.platform_registry": fake_module}):
+        # Must not raise.
+        _resolve_deferred_platform_cli_command("photon")

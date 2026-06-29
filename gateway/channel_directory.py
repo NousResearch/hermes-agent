@@ -430,10 +430,19 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     # raw platform IDs (e.g. Slack "C0B0QV5434G") even when the format guard
     # in _parse_target_ref hasn't recognized them as explicit.
     raw = name.strip()
+    stale_discord_thread_match: str | None = None
     for ch in channels:
         if ch.get("id") == raw:
             return ch["id"]
         if platform_name == "discord" and ch.get("thread_id") == raw:
+            target_id = str(ch.get("id") or "")
+            if target_id == f"{raw}:{raw}":
+                # Older directory builds recorded Discord threads as
+                # thread_id:thread_id because session chat_id is the thread
+                # itself.  Keep looking so a durable alias or newer
+                # parent_channel:thread entry can win.
+                stale_discord_thread_match = target_id
+                continue
             return ch["id"]
 
     query = _normalize_channel_query(name)
@@ -460,6 +469,11 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
     if len(matches) == 1:
         return matches[0]["id"]
+
+    if stale_discord_thread_match:
+        # A bare Discord thread ID is a valid REST send target and is less
+        # misleading than the stale self-parent composite.
+        return raw
 
     return None
 

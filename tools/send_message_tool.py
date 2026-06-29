@@ -381,6 +381,22 @@ def _handle_send(args):
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
+    if platform_name == "discord":
+        try:
+            from gateway.support_ops_routing import lint_and_resolve_discord_content
+            content_lint = lint_and_resolve_discord_content(cleaned_message)
+        except Exception as e:
+            return json.dumps(_error(f"Discord Support Ops pre-send lint failed: {e}"))
+        if not content_lint.ok:
+            return json.dumps(
+                _error(
+                    "Discord Support Ops pre-send lint blocked delivery: "
+                    f"{content_lint.blocked_reason}"
+                )
+            )
+        cleaned_message = content_lint.content
+
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -403,6 +419,29 @@ def _handle_send(args):
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
                 f"or set a home channel via: hermes config set {home_env} <channel_id>"
             })
+
+    if platform_name == "discord":
+        try:
+            from gateway.support_ops_routing import lint_discord_target_for_content
+            target_lint = lint_discord_target_for_content(
+                cleaned_message,
+                chat_id=str(chat_id or ""),
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
+        except Exception as e:
+            return json.dumps(_error(f"Discord Support Ops target lint failed: {e}"))
+        if not target_lint.ok:
+            expected = (
+                f" Expected channel_id: {target_lint.expected_channel_id}."
+                if target_lint.expected_channel_id
+                else ""
+            )
+            return json.dumps(
+                _error(
+                    "Discord Support Ops target lint blocked delivery: "
+                    f"{target_lint.blocked_reason}.{expected}"
+                )
+            )
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:

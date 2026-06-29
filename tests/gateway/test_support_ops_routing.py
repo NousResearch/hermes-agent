@@ -4,6 +4,11 @@ from gateway.support_ops_routing import (
     BACKEND_MENTION,
     FATIH_MENTION,
     KOZHUHAROV_MENTION,
+    ALEX_MENTION,
+    PLAMENA_MENTION,
+    SKYVISION_BACKEND_CHANNEL_ID,
+    SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+    lint_discord_target_for_content,
     lint_and_resolve_discord_content,
 )
 
@@ -65,6 +70,45 @@ def test_exact_known_mentions_pass_without_route_inference():
         assert result.blocked_reason is None
         assert result.content == text
         assert not hasattr(result, "route")
+
+
+def test_backend_resolver_mention_requires_backend_lane_without_keyword_inference():
+    text = f"{ALEX_MENTION} моля за действие по клиентския бонус."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        thread_id="1521047924069371954",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_backend_resolver_mention_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
+
+
+def test_backend_resolver_mention_passes_in_backend_lane():
+    text = f"{ALEX_MENTION} моля за действие по клиентския бонус."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id=SKYVISION_BACKEND_CHANNEL_ID,
+        thread_id="1521049963428053125",
+    )
+
+    assert result.ok is True
+
+
+def test_mixed_backend_resolver_and_requester_mentions_are_blocked_even_in_backend_lane():
+    text = f"{ALEX_MENTION} {PLAMENA_MENTION} — нов клиентски кейс за действие."
+
+    result = lint_discord_target_for_content(
+        text,
+        chat_id=SKYVISION_BACKEND_CHANNEL_ID,
+        thread_id="1521049963428053125",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_mixed_backend_resolver_and_requester_mentions"
 
 
 def test_raw_text_backend_mentions_fail_closed_without_rewrite():

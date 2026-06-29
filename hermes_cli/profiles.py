@@ -29,7 +29,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -328,6 +328,22 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def validate_alias_name(name: str) -> None:
+    """Raise ``ValueError`` if *name* is not a safe wrapper-alias identifier.
+
+    The alias is used verbatim as a filename under :func:`_get_wrapper_dir`
+    (``~/.local/bin``), so it must be a single safe command name with no path
+    separators or traversal segments — otherwise a value like ``../../.bashrc``
+    would escape the wrapper directory and clobber arbitrary user files. We
+    reuse the profile id regex, which already forbids ``/``, ``.``, and ``..``.
+    """
+    if not _PROFILE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid alias name {name!r}. Must match "
+            f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+
+
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     canon = normalize_profile_name(name)
@@ -351,9 +367,14 @@ def profile_exists(name: str) -> bool:
 def check_alias_collision(name: str) -> Optional[str]:
     """Return a human-readable collision message, or None if the name is safe.
 
-    Checks: reserved names, hermes subcommands, existing binaries in PATH.
+    Checks: alias-name validity, reserved names, hermes subcommands, existing
+    binaries in PATH.
     """
     canon = normalize_profile_name(name)
+    try:
+        validate_alias_name(canon)
+    except ValueError as exc:
+        return str(exc)
     if canon in _RESERVED_NAMES:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
@@ -403,6 +424,9 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     """
     canon = normalize_profile_name(name)
     profile = normalize_profile_name(target) if target else canon
+    # The alias is used verbatim as a filename under the wrapper dir; reject
+    # any value that isn't a single safe identifier so it can't traverse out.
+    validate_alias_name(canon)
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -435,6 +459,12 @@ def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
     wrapper_dir = _get_wrapper_dir()
     canon = normalize_profile_name(name)
+    # A traversal-shaped name could point unlink() at a file outside the
+    # wrapper dir; refuse it rather than acting on an arbitrary path.
+    try:
+        validate_alias_name(canon)
+    except ValueError:
+        return False
     is_windows = sys.platform == "win32"
 
     # Check both the extensionless path (POSIX) and .bat (Windows)
@@ -612,10 +642,34 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
-    """Check if a gateway is running for a given profile directory."""
+    """Check if a gateway is running for a given profile directory.
+
+    Primary signal is the profile's ``gateway.pid`` (verified against the
+    runtime lock).  That check fails closed whenever the lock isn't held by
+    *this* reader — which is exactly the case for a dashboard process that is
+    a separate s6 service from the gateway it's reporting on (Docker), or any
+    launch-service-managed gateway that left a fresh ``gateway_state.json`` but
+    no live PID file.  In those cases fall back to validating the PID recorded
+    in the profile's own ``gateway_state.json`` against the live process table,
+    mirroring the ``/api/status`` sidebar's liveness logic so the two surfaces
+    agree.  Parameterized by ``profile_dir`` so it never mutates ``HERMES_HOME``.
+    """
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if (
+            get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+            is not None
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        from gateway.status import (
+            get_runtime_status_running_pid,
+            read_runtime_status,
+        )
+        runtime = read_runtime_status(profile_dir / "gateway_state.json")
+        return get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None
     except Exception:
         return False
 
@@ -779,6 +833,47 @@ def list_profiles() -> List[ProfileInfo]:
             ))
 
     return profiles
+
+
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+    """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
+
+    This is the single chokepoint for "which profiles does the inbound gateway
+    handle" so later multiplexing phases never re-derive the set.
+
+    - ``multiplex=False`` (default): returns exactly one entry for the *active*
+      profile — byte-for-byte the single-profile behavior the gateway has
+      always had. The name is ``"default"`` for the default profile or the
+      active named profile's id.
+    - ``multiplex=True``: returns the default profile plus every valid named
+      profile under ``profiles/``, each paired with its own HERMES_HOME.
+
+    Intentionally lightweight (a directory scan + name validation only): no
+    per-profile config reads, gateway-running probes, or skill counts like
+    :func:`list_profiles`. It runs on gateway startup and must stay cheap.
+
+    The returned ``hermes_home`` is the path to pass to
+    ``set_hermes_home_override`` when scoping a turn to that profile.
+    """
+    active = get_active_profile_name() or "default"
+    if not multiplex:
+        return [(active, get_profile_dir(active))]
+
+    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default":
+                continue  # default is the built-in entry already added above
+            if not _PROFILE_ID_RE.match(name):
+                continue
+            serve.append((name, entry))
+
+    return serve
 
 
 def create_profile(

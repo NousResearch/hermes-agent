@@ -92,9 +92,7 @@ async function readDirForIpc(dirPath, options = {}) {
   try {
     const dirents = await fsImpl.promises.readdir(resolved, { withFileTypes: true })
     const visibleDirents = dirents.filter(dirent => !FS_READDIR_HIDDEN.has(dirent.name))
-    const entries = await mapWithStatConcurrency(visibleDirents, dirent =>
-      entryForDirent(dirent, resolved, fsImpl)
-    )
+    const entries = await mapWithStatConcurrency(visibleDirents, dirent => entryForDirent(dirent, resolved, fsImpl))
 
     entries.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name))
 

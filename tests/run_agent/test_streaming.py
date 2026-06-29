@@ -97,6 +97,99 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_native_gemini_endpoint_omits_stream_options(self, mock_close, mock_create):
+        """Google's native Gemini REST endpoint rejects OpenAI-only stream_options."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="Paris", finish_reason="stop", model="gemini"),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-3-flash-preview",
+            provider="gemini",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Paris"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream"] is True
+        assert "stream_options" not in call_kwargs
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_gemini_openai_compat_shim_keeps_stream_options(self, mock_close, mock_create):
+        """The Gemini OpenAI-compat shim (.../openai) accepts stream_options."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="ok", finish_reason="stop", model="gemini"),
+            _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1)),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-3-flash-preview",
+            provider="gemini",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "ok"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream_options"] == {"include_usage": True}
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_openai_compatible_streaming_keeps_stream_options(self, mock_close, mock_create):
+        """OpenAI-compatible aggregators still request final usage chunks."""
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="ok", finish_reason="stop", model="test-model"),
+            _make_empty_chunk(usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1)),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            provider="openrouter",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "ok"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream_options"] == {"include_usage": True}
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_call_response(self, mock_close, mock_create):
         """Tool call stream accumulates ID, name, and arguments."""
         from run_agent import AIAgent

@@ -2399,6 +2399,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Back-compat: an axis with no snapshot (pre-existing jobs, no_agent, or
         # any axis whose creation-time resolution failed) behaves exactly as
         # before — the guard never engages for it. Pinned axes are unaffected.
+        # Config gate: cron.drift_guard_enabled (default True). Set to false to
+        # let unpinned jobs always run on the current global default without
+        # skipping on drift. The user explicitly opted out of the spend guard.
+        _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg.get("cron", {}), dict) else {}
+        _drift_guard_enabled = _cron_cfg.get("drift_guard_enabled", True)
         _drift: list[str] = []
         _provider_snapshot = (job.get("provider_snapshot") or "").strip().lower()
         if _provider_snapshot and not (job.get("provider") or "").strip():
@@ -2414,7 +2419,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _drift.append(
                     f"model '{_model_snapshot}' -> '{_current_model}'"
                 )
-        if _drift:
+        if _drift and _drift_guard_enabled:
             _changes = "; ".join(_drift)
             logger.warning(
                 "Job '%s': SKIPPED — global inference config drifted since "

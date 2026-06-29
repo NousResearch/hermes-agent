@@ -55,6 +55,7 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length,
 )
+from agent.chat_completion_helpers import estimate_request_context_tokens
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
@@ -930,6 +931,10 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+        raw_request_tokens = estimate_request_context_tokens(
+            {"messages": api_messages, "tools": agent.tools or None}
+        )
+        approx_request_tokens = max(approx_request_tokens, raw_request_tokens)
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens

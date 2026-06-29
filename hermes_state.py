@@ -30,6 +30,52 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+_COMPRESSION_LINEAGE_EVENT_PREFIX = "runtime_event=compression_lineage "
+_COMPRESSION_LINEAGE_EVENT_SAFE_KEYS = {
+    "session_id",
+    "parent_session_id",
+    "child_session_id",
+    "reason",
+    "message_count",
+    "compressed_message_count",
+    "token_estimate",
+    "status",
+}
+
+
+def _compression_lineage_value(key: str, value: Any) -> Any:
+    """Normalize safe scalar metadata for compression-lineage runtime logs."""
+    if key.endswith("_count") or key.endswith("_estimate"):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    text = " ".join(str(value).split())
+    if len(text) > 240:
+        text = text[:237].rstrip() + "..."
+    return text
+
+
+def _log_compression_lineage_event(event: str, **metadata: Any) -> None:
+    """Emit a redacted structured runtime event for compression lineage."""
+    payload: dict[str, Any] = {"event": event}
+    for key in sorted(_COMPRESSION_LINEAGE_EVENT_SAFE_KEYS):
+        if key not in metadata:
+            continue
+        value = _compression_lineage_value(key, metadata[key])
+        if value is not None:
+            payload[key] = value
+    logger.info(
+        "%s%s",
+        _COMPRESSION_LINEAGE_EVENT_PREFIX,
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
+
+
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
@@ -2399,7 +2445,12 @@ class SessionDB:
 
         return f"{base} #{max_num + 1}"
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
+    def get_compression_tip(
+        self,
+        session_id: str,
+        *,
+        emit_lineage_event: bool = False,
+    ) -> Optional[str]:
         """Walk the compression-continuation chain forward and return the tip.
 
         A compression continuation is a child of a session whose
@@ -2420,6 +2471,7 @@ class SessionDB:
         Returns the latest continuation tip, or the input id when no
         continuation exists.
         """
+        original_session_id = session_id
         current = session_id
         seen = {current} if current else set()
         # Bound the walk defensively — compression chains this deep are
@@ -2454,12 +2506,30 @@ class SessionDB:
                 )
                 row = cursor.fetchone()
             if row is None:
+                if emit_lineage_event and current != original_session_id:
+                    _log_compression_lineage_event(
+                        "compression_resume_tip_resolved",
+                        session_id=current,
+                        parent_session_id=original_session_id,
+                        child_session_id=current,
+                        reason="compression_chain_tip",
+                        status="resolved",
+                    )
                 return current
             child_id = row["id"]
             if not child_id or child_id in seen:
                 return current
             seen.add(child_id)
             current = child_id
+        if emit_lineage_event and current != original_session_id:
+            _log_compression_lineage_event(
+                "compression_resume_tip_resolved",
+                session_id=current,
+                parent_session_id=original_session_id,
+                child_session_id=current,
+                reason="compression_chain_tip",
+                status="resolved",
+            )
         return current
 
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:

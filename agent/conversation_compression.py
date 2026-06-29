@@ -28,6 +28,7 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -49,6 +50,55 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+_COMPRESSION_LINEAGE_EVENT_PREFIX = "runtime_event=compression_lineage "
+_COMPRESSION_LINEAGE_EVENT_SAFE_KEYS = {
+    "session_id",
+    "parent_session_id",
+    "child_session_id",
+    "reason",
+    "message_count",
+    "compressed_message_count",
+    "token_estimate",
+    "status",
+}
+
+
+def _compression_lineage_value(key: str, value: Any) -> Any:
+    """Normalize safe scalar metadata for compression-lineage runtime logs."""
+    if key.endswith("_count") or key.endswith("_estimate"):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    text = str(value)
+    # Keep reason strings single-line and bounded.  The caller only supplies
+    # safe metadata fields; this prevents structured events from absorbing
+    # multi-line provider dumps or accidental payload text.
+    text = " ".join(text.split())
+    if len(text) > 240:
+        text = text[:237].rstrip() + "..."
+    return text
+
+
+def _log_compression_lineage_event(event: str, **metadata: Any) -> None:
+    """Emit a redacted structured runtime event for compression lineage."""
+    payload: dict[str, Any] = {"event": event}
+    for key in sorted(_COMPRESSION_LINEAGE_EVENT_SAFE_KEYS):
+        if key not in metadata:
+            continue
+        value = _compression_lineage_value(key, metadata[key])
+        if value is not None:
+            payload[key] = value
+    logger.info(
+        "%s%s",
+        _COMPRESSION_LINEAGE_EVENT_PREFIX,
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -377,6 +427,14 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
+    _log_compression_lineage_event(
+        "compression_start",
+        session_id=agent.session_id or "none",
+        reason="compression",
+        message_count=_pre_msg_count,
+        token_estimate=approx_tokens,
+        status="started",
+    )
     agent._emit_status(COMPACTION_STATUS)
 
     # ── Compression lock ────────────────────────────────────────────────
@@ -451,6 +509,14 @@ def compress_context(
                 "(holder=%s) — returning messages unchanged to avoid session fork",
                 _lock_sid, existing,
             )
+            _log_compression_lineage_event(
+                "compression_abort",
+                session_id=_lock_sid,
+                reason="compression_lock_contended",
+                message_count=_pre_msg_count,
+                token_estimate=approx_tokens,
+                status="aborted",
+            )
             _lock_holder = None  # don't release a lock we don't own
             # Surface to the user once — quiet for downstream auto-compress loops
             if getattr(agent, "_last_compression_lock_warning_sid", None) != _lock_sid:
@@ -502,6 +568,14 @@ def compress_context(
     # the no-op via len(returned) == len(input).
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
         _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+        _log_compression_lineage_event(
+            "compression_abort",
+            session_id=agent.session_id or "none",
+            reason="summary_failed",
+            message_count=_pre_msg_count,
+            token_estimate=approx_tokens,
+            status="aborted",
+        )
         if getattr(agent, "_last_compression_summary_warning", None) != _err:
             agent._last_compression_summary_warning = _err
             agent._emit_warning(
@@ -600,6 +674,15 @@ def compress_context(
                 old_title = agent._session_db.get_session_title(agent.session_id)
                 agent._session_db.end_session(agent.session_id, "compression")
                 old_session_id = agent.session_id
+                _log_compression_lineage_event(
+                    "compression_parent_ended",
+                    session_id=old_session_id,
+                    parent_session_id=old_session_id,
+                    reason="compression",
+                    message_count=_pre_msg_count,
+                    token_estimate=approx_tokens,
+                    status="ended",
+                )
                 agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Ordering contract: the agent thread updates the contextvar here;
                 # the gateway propagates to SessionEntry after run_in_executor returns.
@@ -634,6 +717,17 @@ def compress_context(
                         parent_session_id=old_session_id,
                     )
                 except Exception as _cs_err:
+                    _log_compression_lineage_event(
+                        "compression_abort",
+                        session_id=old_session_id,
+                        parent_session_id=old_session_id,
+                        child_session_id=agent.session_id,
+                        reason=f"child_create_failed:{type(_cs_err).__name__}",
+                        message_count=_pre_msg_count,
+                        compressed_message_count=len(compressed),
+                        token_estimate=approx_tokens,
+                        status="aborted",
+                    )
                     # The child row could not be created (e.g. FK constraint,
                     # contended write). Previously the outer handler simply
                     # warned and let the agent continue on the NEW id — which
@@ -672,6 +766,17 @@ def compress_context(
                     agent._session_db_created = True
                     raise
                 agent._session_db_created = True
+                _log_compression_lineage_event(
+                    "compression_child_created",
+                    session_id=agent.session_id,
+                    parent_session_id=old_session_id,
+                    child_session_id=agent.session_id,
+                    reason="compression",
+                    message_count=_pre_msg_count,
+                    compressed_message_count=len(compressed),
+                    token_estimate=approx_tokens,
+                    status="created",
+                )
                 # Carry a persistent /goal onto the continuation session.
                 # Compression mints a fresh child id; load_goal does a flat
                 # per-session lookup with no parent walk, so without this an

@@ -1296,7 +1296,10 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             # Project forward through compression chain so resumes land on
             # the live tip instead of a dead compressed parent.
             try:
-                resolved_id = db.get_compression_tip(resolved_id) or resolved_id
+                resolved_id = (
+                    db.get_compression_tip(resolved_id, emit_lineage_event=True)
+                    or resolved_id
+                )
             except Exception:
                 pass
 

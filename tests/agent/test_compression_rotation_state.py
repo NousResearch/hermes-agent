@@ -17,11 +17,27 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from hermes_state import SessionDB
+
+
+_COMPRESSION_LINEAGE_PREFIX = "runtime_event=compression_lineage "
+
+
+def _compression_lineage_events(caplog):
+    events = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if _COMPRESSION_LINEAGE_PREFIX not in message:
+            continue
+        payload = message.split(_COMPRESSION_LINEAGE_PREFIX, 1)[1]
+        events.append(json.loads(payload))
+    return events
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
@@ -130,3 +146,137 @@ class TestPlatformForwardedAtBoundary:
         kwargs = calls[-1].kwargs
         assert kwargs.get("platform") == "telegram"
         assert kwargs.get("boundary_reason") == "compression"
+
+
+class TestCompressionLineageRuntimeEvents:
+    def test_successful_rotation_logs_redacted_lineage_events(self, tmp_path: Path, caplog):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_LINEAGE_ROT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+        messages = _msgs()
+
+        caplog.set_level(logging.INFO)
+        agent._compress_context(messages, "SECRET_SYSTEM_PROMPT", approx_tokens=120_000)
+
+        child = agent.session_id
+        assert child != parent
+        events = _compression_lineage_events(caplog)
+        by_name = {event["event"]: event for event in events}
+
+        assert by_name["compression_start"] == {
+            "event": "compression_start",
+            "message_count": len(messages),
+            "reason": "compression",
+            "session_id": parent,
+            "status": "started",
+            "token_estimate": 120_000,
+        }
+        assert by_name["compression_parent_ended"] == {
+            "event": "compression_parent_ended",
+            "message_count": len(messages),
+            "parent_session_id": parent,
+            "reason": "compression",
+            "session_id": parent,
+            "status": "ended",
+            "token_estimate": 120_000,
+        }
+        assert by_name["compression_child_created"]["session_id"] == child
+        assert by_name["compression_child_created"]["child_session_id"] == child
+        assert by_name["compression_child_created"]["parent_session_id"] == parent
+        assert by_name["compression_child_created"]["message_count"] == len(messages)
+        assert by_name["compression_child_created"]["compressed_message_count"] == 2
+        assert by_name["compression_child_created"]["reason"] == "compression"
+        assert by_name["compression_child_created"]["status"] == "created"
+        assert by_name["compression_child_created"]["token_estimate"] == 120_000
+
+        allowed = {
+            "event",
+            "session_id",
+            "parent_session_id",
+            "child_session_id",
+            "reason",
+            "message_count",
+            "compressed_message_count",
+            "token_estimate",
+            "status",
+        }
+        for event in events:
+            assert set(event) <= allowed
+        event_text = json.dumps(events, sort_keys=True)
+        assert "[CONTEXT COMPACTION] summary" not in event_text
+        assert "SECRET_SYSTEM_PROMPT" not in event_text
+        assert "tail" not in event_text
+
+    def test_aborted_compression_logs_abort_without_rotation(self, tmp_path: Path, caplog):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ABORT_ROT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+        messages = _msgs()
+        agent.context_compressor.compress.return_value = messages
+        agent.context_compressor._last_compress_aborted = True
+        agent.context_compressor._last_summary_error = (
+            "provider said sk_live_never_log_me at https://private.invalid/path"
+        )
+
+        caplog.set_level(logging.INFO)
+        returned_messages, _ = agent._compress_context(
+            messages,
+            "SECRET_SYSTEM_PROMPT",
+            approx_tokens=120_000,
+        )
+
+        assert returned_messages is messages
+        assert agent.session_id == parent
+        events = _compression_lineage_events(caplog)
+        by_name = {event["event"]: event for event in events}
+        assert by_name["compression_abort"] == {
+            "event": "compression_abort",
+            "message_count": len(messages),
+            "reason": "summary_failed",
+            "session_id": parent,
+            "status": "aborted",
+            "token_estimate": 120_000,
+        }
+        assert "compression_parent_ended" not in by_name
+        assert "compression_child_created" not in by_name
+        event_text = json.dumps(events, sort_keys=True)
+        assert "sk_live_never_log_me" not in event_text
+        assert "private.invalid" not in event_text
+
+    def test_resume_tip_resolution_is_quiet_by_default(self, tmp_path: Path, caplog):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_QUIET_TIP"
+        child = "CHILD_QUIET_TIP"
+        db.create_session(parent, source="cli")
+        db.end_session(parent, "compression")
+        db.create_session(child, source="cli", parent_session_id=parent)
+
+        caplog.set_level(logging.INFO)
+        assert db.get_compression_tip(parent) == child
+
+        assert _compression_lineage_events(caplog) == []
+
+    def test_resume_tip_resolution_logs_lineage_event_when_requested(self, tmp_path: Path, caplog):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_RESUME_TIP"
+        child = "CHILD_RESUME_TIP"
+        db.create_session(parent, source="cli")
+        db.end_session(parent, "compression")
+        db.create_session(child, source="cli", parent_session_id=parent)
+
+        caplog.set_level(logging.INFO)
+        assert db.get_compression_tip(parent, emit_lineage_event=True) == child
+
+        events = _compression_lineage_events(caplog)
+        assert events == [
+            {
+                "event": "compression_resume_tip_resolved",
+                "child_session_id": child,
+                "parent_session_id": parent,
+                "reason": "compression_chain_tip",
+                "session_id": child,
+                "status": "resolved",
+            }
+        ]

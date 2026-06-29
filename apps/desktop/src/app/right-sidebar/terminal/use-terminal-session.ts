@@ -708,16 +708,21 @@ export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onSh
     return term ? registerTerminalReader(id, makeTerminalReader(term)) : undefined
   }, [id, status])
 
-  // On (re)activation the host went display:none→visible: focus it and refit so
-  // a stale 0×0 fit from while it was hidden doesn't strand the prompt.
+  // On (re)activation: a WebGL terminal doesn't paint while visibility:hidden, so
+  // it reveals a stale/garbled frame. Refit, rebuild the glyph atlas, and force a
+  // full redraw against the live buffer, then focus.
   useEffect(() => {
     if (!active || status !== 'open') {
       return
     }
 
     const frame = requestAnimationFrame(() => {
+      const term = termRef.current
+
       fitRef.current?.()
-      termRef.current?.focus()
+      webglRef.current?.clearTextureAtlas()
+      term?.refresh(0, term.rows - 1)
+      term?.focus()
     })
 
     return () => cancelAnimationFrame(frame)

@@ -723,7 +723,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _mem_result = None
             try:
-                function_result = agent._memory_manager.handle_tool_call(function_name, function_args)
+                function_result = agent._memory_manager.handle_tool_call(
+                    function_name, function_args, user_id=getattr(agent, '_user_id', '') or ''
+                )
                 _mem_result = function_result
             except Exception as tool_error:
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})

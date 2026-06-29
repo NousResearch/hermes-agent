@@ -313,9 +313,11 @@ class Mem0MemoryProvider(MemoryProvider):
         except Exception as e:
             return tool_error(str(e))
 
+        call_user_id = kwargs.get("user_id", "") or self._user_id
+
         if tool_name == "mem0_profile":
             try:
-                memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
+                memories = self._unwrap_results(client.get_all(filters={"user_id": call_user_id}))
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
@@ -334,7 +336,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 results = self._unwrap_results(client.search(
                     query=query,
-                    filters=self._read_filters(),
+                    filters={"user_id": call_user_id},
                     rerank=rerank,
                     top_k=top_k,
                 ))
@@ -354,7 +356,8 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 client.add(
                     [{"role": "user", "content": conclusion}],
-                    **self._write_filters(),
+                    user_id=call_user_id,
+                    agent_id=self._agent_id,
                     infer=False,
                 )
                 self._record_success()

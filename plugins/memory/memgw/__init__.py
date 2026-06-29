@@ -456,13 +456,14 @@ class MemGatewayProvider(MemoryProvider):
         except Exception as e:
             return tool_error(str(e))
 
+        call_user_id = kwargs.get('user_id', '')
         try:
             if tool_name == 'memgw_recall':
                 query = args.get('query', '')
                 if not query:
                     return tool_error('Missing required parameter: query')
                 limit = min(int(args.get('limit', self._recall_limit)), 50)
-                payload = client.call_tool('recall', {'query': query, 'limit': limit, **self._user_scope()})
+                payload = client.call_tool('recall', {'query': query, 'limit': limit, **self._user_scope(call_user_id)})
                 self._record_success()
                 return json.dumps(payload)
 
@@ -472,7 +473,7 @@ class MemGatewayProvider(MemoryProvider):
                 if not content or not title:
                     return tool_error('Missing required parameters: content, title')
                 mtype = args.get('memory_type', 'memory')
-                payload = self._retain(content, title, mtype)
+                payload = self._retain(content, title, mtype, user_id=call_user_id)
                 self._record_success()
                 return json.dumps(payload)
 
@@ -480,7 +481,7 @@ class MemGatewayProvider(MemoryProvider):
                 query = args.get('query', '')
                 if not query:
                     return tool_error('Missing required parameter: query')
-                payload = client.call_tool('reflect', {'query': query, **self._user_scope()})
+                payload = client.call_tool('reflect', {'query': query, **self._user_scope(call_user_id)})
                 self._record_success()
                 return json.dumps(payload)
         except Exception as e:

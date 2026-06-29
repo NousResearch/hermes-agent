@@ -14,6 +14,7 @@ import functools
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -259,12 +260,59 @@ _CMDPOS = (
     r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
     r'\s*'
 )
+_COMMAND_START = r'(?:^|[;&|\n]|`|\$\()'
+_GROUP_COMMAND_START = r'(?:(?:^|[;&|\n])\s*[\({])'
+_ASSIGNMENT_VALUE = (
+    r'(?:"[^"\n;&|()]*"|\'[^\'\n;&|()]*\'|\$\([^)\n]*\)|'
+    r'`[^`\n]*`|\$\{[^}\n]*\}|[^\s;&|()]*)?'
+)
+_ASSIGNMENT_WORD = rf'(?:[A-Za-z_][A-Za-z0-9_]*={_ASSIGNMENT_VALUE})'
+_SUDO_PREFIX = (
+    r'(?:sudo\s+(?:(?:-(?:u|g|h|p|C|T)\s+\S+\s+)|'
+    r'(?:--(?:user|group|host|prompt|chdir|command-timeout)(?:=\S+|\s+\S+)\s+)|'
+    r'(?:-[^\s]+\s+))*)'
+)
+_ENV_PREFIX = (
+    rf'(?:env\s+(?:(?:-(?:C|S)\s+\S+\s+)|'
+    rf'(?:--(?:chdir|split-string)(?:=\S+|\s+\S+)\s+)|'
+    rf'(?:-[^\s]+\s+)|(?:{_ASSIGNMENT_WORD}\s+))*)'
+)
+_WRAPPER_PREFIX = r'(?:(?:exec|nohup|setsid)\s+|time\s+(?:-[^\s]+\s+)*|command\s+(?:-p\s+)*)'
+_COMMAND_DETECTION_POS = (
+    rf'(?:{_COMMAND_START}|{_GROUP_COMMAND_START})'
+    r'\s*'
+    + rf'(?:!\s+|{_SUDO_PREFIX}|{_ENV_PREFIX}|{_WRAPPER_PREFIX}|{_ASSIGNMENT_WORD}\s+)*'
+    + r'\s*'
+)
+_COMMAND_TARGET_END = r'(?:["\'`])?(?:\s|[;&|)]|$)'
+_RM_ROOT_TARGET = r'["\']?(?:/|/\*|/ \*)'
+_RM_SYSTEM_PATH = r'(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)'
+_RM_SYSTEM_TARGET = (
+    rf'["\']?{_RM_SYSTEM_PATH}(?:/?|/\*)'
+)
+_RM_HOME_TARGET = r'(?:~(?:/?|/\*)?|"?\$(?:home|\{home\})(?:/?|/\*)?"?)'
+_RM_DYNAMIC_TARGET_WORD = (
+    r'(?:/|/\*|/ \*|/home/?|/root/?|/etc/?|/usr/?|/var/?|'
+    r'/bin/?|/sbin/?|/boot/?|/lib/?|~|\$home|\$\{home\})'
+)
+_RM_DYNAMIC_PROTECTED_TARGET = (
+    r'(?:"?(?:'
+    rf'\$\((?:echo|printf)\s+["\']?{_RM_DYNAMIC_TARGET_WORD}["\']?\)|'
+    rf'`(?:echo|printf)\s+["\']?{_RM_DYNAMIC_TARGET_WORD}["\']?`'
+    r')"?)'
+)
+_RM_FLAG = r'(?:-[^\s]*\s+|--[^\s]+\s+)'
+_RM_RECURSIVE_FLAGS = (
+    rf'(?=(?:{_RM_FLAG})*(?:-[^\s]*[rR][^\s]*|--recursive)\b)'
+    rf'(?:{_RM_FLAG})*'
+)
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
-    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
-    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    (_COMMAND_DETECTION_POS + r'rm\s+' + _RM_RECURSIVE_FLAGS + _RM_ROOT_TARGET + _COMMAND_TARGET_END, "recursive delete of root filesystem"),
+    (_COMMAND_DETECTION_POS + r'rm\s+' + _RM_RECURSIVE_FLAGS + _RM_SYSTEM_TARGET + _COMMAND_TARGET_END, "recursive delete of system directory"),
+    (_COMMAND_DETECTION_POS + r'rm\s+' + _RM_RECURSIVE_FLAGS + _RM_HOME_TARGET + _COMMAND_TARGET_END, "recursive delete of home directory"),
+    (_COMMAND_DETECTION_POS + r'rm\s+' + _RM_RECURSIVE_FLAGS + _RM_DYNAMIC_PROTECTED_TARGET + _COMMAND_TARGET_END, "recursive delete of protected path via dynamic shell target"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -278,10 +326,10 @@ HARDLINE_PATTERNS = [
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".
     # _CMDPOS matches start-of-command positions.
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
-    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
-    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
-    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    (_COMMAND_DETECTION_POS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_COMMAND_DETECTION_POS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_COMMAND_DETECTION_POS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_COMMAND_DETECTION_POS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
@@ -325,9 +373,9 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     """
     if "SUDO_PASSWORD" in os.environ:
         return (False, None)
-    normalized = _normalize_command_for_detection(command).lower()
-    if _SUDO_STDIN_RE.search(normalized):
-        return (True, "sudo password guessing via stdin (sudo -S)")
+    for command_variant in _command_detection_variants_with_reeval(command):
+        if _search_outside_single_quotes(_SUDO_STDIN_RE, command_variant.lower()):
+            return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
 
 
@@ -337,10 +385,25 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
-            return (True, description)
+    for command_variant in _command_detection_variants_with_reeval(command):
+        normalized = command_variant.lower()
+        if _search_outside_single_quotes(_DYNAMIC_HARDLINE_COMMAND_RE, normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _search_outside_single_quotes(_DYNAMIC_HARDLINE_MKFS_RE, normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _search_outside_single_quotes(_DYNAMIC_HARDLINE_DD_RE, normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _search_outside_single_quotes(_DYNAMIC_HARDLINE_KILL_ALL_RE, normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _search_outside_single_quotes(_DYNAMIC_HARDLINE_SYSTEMCTL_RE, normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _search_outside_single_quotes(_DYNAMIC_HARDLINE_INIT_RE, normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _search_outside_single_quotes(_DYNAMIC_HARDLINE_NAME_RE, normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if _search_outside_single_quotes(pattern_re, normalized):
+                return (True, description)
     return (False, None)
 
 
@@ -586,20 +649,11 @@ def _normalize_command_for_detection(command: str) -> str:
     # it tracks HOME / HERMES_HOME even when those are set after this module is
     # imported — as the hermetic test conftest and profile/session launchers do.
     #
-    # This MUST run before the backslash-escape strip below: on Windows the home
-    # prefix is separated by backslashes (C:\Users\alice\...), which that strip
-    # would otherwise dissolve (-> C:Usersalice) and make the fold impossible.
-    # The fold matches either separator, so POSIX paths are unaffected by order.
-    #
     # Fold the (more specific) Hermes home first: on Windows it nests under the
     # user home (C:\Users\alice\AppData\...\hermes), so folding the user home
     # first would eat the prefix the Hermes-home fold needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
-    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
-    command = re.sub(r'\\([^\n])', r'\1', command)
-    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
-    command = re.sub(r"''|\"\"", '', command)
     return command
 
 
@@ -687,6 +741,182 @@ def _rewrite_resolved_user_home(command: str) -> str:
     return _fold_home_prefixes(command, candidates, "~")
 
 
+_DYNAMIC_COMMAND_EXPANSION = (
+    r'(?:\$\([^)\n]*\)|`[^`\n]*`|\$\{[^}\n]*\}|'
+    r'\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9]+)'
+)
+_DYNAMIC_COMMAND_FRAGMENT = (
+    rf'(?:\\[^\n]|\'[^\'$`\n]*\'|"[^"\n]*"|'
+    rf'{_DYNAMIC_COMMAND_EXPANSION}|[^\s=;&|`$()\'"]+)'
+)
+_DYNAMIC_COMMAND_WORD = (
+    rf'(?=[^\s=;&|)]*{_DYNAMIC_COMMAND_EXPANSION})'
+    rf'(?:{_DYNAMIC_COMMAND_FRAGMENT})+'
+)
+_COMMAND_POSITION_WORD_RE = re.compile(
+    r'(?P<prefix>' + _COMMAND_DETECTION_POS
+    + r')(?P<word>(?:\\[^\n]|\'[^\'\s;&|()]*\'|"[^"\s;&|()]*"|[^\s;&|`$()\'"])+)',
+    _RE_FLAGS,
+)
+_DYNAMIC_COMMAND_NAME_RE = re.compile(_COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD, _RE_FLAGS)
+_DYNAMIC_HARDLINE_TARGET = (
+    r'["\']?(?:/|/\*|/ \*|/home|/home/\*|/root|/root/\*|/etc|/etc/\*|'
+    r'/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|'
+    r'/boot|/boot/\*|/lib|/lib/\*|~|\$home|\$\{home\})(?:/?|/\*)?'
+)
+_DYNAMIC_HARDLINE_COMMAND_RE = re.compile(
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD + r'\s+(-[^\s]*\s+)*'
+    + _DYNAMIC_HARDLINE_TARGET + _COMMAND_TARGET_END,
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_MKFS_RE = re.compile(
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD
+    + r'\s+(?:-[^\s]+\s+)*/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b',
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_DD_RE = re.compile(
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD
+    + r'\s+[^\n]*\bof=/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b',
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_KILL_ALL_RE = re.compile(
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD + r'\s+(-[^\s]+\s+)*-1\b',
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_SYSTEMCTL_RE = re.compile(
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD
+    + r'\s+(?:poweroff|reboot|halt|kexec)\b',
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_INIT_RE = re.compile(
+    _COMMAND_DETECTION_POS + _DYNAMIC_COMMAND_WORD + r'\s+[06]\b',
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_NAME_RE = re.compile(
+    _COMMAND_DETECTION_POS
+    + r'(?:\$\([^)\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^)\n]*\)|'
+    + r'`[^`\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^`\n]*`|'
+    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\}|'
+    + r'"(?:\$\([^)\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^)\n]*\)|'
+    + r'`[^`\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^`\n]*`|'
+    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\})")',
+    _RE_FLAGS,
+)
+_SHELL_COMMAND_NAME = r'(?:[^\s;&|()]+/)?(?:bash|sh|zsh|ksh)'
+_SHELL_WORD_PAYLOAD = r'(?:\\[^\n]|[^\s;&|])+'
+_SHELL_C_REEVAL_PAYLOAD_RE = re.compile(
+    _COMMAND_DETECTION_POS
+    + _SHELL_COMMAND_NAME + r'\s+(?:-[^\s]+\s+)*-[^\s]*c\b\s+'
+    + rf'(?P<payload>\'[^\'\n]*\'|"[^"\n]*"|{_SHELL_WORD_PAYLOAD})',
+    _RE_FLAGS,
+)
+_EVAL_REEVAL_PAYLOAD_RE = re.compile(
+    _COMMAND_DETECTION_POS + r'eval\s+(?P<payload>[^;&|\n]+)',
+    _RE_FLAGS,
+)
+
+
+def _quote_state_at(command: str, index: int) -> tuple[bool, bool]:
+    in_single = False
+    in_double = False
+    escaped = False
+    for ch in command[:index]:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and not in_single:
+            escaped = True
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+    return in_single, in_double
+
+
+def _is_inside_single_quoted_span(command: str, index: int) -> bool:
+    in_single, _in_double = _quote_state_at(command, index)
+    return in_single
+
+
+def _is_inside_inert_quoted_span(command: str, index: int) -> bool:
+    in_single, in_double = _quote_state_at(command, index)
+    if in_single:
+        return True
+    if in_double and not command.startswith(("$(", "`"), index):
+        return True
+    return False
+
+
+def _search_outside_single_quotes(pattern: re.Pattern, command: str):
+    for match in pattern.finditer(command):
+        if not _is_inside_inert_quoted_span(command, match.start()):
+            return match
+    return None
+
+
+def _strip_shell_payload_quotes(payload: str) -> str:
+    payload = payload.strip()
+    try:
+        parts = shlex.split(payload)
+    except ValueError:
+        parts = []
+    if parts:
+        return " ".join(parts)
+    if len(payload) >= 2 and payload[0] == "'" and payload[-1] == "'":
+        return payload[1:-1]
+    if len(payload) >= 2 and payload[0] == '"' and payload[-1] == '"':
+        return re.sub(r'\\(["\\$`])', r'\1', payload[1:-1])
+    return re.sub(r'\\([^\n])', r'\1', payload)
+
+
+def _deobfuscate_static_command_word(word: str) -> str:
+    word = re.sub(r'\\([^\n])', r'\1', word)
+    word = re.sub(
+        r"'([^'\n]*)'",
+        lambda match: match.group(0) if re.search(r'[$`]', match.group(1)) else match.group(1),
+        word,
+    )
+    word = re.sub(r'"([^"\n]*)"', r'\1', word)
+    return word
+
+
+def _command_detection_variants(command: str) -> tuple[str, ...]:
+    normalized = _normalize_command_for_detection(command)
+
+    def replace_word(match: re.Match) -> str:
+        if _is_inside_single_quoted_span(normalized, match.start()):
+            return match.group(0)
+        return match.group("prefix") + _deobfuscate_static_command_word(match.group("word"))
+
+    static_variant = _COMMAND_POSITION_WORD_RE.sub(replace_word, normalized)
+    if static_variant == normalized:
+        return (normalized,)
+    return (normalized, static_variant)
+
+
+def _command_detection_variants_with_reeval(command: str) -> tuple[str, ...]:
+    variants = list(_command_detection_variants(command))
+    seen = set(variants)
+    index = 0
+    while index < len(variants):
+        command_variant = variants[index]
+        index += 1
+        for pattern in (_SHELL_C_REEVAL_PAYLOAD_RE, _EVAL_REEVAL_PAYLOAD_RE):
+            for match in pattern.finditer(command_variant):
+                if _is_inside_single_quoted_span(command_variant, match.start()):
+                    continue
+                payload = _strip_shell_payload_quotes(match.group("payload"))
+                if not payload or payload == command_variant:
+                    continue
+                for payload_variant in _command_detection_variants(payload):
+                    if payload_variant not in seen:
+                        seen.add(payload_variant)
+                        variants.append(payload_variant)
+    return tuple(variants)
+
+
 def _rewrite_resolved_hermes_home(command: str) -> str:
     """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
 
@@ -717,11 +947,15 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
-            pattern_key = description
-            return (True, pattern_key, description)
+    for command_variant in _command_detection_variants_with_reeval(command):
+        command_lower = command_variant.lower()
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if _search_outside_single_quotes(pattern_re, command_lower):
+                pattern_key = description
+                return (True, pattern_key, description)
+        if _search_outside_single_quotes(_DYNAMIC_COMMAND_NAME_RE, command_lower):
+            description = "dynamic shell command name"
+            return (True, description, description)
     return (False, None, None)
 
 

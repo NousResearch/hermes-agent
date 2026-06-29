@@ -4325,6 +4325,51 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     assert "failed" in resp["error"]["message"]
 
 
+def test_shell_exec_blocks_dynamic_command_name(monkeypatch):
+    def fail_run(*args, **kwargs):
+        raise AssertionError("shell.exec should block before subprocess.run")
+
+    monkeypatch.setattr(server.subprocess, "run", fail_run)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "shell.exec",
+            "params": {"command": "$(echo rm) -rf /home/victim"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4005
+    assert "blocked" in resp["error"]["message"]
+
+
+def test_shell_exec_allows_argument_only_substitution(monkeypatch):
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "shell.exec",
+            "params": {"command": "echo $(echo rm) -rf /"},
+        }
+    )
+
+    assert resp["result"]["code"] == 0
+    assert resp["result"]["stdout"] == "ok\n"
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == "echo $(echo rm) -rf /"
+    assert kwargs["shell"] is True
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+
+
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
         resp = server.handle_request(

@@ -159,6 +159,11 @@ class TestWebhookSecurity:
             adapter._validate_webhook_secret({"sb-signing-secret": "webhook-secret"})
             is True
         )
+        assert adapter._validate_webhook_secret({"secret": "webhook-secret"}) is True
+        assert (
+            adapter._validate_webhook_secret({"x-sendblue-secret": "webhook-secret"})
+            is True
+        )
         assert adapter._validate_webhook_secret({"sb-signing-secret": "wrong"}) is False
 
     def test_accepts_bearer_secret(self, tmp_path):

@@ -58,7 +58,11 @@ DEDUP_MAX_SIZE = 2_000
 
 _SECRET_HEADER_CANDIDATES = (
     "sb-signing-secret",
+    "secret",
+    "webhook-secret",
+    "x-sendblue-secret",
     "x-sendblue-webhook-secret",
+    "sendblue-secret",
     "sendblue-webhook-secret",
     "x-webhook-secret",
 )

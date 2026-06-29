@@ -122,3 +122,25 @@ def test_speak_requires_api_key(tmp_path, monkeypatch):
     payload = core.speak({"text": "hello"})
     assert payload["ok"] is False
     assert "AITUBERKIT_API_KEY" in payload["error"]
+
+
+def test_bridge_start_rejects_public_host_without_confirmation(monkeypatch):
+    core = load_core()
+    monkeypatch.setattr(core.dev_server, "tailscale_status", lambda: {})
+
+    payload = core.start_bridge({"host": "0.0.0.0"})
+
+    assert payload["ok"] is False
+    assert payload["confirmation_required"] is True
+    assert "noauth WebSocket" in payload["reason"]
+
+
+def test_bridge_start_rejects_tailscale_bind_without_confirmation(monkeypatch):
+    core = load_core()
+    monkeypatch.setattr(core.dev_server, "tailscale_status", lambda: {"ipv4": "100.64.1.2"})
+
+    payload = core.start_bridge({"tailscale": True})
+
+    assert payload["ok"] is False
+    assert payload["confirmation_required"] is True
+    assert payload["host"] == "0.0.0.0"

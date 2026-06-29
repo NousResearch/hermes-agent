@@ -167,6 +167,13 @@ def test_remote_profile_requires_explicit_unsafe_ack(monkeypatch):
         server.main()
 
 
+def test_local_dev_http_rejects_non_loopback_without_unsafe_ack(monkeypatch):
+    clear_gate_envs(monkeypatch)
+
+    with pytest.raises(SystemExit, match="non-loopback host exposes noauth Hermes tools"):
+        server.main(["--http", "--host", "0.0.0.0"])
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))

@@ -46,6 +46,11 @@ def _path_text(value: Any) -> str:
     return str(value or "").strip().strip('"')
 
 
+def _is_loopback_host(host: str) -> bool:
+    value = (host or "").strip().lower()
+    return value in {"localhost", "::1"} or value.startswith("127.")
+
+
 def _load_config_readonly() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config_readonly
@@ -344,6 +349,10 @@ BRIDGE_START_SCHEMA = {
             "tailscale": {
                 "type": "boolean",
                 "description": "Bind bridge on 0.0.0.0 for tailnet External Linkage clients.",
+            },
+            "confirm_public_host": {
+                "type": "boolean",
+                "description": "Required when host/tailscale binds the bridge outside loopback.",
             },
             "system_prompt": {"type": "string"},
         },
@@ -671,6 +680,14 @@ def start_bridge(values: dict[str, Any] | None = None) -> dict[str, Any]:
         host = "0.0.0.0"
     elif not host:
         host = "127.0.0.1"
+    if not _is_loopback_host(host) and not values.get("confirm_public_host"):
+        return {
+            "ok": False,
+            "confirmation_required": True,
+            "reason": "Binding the AITuberKit bridge outside loopback exposes a noauth WebSocket that can invoke Hermes oneshot.",
+            "host": host,
+            "tailscale": ts,
+        }
     port = _plugin_bridge_port(values.get("port"))
     system_prompt = _path_text(values.get("system_prompt")) or _plugin_config().get("system_prompt") or DEFAULT_SYSTEM_PROMPT
 

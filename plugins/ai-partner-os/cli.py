@@ -77,6 +77,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     bridge_start.add_argument("--host", default="")
     bridge_start.add_argument("--port", type=int, default=None)
     bridge_start.add_argument("--tailscale", action="store_true")
+    bridge_start.add_argument("--confirm-public-host", action="store_true")
     bridge_start.add_argument("--system-prompt", default="")
 
     bridge_stop = subs.add_parser("bridge-stop", help="Stop External Linkage WS bridge")
@@ -206,6 +207,7 @@ def ai_partner_os_command(args: argparse.Namespace) -> int:
                     "host": getattr(args, "host", "") or None,
                     "port": getattr(args, "port", None),
                     "tailscale": getattr(args, "tailscale", False),
+                    "confirm_public_host": getattr(args, "confirm_public_host", False),
                     "system_prompt": getattr(args, "system_prompt", "") or None,
                 }
             )

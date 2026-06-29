@@ -39,7 +39,8 @@ def env_enabled(name: str) -> bool:
 
 
 def is_loopback_host(host: str) -> bool:
-    return host in {"127.0.0.1", "localhost", "::1"}
+    value = (host or "").strip().lower()
+    return value in {"localhost", "::1"} or value.startswith("127.")
 
 
 def is_hermes_root(path: Path) -> bool:
@@ -514,15 +515,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.http and args.sse:
         raise SystemExit("Choose only one of --http or --sse.")
-    if args.profile == REMOTE_PROFILE and not (args.unsafe_remote_ack and env_enabled(UNSAFE_REMOTE_ENV)):
+    unsafe_remote_noauth = args.unsafe_remote_ack and env_enabled(UNSAFE_REMOTE_ENV)
+    network_transport = bool(args.http or args.sse)
+    if args.profile == REMOTE_PROFILE and not unsafe_remote_noauth:
         raise SystemExit(
             "Remote profile requires real authentication, which is not implemented yet. "
             f"For temporary experiments only, pass {UNSAFE_REMOTE_ACK} and set {UNSAFE_REMOTE_ENV}=1."
         )
-    if args.profile == LOCAL_DEV_PROFILE and not is_loopback_host(args.host):
+    if network_transport and args.profile == LOCAL_DEV_PROFILE and not is_loopback_host(args.host):
+        if not unsafe_remote_noauth:
+            raise SystemExit(
+                "local-dev HTTP/SSE on a non-loopback host exposes noauth Hermes tools. "
+                f"For temporary experiments only, pass {UNSAFE_REMOTE_ACK} and set {UNSAFE_REMOTE_ENV}=1."
+            )
         eprint(
-            "WARNING: local-dev profile is bound to a non-loopback host. "
-            "Do not expose hermes-gpt without real authentication."
+            "WARNING: local-dev profile is bound to a non-loopback host without real authentication. "
+            "Use this only for temporary experiments."
         )
     if args.profile == REMOTE_PROFILE:
         eprint("WARNING: remote no-auth mode is explicitly unsafe and intended only for temporary experiments.")

@@ -45,6 +45,11 @@ def _path_text(value: Any) -> str:
     return str(value or "").strip().strip('"')
 
 
+def _is_loopback_host(host: str) -> bool:
+    value = (host or "").strip().lower()
+    return value in {"localhost", "::1"} or value.startswith("127.")
+
+
 def _load_config_readonly() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config_readonly
@@ -627,6 +632,13 @@ def start_bridge(values: dict[str, Any] | None = None) -> dict[str, Any]:
     host = _path_text(values.get("host")) or "127.0.0.1"
     if values.get("tailscale"):
         host = "0.0.0.0"
+    if not _is_loopback_host(host) and not values.get("confirm_public_host"):
+        return {
+            "ok": False,
+            "confirmation_required": True,
+            "reason": "Binding the AI Partner OS bridge outside loopback exposes a noauth WebSocket that can invoke Hermes oneshot.",
+            "host": host,
+        }
     port = _plugin_bridge_port(values.get("port"))
     state = _read_bridge_state()
     old_pid = int(state.get("pid") or 0)
@@ -865,6 +877,10 @@ BRIDGE_START_SCHEMA = {
             "host": {"type": "string"},
             "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
             "tailscale": {"type": "boolean"},
+            "confirm_public_host": {
+                "type": "boolean",
+                "description": "Required when host/tailscale binds the bridge outside loopback.",
+            },
             "system_prompt": {"type": "string"},
         },
     },

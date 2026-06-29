@@ -1515,6 +1515,14 @@ _QR_QUERY_URL = "https://work.weixin.qq.com/ai/qc/query_result"
 _QR_CODE_PAGE = "https://work.weixin.qq.com/ai/qc/gen?source=hermes&scode="
 _QR_POLL_INTERVAL = 3  # seconds
 _QR_POLL_TIMEOUT = 300  # 5 minutes
+_QR_JSON_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_qr_json_response(resp: Any, *, label: str) -> Dict[str, Any]:
+    body = resp.read(_QR_JSON_BODY_MAX_BYTES + 1)
+    if len(body) > _QR_JSON_BODY_MAX_BYTES:
+        raise ValueError(f"{label} exceeded {_QR_JSON_BODY_MAX_BYTES} bytes")
+    return json.loads(body.decode("utf-8"))
 
 
 def qr_scan_for_bot_info(
@@ -1548,7 +1556,7 @@ def qr_scan_for_bot_info(
     try:
         req = urllib.request.Request(generate_url, headers={"User-Agent": "HermesAgent/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
+            raw = _read_qr_json_response(resp, label="WeCom QR generate response body")
     except Exception as exc:
         logger.error("WeCom QR: failed to fetch QR code: %s", exc)
         print(f" failed: {exc}")
@@ -1598,7 +1606,7 @@ def qr_scan_for_bot_info(
         try:
             req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+                result = _read_qr_json_response(resp, label="WeCom QR poll response body")
         except Exception as exc:
             logger.debug("WeCom QR poll error: %s", exc)
             time.sleep(_QR_POLL_INTERVAL)

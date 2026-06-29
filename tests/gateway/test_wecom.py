@@ -124,6 +124,57 @@ class TestWeComConnect:
 
 
 class TestWeComQrScan:
+    class _FakeHTTPResponse:
+        def __init__(self, body: bytes):
+            self.body = body
+            self.read_calls: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_calls.append(size)
+            if size is None or size < 0:
+                return self.body
+            return self.body[:size]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def test_qr_scan_bounds_generate_response(self, monkeypatch):
+        from plugins.platforms.wecom import adapter as wecom
+
+        monkeypatch.setattr(wecom, "_QR_JSON_BODY_MAX_BYTES", 8)
+        response = self._FakeHTTPResponse(b"x" * 9)
+        monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: response)
+
+        with patch("builtins.print"):
+            result = wecom.qr_scan_for_bot_info(timeout_seconds=1)
+
+        assert result is None
+        assert response.read_calls == [9]
+
+    def test_qr_scan_bounds_poll_response(self, monkeypatch):
+        from plugins.platforms.wecom import adapter as wecom
+
+        generate_body = b'{"data":{"scode":"abc","auth_url":"https://example.com/qr"}}'
+        monkeypatch.setattr(wecom, "_QR_JSON_BODY_MAX_BYTES", len(generate_body))
+        generate_resp = self._FakeHTTPResponse(
+            generate_body
+        )
+        poll_resp = self._FakeHTTPResponse(b"x" * (len(generate_body) + 1))
+        responses = iter([generate_resp, poll_resp])
+        monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: next(responses))
+        monkeypatch.setattr(wecom.time, "monotonic", MagicMock(side_effect=[1000, 1000.2, 1001.2]))
+        monkeypatch.setattr(wecom.time, "sleep", MagicMock())
+
+        with patch("builtins.print"), patch.dict("sys.modules", {"qrcode": None}):
+            result = wecom.qr_scan_for_bot_info(timeout_seconds=1)
+
+        assert result is None
+        assert generate_resp.read_calls == [len(generate_body) + 1]
+        assert poll_resp.read_calls == [len(generate_body) + 1]
+
     @patch("plugins.platforms.wecom.adapter.time")
     @patch("plugins.platforms.wecom.adapter.json.loads")
     @patch("plugins.platforms.wecom.adapter.logger")

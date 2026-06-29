@@ -13,8 +13,11 @@ import inspect
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -472,6 +475,31 @@ class TestEventBridge:
         assert len(b._queue) == 500
         assert b._cursor == 500
 
+    def test_concurrent_ensure_started_starts_one_thread(self):
+        from mcp_serve import EventBridge
+        b = EventBridge()
+        started = threading.Event()
+        start_count = 0
+        count_lock = threading.Lock()
+
+        def fake_poll_loop():
+            nonlocal start_count
+            with count_lock:
+                start_count += 1
+            started.set()
+            while b._running:
+                time.sleep(0.001)
+
+        b._poll_loop = fake_poll_loop
+        threads = [threading.Thread(target=b.ensure_started) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert started.wait(timeout=1)
+        b.stop()
+        assert start_count == 1
+
     def test_approvals_lifecycle(self):
         from mcp_serve import EventBridge
         b = EventBridge()
@@ -721,7 +749,10 @@ class TestE2EEventsPoll:
 
 
 class TestE2EEventsWait:
-    def test_wait_timeout(self, mcp_server_e2e, _event_loop):
+    def test_wait_timeout(self, mcp_server_e2e, _event_loop, monkeypatch):
+        import mcp_serve
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: None)
         server, _ = mcp_server_e2e
         result = _run_tool(server, "events_wait", {"timeout_ms": 100})
         assert result["event"] is None
@@ -976,6 +1007,35 @@ class TestRunMcpServer:
             mcp_serve.run_mcp_server()
         assert exc_info.value.code == 1
 
+    def test_run_mcp_server_keeps_bridge_lazy_until_tool_use(self, monkeypatch):
+        import mcp_serve
+
+        calls = []
+
+        class FakeBridge:
+            def start(self):
+                calls.append("start")
+
+            def stop(self):
+                calls.append("stop")
+
+        class FakeServer:
+            async def run_stdio_async(self):
+                calls.append("stdio")
+
+        def fake_create(event_bridge=None):
+            calls.append("create")
+            assert isinstance(event_bridge, FakeBridge)
+            return FakeServer()
+
+        monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+        monkeypatch.setattr(mcp_serve, "EventBridge", FakeBridge)
+        monkeypatch.setattr(mcp_serve, "create_mcp_server", fake_create)
+
+        mcp_serve.run_mcp_server()
+
+        assert calls == ["create", "stdio", "stop"]
+
 
 class TestCliIntegration:
     def test_parse_serve(self):
@@ -1002,6 +1062,155 @@ class TestCliIntegration:
 
         args = parser.parse_args(["mcp", "serve", "--verbose"])
         assert args.verbose is True
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["mcp", "serve"], (True, False)),
+            (["--ignore-user-config", "mcp", "serve", "--verbose"], (True, True)),
+            (["mcp", "--accept-hooks", "serve", "-v"], (True, True)),
+            (["mcp", "serve", "--accept-hooks"], (True, False)),
+            (["--profile", "isolated", "mcp", "serve"], (True, False)),
+            (["--profile=isolated", "mcp", "serve"], (True, False)),
+            (["--profile=BadProfile", "mcp", "serve"], (False, False)),
+            (["--profile=bad!", "mcp", "serve"], (False, False)),
+            (["--profile", "BadProfile", "mcp", "serve"], (False, False)),
+            (["--profile", "bad!", "mcp", "serve"], (False, False)),
+            (["--profile", "--version", "mcp", "serve"], (False, False)),
+            (["-p", "--version", "mcp", "serve"], (False, False)),
+            (["-p=isolated", "mcp", "serve"], (False, False)),
+            (["chat", "--query", "mcp", "serve"], (False, False)),
+            (["debug", "delete", "mcp", "serve"], (False, False)),
+            (["--provider", "mcp", "serve"], (False, False)),
+            (["--provider", "openai", "mcp", "serve"], (False, False)),
+            (["--query", "mcp", "serve"], (False, False)),
+            (["--not-a-hermes-flag", "mcp", "serve"], (False, False)),
+            (["--version", "mcp", "serve"], (False, False)),
+            (["-V", "mcp", "serve"], (False, False)),
+            (["--safe-mode", "mcp", "serve"], (False, False)),
+            (["--tui", "mcp", "serve"], (False, False)),
+            (["-z", "--", "mcp", "serve"], (False, False)),
+            (["-z", "mcp", "serve"], (False, False)),
+            (["-c", "mcp", "serve"], (False, False)),
+            (["mcp", "list"], (False, False)),
+            (["mcp", "serve", "--bad"], (False, False)),
+            (["mcp", "serve", "--help"], (False, False)),
+        ],
+    )
+    def test_fastpath_detector_matches_only_real_mcp_serve(self, argv, expected):
+        from hermes_cli.main import _mcp_serve_fastpath_requested
+
+        assert _mcp_serve_fastpath_requested(argv) == expected
+
+    def test_fastpath_import_rejects_inline_invalid_profile(self):
+        code = """
+import sys
+import types
+fake = types.ModuleType('mcp_serve')
+def run_mcp_server(**kwargs):
+    raise SystemExit(42)
+fake.run_mcp_server = run_mcp_server
+sys.modules['mcp_serve'] = fake
+sys.argv = ['hermes', '--profile=BadProfile', 'mcp', 'serve']
+import hermes_cli.main
+print('imported')
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "imported" in result.stdout
+
+    def test_fastpath_import_skips_container_mode(self):
+        code = r"""
+import os
+import pathlib
+import sys
+import tempfile
+import types
+home = pathlib.Path(tempfile.mkdtemp())
+(home / '.container-mode').write_text('backend=docker\ncontainer_name=hermes-agent\n')
+os.environ['HERMES_HOME'] = str(home)
+import hermes_constants
+hermes_constants._container_detected = False
+fake = types.ModuleType('mcp_serve')
+def run_mcp_server(**kwargs):
+    raise SystemExit(42)
+fake.run_mcp_server = run_mcp_server
+sys.modules['mcp_serve'] = fake
+sys.argv = ['hermes', 'mcp', 'serve']
+import hermes_cli.main
+print('imported')
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "imported" in result.stdout
+
+    def test_runtime_env_loader_runs_once_concurrently(self, monkeypatch):
+        import hermes_cli.env_loader as env_loader
+        import mcp_serve
+
+        calls = []
+        entered = threading.Event()
+
+        def fake_load_hermes_dotenv(**kwargs):
+            calls.append(kwargs)
+            entered.set()
+            time.sleep(0.05)
+            return []
+
+        monkeypatch.setattr(mcp_serve, "_RUNTIME_ENV_LOADED", False)
+        monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
+
+        threads = [threading.Thread(target=mcp_serve._ensure_runtime_env_loaded) for _ in range(20)]
+        for t in threads:
+            t.start()
+        assert entered.wait(timeout=1)
+        for t in threads:
+            t.join(timeout=1)
+
+        assert len(calls) == 1
+        assert mcp_serve._RUNTIME_ENV_LOADED is True
+
+    def test_messages_send_loads_dotenv_lazily(self, mcp_server_e2e, _event_loop, tmp_path, monkeypatch):
+        import mcp_serve
+
+        hermes_home = tmp_path / "home"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("HERMES_MCP_TEST_TOKEN=from-dotenv\n")
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_MCP_TEST_TOKEN", raising=False)
+        monkeypatch.setattr(mcp_serve, "_PROJECT_ROOT", project_root)
+        monkeypatch.setattr(mcp_serve, "_RUNTIME_ENV_LOADED", False)
+
+        def fake_send_message_tool(payload):
+            assert payload["target"] == "telegram:123"
+            assert os.environ["HERMES_MCP_TEST_TOKEN"] == "from-dotenv"
+            return json.dumps({"success": True})
+
+        fake_module = type(sys)("tools.send_message_tool")
+        fake_module.send_message_tool = fake_send_message_tool
+        monkeypatch.setitem(sys.modules, "tools.send_message_tool", fake_module)
+
+        server, _ = mcp_server_e2e
+        result = _run_tool(
+            server,
+            "messages_send",
+            {"target": "telegram:123", "message": "hello"},
+        )
+        assert result["success"] is True
 
     def test_dispatcher_routes_serve(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1046,6 +1255,24 @@ class TestEdgeCases:
         b._running = True
         b.stop()
         assert not b._running
+
+    def test_bridge_ensure_started_is_idempotent(self, monkeypatch):
+        from mcp_serve import EventBridge
+
+        b = EventBridge()
+        calls = []
+
+        def fake_poll_loop():
+            calls.append("poll")
+
+        monkeypatch.setattr(b, "_poll_loop", fake_poll_loop)
+        b.ensure_started()
+        b.ensure_started()
+        assert b._running is True
+        assert b._thread is not None
+        b._thread.join(timeout=1)
+        assert calls == ["poll"]
+        b.stop()
 
     def test_truncation(self):
         assert len(("x" * 5000)[:2000]) == 2000

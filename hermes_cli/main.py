@@ -433,7 +433,7 @@ def _apply_profile_override() -> None:
     # "-p no:xdist" would be misread as profile "no:xdist" otherwise).
     # Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never call
     # resolve_profile_env() with a value it must reject + sys.exit on.
-    if profile_name is not None and consume == 2:
+    if profile_name is not None and consume in {1, 2}:
         import re as _re
 
         if not _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
@@ -509,6 +509,146 @@ def _apply_profile_override() -> None:
 
 
 _apply_profile_override()
+
+
+_MCP_SERVE_FASTPATH_TERMINAL_FLAGS = frozenset({"-h", "--help", "-V", "--version"})
+_MCP_SERVE_FASTPATH_PRE_COMMAND_FLAGS = frozenset({"--ignore-user-config", "--accept-hooks"})
+_MCP_SERVE_FASTPATH_PRE_COMMAND_VALUE_FLAGS = frozenset({"--profile", "-p"})
+_MCP_SERVE_FASTPATH_MCP_FLAGS = frozenset({"--accept-hooks"})
+_MCP_SERVE_FASTPATH_SERVE_FLAGS = frozenset({"-v", "--verbose", "--accept-hooks"})
+
+
+def _split_flag_assignment(token: str) -> tuple[str, bool]:
+    if "=" not in token:
+        return token, False
+    return token.split("=", 1)[0], True
+
+
+def _mcp_profile_value_valid(value: str) -> bool:
+    """Return True when a pre-argparse profile value is syntactically valid."""
+    if not value or len(value) > 64:
+        return False
+    first = value[0]
+    if not ("a" <= first <= "z" or "0" <= first <= "9"):
+        return False
+    return all("a" <= char <= "z" or "0" <= char <= "9" or char in {"_", "-"} for char in value)
+
+
+def _next_mcp_positional(
+    argv: list[str],
+    start: int = 0,
+    *,
+    bool_flags: frozenset[str],
+    value_flags: frozenset[str] = frozenset(),
+) -> tuple[int | None, str | None, bool]:
+    """Return the next positional while rejecting non-MCP options.
+
+    This is intentionally stricter than a generic argv scanner. It exists only
+    to protect the import-time `hermes mcp serve` hot path from being triggered
+    by prompts, version/help requests, chat-only flags, or unknown options.
+    """
+    i = start
+    while i < len(argv):
+        token = argv[i]
+        flag, has_inline_value = _split_flag_assignment(token)
+        if token == "--" or flag in _MCP_SERVE_FASTPATH_TERMINAL_FLAGS:
+            return None, None, False
+        if not token.startswith("-"):
+            return i, token, True
+        if flag in bool_flags:
+            if has_inline_value:
+                return None, None, False
+            i += 1
+            continue
+        if flag in value_flags:
+            if has_inline_value and flag.startswith("-") and not flag.startswith("--"):
+                return None, None, False
+            value = token.split("=", 1)[1] if has_inline_value else None
+            if value is None:
+                if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                    return None, None, False
+                value = argv[i + 1]
+            if not _mcp_profile_value_valid(value):
+                return None, None, False
+            i += 1 if has_inline_value else 2
+            continue
+        return None, None, False
+    return None, None, True
+
+
+def _mcp_serve_tail_valid_and_verbose(argv: list[str], start: int) -> tuple[bool, bool]:
+    verbose = False
+    i = start
+    while i < len(argv):
+        token = argv[i]
+        flag, has_inline_value = _split_flag_assignment(token)
+        if token == "--" or flag in _MCP_SERVE_FASTPATH_TERMINAL_FLAGS:
+            return False, False
+        if not token.startswith("-") or has_inline_value:
+            return False, False
+        if flag not in _MCP_SERVE_FASTPATH_SERVE_FLAGS:
+            return False, False
+        verbose = verbose or flag in {"-v", "--verbose"}
+        i += 1
+    return True, verbose
+
+
+def _mcp_serve_fastpath_requested(argv: list[str]) -> tuple[bool, bool]:
+    """Return (requested, verbose) for the stdio MCP server hot path.
+
+    Console-script wrappers import this module before calling ``main()``. If
+    ``hermes mcp serve`` waits for the full CLI module graph, external MCP
+    clients can time out before the JSON-RPC initialize response. Only trigger
+    when `mcp` is the actual first command and `serve` is the actual MCP
+    subcommand, so chat prompts or other command arguments containing
+    `mcp serve` cannot hijack the process into stdio server mode.
+    """
+    if any(arg in _MCP_SERVE_FASTPATH_TERMINAL_FLAGS for arg in argv):
+        return False, False
+    command_index, command, valid = _next_mcp_positional(
+        argv,
+        bool_flags=_MCP_SERVE_FASTPATH_PRE_COMMAND_FLAGS,
+        value_flags=_MCP_SERVE_FASTPATH_PRE_COMMAND_VALUE_FLAGS,
+    )
+    if not valid or command != "mcp" or command_index is None:
+        return False, False
+    subcommand_index, subcommand, valid = _next_mcp_positional(
+        argv,
+        command_index + 1,
+        bool_flags=_MCP_SERVE_FASTPATH_MCP_FLAGS,
+    )
+    if not valid or subcommand != "serve" or subcommand_index is None:
+        return False, False
+    return _mcp_serve_tail_valid_and_verbose(argv, subcommand_index + 1)
+
+
+def _mcp_container_mode_active() -> bool:
+    """Return True when the normal CLI must route through a managed container."""
+    if os.environ.get("HERMES_DEV") == "1":
+        return False
+    try:
+        from hermes_constants import get_hermes_home, is_container
+
+        if is_container():
+            return False
+        return (get_hermes_home() / ".container-mode").exists()
+    except OSError:
+        return True
+    except Exception:
+        return False
+
+
+def _try_mcp_serve_fastpath() -> None:
+    requested, verbose = _mcp_serve_fastpath_requested(sys.argv[1:])
+    if not requested or _mcp_container_mode_active():
+        return
+    from mcp_serve import run_mcp_server
+
+    run_mcp_server(verbose=verbose)
+    raise SystemExit(0)
+
+
+_try_mcp_serve_fastpath()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -2213,6 +2353,19 @@ def _resolve_use_tui(args) -> bool:
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
+
+    if getattr(args, "query_stdin", False):
+        if getattr(args, "query", None):
+            print("Error: --query-stdin cannot be combined with -q/--query", file=sys.stderr)
+            sys.exit(1)
+        if sys.stdin.isatty():
+            print("Error: --query-stdin requires piped stdin", file=sys.stderr)
+            sys.exit(1)
+        query = sys.stdin.read()
+        if not query:
+            print("Error: --query-stdin received empty stdin", file=sys.stderr)
+            sys.exit(1)
+        args.query = query
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)

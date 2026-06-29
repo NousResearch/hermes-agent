@@ -257,6 +257,12 @@ def build_top_level_parser():
         "-q", "--query", help="Single query (non-interactive mode)"
     )
     chat_parser.add_argument(
+        "--query-stdin",
+        action="store_true",
+        default=False,
+        help="Read a single non-interactive query from stdin instead of argv. Intended for broker subprocesses that must not expose prompts in process listings.",
+    )
+    chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
     )
     _inherited_flag(

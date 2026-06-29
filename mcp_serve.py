@@ -41,6 +41,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
+_RUNTIME_ENV_LOADED = False
+_RUNTIME_ENV_LOCK = threading.Lock()
+_PROJECT_ROOT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 # Lazy MCP SDK import
@@ -58,6 +61,29 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _ensure_runtime_env_loaded() -> None:
+    """Load Hermes env files before tools that need credentials.
+
+    The stdio server intentionally skips the normal CLI startup path so
+    initialize and tools/list stay fast. Credential-backed tools still need
+    the same .env, managed env, and external secret-source loading before use,
+    so do that lazily at the boundary of those tools.
+    """
+    global _RUNTIME_ENV_LOADED
+    if _RUNTIME_ENV_LOADED:
+        return
+    with _RUNTIME_ENV_LOCK:
+        if _RUNTIME_ENV_LOADED:
+            return
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+
+            load_hermes_dotenv(project_env=_PROJECT_ROOT / ".env")
+        except Exception as exc:
+            logger.debug("Runtime env load skipped: %s", exc)
+        _RUNTIME_ENV_LOADED = True
+
 
 def _get_sessions_dir() -> Path:
     """Return the sessions directory using HERMES_HOME."""
@@ -220,6 +246,7 @@ class EventBridge:
         self._queue: List[QueueEvent] = []
         self._cursor = 0
         self._lock = threading.Lock()
+        self._start_lock = threading.Lock()
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -233,12 +260,25 @@ class EventBridge:
 
     def start(self):
         """Start the background polling thread."""
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._thread.start()
+        with self._start_lock:
+            if self._running:
+                return
+            self._running = True
+            self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+            self._thread.start()
         logger.debug("EventBridge started")
+
+    def ensure_started(self):
+        """Start the background poller on first tool use.
+
+        ``hermes mcp serve`` is commonly launched by another MCP client over
+        stdio. That client expects the initialize handshake immediately and
+        may give up before tools/list if we do heavyweight Hermes startup work
+        first. Conversation/event polling is useful only after a client invokes
+        the event/approval tools, so keep it lazy and off the stdio handshake
+        path.
+        """
+        self.start()
 
     def stop(self):
         """Stop the background polling thread."""
@@ -692,6 +732,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: Optional filter to one conversation
             limit: Maximum events to return (default 20)
         """
+        bridge.ensure_started()
         after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
         limit = _coerce_int(limit, default=20, minimum=1, maximum=200)
         result = bridge.poll_events(
@@ -719,6 +760,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: Optional filter to one conversation
             timeout_ms: Maximum wait time in milliseconds (default 30000)
         """
+        bridge.ensure_started()
         after_cursor = _coerce_int(after_cursor, default=0, minimum=0, maximum=10**18)
         timeout_ms = _coerce_int(
             timeout_ms,
@@ -761,6 +803,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"error": "Both target and message are required"})
 
         try:
+            _ensure_runtime_env_loaded()
             from tools.send_message_tool import send_message_tool
             result_str = send_message_tool(
                 {"action": "send", "target": target, "message": message}
@@ -835,6 +878,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         since it started. Approvals are live-session only — older approvals
         from before the bridge connected are not included.
         """
+        bridge.ensure_started()
         approvals = bridge.list_pending_approvals()
         return json.dumps({
             "count": len(approvals),
@@ -854,6 +898,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             id: The approval ID from permissions_list_open
             decision: One of "allow-once", "allow-always", or "deny"
         """
+        bridge.ensure_started()
         if decision not in {"allow-once", "allow-always", "deny"}:
             return json.dumps({
                 "error": f"Invalid decision: {decision}. "
@@ -886,8 +931,6 @@ def run_mcp_server(verbose: bool = False) -> None:
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
 
     bridge = EventBridge()
-    bridge.start()
-
     server = create_mcp_server(event_bridge=bridge)
 
     import asyncio

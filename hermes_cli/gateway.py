@@ -6413,6 +6413,22 @@ def _gateway_command_inner(args):
             sys.exit(1)
 
     elif subcmd == "start":
+        # Defense: refuse gateway lifecycle changes from inside a gateway.
+        # `gateway start` can repair/reload service definitions (launchd
+        # bootout/bootstrap, systemd reloads, etc.), not just start a stopped
+        # process. When triggered by a tool subprocess under a live gateway,
+        # that service-manager work can kill the command mid-flight or disturb
+        # sibling profile gateways. Match the stop/restart guard below: run
+        # service lifecycle commands from an external shell instead.
+        if os.getenv("_HERMES_GATEWAY") == "1":
+            print_error(
+                "Refusing to start the gateway from inside the gateway process.\n"
+                "This command was blocked to prevent restart loops and partial "
+                "service-manager repairs.\n"
+                "Use `hermes gateway start` from a shell outside the running gateway."
+            )
+            sys.exit(1)
+
         system = getattr(args, "system", False)
         start_all = getattr(args, "all", False)
 

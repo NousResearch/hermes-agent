@@ -2228,10 +2228,10 @@ def terminal_tool(
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
-        # restart|stop targeting hermes-gateway) must never run inside the
-        # gateway process itself. The restart would SIGTERM the gateway, which
-        # kills this very subprocess before it can complete — the service may
-        # never restart. This mirrors the `hermes gateway restart` guard in
+        # start|restart|stop targeting hermes-gateway) must never run inside the
+        # gateway process itself. The lifecycle command would SIGTERM or reload
+        # the gateway, which kills this very subprocess before it can complete —
+        # the service may never restart. This mirrors the CLI guards in
         # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
         # but applies unconditionally (force=True cannot help here).
         if os.environ.get("_HERMES_GATEWAY") == "1":
@@ -2241,10 +2241,10 @@ def terminal_tool(
                     "output": "",
                     "exit_code": 1,
                     "error": (
-                        "Blocked: cannot restart or stop the gateway from inside the "
+                        "Blocked: cannot start, restart, or stop the gateway from inside the "
                         "gateway process. The gateway would kill this command before "
                         "it could complete (SIGTERM propagates to child processes). "
-                        "Run `hermes gateway restart` from a separate shell outside "
+                        "Run gateway lifecycle commands from a separate shell outside "
                         "the running gateway."
                     ),
                     "status": "error",

@@ -428,6 +428,22 @@ export interface UsageStats {
   total: number
 }
 
+export interface ContextUsageCategory {
+  color: string
+  id: string
+  label: string
+  tokens: number
+}
+
+export interface ContextBreakdown {
+  categories: ContextUsageCategory[]
+  context_max: number
+  context_percent: number
+  context_used: number
+  estimated_total: number
+  model?: string
+}
+
 export interface AnalyticsDailyEntry {
   actual_cost: number
   api_calls: number

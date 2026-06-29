@@ -16,6 +16,7 @@ pytestmark = pytest.mark.skipif(
 class _OneFrameBridge:
     def __init__(self):
         self._sent = False
+        self.closed = False
 
     @classmethod
     def spawn(cls, *args, **kwargs):
@@ -34,7 +35,7 @@ class _OneFrameBridge:
         pass
 
     def close(self):
-        pass
+        self.closed = True
 
 
 @pytest.fixture
@@ -128,3 +129,48 @@ def test_fresh_param_ignores_channel_active_session_file(pty_client, monkeypatch
     assert captured["resume"] is None
     assert captured["active_session_file"] == str(active_file)
     assert not active_file.exists()
+
+
+def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
+    """Child EOF must close the WS server-side and reap the PTY.
+
+    Regression for the FD leak (#54028): the reader task hits EOF when the
+    PTY child exits, but if the browser's socket is half-open (no FIN), the
+    writer loop's ``ws.receive()`` would block forever and the PTY fds would
+    never be closed. The reader now closes the WebSocket on EOF so the
+    handler's ``finally`` runs ``bridge.close()``.
+    """
+    ws, client, token = pty_client
+    bridges = []
+
+    class _RecordingBridge(_OneFrameBridge):
+        @classmethod
+        def spawn(cls, *args, **kwargs):
+            b = cls()
+            bridges.append(b)
+            return b
+
+    monkeypatch.setattr(ws.PtyBridge, "spawn", _RecordingBridge.spawn)
+    monkeypatch.setattr(
+        ws, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)
+    )
+
+    # The client never sends a disconnect of its own — it only reads the one
+    # frame then the server side must tear everything down on child EOF.
+    with client.websocket_connect(_url(token, channel="eof-chan")) as conn:
+        assert conn.receive_bytes() == b"ready"
+        # Server closes the socket after the child EOFs; receiving again
+        # surfaces the close rather than hanging.
+        with pytest.raises(Exception):
+            conn.receive_bytes()
+
+    assert len(bridges) == 1
+    # bridge.close() runs in the handler's `finally` via asyncio.to_thread,
+    # which can lag the client-side context exit by a tick or two. Poll briefly
+    # instead of asserting immediately so the teardown isn't a race.
+    import time
+
+    deadline = time.monotonic() + 5.0
+    while not bridges[0].closed and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert bridges[0].closed is True

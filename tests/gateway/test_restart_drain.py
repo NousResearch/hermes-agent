@@ -180,6 +180,7 @@ def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
 async def test_request_restart_is_idempotent():
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
+    runner._launch_detached_restart_command = AsyncMock()
 
     # _run_restart is held on self._restart_task and is intentionally NOT in
     # _background_tasks, so _stop_impl's cancel loop can't abort it mid-await
@@ -191,6 +192,7 @@ async def test_request_restart_is_idempotent():
 
     await runner._restart_task
 
+    runner._launch_detached_restart_command.assert_awaited_once_with()
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False
     )
@@ -263,12 +265,29 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert cmd[:2] == ["/usr/bin/setsid", "bash"]
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]
+    assert "deadline=$(( $(date +%s) +" in cmd[-1]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
     # The watcher must NOT inherit the gateway marker, or the CLI's
     # self-restart loop guard refuses to run `hermes gateway restart`.
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
+
+
+@pytest.mark.asyncio
+async def test_detached_restart_helper_is_idempotent(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: popen_calls.append((a, k)))
+
+    await runner._launch_detached_restart_command()
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
 
 
 def test_windows_gateway_venv_imports_add_site_packages(monkeypatch, tmp_path):
@@ -332,6 +351,49 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_windows_detached_restart_uses_pythonw_for_watcher(monkeypatch, tmp_path):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+    venv_dir = tmp_path / "venv"
+    site_packages = venv_dir / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "executable", r"C:\venv\Scripts\python.exe")
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda _python: (r"C:\Python311\pythonw.exe", venv_dir, [str(site_packages)]),
+    )
+    monkeypatch.setattr(
+        subprocess_compat,
+        "windows_detach_popen_kwargs",
+        lambda: {"creationflags": 0x08000008},
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[0] == r"C:\Python311\pythonw.exe"
+    assert cmd[-3:] == ["hermes", "gateway", "restart"]
+    assert kwargs["creationflags"] == 0x08000008
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

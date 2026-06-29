@@ -16,10 +16,11 @@ Inbound:
 
 Outbound:
     ``send`` / ``send_typing`` are loopback POSTs to the sidecar's control
-    endpoints, authenticated with a shared bearer token.  Outbound media
-    (images, voice notes, video, documents) goes through spectrum-ts'
-    ``attachment()`` / ``voice()`` content builders via the sidecar's
-    ``/send-attachment`` endpoint.
+    endpoints, authenticated with a shared bearer token. URL-only messages can
+    route through spectrum-ts' ``richlink()`` builder via ``/send-richlink``.
+    Outbound media (images, voice notes, video, documents) goes through
+    spectrum-ts' ``attachment()`` / ``voice()`` content builders via the
+    sidecar's ``/send-attachment`` endpoint.
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     # Type checkers see ``httpx`` as the always-imported module, so every use
@@ -97,6 +99,12 @@ _PHOTON_RETRYABLE_PATTERNS = (
     "upstream_overflow",
     "upstream_unavailable",
 )
+
+# iMessage may emit the Open Graph preview art for a rich link as one or more
+# image attachments immediately after the URL/richlink message. Suppress those
+# artifacts so Hermes sees the link once, not a follow-up "(attachment)" prompt.
+_RICHLINK_PREVIEW_SUPPRESS_SECONDS = 30.0
+_RICHLINK_PREVIEW_ATTACHMENT_SUFFIX = ".pluginpayloadattachment"
 
 # Minimum seconds between typing-indicator calls for the same chat.
 # iMessage is a personal channel — suppressing rapid repeats reduces
@@ -184,8 +192,116 @@ def _markdown_enabled() -> bool:
     }
 
 
+def _url_only_candidate(text: str) -> Optional[str]:
+    candidate = (text or "").strip()
+    if not re.fullmatch(r"https?://\S+", candidate, flags=re.IGNORECASE):
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    return candidate
+
+
+def _richlink_candidate(text: str) -> Optional[str]:
+    """Return a URL that should be sent via spectrum-ts ``richlink()``.
+
+    Keep this intentionally narrow: only exact http(s) URL messages become
+    rich links. Prose containing URLs and Markdown links stay on the normal
+    markdown/text path so Hermes does not drop labels or rewrite intent.
+    """
+    if not _markdown_enabled():
+        return None
+    return _url_only_candidate(text)
+
+
+def _format_richlink_content(content: Dict[str, Any]) -> str:
+    url = str(content.get("url") or "").strip()
+    title = str(content.get("title") or "").strip()
+    summary = str(content.get("summary") or "").strip()
+    parts: List[str] = []
+    if title:
+        parts.append(title)
+    if summary and summary != title:
+        parts.append(summary)
+    if url:
+        parts.append(url)
+    return "\n".join(parts) if parts else "[Photon rich link received with no URL]"
+
+
+def _richlink_url_from_content(content: Dict[str, Any]) -> Optional[str]:
+    ctype = content.get("type")
+    if ctype == "text":
+        return _url_only_candidate(content.get("text") or "")
+    if ctype == "richlink":
+        return _url_only_candidate(content.get("url") or "")
+    if ctype == "group":
+        for item in content.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_content = item.get("content") or {}
+            if isinstance(item_content, dict):
+                url = _richlink_url_from_content(item_content)
+                if url:
+                    return url
+    return None
+
+
+def _is_richlink_preview_attachment(payload: Dict[str, Any]) -> bool:
+    if payload.get("type") != "attachment":
+        return False
+    name = str(payload.get("name") or "").lower()
+    attachment_id = str(payload.get("id") or "").lower()
+    is_preview_payload = (
+        name.endswith(_RICHLINK_PREVIEW_ATTACHMENT_SUFFIX)
+        or attachment_id.endswith(_RICHLINK_PREVIEW_ATTACHMENT_SUFFIX)
+        or _RICHLINK_PREVIEW_ATTACHMENT_SUFFIX in name
+        or _RICHLINK_PREVIEW_ATTACHMENT_SUFFIX in attachment_id
+    )
+    # Live iMessage rich-link preview art can arrive with this marker but an
+    # opaque document MIME such as application/octet-stream. The marker is the
+    # reliable signal; the recent-link window guards real attachments.
+    return is_preview_payload
+
+
+def _richlink_preview_label(content: Dict[str, Any]) -> str:
+    if content.get("type") == "attachment":
+        return str(content.get("name") or content.get("id") or "(unnamed)")
+    if content.get("type") == "group":
+        labels = []
+        for item in content.get("items") or []:
+            item_content = item.get("content") if isinstance(item, dict) else None
+            if isinstance(item_content, dict):
+                labels.append(
+                    str(item_content.get("name") or item_content.get("id") or "(unnamed)")
+                )
+        return ", ".join(labels) or "(group)"
+    return "(unknown)"
+
+
+def _is_richlink_preview_content(content: Dict[str, Any]) -> bool:
+    if _is_richlink_preview_attachment(content):
+        return True
+    if content.get("type") != "group":
+        return False
+    items = content.get("items") or []
+    if not items:
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            return False
+        item_content = item.get("content") or {}
+        if not isinstance(item_content, dict):
+            return False
+        if not _is_richlink_preview_attachment(item_content):
+            return False
+    return True
+
 # ---------------------------------------------------------------------------
 # Adapter
+
 
 class PhotonAdapter(BasePlatformAdapter):
     """Bidirectional bridge to Photon Spectrum via the Node spectrum-ts sidecar.
@@ -254,6 +370,10 @@ class PhotonAdapter(BasePlatformAdapter):
         # react action default to "the message that triggered me" without
         # requiring the model to thread message ids through tool calls.
         self._last_inbound_by_chat: Dict[str, str] = {}
+        # Latest inbound URL/richlink per chat. iMessage can send rich-link
+        # preview artwork as separate image attachments immediately after the
+        # URL bubble; this lets us coalesce those artifacts.
+        self._recent_richlinks_by_chat: Dict[str, float] = {}
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
 
@@ -664,6 +784,16 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
             )
             return
+        # Preview art for an immediately preceding URL/richlink should not
+        # become a second user prompt. Suppress before recording it as the
+        # latest reactable inbound or decoding/caching image bytes.
+        if self._is_recent_richlink_preview(space_id, content):
+            logger.info(
+                "[photon] suppressing rich-link preview attachment: %s",
+                _richlink_preview_label(content),
+            )
+            return
+
         # Anything past here is a real (reactable) message — remember it as
         # the chat's latest inbound so `add_reaction` can target it when the
         # caller doesn't pass an explicit message id. Recorded before the
@@ -674,6 +804,9 @@ class PhotonAdapter(BasePlatformAdapter):
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
             text, mtype, media_urls, media_types = _normalize_binary_payload(content)
+        elif ctype == "richlink":
+            text = _format_richlink_content(content)
+            mtype = MessageType.TEXT
         elif ctype == "group":
             text_parts: List[str] = []
             mtype = MessageType.TEXT
@@ -688,6 +821,9 @@ class PhotonAdapter(BasePlatformAdapter):
                     item_text = item_content.get("text") or ""
                     if item_text:
                         text_parts.append(item_text)
+                    continue
+                if item_type == "richlink":
+                    text_parts.append(_format_richlink_content(item_content))
                     continue
                 if item_type in {"attachment", "voice"}:
                     marker, item_mtype, item_urls, item_types = _normalize_binary_payload(
@@ -723,6 +859,8 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
                 return
             text = self._clean_mention_text(text)
+
+        self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
 
         source = self.build_source(
             chat_id=space_id,
@@ -1161,6 +1299,32 @@ class PhotonAdapter(BasePlatformAdapter):
             ]:
                 del last[old]
 
+    def _record_recent_richlink(self, chat_id: str, text: str) -> None:
+        if not chat_id or not _url_only_candidate(text):
+            return
+        key = self._normalize_chat_key(chat_id)
+        recent = self._recent_richlinks_by_chat
+        if key in recent:
+            del recent[key]  # refresh insertion order
+        recent[key] = time.time()
+        if len(recent) > self._LAST_INBOUND_CHATS_MAX:
+            for old in list(recent.keys())[
+                : len(recent) - self._LAST_INBOUND_CHATS_MAX
+            ]:
+                del recent[old]
+
+    def _is_recent_richlink_preview(self, chat_id: str, content: Dict[str, Any]) -> bool:
+        if not chat_id or not _is_richlink_preview_content(content):
+            return False
+        key = self._normalize_chat_key(chat_id)
+        last = self._recent_richlinks_by_chat.get(key)
+        if last is None:
+            return False
+        if time.time() - last > _RICHLINK_PREVIEW_SUPPRESS_SECONDS:
+            self._recent_richlinks_by_chat.pop(key, None)
+            return False
+        return True
+
     def _reactions_enabled(self) -> bool:
         return os.getenv("PHOTON_REACTIONS", "false").strip().lower() in {
             "true", "1", "yes", "on",
@@ -1362,23 +1526,52 @@ class PhotonAdapter(BasePlatformAdapter):
                     "[photon] Failed to deliver response after %d retries: %s",
                     max_retries, error_str,
                 )
-                return result
+                # Fall through to the plain-text fallback below. For URL-only
+                # responses this bypasses ``richlink()`` so a rich-link-specific
+                # outage or sidecar skew does not strand an otherwise sendable URL.
 
         logger.warning(
             "[photon] Send failed: %s - retrying plain-text message",
             error_str,
         )
-        fallback_result = await self.send(
-            chat_id=chat_id,
-            content=text[: self.MAX_MESSAGE_LENGTH],
-            reply_to=reply_to,
-            metadata=metadata,
+        fallback_result = await self._sidecar_send(
+            chat_id,
+            text[: self.MAX_MESSAGE_LENGTH],
+            richlink=False,
+            markdown=False,
         )
         if not fallback_result.success:
             logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
         return fallback_result
 
-    async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
+    async def _sidecar_send_richlink(self, space_id: str, url: str) -> SendResult:
+        try:
+            data = await self._sidecar_call(
+                "/send-richlink", {"spaceId": space_id, "url": url}
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
+        return SendResult(success=True, message_id=data.get("messageId"))
+
+    async def _sidecar_send(
+        self,
+        space_id: str,
+        text: str,
+        *,
+        richlink: bool = True,
+        markdown: bool = True,
+    ) -> SendResult:
+        rich_url = _richlink_candidate(text) if richlink else None
+        if rich_url:
+            rich_result = await self._sidecar_send_richlink(space_id, rich_url)
+            if rich_result.success:
+                return rich_result
+            logger.warning(
+                "[photon] rich-link send failed, falling back to plain text: %s",
+                rich_result.error,
+            )
+            markdown = False
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning(
                 "[photon] truncating outbound from %d to %d chars",
@@ -1388,7 +1581,7 @@ class PhotonAdapter(BasePlatformAdapter):
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
         # Omit the key when disabled so an older sidecar (pre-`format`)
         # keeps accepting the body during a half-upgraded restart.
-        if _markdown_enabled():
+        if markdown and _markdown_enabled():
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
@@ -1600,21 +1793,37 @@ async def _standalone_send(
         async with httpx.AsyncClient(timeout=30.0) as client:
             # 1. Text body first (if any), so it leads the conversation.
             if message:
-                send_body: Dict[str, Any] = {
-                    "spaceId": chat_id,
-                    "text": message[:_MAX_MESSAGE_LENGTH],
-                }
-                if _markdown_enabled():
-                    send_body["format"] = "markdown"
-                resp = await client.post(
-                    f"{base}/send", json=send_body, headers=headers,
-                )
-                if resp.status_code != 200:
-                    return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return {"error": data.get("error") or "sidecar reported failure"}
-                last_message_id = data.get("messageId")
+                rich_url = _richlink_candidate(message)
+                if rich_url:
+                    resp = await client.post(
+                        f"{base}/send-richlink",
+                        json={"spaceId": chat_id, "url": rich_url},
+                        headers=headers,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json() or {}
+                        if data.get("ok"):
+                            last_message_id = data.get("messageId")
+                        else:
+                            rich_url = None
+                    else:
+                        rich_url = None
+                if not rich_url:
+                    send_body: Dict[str, Any] = {
+                        "spaceId": chat_id,
+                        "text": message[:_MAX_MESSAGE_LENGTH],
+                    }
+                    if _markdown_enabled() and not _richlink_candidate(message):
+                        send_body["format"] = "markdown"
+                    resp = await client.post(
+                        f"{base}/send", json=send_body, headers=headers,
+                    )
+                    if resp.status_code != 200:
+                        return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
+                    data = resp.json() or {}
+                    if not data.get("ok"):
+                        return {"error": data.get("error") or "sidecar reported failure"}
+                    last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
             #    media_files is List[Tuple[path, is_voice]] (see

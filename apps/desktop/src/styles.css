@@ -518,6 +518,12 @@
   display: none;
 }
 
+/* The Hermes CLI skin should feel like the terminal: flat black surface,
+   no decorative parchment/statue wash behind the conversation. */
+:root[data-hermes-theme='hermes-cli'] [data-slot='theme-backdrop-statue'] {
+  display: none;
+}
+
 /* Primitive-level pointer cursor for every interactive control (buttons,
    selects, menu items, switches, tabs, summaries). Keeps individual
    components from having to hardcode `cursor-pointer`; explicit cursor

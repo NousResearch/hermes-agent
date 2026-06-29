@@ -7506,8 +7506,7 @@ if (!_gotSingleInstanceLock) {
     const url = _extractDeepLink(argv)
     if (url) handleDeepLink(url)
     else if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+      focusWindow(mainWindow)
     }
   })
 }

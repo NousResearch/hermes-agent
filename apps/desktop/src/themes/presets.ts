@@ -204,6 +204,44 @@ export const monoTheme: DesktopTheme = {
   }
 }
 
+/** Bright Hermes terminal palette. Matches the CLI's black + warm text + gold chrome. */
+export const hermesCliTheme: DesktopTheme = {
+  name: 'hermes-cli',
+  label: 'Hermes CLI',
+  description: 'Bright terminal black with warm text and Hermes gold accents',
+  colors: {
+    background: '#1e1e1e',
+    foreground: '#ffffdc',
+    card: '#202020',
+    cardForeground: '#ffffdc',
+    muted: '#2a2a2a',
+    mutedForeground: '#d8d8b8',
+    popover: '#242424',
+    popoverForeground: '#ffffdc',
+    primary: '#ffd700',
+    primaryForeground: '#101010',
+    secondary: '#2f2b12',
+    secondaryForeground: '#fff4a3',
+    accent: '#3a3308',
+    accentForeground: '#fff2a0',
+    border: '#6f6200',
+    input: '#4a430e',
+    ring: '#ffd700',
+    midground: '#ffd700',
+    composerRing: '#f0b400',
+    destructive: '#ff6b6b',
+    destructiveForeground: '#120000',
+    sidebarBackground: '#181818',
+    sidebarBorder: '#5a5000',
+    userBubble: '#282510',
+    userBubbleBorder: '#7a6a00'
+  },
+  typography: {
+    fontSans: `"Cascadia Code", "JetBrains Mono", ${SYSTEM_MONO}`,
+    fontMono: `"Cascadia Code", "JetBrains Mono", ${SYSTEM_MONO}`
+  }
+}
+
 /** Neon green on black. Matches the CLI cyberpunk skin and dashboard theme. */
 export const cyberpunkTheme: DesktopTheme = {
   name: 'cyberpunk',
@@ -282,6 +320,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
+  'hermes-cli': hermesCliTheme,
   cyberpunk: cyberpunkTheme,
   slate: slateTheme
 }

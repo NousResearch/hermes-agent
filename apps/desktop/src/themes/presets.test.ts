@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
+import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on
@@ -29,5 +29,18 @@ describe('theme typography emoji fallback (#40364)', () => {
     expect(EMOJI_FALLBACK).toContain('Apple Color Emoji')
     expect(EMOJI_FALLBACK).toContain('Segoe UI Emoji')
     expect(EMOJI_FALLBACK).toContain('Noto Color Emoji')
+  })
+})
+
+describe('Hermes CLI desktop theme', () => {
+  it('ships a warm high-contrast terminal palette', () => {
+    const theme = BUILTIN_THEMES['hermes-cli']
+
+    expect(theme).toBeDefined()
+    expect(theme.label).toBe('Hermes CLI')
+    expect(theme.colors.background).toBe('#1e1e1e')
+    expect(theme.colors.foreground).toBe('#ffffdc')
+    expect(theme.colors.primary).toBe('#ffd700')
+    expect(theme.typography?.fontMono).toContain('Cascadia Code')
   })
 })

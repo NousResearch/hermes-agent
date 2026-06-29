@@ -645,11 +645,16 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             # Correlate the tapback to the message it reacted to, so the agent
             # sees WHAT was reacted to. `is_ours` above guarantees the target is
-            # one of the bot's own messages, so reply_to_is_own_message holds and
-            # the gateway injects `[Replying to your previous message: "..."]`.
+            # one of the bot's own messages. Prefix reply_to_text with
+            # "your previous message: " so the generic gateway handler emits
+            # `[Replying to: "your previous message: ..."]`.
             # reply_to_text comes from the sidecar (hydrated reaction target);
             # it's None for attachment/voice-only targets, and the gateway only
             # injects the pointer when both id and text are present.
+            target_text = content.get("targetText") or None
+            reply_to_text = (
+                f"your previous message: {target_text}" if target_text else None
+            )
             await self.handle_message(
                 MessageEvent(
                     text=f"reaction:added:{emoji}",
@@ -657,8 +662,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     source=source,
                     message_id=event.get("messageId"),
                     reply_to_message_id=target_id,
-                    reply_to_text=content.get("targetText") or None,
-                    reply_to_is_own_message=True,
+                    reply_to_text=reply_to_text,
                     raw_message=event,
                     timestamp=timestamp,
                 )

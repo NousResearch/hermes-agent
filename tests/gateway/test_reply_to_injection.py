@@ -101,14 +101,15 @@ async def test_reply_prefix_still_injected_when_text_in_history():
 
 @pytest.mark.asyncio
 async def test_own_message_reply_prefix_marks_assistant_message():
+    """Own-message reply context is encoded in reply_to_text by the adapter
+    so the generic gateway handler emits the right framing without a core edit."""
     runner = _make_runner()
     source = _source()
     event = MessageEvent(
         text="this one",
         source=source,
         reply_to_message_id="42",
-        reply_to_text="Use the direct train.",
-        reply_to_is_own_message=True,
+        reply_to_text="your previous message: Use the direct train.",
     )
 
     result = await runner._prepare_inbound_message_text(
@@ -119,7 +120,7 @@ async def test_own_message_reply_prefix_marks_assistant_message():
 
     assert result is not None
     assert result.startswith(
-        '[Replying to your previous message: "Use the direct train."]'
+        '[Replying to: "your previous message: Use the direct train."]'
     )
     assert result.endswith("this one")
 

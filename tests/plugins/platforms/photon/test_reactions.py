@@ -233,11 +233,11 @@ async def test_inbound_reaction_on_bot_message_routed(
     assert event.text == "reaction:added:❤️"
     assert event.message_type == MessageType.TEXT
     assert event.source.chat_id == "+15551234567"
-    # The tapback correlates to the bot message it reacted to, so the gateway
-    # can inject `[Replying to your previous message: "..."]` for context.
+    # The tapback correlates to the bot message it reacted to. The adapter
+    # prefixes reply_to_text with "your previous message: " so the generic
+    # gateway handler emits `[Replying to: "your previous message: ..."]`.
     assert event.reply_to_message_id == "bot-msg-1"
-    assert event.reply_to_text == "the bot's earlier reply"
-    assert event.reply_to_is_own_message is True
+    assert event.reply_to_text == "your previous message: the bot's earlier reply"
 
 
 @pytest.mark.asyncio
@@ -256,7 +256,6 @@ async def test_inbound_reaction_without_target_text_correlates_id_only(
     event = captured[0]
     assert event.reply_to_message_id == "bot-msg-1"
     assert event.reply_to_text is None
-    assert event.reply_to_is_own_message is True
 
 
 @pytest.mark.asyncio

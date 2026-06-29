@@ -52,6 +52,7 @@ export const zh: Translations = {
     revealInSidebar: '在文件树中显示',
     copyPath: '复制路径',
     copyRelativePath: '复制相对路径',
+    copyContent: '复制文件内容',
     download: '下载',
     downloadSaved: '已保存',
     downloadFailed: '下载失败',
@@ -61,7 +62,8 @@ export const zh: Translations = {
     renameLabel: '新名称',
     deleteTitle: name => `删除 ${name}？`,
     deleteBody: '将移至废纸篓，你可以从那里恢复。',
-    pathCopied: '已复制路径'
+    pathCopied: '已复制路径',
+    contentCopied: '已复制文件内容'
   },
 
   boot: {

@@ -72,6 +72,7 @@ export const ru = defineLocale({
     revealInSidebar: 'Показать в дереве файлов',
     copyPath: 'Копировать путь',
     copyRelativePath: 'Копировать относительный путь',
+    copyContent: 'Копировать содержимое файла',
     download: 'Скачать',
     downloadSaved: 'Сохранено',
     downloadFailed: 'Не удалось скачать',
@@ -81,7 +82,8 @@ export const ru = defineLocale({
     renameLabel: 'Новое имя',
     deleteTitle: name => `Удалить ${name}?`,
     deleteBody: 'Элемент будет перемещён в корзину — его можно восстановить оттуда.',
-    pathCopied: 'Путь скопирован'
+    pathCopied: 'Путь скопирован',
+    contentCopied: 'Содержимое файла скопировано'
   },
   boot: {
     ready: 'Hermes Desktop готов',

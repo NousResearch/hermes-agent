@@ -191,57 +191,70 @@ class TestHandleVisionAnalyze:
             # Clean up the coroutine to avoid RuntimeWarning
             result.close()
 
-    def test_prompt_contains_question(self):
+    @pytest.mark.asyncio
+    async def test_prompt_contains_question(self):
         """The full prompt should incorporate the user's question."""
-        with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
-        ) as mock_tool:
+        with (
+            patch(
+                "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
+        ):
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {
                     "image_url": "https://example.com/img.png",
                     "question": "Describe the cat",
                 }
             )
-            # Clean up coroutine
-            coro.close()
             call_args = mock_tool.call_args
             full_prompt = call_args[0][1]  # second positional arg
             assert "Describe the cat" in full_prompt
             assert "Fully describe and explain" in full_prompt
 
-    def test_uses_auxiliary_vision_model_env(self):
+    @pytest.mark.asyncio
+    async def test_uses_auxiliary_vision_model_env(self):
         """AUXILIARY_VISION_MODEL env var should override DEFAULT_VISION_MODEL."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
             patch.dict(os.environ, {"AUXILIARY_VISION_MODEL": "custom/model-v1"}),
         ):
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {"image_url": "https://example.com/img.png", "question": "test"}
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]  # third positional arg
             assert model == "custom/model-v1"
 
-    def test_falls_back_to_default_model(self):
+    @pytest.mark.asyncio
+    async def test_falls_back_to_default_model(self):
         """Without AUXILIARY_VISION_MODEL, model should be None (let call_llm resolve default)."""
         with (
             patch(
                 "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
             ) as mock_tool,
+            patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ),
             patch.dict(os.environ, {}, clear=False),
         ):
             # Ensure AUXILIARY_VISION_MODEL is not set
             os.environ.pop("AUXILIARY_VISION_MODEL", None)
             mock_tool.return_value = json.dumps({"result": "ok"})
-            coro = _handle_vision_analyze(
+            await _handle_vision_analyze(
                 {"image_url": "https://example.com/img.png", "question": "test"}
             )
-            coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]
             # With no AUXILIARY_VISION_MODEL set, model should be None
@@ -1069,3 +1082,169 @@ class TestDownloadRetryClassification:
         # All three attempts used, two backoff sleeps between them.
         assert mock_client.get.await_count == 3
         assert mock_sleep.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Fan-out concurrency cap — a single turn (or several concurrent sessions in
+# one process) can launch dozens of vision_analyze calls at once. The
+# process-global semaphore must bound how many run simultaneously so a video-
+# frame storm can't pin a worker thread and starve the dashboard event loop.
+# ---------------------------------------------------------------------------
+
+
+class TestVisionFanoutConcurrencyCap:
+    """The process-global semaphore bounds concurrent vision analyses."""
+
+    def test_resolver_defaults_to_min_cpus_and_ceiling(self):
+        from tools import vision_tools as vt
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("tools.vision_tools._detect_host_cpus", return_value=64),
+        ):
+            os.environ.pop("HERMES_VISION_MAX_CONCURRENCY", None)
+            # No config override available in the test env → falls to default,
+            # which is clamped to the ceiling even on a 64-core host.
+            with patch("hermes_cli.config.load_config", side_effect=Exception):
+                assert vt._resolve_vision_max_concurrency() == vt._VISION_DEFAULT_CONCURRENCY_CEILING
+
+    def test_resolver_respects_low_host_cpu_count(self):
+        from tools import vision_tools as vt
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("tools.vision_tools._detect_host_cpus", return_value=2),
+            patch("hermes_cli.config.load_config", side_effect=Exception),
+        ):
+            os.environ.pop("HERMES_VISION_MAX_CONCURRENCY", None)
+            # 2-core host → cap is 2 (host limit, below the ceiling of 4).
+            assert vt._resolve_vision_max_concurrency() == 2
+
+    def test_resolver_env_override(self):
+        from tools import vision_tools as vt
+
+        with patch.dict(os.environ, {"HERMES_VISION_MAX_CONCURRENCY": "1"}):
+            assert vt._resolve_vision_max_concurrency() == 1
+
+    def test_resolver_rejects_sub_one_override(self):
+        from tools import vision_tools as vt
+
+        with (
+            patch.dict(os.environ, {"HERMES_VISION_MAX_CONCURRENCY": "0"}),
+            patch("tools.vision_tools._detect_host_cpus", return_value=2),
+            patch("hermes_cli.config.load_config", side_effect=Exception),
+        ):
+            # 0 is ignored (cap can never be disabled) → falls back to default.
+            assert vt._resolve_vision_max_concurrency() == 2
+
+    @pytest.mark.asyncio
+    async def test_fanout_is_bounded_by_semaphore(self):
+        """Firing many concurrent vision calls must never exceed the cap in flight.
+
+        This is the regression guard for the prod incident: an unbounded
+        fan-out pinned the event loop. With the cap, peak concurrency is
+        clamped to the semaphore value regardless of how many calls launch.
+        """
+        import asyncio
+        import importlib
+        import threading
+        # Resolve the module fresh and drive BOTH the handler and the patch
+        # targets through that SAME module object. Sibling suites
+        # (test_vision_routing_31179) delete tools.vision_tools from
+        # sys.modules, so the top-level ``_handle_vision_analyze`` import can
+        # be bound to a stale module while ``patch`` hits the current one —
+        # patching the wrong object lets the real function run (peak stays 0).
+        vt = importlib.import_module("tools.vision_tools")
+
+        CAP = 3
+        in_flight = 0
+        peak = 0
+        lock = asyncio.Lock()
+
+        async def fake_native(image_url, question):
+            nonlocal in_flight, peak
+            async with lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+            try:
+                # Hold the slot long enough that, without a cap, all callers
+                # would overlap and drive peak up to N.
+                await asyncio.sleep(0.05)
+            finally:
+                async with lock:
+                    in_flight -= 1
+            return json.dumps({"ok": True})
+
+        N = 12
+        # Install a fresh semaphore at the test cap so the assertion is
+        # deterministic regardless of the host's core count.
+        with (
+            patch.object(vt, "_vision_concurrency_semaphore",
+                         threading.BoundedSemaphore(CAP)),
+            patch.object(vt, "_should_use_native_vision_fast_path",
+                         return_value=True),
+            patch.object(vt, "_vision_analyze_native", side_effect=fake_native),
+        ):
+            await asyncio.gather(*[
+                vt._handle_vision_analyze(
+                    {"image_url": f"https://example.com/frame_{i}.png",
+                     "question": "what is this"}
+                )
+                for i in range(N)
+            ])
+
+        assert peak <= CAP, f"peak concurrency {peak} exceeded cap {CAP}"
+        # Sanity: with N > CAP and a real wait, we should have actually
+        # saturated the cap (otherwise the test proves nothing).
+        assert peak == CAP, f"expected to saturate cap {CAP}, only reached {peak}"
+
+    @pytest.mark.asyncio
+    async def test_unbounded_fanout_would_exceed_cap_without_semaphore(self):
+        """Control: with a no-op (effectively unbounded) semaphore, peak blows past CAP.
+
+        Proves the guard above would fail if the semaphore weren't enforcing
+        the limit — i.e. the test is actually exercising the cap.
+        """
+        import asyncio
+        import importlib
+        import threading
+        vt = importlib.import_module("tools.vision_tools")
+
+        CAP = 3
+        in_flight = 0
+        peak = 0
+        lock = asyncio.Lock()
+
+        async def fake_native(image_url, question):
+            nonlocal in_flight, peak
+            async with lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+            try:
+                await asyncio.sleep(0.05)
+            finally:
+                async with lock:
+                    in_flight -= 1
+            return json.dumps({"ok": True})
+
+        N = 12
+        # A semaphore sized to N imposes no real limit for this workload.
+        with (
+            patch.object(vt, "_vision_concurrency_semaphore",
+                         threading.BoundedSemaphore(N)),
+            patch.object(vt, "_should_use_native_vision_fast_path",
+                         return_value=True),
+            patch.object(vt, "_vision_analyze_native", side_effect=fake_native),
+        ):
+            await asyncio.gather(*[
+                vt._handle_vision_analyze(
+                    {"image_url": f"https://example.com/frame_{i}.png",
+                     "question": "what is this"}
+                )
+                for i in range(N)
+            ])
+
+        assert peak > CAP, (
+            "control failed: peak did not exceed CAP even without a real cap "
+            f"(peak={peak})"
+        )

@@ -19,12 +19,24 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import gateway.platforms.feishu as feishu
+from apex_overlay import feishu_supervisor
 from gateway.platforms.base import (
     MessageEvent,
     PlatformConfig,
     ProcessingOutcome,
     SendResult,
 )
+
+# hc-384 self-reconnect supervisor lives in the apex_overlay.feishu_supervisor
+# seam (zero-in-place; applied by the apex-overlay plugin at gateway boot). In
+# prod the plugin runs apply() before any adapter connects; this suite imports
+# the adapter cold, so apply it here to install the real supervisor methods onto
+# FeishuAdapter (matching the booted gateway). Idempotent + fail-safe; per-file
+# process isolation keeps this class patch scoped to this test file.
+#
+# The fast-ladder helper monkeypatches the reconnect tuning on the *seam* module
+# now (the constants moved there from feishu.py), so the ladder still runs fast.
+feishu_supervisor.apply()
 
 
 def _adapter(**extra):
@@ -108,11 +120,11 @@ def test_websocket_appears_alive():
 
 
 def _fast_ladder(monkeypatch, *, max_attempts=None):
-    monkeypatch.setattr(feishu, "_FEISHU_WS_RECONNECT_BASE_DELAY", 0)
-    monkeypatch.setattr(feishu, "_FEISHU_WS_RECONNECT_MAX_DELAY", 0)
-    monkeypatch.setattr(feishu, "_FEISHU_WS_RECONNECT_VERIFY_DELAY", 0)
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_BASE_DELAY", 0)
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_MAX_DELAY", 0)
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_VERIFY_DELAY", 0)
     if max_attempts is not None:
-        monkeypatch.setattr(feishu, "_FEISHU_WS_RECONNECT_MAX_ATTEMPTS", max_attempts)
+        monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_MAX_ATTEMPTS", max_attempts)
 
 
 def test_reconnect_ladder_succeeds_first_attempt(monkeypatch):
@@ -230,7 +242,7 @@ def test_reconnect_reentrancy_guard(monkeypatch):
 
 
 def test_verify_ws_alive_requires_socket_and_probe(monkeypatch):
-    monkeypatch.setattr(feishu, "_FEISHU_WS_RECONNECT_VERIFY_DELAY", 0)
+    monkeypatch.setattr(feishu_supervisor, "_FEISHU_WS_RECONNECT_VERIFY_DELAY", 0)
     adapter = _adapter()
     adapter._running = True
 

@@ -245,16 +245,12 @@ _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message 
 # hc-384: adapter-owned websocket reconnection. The lark SDK's built-in
 # auto-reconnect was observed in prod to try exactly once and give up (0
 # successful reconnects across ~188 daily drops), leaving bots dead for 5–15h
-# until the next gateway restart. With self-reconnect enabled we disable the
-# SDK's reconnect and run our own backoff ladder + liveness probe (mirrors the
-# Telegram resilience pattern). See docs/FEISHU-IM-RELIABILITY-AND-STRATEGY.md.
-_FEISHU_WS_HEALTH_CHECK_INTERVAL = 45        # seconds between liveness checks
-_FEISHU_WS_RECONNECT_MAX_ATTEMPTS = 6        # in-adapter ladder length before escalating to a gateway restart
-_FEISHU_WS_RECONNECT_BASE_DELAY = 5          # seconds (5 → 10 → 20 → 40 → 60 → 60)
-_FEISHU_WS_RECONNECT_MAX_DELAY = 60          # seconds cap, matches Telegram's ladder
-_FEISHU_WS_RECONNECT_VERIFY_DELAY = 5        # seconds to let a relaunched socket establish before probing
-_FEISHU_WS_RECONNECT_CONNECT_TIMEOUT = 30    # seconds bound on a single relaunch (guards against a hung hydrate)
-_FEISHU_WS_PROBE_TIMEOUT = 10                # seconds for the /bot/v3/info liveness probe
+# until the next gateway restart. The supervisor + backoff ladder + liveness
+# probe that own reconnection live in the ``apex_overlay.feishu_supervisor``
+# seam (zero-in-place; applied by the apex-overlay plugin). feishu.py keeps only
+# the ``ws_self_reconnect`` revert flag and two no-op lifecycle stubs
+# (``_start_ws_supervisor`` / ``_cancel_ws_supervisor``) the overlay swaps. The
+# reconnect tuning constants moved there too. See OVERLAY-SEAM-AUDIT.md Tier1 #2.
 
 # hc-385: long-task heartbeat. Feishu's progress feedback is deliberately
 # minimal (a single reaction badge), so the heartbeat is opt-in and only
@@ -1313,21 +1309,40 @@ def _strip_edge_self_mentions(
 def _apply_feishu_ws_runtime_overrides(ws_client: Any, adapter: Any) -> None:
     """Push the adapter's websocket tuning onto the lark ws client.
 
-    Also disables the SDK's built-in auto-reconnect when the adapter owns
-    reconnection (hc-384): with auto-reconnect off, the SDK's receive loop calls
-    ``_disconnect()`` (clearing ``_conn``) and stops on a silent drop, leaving a
-    detectable dead socket for the supervisor instead of the SDK's broken
-    single-shot retry that left bots dead for hours in prod.
+    The ``_reconnect_nonce`` / ``_reconnect_interval`` / ``_ping_interval``
+    overrides are upstream behavior. When the ``apex_overlay.feishu_supervisor``
+    seam is active AND self-reconnect is enabled (hc-384), this also disables the
+    SDK's built-in auto-reconnect so the adapter owns reconnection: with it off,
+    the SDK's receive loop calls ``_disconnect()`` (clearing ``_conn``) and stops
+    on a silent drop, leaving a detectable dead socket for the supervisor instead
+    of the SDK's broken single-shot retry that left bots dead for hours in prod.
+    Without the overlay (or with the revert flag) the SDK keeps its own
+    auto-reconnect — so the adapter is never left with no reconnection at all.
     """
     try:
         setattr(ws_client, "_reconnect_nonce", adapter._ws_reconnect_nonce)
         setattr(ws_client, "_reconnect_interval", adapter._ws_reconnect_interval)
         if adapter._ws_ping_interval is not None:
             setattr(ws_client, "_ping_interval", adapter._ws_ping_interval)
-        if getattr(adapter, "_ws_self_reconnect", True):
+        if getattr(adapter, "_ws_self_reconnect", True) and _feishu_supervisor_active(adapter):
             setattr(ws_client, "_auto_reconnect", False)
     except Exception:
         logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
+
+
+def _feishu_supervisor_active(adapter: Any) -> bool:
+    """True when the apex_overlay Feishu self-reconnect seam is installed.
+
+    Lets ``_apply_feishu_ws_runtime_overrides`` disable the lark SDK's broken
+    auto-reconnect only when our supervisor is actually in charge of
+    reconnection. Defaults to False (pure upstream) if the overlay isn't loaded.
+    """
+    try:
+        from apex_overlay.feishu_supervisor import apex_overlay_active
+
+        return apex_overlay_active(adapter)
+    except Exception:
+        return False
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
@@ -1878,163 +1893,42 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_site = None
 
     # =========================================================================
-    # hc-384 — self-reconnect supervisor
+    # hc-384 — self-reconnect supervisor (apex_overlay seam)
     #
     # The lark SDK's built-in auto-reconnect was observed in prod to try once
-    # and give up (0/188 reconnects), leaving the bot dead for hours. We disable
-    # it (see _apply_runtime_ws_overrides) and own reconnection here: a
-    # supervisor task watches the socket, a backoff ladder rebuilds it, a probe
-    # verifies liveness, and exhaustion escalates to a retryable fatal error so
-    # the gateway's reconnect watcher does a full restart. Mirrors the Telegram
-    # resilience pattern (telegram.py: _handle_polling_network_error /
-    # _verify_polling_after_reconnect).
+    # and give up (0/188 reconnects), leaving the bot dead for hours. The fix —
+    # own reconnection: a supervisor task watches the socket, a backoff ladder
+    # rebuilds it, a probe verifies liveness, and exhaustion escalates to a
+    # retryable fatal error so the gateway's reconnect watcher does a full
+    # restart (mirrors telegram.py: _handle_polling_network_error /
+    # _verify_polling_after_reconnect) — lives in the zero-in-place seam
+    # ``apex_overlay/feishu_supervisor.py``, applied by the apex-overlay plugin.
+    #
+    # The two methods below are the **upstream-faithful no-op stubs** the seam
+    # swaps: connect() calls _start_ws_supervisor() and disconnect() awaits
+    # _cancel_ws_supervisor(). With the stubs alone (overlay absent) the adapter
+    # behaves like stock Hermes — no supervisor, and the SDK keeps its own
+    # auto-reconnect (see _apply_feishu_ws_runtime_overrides, which only disables
+    # the SDK retry when the overlay is active). apply() also binds the four
+    # ladder helpers (_supervise_websocket / _websocket_appears_dead /
+    # _reconnect_websocket_with_backoff / _verify_ws_alive) the real supervisor
+    # needs; the seam-test pins these stubs + every upstream method the ladder
+    # depends on so an upstream rename is a loud CI failure, not a silent revert.
     # =========================================================================
 
     def _start_ws_supervisor(self) -> None:
-        """Start the background task that watches the websocket and reconnects.
+        """No-op fallback; the apex_overlay seam swaps in the real supervisor.
 
-        No-op in webhook mode or when self-reconnect is disabled (revert flag).
+        Upstream has no self-reconnect supervisor, so the in-tree behavior is to
+        do nothing (the lark SDK owns reconnection). ``apply()`` in
+        ``apex_overlay.feishu_supervisor`` replaces this with the version that
+        launches the watcher task.
         """
-        if self._connection_mode != "websocket" or not self._ws_self_reconnect:
-            return
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            return
-        # A real asyncio loop always has create_task; guarding lets duck-typed
-        # loop doubles in tests connect without a supervisor.
-        create_task = getattr(loop, "create_task", None)
-        if create_task is None:
-            return
-        existing = self._ws_supervisor_task
-        if existing is not None and not existing.done():
-            return
-        self._ws_supervisor_task = create_task(self._supervise_websocket())
+        return None
 
     async def _cancel_ws_supervisor(self) -> None:
-        task = self._ws_supervisor_task
-        self._ws_supervisor_task = None
-        if task is None or task.done():
-            return
-        if task is asyncio.current_task():
-            # Reached from inside the supervisor itself: the ladder escalated to
-            # a fatal error, which drives disconnect(). Don't await ourselves.
-            return
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-
-    async def _supervise_websocket(self) -> None:
-        """Periodically verify the websocket is alive; reconnect when it dies.
-
-        On a silent drop the SDK's receive loop clears ``_conn`` and stops
-        (auto-reconnect disabled), so ``_conn is None`` is the death signal.
-        """
-        try:
-            while self._running and not self._intentional_disconnect:
-                await asyncio.sleep(_FEISHU_WS_HEALTH_CHECK_INTERVAL)
-                if not self._running or self._intentional_disconnect:
-                    return
-                if self._ws_reconnecting:
-                    continue
-                if self._websocket_appears_dead():
-                    logger.warning(
-                        "[Feishu] Websocket appears dead (no live connection); "
-                        "starting reconnect ladder"
-                    )
-                    await self._reconnect_websocket_with_backoff()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.debug("[Feishu] Websocket supervisor error", exc_info=True)
-
-    def _websocket_appears_dead(self) -> bool:
-        client = self._ws_client
-        if client is None:
-            return True
-        future = self._ws_future
-        if future is not None and future.done():
-            return True
-        # lark's _disconnect() sets _conn to None when the receive loop exits.
-        return getattr(client, "_conn", None) is None
-
-    async def _reconnect_websocket_with_backoff(self) -> None:
-        """Exponential-backoff reconnect ladder (mirrors Telegram's pattern).
-
-        Tears the dead socket down (without releasing the app lock), relaunches
-        it, and verifies liveness via the ``/bot/v3/info`` probe. Once the ladder
-        is exhausted, escalate to a retryable fatal error so the gateway's
-        reconnect watcher recreates the adapter — a full reconnect that
-        re-acquires the app lock and resumes auto-recovery from there.
-        """
-        if self._ws_reconnecting:
-            return
-        self._ws_reconnecting = True
-        try:
-            for attempt in range(1, _FEISHU_WS_RECONNECT_MAX_ATTEMPTS + 1):
-                if not self._running or self._intentional_disconnect:
-                    return
-                delay = min(
-                    _FEISHU_WS_RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
-                    _FEISHU_WS_RECONNECT_MAX_DELAY,
-                )
-                logger.warning(
-                    "[Feishu] Websocket reconnect attempt %d/%d in %ds",
-                    attempt, _FEISHU_WS_RECONNECT_MAX_ATTEMPTS, delay,
-                )
-                await asyncio.sleep(delay)
-                if not self._running or self._intentional_disconnect:
-                    return
-                try:
-                    await self._teardown_ws_thread()
-                    await asyncio.wait_for(
-                        self._connect_websocket(), _FEISHU_WS_RECONNECT_CONNECT_TIMEOUT
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[Feishu] Websocket reconnect attempt %d relaunch failed: %s",
-                        attempt, exc,
-                    )
-                    continue
-                if await self._verify_ws_alive():
-                    logger.info(
-                        "[Feishu] Websocket reconnected and verified on attempt %d", attempt
-                    )
-                    return
-                logger.warning(
-                    "[Feishu] Websocket reconnect attempt %d connected but failed "
-                    "liveness probe", attempt,
-                )
-            message = (
-                "Feishu websocket could not reconnect after "
-                f"{_FEISHU_WS_RECONNECT_MAX_ATTEMPTS} attempts"
-            )
-            logger.error("[Feishu] %s; escalating for gateway restart", message)
-            self._set_fatal_error("feishu_ws_reconnect_exhausted", message, retryable=True)
-            await self._notify_fatal_error()
-        finally:
-            self._ws_reconnecting = False
-
-    async def _verify_ws_alive(self) -> bool:
-        """Confirm a freshly relaunched websocket actually works.
-
-        Guards against "logs say reconnected but it's dead": a new socket object
-        can exist while the bot endpoint is unreachable. Reuses
-        ``_hydrate_bot_identity`` (a real /bot/v3/info round-trip) as the probe.
-        """
-        await asyncio.sleep(_FEISHU_WS_RECONNECT_VERIFY_DELAY)
-        if not self._running or self._intentional_disconnect:
-            return False
-        client = self._ws_client
-        if client is None or getattr(client, "_conn", None) is None:
-            return False
-        try:
-            return bool(
-                await asyncio.wait_for(self._hydrate_bot_identity(), _FEISHU_WS_PROBE_TIMEOUT)
-            )
-        except Exception:
-            return False
+        """No-op fallback; the apex_overlay seam swaps in the real canceller."""
+        return None
 
     # =========================================================================
     # Outbound — send / edit / send_image / send_voice / …

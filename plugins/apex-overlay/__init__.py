@@ -57,3 +57,16 @@ def register(ctx) -> None:  # noqa: ARG001 — ctx unused; this is a boot hook
             )
     except Exception:
         logger.warning("apex-overlay: gateway_bootstrap seam failed to load", exc_info=True)
+
+    try:
+        from apex_overlay import feishu_supervisor
+
+        if not feishu_supervisor.apply():
+            logger.warning(
+                "apex-overlay: hc-384 Feishu self-reconnect supervisor seam did "
+                "not fully apply (see prior error). Feishu falls back to the "
+                "lark SDK's broken single-shot auto-reconnect, which left bots "
+                "dead for hours in prod."
+            )
+    except Exception:
+        logger.warning("apex-overlay: feishu_supervisor seam failed to load", exc_info=True)

@@ -260,6 +260,7 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
+    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -625,6 +626,24 @@ class PreviewedResponseAgent:
         }
 
 
+class PreviewedSplitAfterCommentaryAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.session_id = kwargs.get("session_id")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
+        self.session_id = f"{self.session_id}-child"
+        return {
+            "final_response": "Final answer after compression.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class StreamingRefineAgent:
     def __init__(self, **kwargs):
         self.stream_delta_callback = kwargs.get("stream_delta_callback")
@@ -940,6 +959,21 @@ async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_pat
 
     assert result.get("already_sent") is True
     assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_previewed_split_keeps_final_delivery_pending(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PreviewedSplitAfterCommentaryAgent,
+        session_id="sess-split",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result["session_id"] == "sess-split-child"
+    assert result.get("already_sent") is not True
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
 
 
 @pytest.mark.asyncio

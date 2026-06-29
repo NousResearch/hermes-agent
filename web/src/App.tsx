@@ -486,6 +486,13 @@ export default function App() {
     >
       <SelectionSwitcher />
 
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 z-0"
+      >
+        <PluginSlot name="backdrop" />
+      </div>
+
       <header
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",

@@ -38,6 +38,8 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from hermes_cli import _http_response_limits as http_response_limits
+
 
 def _default_gateway_id() -> str:
     """A stable-ish default gateway instance id: ``<hostname>-<pid-free slug>``.
@@ -113,11 +115,23 @@ def _post_enroll(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = http_response_limits.read_limited_json_response(
+                resp,
+                label="gateway enrollment response body",
+            )
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
-            detail = (json.loads(exc.read().decode()) or {}).get("error", "")
+            detail = (
+                http_response_limits.read_limited_json_response(
+                    exc,
+                    limit=http_response_limits.ERROR_RESPONSE_BODY_MAX_BYTES,
+                    label="gateway enrollment error response body",
+                )
+                or {}
+            ).get("error", "")
+        except http_response_limits.ResponseBodyTooLarge as read_exc:
+            detail = str(read_exc)
         except Exception:
             pass
         if exc.code == 401:

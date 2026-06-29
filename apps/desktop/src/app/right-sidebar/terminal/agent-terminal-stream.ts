@@ -40,3 +40,29 @@ export function writeAgentTerminalChunk(procId: string, chunk: string): void {
   backlog.set(procId, next.length > MAX_BACKLOG ? next.slice(-MAX_BACKLOG) : next)
   writers.get(procId)?.(chunk)
 }
+
+/** Ingest a full output snapshot from process.list/status-stack. This is the
+ *  fallback for older/not-yet-restarted gateways and a seed for tabs opened
+ *  after output already exists. If it extends our current backlog, append only
+ *  the delta; if the registry's rolling tail slid, reset to that tail. */
+export function syncAgentTerminalSnapshot(procId: string, output: string): void {
+  if (!procId || !output) {
+    return
+  }
+
+  const current = backlog.get(procId) ?? ''
+
+  if (output === current) {
+    return
+  }
+
+  if (output.startsWith(current)) {
+    writeAgentTerminalChunk(procId, output.slice(current.length))
+
+    return
+  }
+
+  const next = output.length > MAX_BACKLOG ? output.slice(-MAX_BACKLOG) : output
+  backlog.set(procId, next)
+  writers.get(procId)?.(`\x1bc${next}`)
+}

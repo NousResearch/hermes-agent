@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { $backgroundStatusBySession } from '@/store/composer-status'
 
+import { syncAgentTerminalSnapshot } from './agent-terminal-stream'
 import { setActiveTerminalId } from './buffer'
 import { AgentTerminalInstance, TerminalInstance } from './instance'
 import { $activeTerminalId, $terminals, ensureAgentTerminal } from './terminals'
@@ -30,12 +31,14 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
     }
   }, [])
 
-  // Surface the agent's background processes as read-only tabs (once each); their
-  // output streams in live via agent.terminal.output, no polling needed.
+  // Surface the agent's background processes as read-only tabs (once each).
+  // Live chunks stream via agent.terminal.output; the process-list snapshot also
+  // seeds/falls back so the tab never stays blank if the stream races startup.
   useEffect(() => {
     for (const list of Object.values(background)) {
       for (const item of list) {
         ensureAgentTerminal(item.id, item.title)
+        syncAgentTerminalSnapshot(item.id, item.output ?? '')
       }
     }
   }, [background])

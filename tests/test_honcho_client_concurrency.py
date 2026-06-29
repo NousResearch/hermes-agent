@@ -98,6 +98,38 @@ def test_reset_allows_rebuild(monkeypatch):
     assert c2 is not c1
 
 
+def test_distinct_compartment_configs_get_distinct_cached_clients(monkeypatch):
+    """Ops and personal compartments must not share the first-built client."""
+    build_count = {"n": 0}
+    build_lock = threading.Lock()
+    _install_fake_honcho_sdk(monkeypatch, build_count, build_lock)
+
+    ops = HonchoClientConfig(
+        host="hermes:ops",
+        api_key="ops-key",
+        workspace_id="ops-prod",
+        base_url="https://honcho.example.test",
+        api_key_explicit=True,
+    )
+    personal = HonchoClientConfig(
+        host="hermes:personal",
+        api_key="personal-key",
+        workspace_id="personal-prod",
+        base_url="https://honcho.example.test",
+        api_key_explicit=True,
+    )
+
+    ops_client = get_honcho_client(ops)
+    personal_client = get_honcho_client(personal)
+
+    assert build_count["n"] == 2
+    assert personal_client is not ops_client
+    assert ops_client.kwargs["workspace_id"] == "ops-prod"
+    assert personal_client.kwargs["workspace_id"] == "personal-prod"
+    assert get_honcho_client(ops) is ops_client
+    assert get_honcho_client(personal) is personal_client
+
+
 def test_missing_credentials_still_raises_before_build(monkeypatch):
     build_count = {"n": 0}
     build_lock = threading.Lock()

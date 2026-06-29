@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -1017,6 +1018,82 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     return results
 
 
+def _compartment_auth_label(block: dict) -> str:
+    """Return a display-safe auth label for a compartment block."""
+    if block.get("apiKeyFile"):
+        return f"apiKeyFile:{block['apiKeyFile']}"
+    if block.get("apiKey"):
+        return "apiKey:set"
+    return "inherited/default"
+
+
+def cmd_compartments(args) -> None:
+    """List or configure named Honcho workspace/key compartments."""
+    cfg = _read_config()
+    host = _host_key()
+    hosts = cfg.setdefault("hosts", {})
+    block = hosts.setdefault(host, {})
+    action = getattr(args, "compartment_action", None) or "list"
+
+    if action == "set":
+        name = (getattr(args, "name", "") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            print("  Compartment name must contain only letters, numbers, '_' or '-'.")
+            return
+
+        workspace = (getattr(args, "workspace", "") or "").strip()
+        if not workspace:
+            print("  --workspace is required when setting a compartment.")
+            return
+
+        api_key = getattr(args, "api_key", None)
+        api_key_file = getattr(args, "api_key_file", None)
+        if api_key and api_key_file:
+            print("  Use only one of --api-key or --api-key-file.")
+            return
+
+        compartment = block.setdefault("compartments", {}).setdefault(name, {})
+        compartment["workspace"] = workspace
+        if api_key_file:
+            compartment["apiKeyFile"] = api_key_file
+            compartment.pop("apiKey", None)
+        elif api_key:
+            compartment["apiKey"] = api_key
+            compartment.pop("apiKeyFile", None)
+
+        for attr, key in (
+            ("base_url", "baseUrl"),
+            ("environment", "environment"),
+            ("session_strategy", "sessionStrategy"),
+            ("manual_session_name", "manualSessionName"),
+        ):
+            value = getattr(args, attr, None)
+            if value:
+                compartment[key] = value
+
+        _write_config(cfg)
+        print(f"  Compartment '{name}' configured for host '{host}'.")
+        print(f"  Workspace: {workspace}")
+        print(f"  Auth:      {_compartment_auth_label(compartment)}")
+        return
+
+    compartments = block.get("compartments") or {}
+    print(f"\nHoncho compartments [{host}]\n" + "─" * 55)
+    if not compartments:
+        print("  No named compartments configured.")
+        print("  Example:")
+        print("    hermes honcho compartments set ops --workspace james-ops-prod --api-key-file runtime-keys/james-ops-prod.jwt\n")
+        return
+
+    print(f"  {'Name':<16} {'Workspace':<28} Auth")
+    print(f"  {'─' * 16} {'─' * 28} {'─' * 18}")
+    for name in sorted(compartments):
+        item = compartments[name] if isinstance(compartments[name], dict) else {}
+        workspace = str(item.get("workspace") or "(default)")
+        print(f"  {name:<16} {workspace:<28} {_compartment_auth_label(item)}")
+    print()
+
+
 def cmd_status(args) -> None:
     """Show current Honcho config and connection status."""
     show_all = getattr(args, "all", False)
@@ -1739,6 +1816,8 @@ def honcho_command(args) -> None:
         cmd_status(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub == "compartments":
+        cmd_compartments(args)
     elif sub == "peers":
         cmd_peers(args)
     elif sub == "sessions":
@@ -1765,7 +1844,7 @@ def honcho_command(args) -> None:
         cmd_sync(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
+        print("  Available: status, compartments, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
 
 
 def register_cli(subparser) -> None:
@@ -1792,6 +1871,30 @@ def register_cli(subparser) -> None:
     status_parser.add_argument(
         "--all", action="store_true", help="Show config overview across all profiles",
     )
+
+    compartments_parser = subs.add_parser(
+        "compartments", help="List or set named Honcho workspace/key compartments",
+    )
+    compartment_subs = compartments_parser.add_subparsers(
+        dest="compartment_action"
+    )
+    compartment_subs.add_parser("list", help="List configured compartments")
+    set_parser = compartment_subs.add_parser(
+        "set", help="Create or update a named compartment",
+    )
+    set_parser.add_argument("name", help="Compartment name, e.g. ops or personal")
+    set_parser.add_argument("--workspace", required=True, help="Honcho workspace ID")
+    auth_group = set_parser.add_mutually_exclusive_group()
+    auth_group.add_argument("--api-key-file", dest="api_key_file", help="Path to API/JWT key file; relative paths resolve next to honcho.json")
+    auth_group.add_argument("--api-key", dest="api_key", help="Inline API/JWT key (prefer --api-key-file for scoped runtime keys)")
+    set_parser.add_argument("--base-url", dest="base_url", help="Honcho base URL for this compartment")
+    set_parser.add_argument("--environment", help="Honcho SDK environment name")
+    set_parser.add_argument(
+        "--session-strategy",
+        choices=("per-session", "per-directory", "per-repo", "global", "manual"),
+        help="Override session strategy for this compartment",
+    )
+    set_parser.add_argument("--manual-session-name", help="Manual session name when using manual strategy")
 
     subs.add_parser("peers", help="Show peer identities across all profiles")
     subs.add_parser("sessions", help="List known Honcho session mappings")

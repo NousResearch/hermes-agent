@@ -105,6 +105,91 @@ class TestHonchoClientConfigAutoEnable:
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
 
+    def test_api_key_file_resolves_relative_to_config_file(self, tmp_path, monkeypatch):
+        """apiKeyFile keeps scoped JWTs out of reviewable honcho.json."""
+        key_file = tmp_path / "secrets" / "ops.jwt"
+        key_file.parent.mkdir()
+        key_file.write_text(" file-backed-key \n")
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text(json.dumps({
+            "baseUrl": "https://honcho.example.test",
+            "hosts": {
+                "hermes": {
+                    "workspace": "ops-prod",
+                    "apiKeyFile": "secrets/ops.jwt",
+                }
+            },
+        }))
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        assert cfg.api_key == "file-backed-key"
+        assert cfg.workspace_id == "ops-prod"
+        assert cfg.enabled is True
+
+    def test_named_compartments_parse_to_separate_workspace_key_pairs(self, tmp_path, monkeypatch):
+        """Milo/Miloh need ops and personal compartments at key/workspace level."""
+        ops_key = tmp_path / "ops.jwt"
+        personal_key = tmp_path / "personal.jwt"
+        ops_key.write_text("ops-key\n")
+        personal_key.write_text("personal-key\n")
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text(json.dumps({
+            "baseUrl": "https://honcho.example.test",
+            "hosts": {
+                "hermes": {
+                    "workspace": "personal-prod",
+                    "apiKeyFile": "personal.jwt",
+                    "compartments": {
+                        "ops": {
+                            "workspace": "ops-prod",
+                            "apiKeyFile": "ops.jwt",
+                            "write": True,
+                        },
+                        "personal": {
+                            "workspace": "personal-prod",
+                            "apiKeyFile": "personal.jwt",
+                            "write": True,
+                        },
+                    },
+                    "agents": {
+                        "miloh": ["ops", "personal"],
+                        "echo": ["ops"],
+                    },
+                }
+            },
+        }))
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        assert sorted(cfg.compartments) == ["ops", "personal"]
+        assert cfg.agent_compartments == {"miloh": ["ops", "personal"], "echo": ["ops"]}
+
+        ops_cfg = cfg.for_compartment("ops")
+        personal_cfg = cfg.for_compartment("personal")
+
+        assert ops_cfg.workspace_id == "ops-prod"
+        assert ops_cfg.api_key == "ops-key"
+        assert ops_cfg.base_url == "https://honcho.example.test"
+        assert ops_cfg.host == "hermes:ops"
+
+        assert personal_cfg.workspace_id == "personal-prod"
+        assert personal_cfg.api_key == "personal-key"
+        assert personal_cfg.host == "hermes:personal"
+
+
+def test_honcho_config_schema_documents_file_backed_compartments():
+    provider = HonchoMemoryProvider()
+
+    keys = {item["key"] for item in provider.get_config_schema()}
+
+    assert "api_key" in keys
+    assert "apiKeyFile" in keys
+    assert "baseUrl" in keys
+    assert "compartments" in keys
+
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
 def test_save_config_sets_owner_only_permissions(tmp_path, monkeypatch):

@@ -33,6 +33,16 @@ logger = logging.getLogger(__name__)
 # Tool schemas (moved from tools/honcho_tools.py)
 # ---------------------------------------------------------------------------
 
+COMPARTMENT_PROPERTY = {
+    "type": "string",
+    "description": (
+        "Optional named Honcho memory compartment to use, e.g. 'ops' or "
+        "'personal'. Compartments map to separate Honcho workspaces/keys, so "
+        "this is a hard routing boundary, not a tag. Omit for the default "
+        "workspace configured for this profile."
+    ),
+}
+
 PROFILE_SCHEMA = {
     "name": "honcho_profile",
     "description": (
@@ -50,6 +60,7 @@ PROFILE_SCHEMA = {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
+            "compartment": COMPARTMENT_PROPERTY,
             "card": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -83,6 +94,7 @@ SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
+            "compartment": COMPARTMENT_PROPERTY,
         },
         "required": ["query"],
     },
@@ -122,6 +134,7 @@ REASONING_SCHEMA = {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
+            "compartment": COMPARTMENT_PROPERTY,
         },
         "required": ["query"],
     },
@@ -146,6 +159,7 @@ CONTEXT_SCHEMA = {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
+            "compartment": COMPARTMENT_PROPERTY,
         },
         "required": [],
     },
@@ -175,6 +189,7 @@ CONCLUDE_SCHEMA = {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
+            "compartment": COMPARTMENT_PROPERTY,
         },
         "required": [],
     },
@@ -207,6 +222,8 @@ class HonchoMemoryProvider(MemoryProvider):
     def __init__(self):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
+        self._compartment_managers: dict[str, Any] = {}
+        self._compartment_session_keys: dict[str, str] = {}
         self._session_key = ""
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -281,7 +298,9 @@ class HonchoMemoryProvider(MemoryProvider):
     def get_config_schema(self):
         return [
             {"key": "api_key", "description": "Honcho API key", "secret": True, "env_var": "HONCHO_API_KEY", "url": "https://app.honcho.dev"},
+            {"key": "apiKeyFile", "description": "Path to a file containing a Honcho API key/JWT. Relative paths resolve next to honcho.json.", "secret": True},
             {"key": "baseUrl", "description": "Honcho base URL (for self-hosted)"},
+            {"key": "compartments", "description": "Optional named workspace/key compartments such as ops and personal. Each compartment may set workspace, apiKey, apiKeyFile, baseUrl, environment, and session settings."},
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -1307,6 +1326,51 @@ class HonchoMemoryProvider(MemoryProvider):
             return []
         return list(ALL_TOOL_SCHEMAS)
 
+    def _tool_route(self, compartment: str | None) -> tuple[Any | None, str, str | None]:
+        """Resolve a Honcho manager/session for an optional compartment.
+
+        The default route uses the provider's primary workspace. A named
+        compartment builds or reuses a separate HonchoSessionManager configured
+        with that compartment's workspace/key. This keeps ops/personal routing
+        at the client boundary instead of relying on tags inside one workspace.
+        """
+        name = (compartment or "").strip()
+        if not name:
+            return self._manager, self._session_key, None
+
+        if not self._config or name not in getattr(self._config, "compartments", {}):
+            return None, "", f"Unknown Honcho compartment: {name}"
+
+        manager = self._compartment_managers.get(name)
+        session_key = self._compartment_session_keys.get(name)
+        if manager is not None and session_key:
+            return manager, session_key, None
+
+        try:
+            from plugins.memory.honcho.client import get_honcho_client
+            from plugins.memory.honcho.session import HonchoSessionManager
+
+            cfg = self._config.for_compartment(name)
+            client = get_honcho_client(cfg)
+            init_kwargs = dict(self._lazy_init_kwargs or {})
+            init_session_id = self._lazy_init_session_id or self._session_key or "hermes-default"
+            session_key = self._resolve_session_key(cfg, init_session_id, **init_kwargs)
+            manager = HonchoSessionManager(
+                honcho=client,
+                config=cfg,
+                context_tokens=cfg.context_tokens,
+                runtime_user_peer_name=init_kwargs.get("user_id") or None,
+                runtime_user_peer_name_alt=init_kwargs.get("user_id_alt") or None,
+            )
+            manager.get_or_create(session_key)
+        except Exception as exc:
+            logger.warning("Honcho compartment '%s' initialization failed: %s", name, exc)
+            return None, "", f"Honcho compartment '{name}' could not be initialized."
+
+        self._compartment_managers[name] = manager
+        self._compartment_session_keys[name] = session_key
+        return manager, session_key, None
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
         if self._cron_skipped:
@@ -1322,16 +1386,22 @@ class HonchoMemoryProvider(MemoryProvider):
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")
 
+        manager, route_session_key, route_error = self._tool_route(args.get("compartment"))
+        if route_error:
+            return tool_error(route_error)
+        if not manager or not route_session_key:
+            return tool_error("Honcho is not active for this session.")
+
         try:
             if tool_name == "honcho_profile":
                 peer = args.get("peer", "user")
                 card_update = args.get("card")
                 if card_update:
-                    result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
+                    result = manager.set_peer_card(route_session_key, card_update, peer=peer)
                     if result is None:
                         return tool_error("Failed to update peer card.")
                     return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
-                card = self._manager.get_peer_card(self._session_key, peer=peer)
+                card = manager.get_peer_card(route_session_key, peer=peer)
                 if not card:
                     return json.dumps(self._empty_profile_hint(peer))
                 return json.dumps({"result": card})
@@ -1342,8 +1412,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error("Missing required parameter: query")
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
                 peer = args.get("peer", "user")
-                result = self._manager.search_context(
-                    self._session_key, query, max_tokens=max_tokens, peer=peer
+                result = manager.search_context(
+                    route_session_key, query, max_tokens=max_tokens, peer=peer
                 )
                 if not result:
                     return json.dumps({"result": "No relevant context found."})
@@ -1355,8 +1425,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
                 reasoning_level = args.get("reasoning_level")
-                result = self._manager.dialectic_query(
-                    self._session_key, query,
+                result = manager.dialectic_query(
+                    route_session_key, query,
                     reasoning_level=reasoning_level,
                     peer=peer,
                 )
@@ -1366,7 +1436,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
             elif tool_name == "honcho_context":
                 peer = args.get("peer", "user")
-                ctx = self._manager.get_session_context(self._session_key, peer=peer)
+                ctx = manager.get_session_context(route_session_key, peer=peer)
                 if not ctx:
                     return json.dumps({"result": "No context available yet."})
                 parts = []
@@ -1396,11 +1466,11 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error("Exactly one of conclusion or delete_id must be provided.")
 
                 if has_delete_id:
-                    ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
+                    ok = manager.delete_conclusion(route_session_key, delete_id, peer=peer)
                     if ok:
                         return json.dumps({"result": f"Conclusion {delete_id} deleted."})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
-                ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
+                ok = manager.create_conclusion(route_session_key, conclusion, peer=peer)
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
                 return tool_error("Failed to save conclusion.")

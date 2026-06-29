@@ -8467,6 +8467,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            # Capture the relaunch-handoff signature before the turn so a
+            # tool-driven profile switch (e.g. a plugin tool) is
+            # detected and the frontend can exit-42 → relaunch into the target.
+            _before_relaunch = _relaunch_signature()
             result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
@@ -8581,6 +8585,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["rendered"] = rendered
             with session["history_lock"]:
                 _clear_inflight_turn(session)
+            # A tool the model called this turn may have requested a deferred
+            # relaunch (a plugin tool). Flag it so the frontend
+            # exits with code 42, mirroring the slash-command relaunch path.
+            if _relaunch_requested(_before_relaunch):
+                payload["relaunch"] = True
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -11193,6 +11202,33 @@ def _resolve_name(name: str) -> str:
         return name
 
 
+def _relaunch_signature():
+    """Identity (mtime, size) of the pending-relaunch handoff file, or None.
+
+    Used to detect a relaunch requested *by the current slash command* rather
+    than a stale handoff left by an earlier one — so a non-relaunching command
+    (e.g. /invoke list) can never trigger a spurious exit-42.
+    """
+    try:
+        from hermes_cli.relaunch import _pending_relaunch_path
+
+        st = _pending_relaunch_path().stat()
+        return (st.st_mtime_ns, st.st_size)
+    except Exception:
+        return None
+
+
+def _relaunch_requested(before) -> bool:
+    """True if a deferred relaunch was newly requested since ``before``.
+
+    The TUI consumes this by exiting with code 42 so the wrapper relaunches —
+    the same mechanism /update uses, but driven by any feature that calls
+    ``hermes_cli.relaunch.request_relaunch`` (e.g. a plugin slash command).
+    """
+    after = _relaunch_signature()
+    return after is not None and after != before
+
+
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
@@ -11236,8 +11272,12 @@ def _(rid, params: dict) -> dict:
 
         handler = get_plugin_command_handler(name)
         if handler:
+            _before_relaunch = _relaunch_signature()
             result = resolve_plugin_command_result(handler(arg))
-            return _ok(rid, {"type": "plugin", "output": str(result or "")})
+            payload = {"type": "plugin", "output": str(result or "")}
+            if _relaunch_requested(_before_relaunch):
+                payload["relaunch"] = True
+            return _ok(rid, payload)
     except Exception:
         pass
 
@@ -12425,8 +12465,12 @@ def _(rid, params: dict) -> dict:
 
     if plugin_handler and resolve_plugin_command_result:
         try:
+            _before_relaunch = _relaunch_signature()
             result = resolve_plugin_command_result(plugin_handler(_cmd_arg))
-            return _ok(rid, {"output": str(result or "(no output)")})
+            payload = {"output": str(result or "(no output)")}
+            if _relaunch_requested(_before_relaunch):
+                payload["relaunch"] = True
+            return _ok(rid, payload)
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 

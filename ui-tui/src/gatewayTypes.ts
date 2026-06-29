@@ -707,7 +707,7 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
-      payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }
+      payload?: { reasoning?: string; relaunch?: boolean; rendered?: string; text?: string; usage?: Usage }
       session_id?: string
       type: 'message.complete'
     }

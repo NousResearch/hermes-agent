@@ -742,6 +742,7 @@ export function useMainApp(gw: GatewayClient) {
         session: {
           STARTUP_RESUME_ID,
           colsRef,
+          dieWithCode,
           newSession: session.newSession,
           recoverSidRef,
           resetSession: session.resetSession,
@@ -762,6 +763,7 @@ export function useMainApp(gw: GatewayClient) {
       appendMessage,
       bellOnComplete,
       composerActions.setInput,
+      dieWithCode,
       gateway,
       panel,
       session.newSession,

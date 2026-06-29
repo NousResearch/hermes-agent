@@ -80,7 +80,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
-  const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
+  const { STARTUP_RESUME_ID, dieWithCode, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
   const { setInput } = ctx.composer
@@ -938,6 +938,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         setStatus('ready')
+
+        // A tool the model called this turn requested a profile relaunch
+        // (a plugin tool). Exit with code 42 so the wrapper
+        // relaunches into the target profile, preserving --tui. Delay so the
+        // final message renders first (mirrors the slash relaunch path).
+        if (ev.payload?.relaunch) {
+          setTimeout(() => dieWithCode(42), 150)
+        }
 
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))

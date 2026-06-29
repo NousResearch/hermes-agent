@@ -284,3 +284,54 @@ class TestResolveHermesBinWindowsPyGuard:
         monkeypatch.setattr(relaunch_mod.shutil, "which", lambda name: None)
 
         assert relaunch_mod.resolve_hermes_bin() is None
+
+
+class TestDeferredRelaunch:
+    """request_relaunch / consume_pending_relaunch: the generic deferred-relaunch
+    API that lets an in-session feature (e.g. a plugin slash command) request a
+    relaunch performed at the next clean teardown point."""
+
+    def test_consume_returns_false_when_nothing_pending(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            relaunch_mod, "_pending_relaunch_path", lambda: tmp_path / "pending.json"
+        )
+        assert relaunch_mod.consume_pending_relaunch() is False
+
+    def test_request_then_consume_roundtrip(self, monkeypatch, tmp_path):
+        target = tmp_path / "pending.json"
+        monkeypatch.setattr(relaunch_mod, "_pending_relaunch_path", lambda: target)
+        calls = []
+        monkeypatch.setattr(
+            relaunch_mod,
+            "relaunch",
+            lambda args, preserve_inherited=True: calls.append(
+                (list(args), preserve_inherited)
+            ),
+        )
+
+        relaunch_mod.request_relaunch(["-p", "ogun", "--continue"], preserve_inherited=True)
+        assert target.is_file()
+
+        # consume performs the relaunch, clears the handoff, and reports success
+        assert relaunch_mod.consume_pending_relaunch() is True
+        assert calls == [(["-p", "ogun", "--continue"], True)]
+        assert not target.exists()
+
+        # a second consume is a no-op (handoff already cleared)
+        assert relaunch_mod.consume_pending_relaunch() is False
+
+    def test_request_preserves_inherited_flag(self, monkeypatch, tmp_path):
+        target = tmp_path / "pending.json"
+        monkeypatch.setattr(relaunch_mod, "_pending_relaunch_path", lambda: target)
+        captured = {}
+        monkeypatch.setattr(
+            relaunch_mod,
+            "relaunch",
+            lambda args, preserve_inherited=True: captured.update(
+                preserve_inherited=preserve_inherited
+            ),
+        )
+
+        relaunch_mod.request_relaunch(["update"], preserve_inherited=False)
+        relaunch_mod.consume_pending_relaunch()
+        assert captured == {"preserve_inherited": False}

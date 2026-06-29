@@ -299,6 +299,7 @@ export interface GatewayEventHandlerContext {
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
+    dieWithCode: (code: number) => void
     newSession: (msg?: string, title?: string) => void
     // Set by useMainApp's exit handler to the session that was live when the
     // gateway died unexpectedly; consumed once by the next `gateway.ready` so a

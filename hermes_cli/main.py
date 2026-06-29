@@ -2128,12 +2128,16 @@ def _launch_tui(
     # preserve_inherited=False ensures --tui and other flags are NOT carried
     # into the update subcommand.
     if code == 42:
-        from hermes_cli.relaunch import relaunch
+        from hermes_cli.relaunch import consume_pending_relaunch, relaunch
 
-        print()
-        print("⚕ Launching update...")
-        print()
-        relaunch(["update"], preserve_inherited=False)
+        # A generic deferred relaunch (e.g. requested by a plugin) takes
+        # precedence and preserves inherited flags (notably --tui) so we return
+        # into the TUI in the target profile. Falls back to the update relaunch.
+        if not consume_pending_relaunch():
+            print()
+            print("⚕ Launching update...")
+            print()
+            relaunch(["update"], preserve_inherited=False)
 
     sys.exit(code)
 

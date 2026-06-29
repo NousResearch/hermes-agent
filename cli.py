@@ -15051,6 +15051,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.relaunch import relaunch
             relaunch(self._pending_relaunch, preserve_inherited=False)
 
+        # Honor a generic deferred relaunch requested in-session by a plugin or
+        # feature (e.g. a plugin slash command). No-op when nothing is pending; execs
+        # in place when a request exists — after the terminal has been restored.
+        from hermes_cli.relaunch import consume_pending_relaunch
+        consume_pending_relaunch()
+
 
 # ============================================================================
 # Main Entry Point

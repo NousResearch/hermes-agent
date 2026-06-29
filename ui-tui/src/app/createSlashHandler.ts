@@ -117,6 +117,16 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
+    // A slash command (e.g. a plugin slash command) may request a profile relaunch by
+    // having the backend set `relaunch: true` on its response. Exit with code 42
+    // so the Python wrapper relaunches into the target profile, preserving --tui
+    // (the same mechanism /update uses). Delay briefly so the output renders.
+    const maybeRelaunch = (raw: unknown): void => {
+      if (raw && typeof raw === 'object' && (raw as { relaunch?: boolean }).relaunch) {
+        setTimeout(() => ctx.session.dieWithCode(42), 150)
+      }
+    }
+
     gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sid })
       .then(r => {
         if (stale()) {
@@ -124,14 +134,16 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         }
 
         if (asCommandDispatch(r)) {
-          return handleDispatch(r)
+          handleDispatch(r)
+        } else {
+          const body = r?.output || `/${parsed.name}: no output`
+          const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+          const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+          long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
         }
 
-        const body = r?.output || `/${parsed.name}: no output`
-        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
-        const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
-
-        long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+        maybeRelaunch(r)
       })
       .catch(() => {
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
@@ -141,6 +153,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
             }
 
             handleDispatch(raw)
+            maybeRelaunch(raw)
           })
           .catch(guardedErr)
       })

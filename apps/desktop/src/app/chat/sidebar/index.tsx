@@ -1149,7 +1149,8 @@ export function ChatSidebar({
 
   const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
 
-  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
+  const showSessionSections =
+    showSessionSkeletons || sortedSessions.length > 0 || projectModel.length > 0
 
   // Each reorderable list reports its OWN new id order; persisting is a direct,
   // typed write — no id-prefix sniffing to figure out which level moved.
@@ -1537,7 +1538,7 @@ export function ChatSidebar({
           </div>
         )}
 
-        {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
+        {contentVisible && !showSessionSections && <SidebarBlankState onNewProject={openProjectCreate} />}
 
         {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
@@ -1614,6 +1615,29 @@ function SidebarSessionSkeletons() {
           <Skeleton className="mx-auto size-3.5 rounded-sm opacity-60" />
         </div>
       ))}
+    </div>
+  )
+}
+
+function SidebarBlankState({ onNewProject }: { onNewProject: () => void }) {
+  const { t } = useI18n()
+  const s = t.sidebar
+
+  return (
+    <div className="grid min-h-0 flex-1 place-items-center px-4 text-center">
+      <div className="flex flex-col items-center gap-2">
+        <Codicon className="text-(--ui-text-quaternary)" name="root-folder" size="1.25rem" />
+        <p className="text-xs text-(--ui-text-tertiary)">{s.noSessions}</p>
+        <Button
+          className="mt-0.5 text-(--ui-text-secondary)"
+          onClick={onNewProject}
+          size="sm"
+          variant="ghost"
+        >
+          <Codicon name="add" size="0.75rem" />
+          {s.projects.newButton}
+        </Button>
+      </div>
     </div>
   )
 }

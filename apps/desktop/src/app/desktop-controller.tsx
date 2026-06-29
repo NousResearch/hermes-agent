@@ -10,6 +10,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { isFocusWithin } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -129,7 +130,7 @@ import { ReviewPane } from './right-sidebar/review'
 import { $terminalTakeover } from './right-sidebar/store'
 import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
 import { PersistentTerminal } from './right-sidebar/terminal/persistent'
-import { closeActiveTerminal, isTerminalFocused } from './right-sidebar/terminal/terminals'
+import { closeActiveTerminal } from './right-sidebar/terminal/terminals'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
@@ -397,7 +398,7 @@ export function DesktopController() {
       // Terminal focused: ⌘W closes the active terminal. Ctrl+W is left untouched
       // for the shell's werase, and nothing else may steal ⌘/Ctrl+W from a
       // focused terminal (so it never closes a preview tab out from under it).
-      if (isTerminalFocused()) {
+      if (isFocusWithin('[data-terminal]')) {
         if (event.metaKey && !event.ctrlKey) {
           event.preventDefault()
           event.stopPropagation()

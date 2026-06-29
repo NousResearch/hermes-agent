@@ -40,6 +40,8 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat }: Term
         'absolute inset-0 flex flex-col bg-(--ui-editor-surface-background) px-2 pb-2 pt-0',
         active ? 'visible' : 'invisible pointer-events-none'
       )}
+      // Focus-scope marker so isFocusWithin('[data-terminal]') can route ⌘W here.
+      data-terminal=""
     >
       {status === 'starting' && (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center">

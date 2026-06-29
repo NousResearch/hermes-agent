@@ -62,6 +62,36 @@ interface ProviderGroup {
   provider: ModelOptionProvider
 }
 
+function ProviderSummaryCard({
+  current,
+  provider,
+  shownCount
+}: {
+  current: boolean
+  provider: ModelOptionProvider
+  shownCount: number
+}) {
+  const totalCount = provider.total_models ?? provider.models?.length ?? shownCount
+  const countLabel = shownCount === totalCount ? `${totalCount} models` : `${shownCount} shown / ${totalCount} models`
+
+  return (
+    <div className="mx-1 my-1 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-muted)/60 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="flex size-5 shrink-0 items-center justify-center rounded bg-(--ui-control-background) text-(--ui-text-tertiary)">
+          <Codicon name="server-process" size="0.75rem" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-medium text-foreground">{provider.name}</div>
+          <div className="truncate text-[0.625rem] text-(--ui-text-tertiary)">
+            {provider.slug} · {countLabel}
+          </div>
+        </div>
+        {current ? <Codicon className="text-foreground" name="check" size="0.75rem" /> : null}
+      </div>
+    </div>
+  )
+}
+
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -226,7 +256,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5">
           {groups.map(group => (
             <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{group.provider.name}</DropdownMenuLabel>
+              <ProviderSummaryCard
+                current={group.provider.slug === optionsProvider}
+                provider={group.provider}
+                shownCount={group.families.length}
+              />
               {group.families.map(family => {
                 // The active id may be the base or its -fast sibling; either
                 // way this one family row represents both.

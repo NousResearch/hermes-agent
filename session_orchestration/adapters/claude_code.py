@@ -53,6 +53,7 @@ each known dialog fragment and handles them in order.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
@@ -237,12 +238,17 @@ class ClaudeCodeAdapter(AgentAdapter):
         tmux_session = f"{self._session_prefix}-{session_id[:8]}"
         pane = f"{tmux_session}:0.0"
 
-        # 1. Create a detached tmux session.
+        # Compute the marker file path and ensure its parent directory exists.
+        marker_path = f"{workdir}/.hermes/sessions/{session_id}.jsonl"
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+
+        # 1. Create a detached tmux session, injecting the marker file env var.
         self._tmux.run([
             "new-session", "-d",
             "-s", tmux_session,
             "-x", str(self._pane_width),
             "-y", str(self._pane_height),
+            "-e", f"HERMES_MARKER_FILE={marker_path}",
         ])
 
         # 2. Launch Claude Code inside the session.
@@ -260,6 +266,7 @@ class ClaudeCodeAdapter(AgentAdapter):
             tmux_session=tmux_session,
             pane=pane,
             launch_ts=datetime.now(tz=timezone.utc),
+            marker_file=marker_path,
         )
 
         # 5. Inject the initial prompt.
@@ -376,6 +383,28 @@ class ClaudeCodeAdapter(AgentAdapter):
         self._tmux.run(["send-keys", "-t", handle.pane, "/clear", "Enter"])
         self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
         self.drive(handle, prompt)
+
+    # ------------------------------------------------------------------
+    # terminate()  [testable with stubbed TmuxRunner]
+    # ------------------------------------------------------------------
+
+    def terminate(self, handle: SessionHandle) -> None:
+        """Kill the tmux session associated with ``handle``.
+
+        Sends ``tmux kill-session -t <tmux_session>`` with ``check=False`` so a
+        nonzero exit (e.g. session already gone) is silently ignored.
+        ``CalledProcessError`` is also swallowed for belt-and-suspenders safety
+        when a custom ``TmuxRunner`` implementation raises on failure.
+
+        Parameters
+        ----------
+        handle:
+            The ``SessionHandle`` whose tmux session should be destroyed.
+        """
+        try:
+            self._tmux.run(["kill-session", "-t", handle.tmux_session], check=False)
+        except subprocess.CalledProcessError:
+            pass
 
     # ------------------------------------------------------------------
     # Internal helpers

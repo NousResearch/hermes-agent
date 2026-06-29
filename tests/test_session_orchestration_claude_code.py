@@ -30,6 +30,9 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+# patch target for os.makedirs used inside claude_code.py
+_MAKEDIRS = "session_orchestration.adapters.claude_code.os.makedirs"
+
 from session_orchestration.adapters.claude_code import (
     ACTIVITY_REGEX,
     HANDOFF_MARKER,
@@ -350,3 +353,117 @@ class TestResume:
             adapter.resume(handle, "prompt")
 
         mock_drive.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# launch() — marker file injection (testable subset)
+# ---------------------------------------------------------------------------
+
+
+class TestLaunch:
+    """Verify the HERMES_MARKER_FILE injection and handle.marker_file population.
+
+    ``launch()`` is live-only in general, but we can exercise its new-session
+    command construction by stubbing the live parts (dialogs, prompt wait, drive,
+    os.makedirs) while leaving the TmuxRunner fake in place to record calls.
+    """
+
+    def _run_launch(self, workdir: str = "/repo/myproject", prompt: str = "do the thing"):
+        """Run launch() with all live I/O stubbed; return (handle, fake_tmux, mock_makedirs)."""
+        fake_tmux = FakeTmuxRunner(capture_output="❯ ")
+        adapter = ClaudeCodeAdapter(tmux_runner=fake_tmux)
+
+        with patch.object(adapter, "_handle_dialogs"):
+            with patch.object(adapter, "_wait_for_prompt"):
+                with patch.object(adapter, "drive"):
+                    with patch(_MAKEDIRS) as mock_makedirs:
+                        handle = adapter.launch(workdir, prompt)
+
+        return handle, fake_tmux, mock_makedirs
+
+    def test_new_session_receives_hermes_marker_file_env(self):
+        """new-session args must include -e HERMES_MARKER_FILE=<workdir>/.hermes/sessions/<uuid>.jsonl."""
+        workdir = "/repo/myproject"
+        handle, fake_tmux, _ = self._run_launch(workdir=workdir)
+
+        new_session_calls = [c for c in fake_tmux.calls if c[0] == "new-session"]
+        assert new_session_calls, "No new-session call found in TmuxRunner.calls"
+        args = new_session_calls[0]
+
+        expected_path = f"{workdir}/.hermes/sessions/{handle.session_id}.jsonl"
+        assert "-e" in args, "'-e' flag missing from new-session args"
+        env_idx = args.index("-e")
+        assert args[env_idx + 1] == f"HERMES_MARKER_FILE={expected_path}", (
+            f"Expected HERMES_MARKER_FILE={expected_path!r}, got {args[env_idx + 1]!r}"
+        )
+
+    def test_handle_marker_file_matches_env_path(self):
+        """handle.marker_file must equal the path injected into the tmux env."""
+        workdir = "/repo/myproject"
+        handle, fake_tmux, _ = self._run_launch(workdir=workdir)
+
+        expected_path = f"{workdir}/.hermes/sessions/{handle.session_id}.jsonl"
+        assert handle.marker_file == expected_path
+
+    def test_os_makedirs_called_with_exist_ok(self):
+        """os.makedirs must be called once with the marker dir and exist_ok=True."""
+        workdir = "/repo/myproject"
+        handle, _, mock_makedirs = self._run_launch(workdir=workdir)
+
+        expected_dir = f"{workdir}/.hermes/sessions"
+        mock_makedirs.assert_called_once_with(expected_dir, exist_ok=True)
+
+    def test_marker_file_path_encodes_session_id(self):
+        """The marker file path must embed the session_id UUID."""
+        workdir = "/some/workdir"
+        handle, _, _ = self._run_launch(workdir=workdir)
+
+        assert handle.session_id in handle.marker_file
+
+
+# ---------------------------------------------------------------------------
+# terminate()
+# ---------------------------------------------------------------------------
+
+
+class TestTerminate:
+    def test_terminate_issues_kill_session(self):
+        """terminate() must call kill-session -t <tmux_session>."""
+        fake_tmux = FakeTmuxRunner()
+        adapter = ClaudeCodeAdapter(tmux_runner=fake_tmux)
+        handle = _make_handle()
+
+        adapter.terminate(handle)
+
+        kill_calls = [c for c in fake_tmux.calls if c[0] == "kill-session"]
+        assert kill_calls, "No kill-session call found in TmuxRunner.calls"
+        assert "-t" in kill_calls[0]
+        assert handle.tmux_session in kill_calls[0]
+
+    def test_terminate_does_not_raise_when_tmux_errors(self):
+        """terminate() must not raise even if the TmuxRunner raises CalledProcessError."""
+
+        class AlwaysFailRunner:
+            def run(self, args: list[str], check: bool = True) -> str:
+                raise subprocess.CalledProcessError(1, "tmux")
+
+        adapter = ClaudeCodeAdapter(tmux_runner=AlwaysFailRunner())
+        handle = _make_handle()
+        # Must not propagate CalledProcessError
+        adapter.terminate(handle)
+
+    def test_terminate_passes_check_false(self):
+        """terminate() must pass check=False so a nonzero exit is never raised by the runner."""
+
+        check_values: list[bool] = []
+
+        class CheckCapturingRunner:
+            def run(self, args: list[str], check: bool = True) -> str:
+                if args[0] == "kill-session":
+                    check_values.append(check)
+                return ""
+
+        adapter = ClaudeCodeAdapter(tmux_runner=CheckCapturingRunner())
+        adapter.terminate(_make_handle())
+
+        assert check_values == [False], f"Expected check=False, got {check_values}"

@@ -84,12 +84,17 @@ class SessionHandle:
     launch_ts : datetime
         UTC timestamp recorded at the moment ``launch()`` returned the
         handle. Used to compute elapsed time and to detect stale handles.
+    marker_file : Optional[str]
+        Absolute path to the JSONL marker file injected into the tmux
+        session environment as ``HERMES_MARKER_FILE``.  ``None`` until
+        ``launch()`` sets it (legacy handles or handles not yet launched).
     """
 
     session_id: str
     tmux_session: str
     pane: str
     launch_ts: datetime
+    marker_file: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

@@ -176,6 +176,11 @@ voice = [
   "faster-whisper==1.2.1",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
+  # Streaming TTS playback (edge + openai pcm_24000 paths in tts_tool.py)
+  # decodes MP3 chunks via miniaudio. Only required when tts.<provider>.streaming
+  # is true; lazy-imported at call time so non-streaming installs don't pay
+  # the import cost.
+  "miniaudio>=1.71,<2",
 ]
 pty = [
   # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now

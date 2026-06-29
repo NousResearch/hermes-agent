@@ -7,6 +7,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -131,6 +132,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "OPENAI_ORGANIZATION",
         "OPENROUTER_API_KEY",
         "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
@@ -190,6 +192,18 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+# Active-virtualenv markers that must NOT leak into terminal subprocesses.
+# The gateway runs inside its own venv, so its process environment carries
+# VIRTUAL_ENV (and possibly CONDA_PREFIX). If those leak into commands the
+# agent runs against OTHER Python projects, tools like ``uv``/``poetry`` treat
+# the inherited value as the active environment and build/sync that other
+# project's dependencies into the Hermes venv path instead of the project's own
+# ``.venv`` — silently clobbering the Hermes environment (e.g. a project pinned
+# to a different Python version overwrites it and breaks the gateway). The
+# Hermes venv stays reachable via PATH (its bin dir is first), so stripping
+# these markers is safe and only prevents the cross-project clobber (#23473).
+_ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX")
+
 
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
@@ -230,7 +244,104 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(sanitized)
 
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        sanitized.pop(_marker, None)
+
     return sanitized
+
+
+# Tier-1 secrets: stripped from EVERY spawned subprocess unconditionally —
+# even when the caller opts into credential inheritance for a model-driving
+# CLI (claude / codex / gemini).  These are not LLM provider credentials; no
+# legitimate child Hermes spawns needs them, and they are the highest-value
+# secrets to keep out of a compromised dependency's reach (gateway bot tokens,
+# GitHub auth, remote-compute tokens, dashboard session secret).  The set is a
+# narrow subset of _HERMES_PROVIDER_ENV_BLOCKLIST; provider keys are handled by
+# the conditional Tier-2 strip in hermes_subprocess_env().
+_ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
+    # GitHub auth
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY_PATH",
+    "GITHUB_APP_INSTALLATION_ID",
+    # Gateway / messaging bot tokens and access control
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "SLACK_SIGNING_SECRET",
+    "GATEWAY_ALLOWED_USERS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "HASS_TOKEN",
+    "EMAIL_PASSWORD",
+    "HERMES_DASHBOARD_SESSION_TOKEN",
+    # Remote-compute / infrastructure secrets
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "DAYTONA_API_KEY",
+})
+
+
+def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+    """Build a sanitized environment dict for a spawned subprocess.
+
+    Centralized helper for the **non-terminal** spawn surface (browser,
+    ACP/CLI executors, computer-use driver, dep-ensure, TUI Node host,
+    detached gateway).  Use this instead of copying ``os.environ`` directly
+    so strip-by-default is the uniform policy across every spawn site, with a
+    single source of truth (``_HERMES_PROVIDER_ENV_BLOCKLIST``).  The terminal
+    / execute_code path keeps using :func:`_sanitize_subprocess_env`, which is
+    skill-aware (``env_passthrough``); this helper is for spawns that have no
+    skill-passthrough concept.
+
+    Two-tier stripping:
+
+    * **Tier 1 (always):** ``_ALWAYS_STRIP_KEYS`` — gateway bot tokens, GitHub
+      auth, and remote-compute secrets are removed regardless of
+      ``inherit_credentials``.  No child Hermes spawns legitimately needs them.
+    * **Tier 2 (conditional):** the rest of ``_HERMES_PROVIDER_ENV_BLOCKLIST``
+      (LLM provider API keys, tool secrets) is removed unless the caller passes
+      ``inherit_credentials=True``.
+
+    Pass ``inherit_credentials=True`` **only** when the child legitimately
+    needs LLM provider credentials — a user-blessed ``claude`` / ``codex`` /
+    ``gemini`` CLI executor, or the TUI Node host that makes model calls.  The
+    flag is grep-able for audit: ``grep -rn 'inherit_credentials=True'`` lists
+    every spawn site that still receives provider credentials.
+
+    Callers that need a *specific* non-provider secret (e.g. the browser worker
+    needs ``BROWSERBASE_API_KEY`` / ``FIRECRAWL_API_KEY``) should call with
+    ``inherit_credentials=False`` and copy just those keys back from
+    ``os.environ`` into the returned dict.
+    """
+    env = os.environ.copy()
+
+    # Tier 1 — always strip.
+    for key in _ALWAYS_STRIP_KEYS:
+        env.pop(key, None)
+    # Internal routing hints must never reach a child.
+    for key in list(env):
+        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+
+    if not inherit_credentials:
+        # Tier 2 — strip provider/tool credentials unless explicitly inherited.
+        for key in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            env.pop(key, None)
+
+    # Windows UTF-8 safety for spawned processes (#31420).
+    env.setdefault("PYTHONUTF8", "1")
+
+    _inject_context_hermes_home(env)
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(env)
+
+    # Active-venv markers must not clobber another project's environment.
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        env.pop(_marker, None)
+
+    return env
 
 
 def _find_bash() -> str:
@@ -286,8 +397,53 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
-_find_shell = _find_bash
+# POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
+# invocation spawn_local uses. $SHELL values outside this set (fish, csh/tcsh,
+# nushell, elvish, xonsh, …) would error on that syntax, so _find_shell falls
+# back to bash for them rather than honouring $SHELL. (#42203)
+_SPAWN_COMPATIBLE_SHELLS = frozenset({"bash", "zsh", "sh", "dash", "ksh", "mksh"})
+
+
+def _find_shell() -> str:
+    """Find the user's login shell for background process spawning.
+
+    Unlike ``_find_bash`` (which always returns a bash binary for callers
+    that explicitly need bash), this function prefers the user's configured
+    ``$SHELL`` on POSIX so that ``spawn_local`` uses the shell the user
+    actually logs in with.
+
+    On macOS Catalina+ the default login shell is zsh, but
+    ``shutil.which("bash")`` still finds the system ``/bin/bash`` (GNU bash
+    3.2).  When bash 3.2 is invoked with ``-l`` (login) and stdin is
+    ``/dev/null``, it sources ``~/.bash_profile`` which on many macOS setups
+    contains ``exec /bin/zsh -l``.  That ``exec`` replaces bash with zsh but
+    drops the ``-c`` argument, so the background command never runs — the
+    subprocess exits 0 with no output and no side effects.
+
+    Preferring ``$SHELL`` (when it is a POSIX-``sh``-family shell) avoids this
+    because zsh/bash/sh/dash/ksh handle ``-lic`` correctly even with
+    redirected stdin.
+
+    Only POSIX-sh-family shells are honoured: ``spawn_local`` invokes the
+    shell as ``[shell, "-lic", "set +m; <cmd>"]``, and that ``-lic`` bundle +
+    ``set +m`` job-control syntax is NOT understood by fish, csh/tcsh,
+    nushell, elvish, xonsh, etc.  Returning such a ``$SHELL`` would trade the
+    bash-3.2 swallow for a parse error on every background command, so for any
+    non-allowlisted shell we fall back to ``_find_bash`` (the prior behaviour).
+
+    On Windows, ``$SHELL`` is typically bash (Git Bash), so behaviour is
+    unchanged — we fall through to ``_find_bash``.
+    """
+    if not _IS_WINDOWS:
+        user_shell = os.environ.get("SHELL")
+        if (
+            user_shell
+            and os.path.isfile(user_shell)
+            and os.access(user_shell, os.X_OK)
+            and Path(user_shell).name in _SPAWN_COMPATIBLE_SHELLS
+        ):
+            return user_shell
+    return _find_bash()
 
 
 # Standard PATH entries for environments with minimal PATH.
@@ -295,6 +451,85 @@ _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
+
+# Cached directory containing the ``hermes`` console-script.
+# ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
+_SENTINEL = object()
+_HERMES_BIN_DIR: "str | None | object" = _SENTINEL
+
+
+def _resolve_hermes_bin_dir() -> str | None:
+    """Return the directory holding the ``hermes`` console-script, or None.
+
+    The terminal tool runs in a freshly-spawned subshell whose PATH is the
+    agent process's PATH plus a static set of system dirs (``_SANE_PATH``).
+    When the gateway is launched by something that does NOT source the user's
+    shell rc — systemd, a service manager, a desktop launcher, cron — the
+    hermes install dir (``~/.local/bin``, the venv ``bin``/``Scripts``, pipx,
+    nix) is absent from that PATH, so plugins shelling out to bare ``hermes``
+    via the terminal tool hit ``command not found`` (exit 127) even though
+    ``hermes`` works fine in the user's own interactive terminal.
+
+    We resolve the install dir once (it never changes within a process) and
+    prepend-if-missing it to the subshell PATH so bare ``hermes`` resolves
+    regardless of how the gateway was started.
+
+    Resolution order (cheap, no heavy imports):
+      1. ``shutil.which("hermes")`` — normal PATH-installed shim.
+      2. The directory of ``sys.argv[0]`` when it's an absolute path to a
+         real ``hermes`` executable (covers nix-store / venv wrappers).
+      3. The directory of ``sys.executable`` — the running interpreter's
+         venv ``bin``/``Scripts`` is where its console-scripts live.
+    """
+    global _HERMES_BIN_DIR
+    if _HERMES_BIN_DIR is not _SENTINEL:
+        return _HERMES_BIN_DIR  # type: ignore[return-value]
+
+    candidate: str | None = None
+
+    which = shutil.which("hermes")
+    if which:
+        candidate = os.path.dirname(which)
+
+    if candidate is None:
+        argv0 = sys.argv[0] if sys.argv else ""
+        base = os.path.basename(argv0).lower()
+        if (
+            os.path.isabs(argv0)
+            and (base == "hermes" or base.startswith("hermes."))
+            and os.path.isfile(argv0)
+        ):
+            candidate = os.path.dirname(argv0)
+
+    if candidate is None:
+        exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
+        if exe_dir:
+            shim = "hermes.exe" if _IS_WINDOWS else "hermes"
+            if os.path.isfile(os.path.join(exe_dir, shim)):
+                candidate = exe_dir
+
+    if candidate and not os.path.isdir(candidate):
+        candidate = None
+
+    _HERMES_BIN_DIR = candidate
+    return candidate
+
+
+def _prepend_hermes_bin_dir(existing_path: str) -> str:
+    """Prepend the hermes install dir to ``existing_path`` if it's missing.
+
+    Cross-platform (uses ``os.pathsep``). First-occurrence wins, so a PATH
+    that already contains the dir is returned unchanged. Returns the input
+    unchanged when the install dir can't be resolved.
+    """
+    bin_dir = _resolve_hermes_bin_dir()
+    if not bin_dir:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    if bin_dir in entries:
+        return existing_path
+    return sep.join([bin_dir, *entries])
 
 
 def _append_missing_sane_path_entries(existing_path: str) -> str:
@@ -380,7 +615,11 @@ def _make_run_env(env: dict) -> dict:
             run_env[k] = v
     path_key = _path_env_key(run_env)
     if path_key is not None:
-        run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # Ensure the hermes install dir is reachable so plugins can shell out
+        # to bare ``hermes`` via the terminal tool even when the gateway was
+        # launched without it on PATH (systemd, service managers, cron, etc.).
+        run_env[path_key] = _prepend_hermes_bin_dir(new_path)
 
     _inject_context_hermes_home(run_env)
 
@@ -397,6 +636,9 @@ def _make_run_env(env: dict) -> dict:
                 run_env[var_name] = value
     except Exception:
         pass
+
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        run_env.pop(_marker, None)
 
     return run_env
 
@@ -601,7 +843,7 @@ class LocalEnvironment(BaseEnvironment):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            start_new_session=True,
             cwd=_popen_cwd,
             **_popen_kwargs,
         )
@@ -745,3 +987,14 @@ class LocalEnvironment(BaseEnvironment):
                 os.unlink(f)
             except OSError:
                 pass
+        # Remove any orphaned atomic-write temp snapshots (snap.tmp.<bashpid>)
+        # a failed/interrupted mv could have left behind (#38249).
+        try:
+            import glob
+            for tmp in glob.glob(f"{self._snapshot_path}.tmp.*"):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        except Exception:
+            pass

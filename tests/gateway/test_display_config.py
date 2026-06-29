@@ -450,3 +450,108 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+class TestToolProgressGrouping:
+    """resolve_display_setting() for the tool_progress_grouping knob."""
+
+    def test_default_is_accumulate(self):
+        """No config anywhere → global default 'accumulate'."""
+        from gateway.display_config import resolve_display_setting
+
+        assert (
+            resolve_display_setting({}, "telegram", "tool_progress_grouping")
+            == "accumulate"
+        )
+
+    def test_global_separate(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_grouping": "separate"}}
+        assert (
+            resolve_display_setting(config, "discord", "tool_progress_grouping")
+            == "separate"
+        )
+
+    def test_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_grouping": "accumulate",
+                "platforms": {"discord": {"tool_progress_grouping": "separate"}},
+            }
+        }
+        assert (
+            resolve_display_setting(config, "discord", "tool_progress_grouping")
+            == "separate"
+        )
+        # Other platforms still get the global value.
+        assert (
+            resolve_display_setting(config, "telegram", "tool_progress_grouping")
+            == "accumulate"
+        )
+
+    def test_invalid_value_falls_back_to_accumulate(self):
+        """_normalise rejects anything outside accumulate|separate."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_grouping": "bogus"}}
+        assert (
+            resolve_display_setting(config, "telegram", "tool_progress_grouping")
+            == "accumulate"
+        )
+
+    def test_case_insensitive(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_grouping": "SEPARATE"}}
+        assert (
+            resolve_display_setting(config, "telegram", "tool_progress_grouping")
+            == "separate"
+        )
+
+
+class TestReasoningStyle:
+    """Per-platform reasoning render style (code | blockquote | subtext)."""
+
+    def test_discord_defaults_to_subtext(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "discord", "reasoning_style") == "subtext"
+
+    def test_other_platforms_default_to_code(self):
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "slack", "matrix", "api_server"):
+            assert (
+                resolve_display_setting({}, plat, "reasoning_style") == "code"
+            ), plat
+
+    def test_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"discord": {"reasoning_style": "blockquote"}}}}
+        assert (
+            resolve_display_setting(config, "discord", "reasoning_style") == "blockquote"
+        )
+
+    def test_global_override(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "subtext"}}
+        assert (
+            resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+        )
+
+    def test_invalid_value_falls_back_to_code(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "bogus"}}
+        assert resolve_display_setting(config, "telegram", "reasoning_style") == "code"
+
+    def test_case_insensitive(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "SUBTEXT"}}
+        assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"

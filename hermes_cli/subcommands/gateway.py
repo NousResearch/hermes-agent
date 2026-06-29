@@ -29,7 +29,9 @@ def _add_compat_platform_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callable) -> None:
+def build_gateway_parser(
+    subparsers, *, cmd_gateway: Callable, cmd_proxy: Callable, cmd_gateway_enroll: Callable
+) -> None:
     """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
     # =========================================================================
     # gateway command
@@ -167,26 +169,26 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         dest="start_now",
         action="store_true",
         default=None,
-        help=argparse.SUPPRESS,
+        help="Start the gateway service immediately after installing",
     )
     gateway_install.add_argument(
         "--no-start-now",
         dest="start_now",
         action="store_false",
-        help=argparse.SUPPRESS,
+        help="Do not start the gateway service after installing",
     )
     gateway_install.add_argument(
         "--start-on-login",
         dest="start_on_login",
         action="store_true",
         default=None,
-        help=argparse.SUPPRESS,
+        help="Enable the service to start automatically on login/boot",
     )
     gateway_install.add_argument(
         "--no-start-on-login",
         dest="start_on_login",
         action="store_false",
-        help=argparse.SUPPRESS,
+        help="Do not enable the service to start on login/boot",
     )
     gateway_install.add_argument(
         "--elevated-handoff",
@@ -235,6 +237,65 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         action="store_true",
         help="Skip the confirmation prompt",
     )
+
+    # gateway enroll — enroll a self-hosted gateway with a relay connector
+    # (connector⇄gateway auth). Redeems a single-use enrollment token for the
+    # per-gateway secret + per-tenant delivery key and writes them to .env.
+    # See docs/relay-connector-contract.md (and the connector repo's
+    # docs/connector-gateway-auth-design.md). EXPERIMENTAL.
+    gateway_enroll = gateway_subparsers.add_parser(
+        "enroll",
+        help="Enroll this gateway with a relay connector (writes relay auth creds to .env)",
+        description=(
+            "Redeem a single-use enrollment token with a relay connector. "
+            "Authenticates as your Nous Portal account (the connector derives the "
+            "authoritative tenant from it), mints this gateway's per-gateway secret "
+            "and per-tenant delivery key, and writes GATEWAY_RELAY_ID / "
+            "GATEWAY_RELAY_SECRET / GATEWAY_RELAY_DELIVERY_KEY into ~/.hermes/.env. "
+            "Requires being logged in (hermes setup). Not available in managed installs."
+        ),
+    )
+    gateway_enroll.add_argument(
+        "--token",
+        default=None,
+        help=(
+            "The single-use enrollment token from the connector (delivered with "
+            "your gateway config). Also settable via GATEWAY_RELAY_ENROLL_TOKEN."
+        ),
+    )
+    gateway_enroll.add_argument(
+        "--connector-url",
+        dest="connector_url",
+        default=None,
+        help=(
+            "The connector base/relay URL, e.g. wss://connector.example.com/relay "
+            "or https://connector.example.com. Also settable via GATEWAY_RELAY_URL "
+            "/ gateway.relay_url in config.yaml."
+        ),
+    )
+    gateway_enroll.add_argument(
+        "--gateway-id",
+        dest="gateway_id",
+        default=None,
+        help=(
+            "A stable id for this gateway instance (kill-switch granularity). "
+            "Defaults to gw-<hostname>."
+        ),
+    )
+    gateway_enroll.add_argument(
+        "--wake-url",
+        dest="wake_url",
+        default=None,
+        help=(
+            "Phase 5 §5.2 wake URL: a reachable URL the connector pokes "
+            "(payload-free GET) to wake this gateway when buffered work arrives "
+            "while it's idle/suspended, so it reconnects and drains. Persisted as "
+            "GATEWAY_RELAY_WAKE_URL in ~/.hermes/.env and forwarded at provision. "
+            "Optional — without it the gateway still drains whenever it next "
+            "reconnects on its own."
+        ),
+    )
+    gateway_enroll.set_defaults(func=cmd_gateway_enroll)
 
     # =========================================================================
     # proxy command — local OpenAI-compatible proxy that attaches the user's

@@ -185,6 +185,12 @@ def _auto_sso_response(request: Request) -> Response | None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     provider = providers[0]
+    # Password-only providers (e.g. the bundled basic-auth) have no OAuth
+    # redirect / start_login flow — auto-SSO to /auth/login would raise
+    # NotImplementedError and 500. Fall through to the /login interstitial,
+    # which renders the credential form and POSTs to /auth/password-login.
+    if getattr(provider, "supports_password", False):
+        return None
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

@@ -112,3 +112,20 @@ def test_custom_providers_valid_context_length():
         )
     for c in mock_logger.warning.call_args_list:
         assert "Invalid" not in str(c)
+
+
+def test_explicit_context_length_override_skips_minimum_check():
+    """When user explicitly sets context_length < 64K, the minimum check
+    should be skipped. Regression test for #8430.
+    """
+    # Build agent with explicit context_length below MINIMUM_CONTEXT_LENGTH
+    agent = _build_agent({
+        "default": "qwen3-235b",
+        "provider": "custom",
+        "base_url": "http://localhost:4000/v1",
+        "context_length": 32768,
+    })
+    # Should have stored the explicit value
+    assert agent._config_context_length == 32768
+    # The agent should build successfully without raising ValueError
+    # about "context window below minimum"

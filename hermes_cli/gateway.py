@@ -3517,8 +3517,27 @@ _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
 
 
 def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
-    """True when launchctl failed because the job isn't loaded (retry bootstrap)."""
-    return exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
+    """True when launchctl failed because the job isn't loaded (retry bootstrap).
+
+    launchctl exit codes vary across macOS versions and domains.  Prefer the
+    known numeric codes, but also accept the stable human-readable diagnostics
+    emitted for the same condition so an unrecognized code does not bypass the
+    bootstrap recovery path.
+    """
+    if exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES:
+        return True
+    output = "\n".join(
+        str(part or "")
+        for part in (getattr(exc, "stdout", ""), getattr(exc, "stderr", ""))
+    ).lower()
+    return any(
+        marker in output
+        for marker in (
+            "could not find service",
+            "service is not loaded",
+            "no such process",
+        )
+    )
 
 
 def _launchctl_domain_unsupported(returncode: int) -> bool:

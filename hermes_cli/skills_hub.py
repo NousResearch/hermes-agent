@@ -1426,6 +1426,92 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
         c.print(f"[bold red]Unknown tap action:[/] {action}. Use: list, add, remove\n")
 
 
+def do_well_known(
+    action: str,
+    base_url: str = "",
+    name: str = "",
+    description: str = "",
+    trust_level: str = "community",
+    enabled: bool = True,
+    console: Optional[Console] = None,
+) -> None:
+    """Manage persistent well-known skill hub sources."""
+    from tools.skills_hub import WELL_KNOWN_SOURCES_FILE, WellKnownSourcesManager
+
+    c = console or _console
+    mgr = WellKnownSourcesManager()
+
+    if action == "list":
+        sources = mgr.list_sources(include_disabled=True)
+        if not sources:
+            c.print("[dim]No persistent well-known skill hubs configured.[/]\n")
+            c.print(f"[dim]Config file: {WELL_KNOWN_SOURCES_FILE}[/]\n")
+            return
+        table = Table(title="Configured Well-Known Skill Hubs")
+        table.add_column("Name", style="bold cyan")
+        table.add_column("Base URL", style="dim", overflow="fold", no_wrap=False)
+        table.add_column("Trust", style="dim")
+        table.add_column("Status", style="dim")
+        table.add_column("Description", overflow="fold", no_wrap=False)
+        for source in sources:
+            status = "[green]enabled[/]" if source.get("enabled", True) else "[yellow]disabled[/]"
+            table.add_row(
+                source.get("name", ""),
+                source.get("base_url", ""),
+                source.get("trust_level", "community"),
+                status,
+                source.get("description", ""),
+            )
+        c.print(table)
+        c.print(f"[dim]Config file: {WELL_KNOWN_SOURCES_FILE}[/]\n")
+
+    elif action == "add":
+        if not base_url:
+            c.print("[bold red]Error:[/] Base URL required. Usage: hermes skills well-known add https://example.com --name \"Internal Hub\"\n")
+            return
+        try:
+            added = mgr.add(
+                base_url,
+                name=name,
+                description=description,
+                trust_level=trust_level,
+                enabled=enabled,
+            )
+        except ValueError as exc:
+            c.print(f"[bold red]Error:[/] {exc}\n")
+            return
+        if added:
+            c.print(f"[bold green]Added well-known skill hub:[/] {name or base_url}\n")
+        else:
+            c.print(f"[yellow]Well-known skill hub already exists:[/] {name or base_url}\n")
+
+    elif action == "remove":
+        target = name or base_url
+        if not target:
+            c.print("[bold red]Error:[/] Name or base URL required. Usage: hermes skills well-known remove <name-or-url>\n")
+            return
+        if mgr.remove(target):
+            c.print(f"[bold green]Removed well-known skill hub:[/] {target}\n")
+        else:
+            c.print(f"[bold red]Error:[/] Well-known skill hub not found: {target}\n")
+
+    elif action in {"enable", "disable"}:
+        target = name or base_url
+        if not target:
+            c.print(f"[bold red]Error:[/] Name or base URL required. Usage: hermes skills well-known {action} <name-or-url>\n")
+            return
+        desired = action == "enable"
+        if mgr.set_enabled(target, desired):
+            state = "Enabled" if desired else "Disabled"
+            c.print(f"[bold green]{state} well-known skill hub:[/] {target}\n")
+        else:
+            c.print(f"[bold red]Error:[/] Well-known skill hub not found: {target}\n")
+
+    else:
+        c.print("[bold red]Unknown well-known action:[/] "
+                f"{action}. Use: list, add, remove, enable, disable\n")
+
+
 def do_publish(skill_path: str, target: str = "github", repo: str = "",
                console: Optional[Console] = None) -> None:
     """Publish a local skill to a registry (GitHub PR or ClawHub submission)."""
@@ -1748,6 +1834,19 @@ def skills_command(args) -> None:
             _console.print("Usage: hermes skills tap [list|add|remove]\n")
             return
         do_tap(tap_action, repo=repo)
+    elif action == "well-known":
+        well_known_action = getattr(args, "well_known_action", None)
+        if not well_known_action:
+            _console.print("Usage: hermes skills well-known [list|add|remove|enable|disable]\n")
+            return
+        do_well_known(
+            well_known_action,
+            base_url=getattr(args, "base_url", ""),
+            name=getattr(args, "name", ""),
+            description=getattr(args, "description", ""),
+            trust_level=getattr(args, "trust_level", "community"),
+            enabled=not getattr(args, "disabled", False),
+        )
     else:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
@@ -1779,6 +1878,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills tap list
         /skills tap add owner/repo
         /skills tap remove owner/repo
+        /skills well-known add https://skills.example.com --name internal
     """
     c = console or _console
     parts = cmd.strip().split()
@@ -1965,6 +2065,46 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         repo = args[1] if len(args) > 1 else ""
         do_tap(tap_action, repo=repo, console=c)
 
+    elif action == "well-known":
+        if not args:
+            do_well_known("list", console=c)
+            return
+        well_known_action = args[0]
+        if well_known_action == "add":
+            if len(args) < 2:
+                c.print("[bold red]Usage:[/] /skills well-known add <base-url> [--name <name>] [--description <text>] [--trust-level community|trusted] [--disabled]\n")
+                return
+            base_url = args[1]
+            source_name = ""
+            description = ""
+            trust_level = "community"
+            enabled = "--disabled" not in args
+            for i, a in enumerate(args):
+                if a == "--name" and i + 1 < len(args):
+                    source_name = args[i + 1]
+                elif a == "--description" and i + 1 < len(args):
+                    description = args[i + 1]
+                elif a == "--trust-level" and i + 1 < len(args):
+                    trust_level = args[i + 1]
+            do_well_known(
+                "add",
+                base_url=base_url,
+                name=source_name,
+                description=description,
+                trust_level=trust_level,
+                enabled=enabled,
+                console=c,
+            )
+        elif well_known_action in {"remove", "enable", "disable"}:
+            if len(args) < 2:
+                c.print(f"[bold red]Usage:[/] /skills well-known {well_known_action} <name-or-url>\n")
+                return
+            do_well_known(well_known_action, name=args[1], console=c)
+        elif well_known_action == "list":
+            do_well_known("list", console=c)
+        else:
+            c.print("[bold red]Usage:[/] /skills well-known [list|add|remove|enable|disable]\n")
+
     elif action in {"help", "--help", "-h"}:
         _print_skills_help(c)
 
@@ -1992,6 +2132,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
-        "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
+        "  [cyan]tap[/] list|add|remove         Manage skill sources\n"
+        "  [cyan]well-known[/] list|add|remove  Manage persistent well-known hubs\n"
+        "       Also supports enable|disable\n",
         title="/skills",
     ))

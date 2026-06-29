@@ -54,6 +54,10 @@ LOCK_FILE = HUB_DIR / "lock.json"
 QUARANTINE_DIR = HUB_DIR / "quarantine"
 AUDIT_LOG = HUB_DIR / "audit.log"
 TAPS_FILE = HUB_DIR / "taps.json"
+WELL_KNOWN_SOURCES_FILE = HUB_DIR / "well-known-sources.json"
+# Early docs and examples used ~/.hermes/.hub before the Skills Hub settled on
+# ~/.hermes/skills/.hub. Keep it readable so manually-created configs work.
+LEGACY_WELL_KNOWN_SOURCES_FILE = HERMES_HOME / ".hub" / "well-known-sources.json"
 INDEX_CACHE_DIR = HUB_DIR / "index-cache"
 
 # Cache duration for remote index fetches
@@ -1027,6 +1031,181 @@ class GitHubSource(SkillSource):
 # Well-known Agent Skills endpoint source adapter
 # ---------------------------------------------------------------------------
 
+_CONFIGURABLE_WELL_KNOWN_TRUST_LEVELS = {"community", "trusted"}
+
+
+def _normalize_well_known_trust_level(value: Any) -> str:
+    trust_level = str(value or "community").strip().lower()
+    if trust_level not in _CONFIGURABLE_WELL_KNOWN_TRUST_LEVELS:
+        return "community"
+    return trust_level
+
+
+def _normalize_well_known_base_url(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    base_url = value.strip().rstrip("/")
+    if not base_url:
+        return ""
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return base_url
+
+
+def _default_well_known_source_name(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    return parsed.netloc or "well-known-custom"
+
+
+def _slugify_source_id(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9._-]+", "-", value.strip().lower()).strip("-")
+    return slug[:64] or "custom"
+
+
+def _normalize_well_known_source_config(config: Any) -> Optional[dict]:
+    if not isinstance(config, dict):
+        return None
+
+    base_url = _normalize_well_known_base_url(config.get("base_url"))
+    if not base_url:
+        return None
+
+    name = config.get("name")
+    if not isinstance(name, str) or not name.strip():
+        name = _default_well_known_source_name(base_url)
+    else:
+        name = name.strip()
+
+    description = config.get("description", "")
+    if not isinstance(description, str):
+        description = str(description)
+
+    return {
+        "name": name,
+        "base_url": base_url,
+        "description": description,
+        "enabled": bool(config.get("enabled", True)),
+        "trust_level": _normalize_well_known_trust_level(config.get("trust_level")),
+    }
+
+
+class WellKnownSourcesManager:
+    """Manages persistent custom well-known skill hub sources."""
+
+    def __init__(self, path: Optional[Path] = None):
+        self.path = path or WELL_KNOWN_SOURCES_FILE
+
+    def _candidate_paths(self) -> List[Path]:
+        paths = [self.path]
+        if self.path == WELL_KNOWN_SOURCES_FILE and LEGACY_WELL_KNOWN_SOURCES_FILE != self.path:
+            paths.append(LEGACY_WELL_KNOWN_SOURCES_FILE)
+        return paths
+
+    @staticmethod
+    def _read_path(path: Path) -> List[dict]:
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+
+        sources = data.get("sources", []) if isinstance(data, dict) else []
+        if not isinstance(sources, list):
+            return []
+        return sources
+
+    def load(self, include_disabled: bool = True) -> List[dict]:
+        sources: List[dict] = []
+        seen_base_urls: set = set()
+        for path in self._candidate_paths():
+            for raw_source in self._read_path(path):
+                source = _normalize_well_known_source_config(raw_source)
+                if not source:
+                    continue
+                if not include_disabled and not source.get("enabled", True):
+                    continue
+                base_url = source["base_url"]
+                if base_url in seen_base_urls:
+                    continue
+                seen_base_urls.add(base_url)
+                sources.append(source)
+        return sources
+
+    def save(self, sources: List[dict]) -> None:
+        normalized = []
+        seen_base_urls: set = set()
+        for raw_source in sources:
+            source = _normalize_well_known_source_config(raw_source)
+            if not source or source["base_url"] in seen_base_urls:
+                continue
+            seen_base_urls.add(source["base_url"])
+            normalized.append(source)
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps({"sources": normalized}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def list_sources(self, include_disabled: bool = True) -> List[dict]:
+        return self.load(include_disabled=include_disabled)
+
+    def add(
+        self,
+        base_url: str,
+        *,
+        name: str = "",
+        description: str = "",
+        trust_level: str = "community",
+        enabled: bool = True,
+    ) -> bool:
+        source = _normalize_well_known_source_config({
+            "name": name,
+            "base_url": base_url,
+            "description": description,
+            "enabled": enabled,
+            "trust_level": trust_level,
+        })
+        if not source:
+            raise ValueError("base_url must be an http(s) URL")
+
+        sources = self.load(include_disabled=True)
+        if any(
+            s["base_url"] == source["base_url"] or s["name"] == source["name"]
+            for s in sources
+        ):
+            return False
+        sources.append(source)
+        self.save(sources)
+        return True
+
+    def remove(self, target: str) -> bool:
+        target = target.strip()
+        sources = self.load(include_disabled=True)
+        kept = [
+            s for s in sources
+            if s["name"] != target and s["base_url"] != target
+        ]
+        if len(kept) == len(sources):
+            return False
+        self.save(kept)
+        return True
+
+    def set_enabled(self, target: str, enabled: bool) -> bool:
+        target = target.strip()
+        sources = self.load(include_disabled=True)
+        changed = False
+        for source in sources:
+            if source["name"] == target or source["base_url"] == target:
+                source["enabled"] = enabled
+                changed = True
+        if changed:
+            self.save(sources)
+        return changed
+
+
 class WellKnownSkillSource(SkillSource):
     """Read skills from a domain exposing /.well-known/skills/index.json."""
 
@@ -1160,6 +1339,8 @@ class WellKnownSkillSource(SkillSource):
             return None
         if query.endswith("/index.json"):
             return query
+        if query.rstrip("/").endswith(self.BASE_PATH):
+            return f"{query.rstrip('/')}/index.json"
         if f"{self.BASE_PATH}/" in query:
             base_url = query.split(f"{self.BASE_PATH}/", 1)[0] + self.BASE_PATH
             return f"{base_url}/index.json"
@@ -1248,6 +1429,131 @@ class WellKnownSkillSource(SkillSource):
     @staticmethod
     def _wrap_identifier(base_url: str, skill_name: str) -> str:
         return f"well-known:{base_url.rstrip('/')}/{skill_name}"
+
+
+class ConfiguredWellKnownSource(WellKnownSkillSource):
+    """Persistent well-known skill hub configured in well-known-sources.json."""
+
+    is_persistent_custom_source = True
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        name: str = "",
+        description: str = "",
+        trust_level: str = "community",
+    ):
+        normalized_base_url = _normalize_well_known_base_url(base_url)
+        if not normalized_base_url:
+            raise ValueError("base_url must be an http(s) URL")
+
+        self.configured_base_url = normalized_base_url
+        self.configured_name = name.strip() if name else _default_well_known_source_name(normalized_base_url)
+        self.configured_description = description
+        self.configured_trust_level = _normalize_well_known_trust_level(trust_level)
+        self.index_url = self._query_to_index_url(normalized_base_url) or ""
+        self._source_id = f"well-known:{_slugify_source_id(self.configured_name)}"
+
+    def source_id(self) -> str:
+        return self._source_id
+
+    def trust_level_for(self, identifier: str) -> str:
+        return self.configured_trust_level
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        if limit <= 0:
+            return []
+        if not self.index_url:
+            return []
+
+        parsed = self._parse_index(self.index_url)
+        if not parsed:
+            return []
+
+        query_lower = query.strip().lower()
+        results: List[SkillMeta] = []
+        for entry in parsed["skills"]:
+            if not isinstance(entry, dict):
+                continue
+            if query_lower and not self._entry_matches_query(entry, query_lower):
+                continue
+            meta = self._entry_to_meta(parsed, entry)
+            if meta:
+                results.append(meta)
+                if len(results) >= limit:
+                    break
+        return results
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        if not self._identifier_belongs_to_configured_source(identifier):
+            return None
+        meta = super().inspect(identifier)
+        if meta:
+            self._apply_configured_metadata(meta)
+        return meta
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        if not self._identifier_belongs_to_configured_source(identifier):
+            return None
+        bundle = super().fetch(identifier)
+        if bundle:
+            bundle.trust_level = self.configured_trust_level
+            bundle.metadata.update({
+                "configured_source_name": self.configured_name,
+                "configured_source_base_url": self.configured_base_url,
+            })
+            if self.configured_description:
+                bundle.metadata["configured_source_description"] = self.configured_description
+        return bundle
+
+    def _entry_matches_query(self, entry: dict, query_lower: str) -> bool:
+        searchable_parts = [
+            str(entry.get("name", "")),
+            str(entry.get("description", "")),
+        ]
+        tags = entry.get("tags", [])
+        if isinstance(tags, list):
+            searchable_parts.extend(str(tag) for tag in tags)
+        files = entry.get("files", [])
+        if isinstance(files, list):
+            searchable_parts.extend(str(path) for path in files)
+        return query_lower in " ".join(searchable_parts).lower()
+
+    def _identifier_belongs_to_configured_source(self, identifier: str) -> bool:
+        parsed = self._parse_identifier(identifier)
+        return bool(parsed and parsed.get("index_url") == self.index_url)
+
+    def _entry_to_meta(self, parsed: dict, entry: dict) -> Optional[SkillMeta]:
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            return None
+        description = entry.get("description", "")
+        files = entry.get("files", ["SKILL.md"])
+        tags = entry.get("tags", [])
+        meta = SkillMeta(
+            name=name,
+            description=str(description),
+            source="well-known",
+            identifier=self._wrap_identifier(parsed["base_url"], name),
+            trust_level=self.configured_trust_level,
+            path=name,
+            tags=tags if isinstance(tags, list) else [],
+            extra={
+                "index_url": parsed["index_url"],
+                "base_url": parsed["base_url"],
+                "files": files if isinstance(files, list) else ["SKILL.md"],
+            },
+        )
+        self._apply_configured_metadata(meta)
+        return meta
+
+    def _apply_configured_metadata(self, meta: SkillMeta) -> None:
+        meta.trust_level = self.configured_trust_level
+        meta.extra["configured_source_name"] = self.configured_name
+        meta.extra["configured_source_base_url"] = self.configured_base_url
+        if self.configured_description:
+            meta.extra["configured_source_description"] = self.configured_description
 
 
 # ---------------------------------------------------------------------------
@@ -3842,13 +4148,27 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
+    ]
+
+    for config in WellKnownSourcesManager().list_sources(include_disabled=False):
+        try:
+            sources.append(ConfiguredWellKnownSource(
+                config["base_url"],
+                name=config.get("name", ""),
+                description=config.get("description", ""),
+                trust_level=config.get("trust_level", "community"),
+            ))
+        except ValueError:
+            logger.debug("Skipping invalid configured well-known source: %r", config)
+
+    sources.extend([
         UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
         BrowseShSource(),   # browse.sh: 169+ site-specific browser automation skills
-    ]
+    ])
 
     return sources
 
@@ -3862,6 +4182,17 @@ def _search_one_source(
     except Exception as e:
         logger.debug("Search failed for %s: %s", src.source_id(), e)
         return src.source_id(), []
+
+
+def _source_filter_matches(src: SkillSource, source_filter: str) -> bool:
+    if source_filter == "all":
+        return True
+    sid = src.source_id()
+    if sid == source_filter or sid == "official":
+        return True
+    if source_filter == "well-known" and sid.startswith("well-known:"):
+        return True
+    return False
 
 
 def parallel_search_sources(
@@ -3909,7 +4240,7 @@ def parallel_search_sources(
 
     for src in sources:
         sid = src.source_id()
-        if _effective_filter != "all" and sid != _effective_filter and sid != "official":
+        if not _source_filter_matches(src, _effective_filter):
             continue
         # Skip external API sources when the index covers them
         if _index_available and sid in _api_source_ids:

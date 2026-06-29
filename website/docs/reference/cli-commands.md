@@ -1048,6 +1048,7 @@ Subcommands:
 | `publish` | Publish a skill to a registry. |
 | `snapshot` | Export/import skill configurations. |
 | `tap` | Manage custom skill sources. |
+| `well-known` | Manage persistent well-known skill hub sources. |
 | `config` | Interactive enable/disable configuration for skills by platform. |
 
 Common examples:
@@ -1071,15 +1072,19 @@ hermes skills reset google-workspace --restore --yes
 hermes skills opt-out                  # stop future bundled-skill seeding (nothing deleted)
 hermes skills opt-out --remove --yes   # also delete UNMODIFIED bundled skills
 hermes skills opt-in --sync            # undo: remove marker and re-seed now
+hermes skills well-known add https://skills.example.com --name internal
+hermes skills well-known list
+hermes skills well-known remove internal
 ```
 
 Notes:
 - `--force` can override non-dangerous policy blocks for third-party/community skills.
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.
-- `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+- `--source well-known` searches direct well-known endpoint URLs and any persistent well-known hubs configured with `hermes skills well-known add`.
 - `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
+- Persistent well-known hubs are stored in `~/.hermes/skills/.hub/well-known-sources.json`. Hermes also reads `~/.hermes/.hub/well-known-sources.json` for compatibility with manually-created configs.
 
 ## `hermes bundles`
 

@@ -307,6 +307,57 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
 
+    skills_well_known = skills_subparsers.add_parser(
+        "well-known",
+        help="Manage persistent well-known skill hub sources",
+    )
+    well_known_subparsers = skills_well_known.add_subparsers(dest="well_known_action")
+    well_known_subparsers.add_parser("list", help="List configured well-known skill hubs")
+    well_known_add = well_known_subparsers.add_parser(
+        "add",
+        help="Add a persistent well-known skill hub",
+    )
+    well_known_add.add_argument(
+        "base_url",
+        help="Hub site URL or /.well-known/skills base URL",
+    )
+    well_known_add.add_argument(
+        "--name",
+        default="",
+        help="Display name for this hub",
+    )
+    well_known_add.add_argument(
+        "--description",
+        default="",
+        help="Optional description for this hub",
+    )
+    well_known_add.add_argument(
+        "--trust-level",
+        default="community",
+        choices=["community", "trusted"],
+        help="Trust ranking for skills from this hub (default: community)",
+    )
+    well_known_add.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Add the source but leave it disabled",
+    )
+    well_known_remove = well_known_subparsers.add_parser(
+        "remove",
+        help="Remove a configured well-known skill hub",
+    )
+    well_known_remove.add_argument("name", help="Hub name or base URL to remove")
+    well_known_enable = well_known_subparsers.add_parser(
+        "enable",
+        help="Enable a configured well-known skill hub",
+    )
+    well_known_enable.add_argument("name", help="Hub name or base URL to enable")
+    well_known_disable = well_known_subparsers.add_parser(
+        "disable",
+        help="Disable a configured well-known skill hub",
+    )
+    well_known_disable.add_argument("name", help="Hub name or base URL to disable")
+
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser(
         "config",

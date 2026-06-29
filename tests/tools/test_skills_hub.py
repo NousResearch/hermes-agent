@@ -13,8 +13,10 @@ from tools.skills_hub import (
     GitHubSource,
     LobeHubSource,
     SkillsShSource,
+    ConfiguredWellKnownSource,
     UrlSource,
     WellKnownSkillSource,
+    WellKnownSourcesManager,
     OptionalSkillSource,
     SkillSource,
     SkillBundle,
@@ -911,6 +913,99 @@ class TestWellKnownSkillSource:
         assert bundle is None
 
 
+class TestConfiguredWellKnownSource:
+    @pytest.fixture(autouse=True)
+    def _allow_public_skill_fetches(self, monkeypatch):
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_filters_configured_index_by_query(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "skills": [
+                    {"name": "deploy-runbook", "description": "Deploy service safely", "tags": ["ops"]},
+                    {"name": "sales-brief", "description": "Summarize account context"},
+                ]
+            },
+        )
+        source = ConfiguredWellKnownSource(
+            "https://hub.example.com",
+            name="Internal Skill Hub",
+            description="Private skills",
+            trust_level="trusted",
+        )
+
+        assert source.search("", limit=0) == []
+
+        results = source.search("deploy", limit=10)
+
+        assert [r.name for r in results] == ["deploy-runbook"]
+        assert results[0].source == "well-known"
+        assert results[0].trust_level == "trusted"
+        assert results[0].extra["configured_source_name"] == "Internal Skill Hub"
+        assert mock_get.call_args.args[0] == "https://hub.example.com/.well-known/skills/index.json"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_preserves_configured_trust_and_metadata(self, mock_get, _mock_read_cache, _mock_write_cache):
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/index.json"):
+                return MagicMock(status_code=200, json=lambda: {
+                    "skills": [{"name": "deploy-runbook", "description": "Deploy", "files": ["SKILL.md"]}]
+                })
+            if url.endswith("/deploy-runbook/SKILL.md"):
+                return MagicMock(status_code=200, text="# Deploy\n")
+            raise AssertionError(url)
+
+        mock_get.side_effect = fake_get
+        source = ConfiguredWellKnownSource(
+            "https://hub.example.com/.well-known/skills",
+            name="Internal Skill Hub",
+            trust_level="trusted",
+        )
+
+        assert source.fetch("well-known:https://other.example.com/.well-known/skills/deploy-runbook") is None
+
+        bundle = source.fetch("well-known:https://hub.example.com/.well-known/skills/deploy-runbook")
+
+        assert bundle is not None
+        assert bundle.trust_level == "trusted"
+        assert bundle.metadata["configured_source_name"] == "Internal Skill Hub"
+        assert bundle.files["SKILL.md"] == "# Deploy\n"
+
+
+class TestWellKnownSourcesManager:
+    def test_add_list_disable_and_remove_sources(self, tmp_path):
+        mgr = WellKnownSourcesManager(path=tmp_path / "well-known-sources.json")
+
+        assert mgr.add(
+            "https://hub.example.com",
+            name="Internal Skill Hub",
+            description="Private skills",
+            trust_level="trusted",
+        )
+        assert not mgr.add("https://hub.example.com", name="Duplicate Hub")
+
+        sources = mgr.list_sources()
+        assert sources == [{
+            "name": "Internal Skill Hub",
+            "base_url": "https://hub.example.com",
+            "description": "Private skills",
+            "enabled": True,
+            "trust_level": "trusted",
+        }]
+
+        assert mgr.set_enabled("Internal Skill Hub", False)
+        assert mgr.list_sources(include_disabled=False) == []
+        assert mgr.remove("https://hub.example.com")
+        assert mgr.list_sources() == []
+
+
 class TestUrlSource:
     @pytest.fixture(autouse=True)
     def _allow_public_skill_fetches(self, monkeypatch):
@@ -1295,6 +1390,23 @@ class TestCreateSourceRouter:
         sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
         assert any(isinstance(src, UrlSource) for src in sources)
 
+    def test_includes_configured_well_known_sources(self, monkeypatch):
+        class _Manager:
+            def list_sources(self, include_disabled=True):
+                return [{
+                    "name": "Internal Skill Hub",
+                    "base_url": "https://hub.example.com",
+                    "description": "Private skills",
+                    "trust_level": "community",
+                    "enabled": True,
+                }]
+
+        monkeypatch.setattr("tools.skills_hub.WellKnownSourcesManager", lambda: _Manager())
+
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+
+        assert any(isinstance(src, ConfiguredWellKnownSource) for src in sources)
+
     def test_url_source_runs_before_github_source(self):
         # UrlSource must win over GitHubSource when both could claim a URL.
         sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
@@ -1583,6 +1695,24 @@ class TestUnifiedSearchDedup:
         results = unified_search("query", [src_a, src_b], source_filter="a")
         assert len(results) == 1
         assert results[0].name == "s1"
+
+    def test_well_known_filter_includes_configured_sources(self):
+        configured_result = SkillMeta(
+            name="internal-deploy",
+            description="Deploy service",
+            source="well-known",
+            identifier="well-known:https://hub.example.com/.well-known/skills/internal-deploy",
+            trust_level="community",
+        )
+        configured_src = self._make_source("well-known:internal", [configured_result])
+        other_src = self._make_source("github", [
+            SkillMeta(name="github-skill", description="d", source="github",
+                       identifier="owner/repo/github-skill", trust_level="community")
+        ])
+
+        results = unified_search("deploy", [configured_src, other_src], source_filter="well-known")
+
+        assert [r.name for r in results] == ["internal-deploy"]
 
     def test_limit_respected(self):
         skills = [

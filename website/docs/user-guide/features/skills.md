@@ -509,6 +509,7 @@ hermes skills reset google-workspace --restore    # Also restore the bundled ver
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
+hermes skills well-known add https://skills.example.com --name internal
 ```
 
 ### Supported hub sources
@@ -567,6 +568,31 @@ hermes skills search https://mintlify.com/docs --source well-known
 hermes skills inspect well-known:https://mintlify.com/docs/.well-known/skills/mintlify
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
 ```
+
+For private or organization-wide hubs, add the site once and Hermes will search it in every future session:
+
+```bash
+hermes skills well-known add https://skills.example.com --name internal
+hermes skills search deploy --source well-known
+```
+
+Hermes stores persistent well-known sources in `~/.hermes/skills/.hub/well-known-sources.json`:
+
+```json
+{
+  "sources": [
+    {
+      "name": "internal",
+      "base_url": "https://skills.example.com",
+      "description": "Internal skill hub",
+      "enabled": true,
+      "trust_level": "community"
+    }
+  ]
+}
+```
+
+`base_url` can be the site root, the `/.well-known/skills` base path, or the `index.json` URL. Hermes also reads the legacy `~/.hermes/.hub/well-known-sources.json` path for manually-created configs.
 
 #### 4. Direct GitHub skills (`github`)
 
@@ -826,6 +852,9 @@ New taps are assigned `community` trust by default. Skills installed from them r
 hermes skills tap list                                # show all configured taps
 hermes skills tap add myorg/skills-repo               # add (default path: skills/)
 hermes skills tap remove myorg/skills-repo            # remove
+hermes skills well-known list                         # show persistent well-known hubs
+hermes skills well-known add https://skills.example.com --name internal
+hermes skills well-known remove internal
 ```
 
 Inside a running session:
@@ -834,9 +863,13 @@ Inside a running session:
 /skills tap list
 /skills tap add myorg/skills-repo
 /skills tap remove myorg/skills-repo
+/skills well-known list
+/skills well-known add https://skills.example.com --name internal
+/skills well-known remove internal
 ```
 
 Taps are stored in `~/.hermes/.hub/taps.json` (created on demand).
+Persistent well-known hubs are stored in `~/.hermes/skills/.hub/well-known-sources.json`.
 
 ## Bundled skill updates (`hermes skills reset`)
 

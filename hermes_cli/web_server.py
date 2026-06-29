@@ -4773,12 +4773,63 @@ async def get_env_vars(profile: Optional[str] = None):
     return result
 
 
+# Generic masked/redacted sentinels the Keys page can render. If a write
+# arrives carrying one of these verbatim, the SPA almost certainly echoed a
+# display string back instead of a real credential. Covers mask_secret()'s
+# placeholder ("***") and head...tail form, plus agent.redact's «redacted…»
+# sentinels. Anchored + length-bounded so a legitimate secret that merely
+# *contains* "..." isn't rejected.
+_MASKED_VALUE_RE = re.compile(
+    r"^(?:\*{2,}"
+    r"|«redacted[^»]*»"
+    r"|[^\s]{1,12}\.{3}[^\s]{1,12})$"
+)
+
+
+def _is_masked_writeback(key: str, value: str) -> bool:
+    """True if ``value`` is a masked display string rather than a real secret.
+
+    Two checks, cheapest first:
+
+    1. Exact match against the masked form of the value currently on disk —
+       the precise, false-positive-free signal that the SPA sent back the
+       ``redacted_value`` it was shown by ``GET /api/env``.
+    2. Fallback generic sentinel match (``***``/``head...tail``/``«redacted»``)
+       for the case where no prior value is stored to compare against.
+    """
+    if not value:
+        return False
+    try:
+        from hermes_cli.config import get_env_value
+
+        current = get_env_value(key)
+    except Exception:
+        current = None
+    if current and value == redact_key(current):
+        return True
+    return bool(_MASKED_VALUE_RE.match(value))
+
+
 @app.put("/api/env")
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
+            if _is_masked_writeback(body.key, body.value):
+                # The dashboard pre-populates editable inputs with the masked
+                # redacted_value; saving an unchanged key then writes the mask
+                # back over the real credential (issue #54708), silently
+                # corrupting it. Refuse rather than destroy the secret.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Value looks like a masked/redacted display string, not a "
+                        "real credential. Reveal or re-enter the value before saving."
+                    ),
+                )
             save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
+    except HTTPException:
+        raise
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
         # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the

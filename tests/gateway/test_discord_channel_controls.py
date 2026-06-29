@@ -256,6 +256,45 @@ async def test_configured_crew_alias_counts_as_bot_call(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_direct_specialist_mention_still_wakes_when_crew_alias_disabled(adapter, monkeypatch):
+    """Restricted workers stay directly summonable by explicit @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{bot_user.id}> Boba, quick reality check",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "Boba, quick reality check"
+
+
+@pytest.mark.asyncio
+async def test_worker_profile_ignores_broad_crew_alias_when_not_configured(adapter, monkeypatch):
+    """Worker profiles with no crew aliases do not join @Crew/crew: dogpiles."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="crew: discuss this together",
+        mentions=[],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_council_mode_opens_huddle_invites_workers_closes_and_synthesizes(adapter, monkeypatch):
     """Coordinator council mode turns a crew call into a bounded huddle, not a dogpile."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
@@ -370,6 +409,27 @@ async def test_council_huddle_suppresses_ambient_worker_chatter(adapter, monkeyp
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_worker_ignores_close_markers_and_acks(adapter, monkeypatch):
+    """Worker-style profiles stay quiet on huddle close markers and casual acks."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._threads.mark(str(thread.id))
+
+    for content in (
+        "Huddle closed. Workers, stop here unless tagged directly.",
+        "ok thanks",
+    ):
+        adapter.handle_message.reset_mock()
+        message = make_message(channel=thread, content=content, mentions=[])
+        await adapter._handle_message(message)
+        adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

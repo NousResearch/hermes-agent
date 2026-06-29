@@ -24,9 +24,9 @@ Mounting
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
 import logging
+import queue as _queue
 import socket
 from typing import Any
 
@@ -34,11 +34,16 @@ from tui_gateway import server
 
 _log = logging.getLogger(__name__)
 
-# Max seconds a pool-dispatched handler will block waiting for the event loop
-# to flush a WS frame before we mark the transport dead. Protects handler
-# threads from a wedged socket.
-_WS_WRITE_TIMEOUT_S = 10.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
+
+# Max pending outbound frames in the writer queue.  When the client is
+# completely stuck (TCP buffer full, renderer frozen) the queue acts as a
+# shock absorber.  4096 is large enough that it should never fill in normal
+# operation; if it does, the transport is effectively dead and we drop.
+_WS_QUEUE_MAXSIZE = 4096
+
+# Seconds to wait for the writer task to flush remaining frames on disconnect.
+_WRITER_DRAIN_TIMEOUT_S = 2.0
 
 # Keep starlette optional at import time; handle_ws uses the real class when
 # it's available and falls back to a generic Exception sentinel otherwise.
@@ -49,19 +54,17 @@ except ImportError:  # pragma: no cover - starlette is a required install path
 
 
 class WSTransport:
-    """Per-connection WS transport.
+    """Per-connection WS transport with a dedicated writer task.
 
-    ``write`` is safe to call from any thread *other than* the event loop
-    thread that owns the socket. Pool workers (the only real caller) run in
-    their own threads, so marshalling onto the loop via
-    :func:`asyncio.run_coroutine_threadsafe` + ``future.result()`` is correct
-    and deadlock-free there.
+    Writes from any thread are non-blocking: frames are enqueued to a
+    thread-safe queue and a single async writer task drains them in order.
+    This decouples the read loop (and RPC dispatch) from write backpressure:
+    a slow client can stall the writer, but never blocks inbound RPC reads
+    or agent worker threads that emit streaming events.
 
-    When called from the loop thread itself (e.g. by ``handle_ws`` for an
-    inline response) the same call would deadlock: we'd schedule work onto
-    the loop we're currently blocking. We detect that case and fire-and-
-    forget instead. Callers that need to know when the bytes are on the wire
-    should use :meth:`write_async` from the loop thread.
+    ``write`` is safe to call from any thread — it uses ``queue.put_nowait``
+    which is intrinsically thread-safe.  ``write_async`` is the event-loop
+    counterpart with identical semantics; both return immediately.
     """
 
     def __init__(
@@ -75,71 +78,99 @@ class WSTransport:
         self._loop = loop
         self._peer = peer
         self._closed = False
+        self._outgoing: _queue.Queue[str | None] = _queue.Queue(
+            maxsize=_WS_QUEUE_MAXSIZE
+        )
+        self._writer: asyncio.Task[None] | None = None
+        self._dropped = 0  # metrics: frames dropped due to queue overflow
 
-    def write(self, obj: dict) -> bool:
-        if self._closed:
-            return False
+    # ── lifecycle ──────────────────────────────────────────────────────
 
-        line = json.dumps(obj, ensure_ascii=False)
+    def start_writer(self) -> None:
+        """Start the dedicated writer task.  Must be called on the event loop."""
+        if self._writer is None:
+            self._writer = self._loop.create_task(self._writer_loop())
 
-        try:
-            on_loop = asyncio.get_running_loop() is self._loop
-        except RuntimeError:
-            on_loop = False
+    async def _writer_loop(self) -> None:
+        """Drain the outgoing queue and send frames one at a time.
 
-        if on_loop:
-            # Fire-and-forget — don't block the loop waiting on itself.
-            self._loop.create_task(self._safe_send(line))
-            return True
-
-        try:
-            from agent.async_utils import safe_schedule_threadsafe
-            fut = safe_schedule_threadsafe(self._safe_send(line), self._loop)
-            if fut is None:
+        Only this coroutine calls ``ws.send_text``, so there are never
+        concurrent sends on the same socket — a fragile path under
+        Starlette/uvicorn.  If ``send_text`` fails the transport is latched
+        closed and the loop exits; the read loop in ``handle_ws`` detects
+        ``_closed`` on its next iteration and tears down.
+        """
+        while True:
+            try:
+                item = await self._loop.run_in_executor(None, self._outgoing.get)
+            except Exception:
+                break
+            if item is None:  # sentinel from close()
+                break
+            try:
+                await self._ws.send_text(item)
+            except Exception as exc:
                 self._closed = True
-                return False
-            fut.result(timeout=_WS_WRITE_TIMEOUT_S)
-            return not self._closed
-        except concurrent.futures.TimeoutError:  # builtin TimeoutError on 3.11+
-            # The event loop is stalled (GIL-heavy agent turn, delegation
-            # running N children), NOT the socket dead. The send coroutine is
-            # already scheduled and will flush once the loop breathes — latching
-            # _closed here permanently silenced live windows after one slow
-            # write (the "subagent window shows zero streaming" bug). Unblock
-            # the worker thread and keep the transport alive; _safe_send latches
-            # on a real socket error when the frame actually fails.
-            _log.warning(
-                "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
-                _WS_WRITE_TIMEOUT_S, self._peer,
-            )
-            return not self._closed
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws write failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
-            return False
-
-    async def write_async(self, obj: dict) -> bool:
-        """Send from the owning event loop. Awaits until the frame is on the wire."""
-        if self._closed:
-            return False
-        await self._safe_send(json.dumps(obj, ensure_ascii=False))
-        return not self._closed
-
-    async def _safe_send(self, line: str) -> None:
-        try:
-            await self._ws.send_text(line)
-        except Exception as exc:
-            self._closed = True
-            _log.warning(
-                "ws send failed peer=%s error_type=%s error=%s",
-                self._peer, type(exc).__name__, exc,
-            )
+                _log.warning(
+                    "ws send failed peer=%s error_type=%s error=%s",
+                    self._peer,
+                    type(exc).__name__,
+                    exc,
+                )
+                break
 
     def close(self) -> None:
         self._closed = True
+        try:
+            self._outgoing.put_nowait(None)  # wake up a blocked writer
+        except _queue.Full:
+            pass  # queue is full; writer will drain, see _closed, and stop
+
+    # ── write interface ────────────────────────────────────────────────
+
+    def write(self, obj: dict) -> bool:
+        """Enqueue one JSON frame.  Non-blocking; safe from any thread.
+
+        Returns ``True`` if the frame was enqueued (or dropped due to
+        backpressure, which is not a transport failure).  Returns ``False``
+        ONLY when the transport is closed — the ``Transport`` protocol's
+        "peer is gone" signal.
+        """
+        if self._closed:
+            return False
+        line = json.dumps(obj, ensure_ascii=False)
+        try:
+            self._outgoing.put_nowait(line)
+        except _queue.Full:
+            self._dropped += 1
+            _log.warning(
+                "ws queue full (maxsize=%d) peer=%s — dropping streaming frame (dropped=%d)",
+                _WS_QUEUE_MAXSIZE,
+                self._peer,
+                self._dropped,
+            )
+        return True
+
+    async def write_async(self, obj: dict) -> bool:
+        """Enqueue from the event loop.  Same semantics as :meth:`write`.
+
+        On queue overflow this returns ``False`` so ``handle_ws`` treats the
+        RPC response as undeliverable and disconnects — a completely stuck
+        client (4096 pending frames) is effectively dead.
+        """
+        if self._closed:
+            return False
+        line = json.dumps(obj, ensure_ascii=False)
+        try:
+            self._outgoing.put_nowait(line)
+        except _queue.Full:
+            _log.warning(
+                "ws queue full (maxsize=%d) peer=%s — RPC response dropped, disconnecting",
+                _WS_QUEUE_MAXSIZE,
+                self._peer,
+            )
+            return False
+        return True
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -189,6 +220,7 @@ async def handle_ws(ws: Any) -> None:
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        transport.start_writer()
 
         # The desktop app and dashboard chat reach the agent through this WS
         # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
@@ -223,6 +255,16 @@ async def handle_ws(ws: Any) -> None:
             return
 
         while True:
+            # If the writer task died (send_text failure) the transport is
+            # closed — tear down before trying to read from a dead socket.
+            if transport._closed:
+                disconnect_reason = "send_failed"
+                send_failures += 1
+                _log.warning(
+                    "ws transport closed (writer failed) peer=%s", peer
+                )
+                break
+
             try:
                 raw = await ws.receive_text()
             except _WebSocketDisconnect as exc:
@@ -317,6 +359,17 @@ async def handle_ws(ws: Any) -> None:
         detached_sessions = 0
         if transport is not None:
             transport.close()
+
+            # Let the writer flush remaining frames (bounded), then proceed
+            # to session teardown.  A stuck writer is cancelled so the
+            # teardown path is not delayed.
+            if transport._writer is not None:
+                try:
+                    await asyncio.wait_for(
+                        transport._writer, timeout=_WRITER_DRAIN_TIMEOUT_S
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    transport._writer.cancel()
 
             # Reap sessions this transport owned (close_on_disconnect sidecar
             # sessions) or detach the rest to the drop sentinel so later emits

@@ -53,6 +53,7 @@ def test_no_managed_env_is_noop(env_homes, monkeypatch):
 
     home, managed = env_homes  # managed dir exists but has no .env
     monkeypatch.setenv("SOME_VALUE", "from_shell")
+    monkeypatch.setenv("HERMES_DOTENV_OVERRIDE", "1")
     (home / ".env").write_text("SOME_VALUE=from_user\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=str(home))
     assert os.environ["SOME_VALUE"] == "from_user"

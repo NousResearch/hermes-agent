@@ -130,7 +130,8 @@ def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
 
 def exchange_token(
     url: str, data: Dict[str, str], *, headers: Optional[Dict[str, str]] = None, bad_request_exc: type[Exception],
-    idp: str, endpoint: str, token_key: str, missing_msg: str) -> tuple[str, Dict[str, Any]]:
+    idp: str, endpoint: str, token_key: str, missing_msg: str,
+    post: Optional[Callable[..., httpx.Response]] = None) -> tuple[str, Dict[str, Any]]:
     """POST a token grant and return ``(token, payload)``.
 
     A 400 (OAuth-shaped error envelope) raises ``bad_request_exc`` — ``InvalidCodeError``
@@ -138,9 +139,10 @@ def exchange_token(
     distinct handling is preserved. Any other non-200, transport failure, missing
     ``token_key`` or non-bearer ``token_type`` raises ``ProviderError``. Redirects are
     deliberately NOT followed: the body carries an auth code / refresh token.
+    ``post`` lets a provider use a bounded transport while sharing error mapping.
     """
     try:
-        response = httpx.post(url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
+        response = (post or httpx.post)(url, data=data, headers={**JSON_HEADERS, **(headers or {})}, timeout=TOKEN_ENDPOINT_TIMEOUT_SEC)
     except httpx.RequestError as exc:
         raise ProviderError(f"{endpoint} unreachable: {exc}") from exc
     if response.status_code == 400:

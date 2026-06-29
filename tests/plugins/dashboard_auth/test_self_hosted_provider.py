@@ -48,6 +48,32 @@ _DISCOVERY_DOC = {
 }
 
 
+class _FakeStreamResponse:
+    def __init__(
+        self,
+        method: str,
+        url: str,
+        *,
+        chunks: list[bytes],
+        status_code: int = 200,
+        headers: Dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.request = httpx.Request(method, url)
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_bytes(self, chunk_size: int = 65536):
+        _ = chunk_size
+        yield from self._chunks
+
+
 # ---------------------------------------------------------------------------
 # RSA keypair fixture (module-scope — keygen is slow)
 # ---------------------------------------------------------------------------
@@ -225,7 +251,7 @@ class TestDiscovery:
         p = self._provider()
         mock_resp = self._mock_get(200, dict(_DISCOVERY_DOC))
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_get:
             disco1 = p._get_discovery()
             disco2 = p._get_discovery()
@@ -251,7 +277,7 @@ class TestDiscovery:
             200, forged, url="https://attacker.example/openid-configuration"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -262,7 +288,7 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="http://auth.example.com/discovery"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -275,7 +301,7 @@ class TestDiscovery:
             url="https://auth.example.com/.well-known/openid-configuration/application/o/hermes",
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             disco = p._fetch_discovery()
         assert disco["token_endpoint"] == f"{_ISSUER}/token"
@@ -287,9 +313,26 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="https://auth.example.com:443/x"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=resp
         ):
             assert p._fetch_discovery()["issuer"] == _ISSUER
+
+    def test_discovery_rejects_oversized_response_body(self, monkeypatch):
+        p = self._provider()
+
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method,
+                url,
+                chunks=[b"a" * 6, b"b" * 6],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", fake_stream)
+        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            p._get_discovery()
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +343,9 @@ class TestDiscovery:
 class TestDiscoveryRealRedirect:
     """Discovery must follow a 3xx on the .well-known GET.
 
-    The rest of the discovery suite mocks ``httpx.get`` with a canned 200, so
-    it cannot see httpx's ``follow_redirects=False`` default. Many real IDPs
+    The rest of the discovery suite mocks the bounded request helper with a
+    canned 200, so it cannot see httpx's ``follow_redirects=False`` default.
+    Many real IDPs
     answer the discovery GET with a redirect rather than a direct 200 —
     Authentik canonicalises the ``.well-known`` path, and any IDP behind a
     reverse proxy doing http→https upgrade redirects too. Before the fix the
@@ -483,7 +527,7 @@ class TestCompleteLogin:
             },
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -506,7 +550,7 @@ class TestCompleteLogin:
             200, {"id_token": id_token, "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -521,7 +565,7 @@ class TestCompleteLogin:
             200, {"access_token": "opaque", "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="id_token"):
                 provider.complete_login(
@@ -534,7 +578,7 @@ class TestCompleteLogin:
     def test_400_raises_invalid_code(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
@@ -543,6 +587,26 @@ class TestCompleteLogin:
                     code_verifier="v",
                     redirect_uri="https://hermes.example/auth/callback",
                 )
+
+    def test_token_endpoint_rejects_oversized_response_body(self, provider, monkeypatch):
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method,
+                url,
+                chunks=[b"x" * 8, b"y" * 8],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", fake_stream)
+        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            provider.complete_login(
+                code="x",
+                state="s",
+                code_verifier="v",
+                redirect_uri="https://hermes.example/auth/callback",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +636,7 @@ class TestConfidentialClient:
         id_token = _mint_id_token(rsa_keypair)
         mock_resp = _mock_post(200, {"id_token": id_token, **_GOOD_TOKEN_RESP_KEYS})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.complete_login(
                 code="the-code",
@@ -644,7 +708,7 @@ class TestConfidentialClient:
             200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.refresh_session(refresh_token="rt_old")
         _, kwargs = mock_post.call_args
@@ -841,4 +905,3 @@ class TestPluginRegister:
         oidc_plugin.register(ctx)
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
         assert registered._client_secret == "cfg-secret"
-

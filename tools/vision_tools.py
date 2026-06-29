@@ -32,6 +32,7 @@ import base64
 import contextlib
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import uuid
@@ -77,36 +78,35 @@ _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
-# Fan-out concurrency cap
+# CPU-burst concurrency cap (vision encode/resize)
 # ---------------------------------------------------------------------------
 # A single agent turn can fan out N vision_analyze calls at once (the classic
 # trigger is "analyze every frame of this video" — ffmpeg explodes a clip into
-# dozens of frames, the model then calls vision_analyze on each). Every call
-# does a CPU-heavy base64-encode/resize burst AND holds a long-lived LLM stream
-# open. The tool executor runs concurrent tool calls on a ThreadPoolExecutor
-# (agent.tool_executor._MAX_TOOL_WORKERS = 8) PER SESSION, and several agent
-# sessions share one process (the dashboard runs the agent in-process). With no
-# global ceiling, a video-frame fan-out across one or more sessions pins a
-# worker thread at ~100% CPU and starves the shared asyncio event loop that also
-# serves the dashboard's /api/status liveness probe — so the instance flaps to
-# UNHEALTHY even though nothing has actually crashed (observed in prod, June
-# 2026).
+# dozens of frames, the model then calls vision_analyze on each). Each call does
+# a CPU-heavy base64-encode + (sometimes) Pillow resize. The tool executor runs
+# concurrent tool calls on a ThreadPoolExecutor (agent.tool_executor =
+# 8 workers) PER SESSION, and several agent sessions share one process (the
+# dashboard runs the agent in-process). Unbounded, a video-frame fan-out across
+# one or more sessions runs *every* encode at once, saturates all cores, and
+# leaves no CPU to service the shared asyncio event loop that serves the
+# dashboard's /api/status liveness probe — so the instance flaps to UNHEALTHY
+# even though nothing has crashed (observed in prod, June 2026).
 #
-# This semaphore bounds the number of vision analyses running concurrently
-# across the WHOLE process, regardless of how many sessions or worker threads
-# issue them. It is a threading.Semaphore (NOT asyncio.Semaphore): each vision
-# call is dispatched through model_tools._run_async on a PER-THREAD event loop,
-# so an asyncio primitive bound to one loop cannot coordinate across them. A
-# threading semaphore is loop- and thread-agnostic, which is exactly what we
-# need here.
+# The fix is NOT to cap how many vision analyses run — multi-image workflows
+# ("compare these 6 screenshots", "read this 10-page scan") legitimately want
+# high concurrency, and the slow part (the LLM stream) is network-bound and
+# harmless to the loop. We cap ONLY the CPU burst: the encode/resize is offloaded
+# to a dedicated, bounded executor sized to the host's usable core count. That
+# is the resource the incident actually exhausted (cores), so bounding it to
+# cores is *correct*, not an arbitrary number — excess encodes queue on the
+# executor instead of all running at once, the LLM calls stay fully concurrent,
+# and the loop always keeps a core. No fixed ceiling: the limit tracks the host.
 #
-# Default: min(host CPU count, 4), floored at 1 — "respect the host's
-# concurrency, or lower". 4 is a conservative ceiling: vision work is a mix of
-# CPU (encode/resize) and network (LLM stream), and we would rather under-
-# subscribe than let a frame storm wedge the loop. Override with
-# HERMES_VISION_MAX_CONCURRENCY (env) or auxiliary.vision.max_concurrency
-# (config.yaml). 0 / negative / unparseable falls back to the default.
-import threading
+# A threading primitive (NOT asyncio) is required: each vision call is dispatched
+# through model_tools._run_async on a PER-THREAD event loop, so an asyncio
+# executor/semaphore bound to one loop cannot coordinate across them. A
+# ThreadPoolExecutor is loop- and thread-agnostic.
+import threading  # noqa: F401  (kept for downstream importers / patch targets)
 
 
 def _detect_host_cpus() -> int:
@@ -122,19 +122,19 @@ def _detect_host_cpus() -> int:
         return max(1, os.cpu_count() or 1)
 
 
-# Absolute ceiling for the default (not for explicit overrides): even on a
-# many-core host, more than this many simultaneous in-process vision analyses
-# is rarely worth the event-loop pressure.
-_VISION_DEFAULT_CONCURRENCY_CEILING = 4
+def _resolve_vision_cpu_workers() -> int:
+    """Resolve how many vision encode/resize bursts may run concurrently.
 
+    Defaults to the host's usable core count (``_detect_host_cpus``) — no fixed
+    ceiling, because the cap tracks the actual exhausted resource (CPU cores),
+    not a magic number. The LLM call is NOT covered by this limit, so legitimate
+    multi-image fan-out keeps full request concurrency; only the simultaneous
+    CPU bursts are bounded so the event loop always keeps a core.
 
-def _resolve_vision_max_concurrency() -> int:
-    """Resolve the max concurrent vision analyses for this process.
-
-    Resolution order: HERMES_VISION_MAX_CONCURRENCY env → config.yaml
-    auxiliary.vision.max_concurrency → default ``min(host_cpus, 4)``. Any
-    value that parses to < 1 is ignored in favor of the next source so the
-    cap can never be disabled into an unbounded fan-out.
+    Resolution order: HERMES_VISION_MAX_CONCURRENCY env →
+    config.yaml auxiliary.vision.max_concurrency → host core count. Any value
+    that parses to < 1 is ignored in favor of the next source so the cap can
+    never be disabled into an unbounded encode storm.
     """
     env_val = os.getenv("HERMES_VISION_MAX_CONCURRENCY", "").strip()
     if env_val:
@@ -154,11 +154,39 @@ def _resolve_vision_max_concurrency() -> int:
                 return parsed
     except Exception:
         pass
-    return max(1, min(_detect_host_cpus(), _VISION_DEFAULT_CONCURRENCY_CEILING))
+    return _detect_host_cpus()
 
 
-_VISION_MAX_CONCURRENCY = _resolve_vision_max_concurrency()
-_vision_concurrency_semaphore = threading.BoundedSemaphore(_VISION_MAX_CONCURRENCY)
+_VISION_CPU_WORKERS = _resolve_vision_cpu_workers()
+
+# Dedicated, bounded executor for the CPU-bound encode/resize burst ONLY. We do
+# NOT use the default executor (run_in_executor(None, ...)) — that pool is shared
+# with the gateway and web server, so a fan-out would park encode work there and
+# starve those callers. Sizing it to the usable core count means at most
+# _VISION_CPU_WORKERS encodes run at once; further encodes queue on this
+# executor's work queue, leaving cores free for the event loop. The LLM call is
+# deliberately left OUTSIDE this executor so multi-image workflows keep full
+# request concurrency.
+_vision_cpu_executor = ThreadPoolExecutor(
+    max_workers=_VISION_CPU_WORKERS,
+    thread_name_prefix="vision-encode",
+)
+
+
+async def _run_encode_on_cpu_executor(fn, *args, **kwargs):
+    """Run a sync encode/resize callable on the bounded vision CPU executor.
+
+    Offloads CPU-bound image work to :data:`_vision_cpu_executor` so it (a)
+    never runs on the caller's event-loop thread and (b) is bounded to the
+    host's usable core count process-wide. Excess encodes queue on the
+    executor instead of all running at once, leaving cores free for the loop.
+    The LLM call must NOT be routed through here — only the encode/resize.
+    """
+    import functools
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _vision_cpu_executor, functools.partial(fn, *args, **kwargs)
+    )
 
 
 def _image_url_shape_ok(url: str) -> bool:
@@ -774,22 +802,17 @@ def _build_native_vision_tool_result(
 
 @contextlib.asynccontextmanager
 async def _vision_concurrency_slot():
-    """Hold one process-global vision-concurrency slot for the duration.
+    """Deprecated no-op shim kept for backward compatibility.
 
-    Acquires :data:`_vision_concurrency_semaphore` before yielding and always
-    releases it on exit. The blocking acquire is offloaded to a worker thread
-    via ``run_in_executor`` so that waiting for a slot never blocks the calling
-    event loop (callers run on per-thread loops; blocking the acquire on the
-    loop thread would freeze that loop's other tasks while we wait). The
-    semaphore is a ``BoundedSemaphore`` so a double-release would raise rather
-    than silently inflate the limit.
+    The fan-out cap was narrowed to the CPU-bound encode/resize burst only
+    (see :data:`_vision_cpu_executor` / :func:`_run_encode_on_cpu_executor`).
+    Holding a slot across the whole analysis serialized legitimate multi-image
+    workflows behind the slow LLM call, which is exactly what we don't want.
+    This context manager no longer gates anything; encode/resize is bounded
+    where it actually runs. Retained only so any external caller importing it
+    keeps working.
     """
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _vision_concurrency_semaphore.acquire)
-    try:
-        yield
-    finally:
-        _vision_concurrency_semaphore.release()
+    yield
 
 
 async def _vision_analyze_native(
@@ -851,7 +874,8 @@ async def _vision_analyze_native(
                 success=False,
             )
 
-        image_data_url = _image_to_base64_data_url(
+        image_data_url = await _run_encode_on_cpu_executor(
+            _image_to_base64_data_url,
             temp_image_path, mime_type=detected_mime_type,
         )
 
@@ -864,9 +888,12 @@ async def _vision_analyze_native(
         # target (4 MB / 7900px, headroom under both ceilings) whenever the
         # payload exceeds either limit, not just at the 20 MB hard ceiling.
         _over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
-        _over_dims = _image_exceeds_dimension(temp_image_path, _EMBED_MAX_DIMENSION)
+        _over_dims = await _run_encode_on_cpu_executor(
+            _image_exceeds_dimension, temp_image_path, _EMBED_MAX_DIMENSION,
+        )
         if _over_bytes or _over_dims:
-            image_data_url = _resize_image_for_vision(
+            image_data_url = await _run_encode_on_cpu_executor(
+                _resize_image_for_vision,
                 temp_image_path, mime_type=detected_mime_type,
                 max_base64_bytes=_EMBED_TARGET_BYTES,
                 max_dimension=_EMBED_MAX_DIMENSION,
@@ -1008,15 +1035,19 @@ async def vision_analyze_tool(
         
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.
+        # Offloaded to the bounded vision CPU executor so a fan-out of encodes
+        # can't saturate every core and starve the event loop.
         logger.info("Converting image to base64...")
-        image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)
+        image_data_url = await _run_encode_on_cpu_executor(
+            _image_to_base64_data_url, temp_image_path, mime_type=detected_mime_type)
         data_size_kb = len(image_data_url) / 1024
         logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
 
         # Hard limit (20 MB) — no provider accepts payloads this large.
         if len(image_data_url) > _MAX_BASE64_BYTES:
             # Try to resize down to 5 MB before giving up.
-            image_data_url = _resize_image_for_vision(
+            image_data_url = await _run_encode_on_cpu_executor(
+                _resize_image_for_vision,
                 temp_image_path, mime_type=detected_mime_type)
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 raise ValueError(
@@ -1092,7 +1123,8 @@ async def vision_analyze_tool(
                     len(image_data_url) / (1024 * 1024),
                     _RESIZE_TARGET_BYTES / (1024 * 1024),
                 )
-                image_data_url = _resize_image_for_vision(
+                image_data_url = await _run_encode_on_cpu_executor(
+                    _resize_image_for_vision,
                     temp_image_path, mime_type=detected_mime_type)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
                 response = await async_call_llm(**call_kwargs)
@@ -1305,32 +1337,28 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
 
-    # Bound process-wide vision fan-out: a single turn (or several concurrent
-    # sessions sharing this process) can launch dozens of vision_analyze calls
-    # at once — e.g. "analyze every frame of this video". Each one is a
-    # CPU-heavy encode/resize plus a long LLM stream; unbounded, they pin a
-    # worker thread and starve the shared event loop that serves /api/status,
-    # flapping the instance to UNHEALTHY. The slot is held across the WHOLE
-    # analysis (image load + encode + LLM call), and acquiring it waits off the
-    # event loop, so excess calls queue instead of piling on simultaneously.
-    async with _vision_concurrency_slot():
-        # Fast path: when native image routing is in effect for the active main
-        # model (provider accepts images in tool results, or the user set the
-        # model.supports_vision override), short-circuit the auxiliary LLM and
-        # return the image bytes as a multimodal tool-result envelope. The main
-        # model sees the pixels directly on its next turn — no aux call, no
-        # information loss, no extra latency.
-        if _should_use_native_vision_fast_path():
-            logger.info("vision_analyze: native fast path")
-            return await _vision_analyze_native(image_url, question)
+    # The fan-out cap lives inside the encode/resize step (offloaded to the
+    # bounded _vision_cpu_executor), NOT around the whole analysis — so a
+    # legitimate multi-image workflow keeps full request concurrency while the
+    # CPU bursts that actually starve the loop are bounded to host cores.
+    #
+    # Fast path: when native image routing is in effect for the active main
+    # model (provider accepts images in tool results, or the user set the
+    # model.supports_vision override), short-circuit the auxiliary LLM and
+    # return the image bytes as a multimodal tool-result envelope. The main
+    # model sees the pixels directly on its next turn — no aux call, no
+    # information loss, no extra latency.
+    if _should_use_native_vision_fast_path():
+        logger.info("vision_analyze: native fast path")
+        return await _vision_analyze_native(image_url, question)
 
-        # Legacy path: aux LLM describes the image and we return its text.
-        full_prompt = (
-            "Fully describe and explain everything about this image, then answer the "
-            f"following question:\n\n{question}"
-        )
-        model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
-        return await vision_analyze_tool(image_url, full_prompt, model)
+    # Legacy path: aux LLM describes the image and we return its text.
+    full_prompt = (
+        "Fully describe and explain everything about this image, then answer the "
+        f"following question:\n\n{question}"
+    )
+    model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+    return await vision_analyze_tool(image_url, full_prompt, model)
 
 
 registry.register(

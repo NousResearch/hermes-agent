@@ -1005,9 +1005,11 @@ auxiliary:
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
     timeout: 120               # seconds — LLM API call timeout; vision payloads need generous timeout
     download_timeout: 30       # seconds — image HTTP download; increase for slow connections
-    max_concurrency: 4         # max vision analyses running at once across the whole process
-                               # (default: min(host CPUs, 4)) — bounds video-frame fan-out so it
-                               # can't saturate the event loop. Minimum 1; values < 1 are ignored.
+    max_concurrency: 8         # max concurrent image encode/resize bursts across the process
+                               # (default: host CPU core count, no ceiling) — bounds only the
+                               # CPU-bound encode step so a video-frame fan-out can't saturate
+                               # every core and starve the event loop; LLM calls stay fully
+                               # concurrent. Minimum 1; values < 1 are ignored.
 
   # Web page summarization + browser page text extraction
   web_extract:

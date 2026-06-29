@@ -288,6 +288,8 @@ def _candidate_node_command_names(command: str) -> list[str]:
 
 
 _HERMES_NODE_TARGET_MAJOR = int(os.environ.get("HERMES_NODE_TARGET_MAJOR", "22"))
+_NODE_INDEX_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+_NODE_ZIP_RESPONSE_BODY_MAX_BYTES = 256 * 1024 * 1024
 _managed_node_heal_attempted = False
 _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "node-bootstrap.sh"
 
@@ -367,8 +369,12 @@ def _heal_managed_node_windows() -> bool:
     index_url = f"https://nodejs.org/dist/latest-v{_HERMES_NODE_TARGET_MAJOR}.x/"
     try:
         with urllib.request.urlopen(index_url, timeout=60) as response:
-            index_html = response.read().decode("utf-8", errors="replace")
-    except OSError:
+            index_html = _read_response_with_limit(
+                response,
+                _NODE_INDEX_RESPONSE_BODY_MAX_BYTES,
+                "Node release index",
+            ).decode("utf-8", errors="replace")
+    except (OSError, ValueError):
         return False
 
     match = re.search(
@@ -382,8 +388,12 @@ def _heal_managed_node_windows() -> bool:
     download_url = f"{index_url}{zip_name}"
     try:
         with urllib.request.urlopen(download_url, timeout=300) as response:
-            zip_bytes = response.read()
-    except OSError:
+            zip_bytes = _read_response_with_limit(
+                response,
+                _NODE_ZIP_RESPONSE_BODY_MAX_BYTES,
+                "Node Windows zip",
+            )
+    except (OSError, ValueError):
         return False
 
     try:
@@ -406,6 +416,13 @@ def _heal_managed_node_windows() -> bool:
         return False
 
     return node_tool_runnable(str(target / "node.exe"))
+
+
+def _read_response_with_limit(response, max_bytes: int, label: str) -> bytes:
+    data = response.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"{label} response exceeded {max_bytes} bytes")
+    return data
 
 
 def heal_hermes_managed_node() -> bool:

@@ -208,6 +208,117 @@ class TestHermesManagedNode:
         assert parts[:2] == [str(node_dir), str(bin_dir)]
         assert parts[-1] == "system-node"
 
+    def test_windows_managed_node_heal_bounds_download_reads(self, tmp_path, monkeypatch):
+        import io
+        import urllib.request
+        import zipfile
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        zip_name = "node-v22.1.0-win-x64.zip"
+        zip_root = zip_name.removesuffix(".zip")
+        archive_bytes = io.BytesIO()
+        with zipfile.ZipFile(archive_bytes, "w") as archive:
+            archive.writestr(f"{zip_root}/node.exe", b"node")
+
+        captured = {}
+
+        class _Resp:
+            def __init__(self, label, payload):
+                self.label = label
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                captured[self.label] = size
+                return self.payload if size < 0 else self.payload[:size]
+
+        def fake_urlopen(url, timeout=None):
+            if str(url).endswith("/latest-v22.x/"):
+                return _Resp("index", f'<a href="{zip_name}">{zip_name}</a>'.encode())
+            return _Resp("zip", archive_bytes.getvalue())
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
+
+        assert hermes_constants._heal_managed_node_windows() is True
+        assert captured["index"] == hermes_constants._NODE_INDEX_RESPONSE_BODY_MAX_BYTES + 1
+        assert captured["zip"] == hermes_constants._NODE_ZIP_RESPONSE_BODY_MAX_BYTES + 1
+        assert (home / "node" / "node.exe").is_file()
+
+    def test_windows_managed_node_heal_rejects_oversized_index(self, tmp_path, monkeypatch):
+        import urllib.request
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        calls = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                return b"x" * size
+
+        def fake_urlopen(url, timeout=None):
+            calls.append(str(url))
+            return _Resp()
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(hermes_constants, "_NODE_INDEX_RESPONSE_BODY_MAX_BYTES", 8)
+
+        assert hermes_constants._heal_managed_node_windows() is False
+        assert calls == ["https://nodejs.org/dist/latest-v22.x/"]
+        assert not (home / "node").exists()
+
+    def test_windows_managed_node_heal_rejects_oversized_zip(self, tmp_path, monkeypatch):
+        import urllib.request
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        zip_name = "node-v22.1.0-win-x64.zip"
+
+        class _Resp:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                return self.payload if size < 0 else self.payload[:size]
+
+        def fake_urlopen(url, timeout=None):
+            if str(url).endswith("/latest-v22.x/"):
+                return _Resp(f'<a href="{zip_name}">{zip_name}</a>'.encode())
+            return _Resp(b"x" * 9)
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(hermes_constants, "_NODE_ZIP_RESPONSE_BODY_MAX_BYTES", 8)
+
+        assert hermes_constants._heal_managed_node_windows() is False
+        assert not (home / "node").exists()
+
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
 class TestNodeToolRunnable:

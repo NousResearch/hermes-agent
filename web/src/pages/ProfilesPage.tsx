@@ -47,11 +47,15 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import {
-  bundleProfileName,
-  PROFILE_BUNDLES,
+  buildProfileBundlePlan,
+  defaultProfileBundle,
+  getProfileBundle,
+  listProfileBundles,
+  sanitizeBundlePrefix,
+} from "@/lib/profile-bundles";
+import {
   PROFILE_EXAMPLES,
   PROFILE_FIELD_GUIDANCE,
-  sanitizeProfilePrefix,
 } from "@/lib/profile-presets";
 import { cn, themedBody } from "@/lib/utils";
 
@@ -343,16 +347,19 @@ export default function ProfilesPage() {
   });
 
   // Bundle modal
+  const bundleCatalog = listProfileBundles();
+  const fallbackBundle = defaultProfileBundle();
   const [bundleModalOpen, setBundleModalOpen] = useState(false);
-  const [bundleId, setBundleId] = useState(PROFILE_BUNDLES[0]?.id ?? "");
-  const selectedBundle =
-    PROFILE_BUNDLES.find((bundle) => bundle.id === bundleId) ??
-    PROFILE_BUNDLES[0];
+  const [bundleId, setBundleId] = useState(fallbackBundle.id);
+  const selectedBundle = getProfileBundle(bundleId) ?? fallbackBundle;
   const [bundlePrefix, setBundlePrefix] = useState(
-    selectedBundle?.prefix ?? "team",
+    selectedBundle.defaultPrefix,
   );
   const [bundleCreating, setBundleCreating] = useState(false);
-  const closeBundleModal = useCallback(() => setBundleModalOpen(false), []);
+  const closeBundleModal = useCallback(
+    () => setBundleModalOpen(false),
+    [setBundleModalOpen],
+  );
   const bundleModalRef = useModalBehavior({
     open: bundleModalOpen,
     onClose: closeBundleModal,
@@ -498,20 +505,17 @@ export default function ProfilesPage() {
     () => new Set(profiles.map((profile) => profile.name)),
     [profiles],
   );
-  const normalizedBundlePrefix = selectedBundle
-    ? sanitizeProfilePrefix(bundlePrefix, selectedBundle.prefix)
-    : "team";
+  const normalizedBundlePrefix = sanitizeBundlePrefix(
+    bundlePrefix,
+    selectedBundle.defaultPrefix,
+  );
   const bundleProfiles = useMemo(
     () =>
-      selectedBundle
-        ? selectedBundle.roles.map((role) => ({
-            role,
-            name: bundleProfileName(normalizedBundlePrefix, role),
-            exists: existingProfileNames.has(
-              bundleProfileName(normalizedBundlePrefix, role),
-            ),
-          }))
-        : [],
+      buildProfileBundlePlan(
+        selectedBundle,
+        normalizedBundlePrefix,
+        existingProfileNames,
+      ),
     [existingProfileNames, normalizedBundlePrefix, selectedBundle],
   );
   const bundleHasConflicts = bundleProfiles.some((profile) => profile.exists);
@@ -541,7 +545,7 @@ export default function ProfilesPage() {
         "success",
       );
       setBundleModalOpen(false);
-      setBundlePrefix(selectedBundle.prefix);
+      setBundlePrefix(selectedBundle.defaultPrefix);
       load();
     } catch (e) {
       const prefix = created.length ? `Created ${created.length} before stopping. ` : "";
@@ -951,7 +955,7 @@ export default function ProfilesPage() {
 
             <div className="min-h-0 overflow-y-auto p-5 grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
               <div className="grid gap-3">
-                {PROFILE_BUNDLES.map((bundle) => (
+                {bundleCatalog.map((bundle) => (
                   <button
                     key={bundle.id}
                     type="button"
@@ -961,7 +965,7 @@ export default function ProfilesPage() {
                     )}
                     onClick={() => {
                       setBundleId(bundle.id);
-                      setBundlePrefix(bundle.prefix);
+                      setBundlePrefix(bundle.defaultPrefix);
                     }}
                   >
                     <span className="block text-sm font-medium">{bundle.title}</span>
@@ -983,7 +987,7 @@ export default function ProfilesPage() {
                     id="bundle-prefix"
                     value={bundlePrefix}
                     onChange={(e) => setBundlePrefix(e.target.value)}
-                    placeholder={selectedBundle.prefix}
+                    placeholder={selectedBundle.defaultPrefix}
                   />
                   <p className="text-xs text-muted-foreground">
                     Names will use{" "}
@@ -1034,6 +1038,11 @@ export default function ProfilesPage() {
                             </Badge>
                           ))}
                         </div>
+                        {role.recommendedSkills?.length ? (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Skill set: {role.recommendedSkills.join(", ")}
+                          </p>
+                        ) : null}
                       </div>
                     ))}
                   </div>

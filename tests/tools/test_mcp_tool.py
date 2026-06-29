@@ -1379,6 +1379,32 @@ class TestBuildSafeEnv:
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
 
+    def test_tool_runtime_vars_passed(self):
+        """Tool runtime env vars (BUN_INSTALL, NODE_OPTIONS, DENO_INSTALL) pass through.
+
+        These are install-prefix and runtime-flag variables — not credentials.
+        MCP servers that shell out to Bun/Node/Deno need them to locate WASM
+        runtimes, native addons, and globally-installed tools.
+        """
+        from tools.mcp_tool import _build_safe_env
+
+        fake_env = {
+            "PATH": "/usr/bin",
+            "HOME": "/home/test",
+            "BUN_INSTALL": "/opt/bun",
+            "NODE_OPTIONS": "--experimental-wasm-simd",
+            "DENO_INSTALL": "/opt/deno",
+            "OPENAI_API_KEY": "sk-should-not-leak",
+        }
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _build_safe_env(None)
+
+        assert result["BUN_INSTALL"] == "/opt/bun"
+        assert result["NODE_OPTIONS"] == "--experimental-wasm-simd"
+        assert result["DENO_INSTALL"] == "/opt/deno"
+        # Secret still excluded
+        assert "OPENAI_API_KEY" not in result
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_error

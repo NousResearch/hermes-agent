@@ -263,9 +263,23 @@ _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
-# Environment variables that are safe to pass to stdio subprocesses
+# Environment variables that are safe to pass to stdio subprocesses.
+# These are tool runtime paths and platform environment variables — not
+# credentials or secrets.  Tool runtimes like Bun, Node, and Deno need
+# their install-prefix variables to locate WASM runtimes, native
+# addons, and global packages.  Without them, MCP servers that shell
+# out to these runtimes can crash with opaque WASM aborts or fail to
+# find globally-installed tools.
+#
+# If you add a key here it must be a runtime/platform variable whose
+# value does not contain secrets (no API keys, tokens, or passwords).
 _SAFE_ENV_KEYS = frozenset({
+    # Platform baseline
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
+    # Tool runtime paths — needed by MCP servers that shell out to these runtimes
+    "BUN_INSTALL",
+    "NODE_OPTIONS",
+    "DENO_INSTALL",
 })
 
 # Regex for credential patterns to strip from error messages

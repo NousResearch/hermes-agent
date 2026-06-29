@@ -20,6 +20,7 @@ class _FakeHTTPResponse:
     def __init__(self, status: int, body: bytes):
         self.status = status
         self._body = body
+        self.read_sizes = []
 
     def __enter__(self):
         return self
@@ -27,8 +28,28 @@ class _FakeHTTPResponse:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size=None) -> bytes:
+        self.read_sizes.append(size)
+        if size is None:
+            return self._body
+        return self._body[:size]
+
+
+class _FakeHTTPErrorBody:
+    """File-like body object used by urllib.error.HTTPError."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+        self.read_sizes = []
+
+    def read(self, size=None) -> bytes:
+        self.read_sizes.append(size)
+        if size is None:
+            return self._body
+        return self._body[:size]
+
+    def close(self) -> None:
+        pass
 
 
 def _openai_models_body(*ids: str) -> bytes:
@@ -203,6 +224,31 @@ def test_http_get_json_on_http_error_returns_code_none():
         status, body = azure_detect._http_get_json("https://x/", "k")
     assert status == 403
     assert body is None
+
+
+def test_http_get_json_limits_success_body_read():
+    """A hostile /models endpoint must not be read without a cap."""
+    limit = azure_detect._AZURE_DETECT_JSON_BODY_LIMIT_BYTES
+    resp = _FakeHTTPResponse(200, b'{"data":' + b'"x"' * limit)
+    with patch("hermes_cli.azure_detect.urllib_request.urlopen", return_value=resp):
+        status, body = azure_detect._http_get_json("https://x/models", "k")
+    assert status == 200
+    assert body is None
+    assert resp.read_sizes == [limit + 1]
+
+
+def test_probe_anthropic_messages_limits_http_error_body_read():
+    """Anthropic detection only needs a small diagnostic prefix."""
+    import urllib.error
+
+    limit = azure_detect._AZURE_DETECT_ERROR_BODY_LIMIT_BYTES
+    prefix = _anthropic_error_body("model not found")
+    fp = _FakeHTTPErrorBody(prefix + (b"x" * (limit * 4)))
+    err = urllib.error.HTTPError("https://x/v1/messages", 400, "Bad Request", {}, fp)
+    with patch("hermes_cli.azure_detect.urllib_request.urlopen", side_effect=err):
+        ok = azure_detect._probe_anthropic_messages("https://x", "k")
+    assert ok is True
+    assert fp.read_sizes == [limit + 1]
 
 
 # ----------------------------------------------------------------------

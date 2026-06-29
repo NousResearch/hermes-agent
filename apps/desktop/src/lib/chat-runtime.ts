@@ -223,7 +223,7 @@ export function normalizePersonalityValue(value: string): string {
 }
 
 export function parseSlashCommand(command: string) {
-  const match = command.replace(/^\/+/, '').match(/^(\S+)\s*(.*)$/)
+  const match = command.replace(/^\/+/, '').match(/^(\S+)\s*(.*)$/s)
 
   return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
 }

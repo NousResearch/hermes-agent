@@ -263,6 +263,22 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+_PYPI_JSON_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_pypi_json_response(resp) -> dict:
+    raw = resp.read(_PYPI_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _PYPI_JSON_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "PyPI response exceeded "
+            f"{_PYPI_JSON_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("PyPI response was not a JSON object")
+    return data
+
+
 def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
     """Fetch the latest version of a package from PyPI. Returns None on failure."""
     try:
@@ -270,7 +286,7 @@ def _fetch_pypi_latest(package: str = "hermes-agent") -> Optional[str]:
         url = f"https://pypi.org/pypi/{package}/json"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
+            data = _read_pypi_json_response(resp)
             return data.get("info", {}).get("version")
     except Exception:
         return None

@@ -313,6 +313,54 @@ def test_check_for_updates_non_docker_still_checks(tmp_path, monkeypatch):
     mock_run.assert_not_called()
 
 
+def test_fetch_pypi_latest_bounds_response_read(monkeypatch):
+    """PyPI update JSON should be read with a defensive size cap."""
+    import urllib.request
+
+    import hermes_cli.banner as banner
+
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            captured["size"] = size
+            data = json.dumps({"info": {"version": "9.9.9"}}).encode()
+            return data if size < 0 else data[:size]
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+
+    assert banner._fetch_pypi_latest("hermes-agent") == "9.9.9"
+    assert captured["size"] == banner._PYPI_JSON_RESPONSE_BODY_MAX_BYTES + 1
+
+
+def test_fetch_pypi_latest_rejects_oversized_response(monkeypatch):
+    """Oversized PyPI JSON should be treated like an update-check miss."""
+    import urllib.request
+
+    import hermes_cli.banner as banner
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            return b"x" * size
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    monkeypatch.setattr(banner, "_PYPI_JSON_RESPONSE_BODY_MAX_BYTES", 8)
+
+    assert banner._fetch_pypi_latest("hermes-agent") is None
+
+
 def test_prefetch_non_blocking():
     """prefetch_update_check() should return immediately without blocking."""
     import hermes_cli.banner as banner

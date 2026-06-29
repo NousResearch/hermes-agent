@@ -16,63 +16,115 @@ tags:
   - session-memory
   - context-management
 status: active
-version: 1.0
-created: 2026-06-24
+version: 2.1
+updated: 2026-06-28
+schema: memory-schema-v1.1
+pairs_with: use-new-chat >= 1.7
 ---
 
-# Use Close Chat
+# Use Close Chat (v2.1 · 2026-06-28)
 
-ปิดแชทแบบปลอดภัย + เขียน "ความจำถาวร" ให้แชทหน้าอ่านตอนเปิด · แก้ปัญหา AI ลืมว่าทำอะไร แก้อะไร ถึงไหน เมื่อข้ามแชท
+คู่กับ Use New Chat ≥ v1.7 · อ้าง Memory Schema v1.1 · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือนก่อน
 
-> คู่กับ Use New Chat: เปิด = New Chat (อ่านความจำล่าสุดก่อนเริ่ม) · ปิด = Close Chat (เขียนความจำ)
-> บทบาทไม่ทับกัน: Close Chat = ปิดงาน+เขียน memory · Review Chat = ตรวจคุณภาพงาน/claim · Save Git = commit/push · New Chat = เปิดงาน+อ่าน memory
-> Close Chat **ไม่ push/merge เอง** ชี้ไป Use Save Git / Use Merge to Production
+ปิดแชทแบบปลอดภัย + เขียน "ความจำถาวร" ให้แชทหน้าอ่านตอนเปิด · แก้ปัญหา AI ลืมว่าทำอะไร แก้อะไร ถึงไหน + กัน AI โกหกว่าเสร็จทั้งที่ยังไม่ตรวจ
 
-## Pre-Close Gate (5 ด่านสั้น + ค่าปลอดภัยตั้งต้น)
+> บทบาทไม่ทับกัน: Close Chat = ปิดงาน+เขียน memory · Review Chat = ตรวจคุณภาพ/claim · Save Git = commit/push · Merge to Production = merge/deploy · New Chat = เปิดงาน+อ่าน memory
+> Close Chat **ไม่ push/merge/deploy เอง** ชี้ไป Use Save Git / Use Merge to Production
 
-1. **Commit แล้วยัง** — รัน `git status --short --branch` จริง · มีไฟล์ค้าง = ยังปิด clean ไม่ได้ · ถามเจ้าของงานจะ commit / stash / discard
-2. **ต้อง push / merge / แจ้ง merger ไหม** — ถ้าใช่ ชี้ไป Use Save Git (merge-gate) หรือ Use Merge to Production · Close Chat ไม่ทำเอง
-3. **แต่ละงานในแชท "ทำจริง" ไหม** — ไล่ทุก task · แยก `verified` (มีหลักฐานตรวจจริง) กับ `claimed` (แค่ AI บอกว่าเสร็จ) · claimed ที่ยังไม่ตรวจ = นับเป็นงานค้าง
-4. **AI ลืมอะไรไหม** — สรุป prompt ทั้งแชทของเจ้าของงานเป็น: เป้าหมายเดิม / คำสั่งที่เปลี่ยนทิศ / decision สำคัญ / ข้อห้าม → ข้อไหนยังไม่ทำหรือตกหล่น เอามาแสดง
-5. **Claim + dirty** — ปลด claim ของงานนี้ (`claim release` หรือเปลี่ยนเป็น handoff) · dirty ที่เป็นงานนี้ต้องตัดสินก่อน · dirty ของคนอื่น = ไม่แตะ รายงาน
+## Prompt
 
-## เขียนความจำถาวร (review-before-write — เสนอก่อน รออนุมัติถ้าไม่มีคำสั่งชัด)
+```text
+Use Close Chat
 
-1. `handoff.md` = สถานะล่าสุดของโปรเจกต์ (สั้น) + ลิงก์ไป session log · ไม่ใช่ที่ทิ้ง log ทุกแชท
+คู่กับ Use New Chat ≥ v1.7 · อ้าง Memory Schema v1.1 · เช็ก schema version ตอนเริ่ม ไม่ตรง = เตือนก่อน
+ปิดแชทแบบปลอดภัย + เขียน "ความจำถาวร" ให้แชทหน้าอ่านตอนเปิด · แก้ปัญหา AI ลืมว่าทำอะไร แก้อะไร ถึงไหน + กัน AI โกหกว่าเสร็จทั้งที่ยังไม่ตรวจ
+บทบาทไม่ทับกัน: Close Chat = ปิดงาน+เขียน memory · Review Chat = ตรวจคุณภาพ/claim · Save Git = commit/push · Merge to Production = merge/deploy · New Chat = เปิดงาน+อ่าน memory
+Close Chat ไม่ push/merge/deploy เอง ชี้ไป Use Save Git / Use Merge to Production
+
+กฎบังคับ (เหมือน New Chat — เพราะนี่คือด่านสุดท้าย ยิ่งต้องเข้ม):
+- เจ้าของงานอาจเป็น non-dev → อธิบายภาษาคน · ทุกคำสั่งให้เขารันต้องก๊อปวางได้ · ห้ามถามว่า "ใช้ test ตัวไหน" ค้นเอง
+- ห้ามบอกว่า "ปิดแล้ว/clean/ผ่าน" โดยไม่รัน command จริง · ทุกค่ามาจาก command จริง
+- ไม่มี output จริงแปะ = ถือเป็น claimed อัตโนมัติ (กฎเหล็กกันโกหก)
+- redact secret ทุกอย่างก่อนเขียน memory (Schema §7)
+- แนบ Evidence footer (timestamp/host/cwd/commands) ท้ายรายงานเสมอ
+
+Pre-Close Gate (6 ด่าน):
+
+1. Commit ค้างไหม — รัน `git status --short --branch` จริง · มีไฟล์ค้าง = ยังปิด clean ไม่ได้ → ถามเจ้าของ: commit / stash / discard (เสนอคำสั่งก๊อปวางทั้ง 3 ทาง)
+2. ต้อง push/merge/deploy ไหม — ถ้าใช่ ชี้ไป Use Save Git / Use Merge to Production · Close ไม่ทำเอง
+3. Quality Gate ผ่านจริงไหม — ค้น gate จาก repo เอง (Schema §5: package.json/Makefile/pyproject/CI) แล้วรันจริง + แปะ output · gate ใดไม่มีในโปรเจกต์ = N/A · ไม่เจอ gate เลย = บอกตรง ๆ ไม่เดาว่าผ่าน
+4. ไล่ทุก task: verified หรือ claimed — ตัดสินตามบันไดหลักฐาน (Schema §4) · claimed ที่ยังไม่ตรวจ = งานค้าง · ห้ามเลื่อน claimed ขึ้น verified เอง
+5. Deploy verify (เฉพาะถ้ารอบนี้ถึงขั้น merge→main) — โปรเจกต์ deploy แบบ CI/CD auto-on-merge:
+   - ตรวจสถานะ CI run ของ SHA ที่ merge (เช่น `gh run list` สำหรับ GitHub / `glab ci status` หรือ pipeline API สำหรับ GitLab) → ต้องเขียวถึงนับ deploy verified
+   - ถ้ามี health endpoint → ยิงดูตอบ 200 ไหม + เทียบ live SHA กับ SHA ที่ตั้งใจ deploy
+   - CI ยังรัน/แดง/ไม่เทียบ SHA = `NEED_OWNER_ACTION_BEFORE_CLOSE` ห้ามบอกว่า deploy แล้ว
+6. Claim + dirty — ปลด claim ของงานนี้ (release/เปลี่ยนเป็น handoff) · dirty ที่เป็นงานนี้ต้องตัดสินก่อน · dirty ของคนอื่น = ไม่แตะ รายงาน
+   - ถ้าจบที่ `NEED_OWNER_ACTION_BEFORE_CLOSE` → ห้ามปลด claim (กันงานหลุดให้คนอื่นทับทั้งที่ยังไม่จบ)
+
+สรุป prompt ทั้งแชท (กัน AI ลืมคำสั่งเจ้าของ):
+ไล่ prompt ทั้งแชทของเจ้าของงาน สรุปเป็น: เป้าหมายเดิม / คำสั่งที่เปลี่ยนทิศ / decision สำคัญ / ข้อห้าม → ข้อไหนยังไม่ทำหรือตกหล่น เอามาแสดง
+
+เขียนความจำถาวร (review-before-write — เสนอก่อน รออนุมัติถ้าไม่มีคำสั่งชัด):
+เขียนตาม Memory Schema v1.1 §1 · redact secret ก่อนเขียนทุกครั้ง (§7)
+
+1. `handoff.md` = สถานะล่าสุด (สั้น) + pointer ไป session log
    - ถ้า handoff ถูกแก้หลังเริ่มแชท → อ่าน diff ก่อนเขียน · ชนกับคนอื่น = เขียนเข้า review queue ก่อน ไม่ทับทันที
-2. session log = `$HERMES_OBSIDIAN_ROOT/projects/<project>/session-logs/YYYY-MM-DD-<staff>-<branch>.md`
-   ($HERMES_OBSIDIAN_ROOT: local = `/Users/rattanasak/ObsidianVault/HermesAgent` · VPS = `/home/linux-nat/ObsidianVault/HermesAgent`)
-   - อัปเดต `latest-close.md` (ตัวชี้ session ล่าสุดต่อโปรเจกต์) ให้ New Chat อ่านถูกไฟล์
-3. เนื้อ session log ขั้นต่ำ:
+2. session log (path ตาม Schema) เนื้อขั้นต่ำ:
    - เป้าหมายรอบนี้
-   - Changed-files table: `| file | owner | changed_by | reason | verification | risk | next_owner |`
-   - Decision log: การตัดสินใจสำคัญ + ทำไมเลือกทางนี้
-   - คำสั่งตรวจ + ผลจริง
-   - งานค้าง + เจ้าของถัดไป
+   - Changed-files table: | file | owner | changed_by | reason | verification(verified/claimed+หลักฐาน) | risk | next_owner |
+   - Decision log: ตัดสินใจอะไร + ทำไมเลือกทางนี้
+   - Quality gate ที่รัน + output จริง
+   - Deploy: merge SHA / CI status / live SHA (ถ้ามี)
+   - งานค้าง (รวม claimed ที่ยังไม่ตรวจ) + เจ้าของถัดไป
    - ความเสี่ยงที่เหลือ
-   - next step + ข้อความเปิดแชทหน้า
+   - next step + ข้อความเปิดแชทหน้า (พร้อมก๊อป)
+3. อัปเดต pointer + ไฟล์ประสาน (สำคัญ — New Chat อ่านพวกนี้):
+   - `latest-close.md` (pointer ต่อ staff ตาม Schema §6)
+   - `.hermes/active.md` = งานที่กำลังทำ/ค้างของ staff นี้
+   - `.hermes/decisions.md` = append decision สำคัญรอบนี้ (ห้ามเขียนทับของเดิม)
 
-## Decision Token ปิด (บอกแชทหน้าให้ทำตัวยังไง)
+Business Plan Sync (capability-based — ทำเฉพาะเมื่อมี `.project/BusinessPlan.md`):
+ถามตัวเอง: รอบนี้มี feature ใหม่ / ราคาเปลี่ยน / เจอ insight ลูกค้าใหม่ / คู่แข่งเปลี่ยน ที่ขยับแผนธุรกิจไหม
+- ไม่มี → ระบุใน Output ว่า "Business Plan: รอบนี้ไม่มีการเปลี่ยนด้านธุรกิจ"
+- มี → อัป [fact] ใน `.project/BusinessPlan.md` + ต่อท้าย log ใน `.project/BusinessPlan-Full.md` (ห้ามทับ log เก่า)
+ห้ามบังคับอัปเดตทั้งที่รอบนั้นไม่มีอะไรกระทบธุรกิจ (กันไฟล์รก/ข้อมูลลม) · รายละเอียดเทมเพลตอยู่ใน Use BusinessPlan
 
-- `CLOSED_CLEAN` — commit ครบ ไม่มีค้าง · New Chat ทำงานต่อได้เลย
-- `CLOSED_WITH_PENDING` — ปิดได้แต่มีงานค้าง · New Chat ต้องอ่านงานค้างก่อนเริ่ม
-- `NEED_OWNER_ACTION_BEFORE_CLOSE` — ยังปิดไม่ได้ (dirty ไม่ตัดสิน / ต้อง commit / ต้อง merge) · ห้ามบอกว่าปิดแล้ว
+Decision Token ปิด (ตาม Schema §2):
+- `CLOSED_CLEAN` — commit ครบ ไม่มีค้าง gate เขียว (CI เขียวถ้ามี deploy)
+- `CLOSED_WITH_PENDING` — ปิดได้แต่มีงานค้าง/claimed · ระบุชัดว่าค้างอะไร
+- `NEED_OWNER_ACTION_BEFORE_CLOSE` — ยังปิดไม่ได้ (dirty/ยัง commit/ยัง merge/CI แดง) · ห้ามบอกว่าปิดแล้ว · ห้ามปลด claim · แสดงคำสั่งแก้แบบก๊อปวาง
 
-## Output
+รูปแบบ Output บังคับ:
 
-- สรุปภาษาคน (ทำอะไรไป / เหลืออะไร / ลืมอะไรไหม)
-- Decision token
-- ลิงก์ session log + handoff ที่อัปเดต (เป็น path ข้อความ ไม่ใช่ลิงก์คลิกถ้าอยู่นอกโปรเจกต์)
-- งานค้าง + เจ้าของถัดไป
-- ข้อความเปิดแชทหน้า (พร้อมใช้)
+Close Chat Report
+สรุปภาษาคน: ทำอะไรไป / เหลืออะไร / ลืมคำสั่งไหนไหม
+Tasks: <task> = verified(หลักฐาน) | claimed(เหตุที่ยังไม่ตรวจ)   ← ไล่ทุกอัน
+Quality Gate: <gate ที่ค้นเจอ> = ผล + output (หรือ N/A / ไม่พบ gate)
+Deploy: merge SHA / CI status / live SHA   (หรือ N/A ถ้ายังไม่ถึง merge)
+Memory written: session log path / handoff / active.md / decisions.md(+N บรรทัด)
+Business Plan: <อัปอะไรใน .project/BusinessPlan(.md/-Full.md) หรือ "ไม่มีการเปลี่ยนด้านธุรกิจ" หรือ N/A ถ้าไม่มีไฟล์>
+Decision Token: <token> + เหตุผล
+งานค้าง: <รายการ> + เจ้าของถัดไป
+ข้อความเปิดแชทหน้า: <ก๊อปวางได้>
+Evidence: timestamp / host / cwd / commands ที่รันจริง
+
+ตัวอย่าง CLEAN: Decision Token: CLOSED_CLEAN · commit ครบบน feature/x · test+lint+build เขียว (output แปะแล้ว) · merge→main CI เขียว live SHA ตรง · ปลด claim แล้ว
+ตัวอย่าง BLOCKED: Decision Token: NEED_OWNER_ACTION_BEFORE_CLOSE · มี 2 ไฟล์ค้างยังไม่ commit + CI run ของ merge ล่าสุดยัง failing · ยังไม่ปิด ไม่ปลด claim · รัน: git add -A && git commit -m "..." แล้วรอ CI เขียวก่อนปิดใหม่
+
+ข้อห้าม: บอก "ปิดแล้ว" โดยไม่รัน git/CI จริง · เลื่อน claimed เป็น verified โดยไม่มี output · เขียน secret ลง memory · ปลด claim ตอนยังไม่จบ · สรุปด้วยศัพท์เทคนิคโดยไม่แปล
+```
 
 ## Changelog
 
-- v1.0 (2026-06-24): สร้างใหม่ตามโจทย์เจ้าของงาน (แก้ AI ลืมงานข้ามแชท) · ผ่านตรวจ 2 AI (Claude+Codex) · Pre-Close Gate 5 ด่าน · เขียนความจำถาวร (handoff สั้น + session log แยกคน/วัน/branch + latest-close pointer ให้ New Chat อ่าน) · changed-files + decision log สำหรับทีม · กันชน handoff คนอื่น · Decision token ปิด 3 แบบ · ไม่ push/merge เอง
+- v2.1 (2026-06-28): เพิ่มขั้น Business Plan Sync (capability-based) · ปิดแชทแล้วถ้ามี `.project/BusinessPlan.md` ให้เช็คว่ารอบนี้มีอะไรกระทบแผนธุรกิจไหม → อัป BusinessPlan(.md/-Full.md) เฉพาะเมื่อเปลี่ยนจริง + เพิ่มบรรทัด Business Plan ใน Output · ผูกกับ Use BusinessPlan v1.0 (ชุด Project OS)
+- v2.0 (2026-06-26): เขียนใหม่ทั้งฉบับให้เกาะ Memory Schema v1.1 · เพิ่ม Pre-Close Gate เป็น 6 ด่าน (Quality Gate auto-detect ค้นเอง + Deploy verify ผ่านสถานะ CI ของ merge SHA) · ผูก verified/claimed กับบันไดหลักฐาน · ห้ามปลด claim ตอน NEED_OWNER_ACTION · เขียน memory เพิ่ม active.md + decisions.md (append) · Output format ตายตัว + Evidence footer · เช็ก schema version ตอนเริ่ม
+- v1.0 (2026-06-24): สร้างใหม่ตามโจทย์เจ้าของงาน (แก้ AI ลืมงานข้ามแชท) · Pre-Close Gate 5 ด่าน · handoff สั้น + session log แยกคน/วัน/branch + latest-close pointer · Decision token 3 แบบ · ไม่ push/merge เอง
 
 ## Graph Links
 
 - Parent hub: [[skills/prompt-shortcuts/Prompt Shortcuts|Prompt Shortcuts]]
 - Registry: [[ai-context/prompt-shortcut-registry|Prompt Shortcut Registry]]
+- Schema: [[skills/prompt-shortcuts/references/memory-schema|Memory Schema v1.1]]
 - Pair: [[skills/prompt-shortcuts/references/use-new-chat|Use New Chat]]
 - Related: [[skills/prompt-shortcuts/references/review-chat|Review Chat]]
+- คู่มือเจ้าของงาน: [[skills/prompt-shortcuts/references/memory-system-owner-guide-th|ระบบความจำข้ามแชท — คู่มือเจ้าของงาน]]

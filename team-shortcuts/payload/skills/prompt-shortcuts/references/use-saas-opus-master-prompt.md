@@ -27,6 +27,10 @@ source: "Owner instruction in Codex chat, 2026-06-07: remember and resend this d
 
 # Use SaaS Opus Master Prompt
 
+> ยุบรวมแล้ว (2026-06-28): prompt นี้กลายเป็น "เครื่องยนต์โหมด SaaS" ของชุด Project OS
+> เนื้อหาเต็มยังอยู่ครบที่นี่ ไม่ถูกลบ · เรียกชื่อเดิมก็ยังได้ผลเหมือนเดิม
+> เวลาจะสร้าง/อัปเดตไฟล์แผนธุรกิจประจำ project ให้ใช้ [[skills/prompt-shortcuts/references/use-businessplan|Use BusinessPlan]] ซึ่งเรียก prompt นี้มาเป็นเครื่องวางแผนภายใน
+
 ## Shortcut
 
 ```text

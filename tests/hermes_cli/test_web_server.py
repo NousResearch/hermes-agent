@@ -1069,6 +1069,57 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json() == {"available": False, "voices": []}
 
+    def test_elevenlabs_voices_bounds_response_read(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_env", lambda: {"ELEVENLABS_API_KEY": "key"})
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                captured["size"] = size
+                data = json.dumps({
+                    "voices": [{"voice_id": "voice-1", "name": "Voice One"}],
+                }).encode()
+                return data if size < 0 else data[:size]
+
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+
+        resp = self.client.get("/api/audio/elevenlabs/voices")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["available"] is True
+        assert body["voices"][0]["voice_id"] == "voice-1"
+        assert captured["size"] == web_server._DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1
+
+    def test_elevenlabs_voices_rejects_oversized_response(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_env", lambda: {"ELEVENLABS_API_KEY": "key"})
+        monkeypatch.setattr(web_server, "_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES", 8)
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                return b"x" * size
+
+        monkeypatch.setattr(web_server.urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+
+        resp = self.client.get("/api/audio/elevenlabs/voices")
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "Could not load ElevenLabs voices"
+
     def test_speak_text_returns_base64_data_url(self, monkeypatch, tmp_path):
         import tools.tts_tool as tts_tool
 
@@ -4579,6 +4630,73 @@ class TestProbeGatewayHealth:
         assert alive is True
         assert body["status"] == "ok"
         assert body["pid"] == 42
+
+    def test_successful_probe_bounds_response_read(self, monkeypatch):
+        """Gateway health JSON should be read with a defensive size cap."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+
+        captured = {}
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                captured["size"] = size
+                data = json.dumps({"status": "ok", "pid": 42}).encode()
+                return data if size < 0 else data[:size]
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", lambda req, **kw: _Resp())
+        alive, body = ws._probe_gateway_health()
+        assert alive is True
+        assert body["pid"] == 42
+        assert captured["size"] == ws._DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1
+
+    def test_oversized_detailed_probe_falls_back_to_simple_health(self, monkeypatch):
+        """An oversized detailed health body should not block the fallback path."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        monkeypatch.setattr(ws, "_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES", 16)
+
+        calls = []
+
+        class _Resp:
+            status = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, size=-1):
+                return self.payload if size < 0 else self.payload[:size]
+
+        def mock_urlopen(req, **kwargs):
+            calls.append(req.full_url)
+            if len(calls) == 1:
+                return _Resp(b"x" * 17)
+            return _Resp(json.dumps({"status": "ok"}).encode())
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+        alive, body = ws._probe_gateway_health()
+        assert alive is True
+        assert body["status"] == "ok"
+        assert calls == [
+            "http://gw:8642/health/detailed",
+            "http://gw:8642/health",
+        ]
 
     def test_detailed_fails_falls_back_to_simple_health(self, monkeypatch):
         """If /health/detailed fails, falls back to /health."""

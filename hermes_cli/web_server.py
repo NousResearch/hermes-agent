@@ -1035,6 +1035,19 @@ except (ValueError, TypeError):
 # config surface.
 
 
+_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_dashboard_json_response(response) -> Any:
+    raw = response.read(_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "dashboard HTTP JSON response exceeded "
+            f"{_DASHBOARD_JSON_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(raw.decode("utf-8"))
+
+
 def _probe_gateway_health() -> tuple[bool, dict | None]:
     """Probe the gateway via its HTTP health endpoint (cross-container).
 
@@ -1070,7 +1083,7 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
             req = urllib.request.Request(path, method="GET")
             with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
                 if resp.status == 200:
-                    body = json.loads(resp.read())
+                    body = _read_dashboard_json_response(resp)
                     return True, body
         except Exception:
             continue
@@ -3193,7 +3206,7 @@ async def get_elevenlabs_voices():
 
         def _fetch() -> Dict[str, Any]:
             with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return _read_dashboard_json_response(response)
 
         payload = await loop.run_in_executor(None, _fetch)
     except urllib.error.HTTPError as exc:

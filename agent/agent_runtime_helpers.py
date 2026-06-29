@@ -1622,6 +1622,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             from agent.moa_loop import MoAClient
 
             agent.api_key = api_key or "moa-virtual-provider"
+            agent._real_base_url = agent.base_url
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
             agent.client = MoAClient(agent.model or "default")

@@ -765,6 +765,11 @@ def init_agent(
         )
         agent._client_kwargs = {}
         agent.api_key = api_key or "moa-virtual-provider"
+        # Preserve the real base_url for non-MoA code paths (boot probes,
+        # desktop model refresh, self-improvement reviews) that read
+        # agent.base_url and try HTTP connections.  moa://local is a
+        # virtual address only MoAClient understands.
+        agent._real_base_url = agent.base_url
         agent.base_url = "moa://local"
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")

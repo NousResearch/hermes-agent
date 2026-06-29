@@ -78,13 +78,28 @@ def test_no_managed_dir_means_user_value_wins(hermes_home):
     assert cfg_get(load_config(), "model", "default") == "user/model-y"
 
 
-def test_user_env_overrides_shell(tmp_path, monkeypatch):
+def test_shell_env_wins_by_default(tmp_path, monkeypatch):
+    """12-factor: .env fills missing values but does NOT override shell env."""
     from hermes_cli.env_loader import load_hermes_dotenv
 
     home = tmp_path / "home"
     home.mkdir()
     (home / ".env").write_text("FOO_TOKEN=from_user_env\n", encoding="utf-8")
     monkeypatch.setenv("FOO_TOKEN", "from_shell")
+    monkeypatch.delenv("HERMES_DOTENV_OVERRIDE", raising=False)
+    load_hermes_dotenv(hermes_home=str(home))
+    assert os.environ["FOO_TOKEN"] == "from_shell"
+
+
+def test_dotenv_override_opt_in_restores_legacy(tmp_path, monkeypatch):
+    """HERMES_DOTENV_OVERRIDE=1 restores legacy .env-overrides-shell behavior."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("FOO_TOKEN=from_user_env\n", encoding="utf-8")
+    monkeypatch.setenv("FOO_TOKEN", "from_shell")
+    monkeypatch.setenv("HERMES_DOTENV_OVERRIDE", "1")
     load_hermes_dotenv(hermes_home=str(home))
     assert os.environ["FOO_TOKEN"] == "from_user_env"
 

@@ -782,6 +782,28 @@ class TestWebServerEndpoints:
         messages = self.client.get("/api/sessions/worker-only/messages?profile=worker").json()
         assert [m["content"] for m in messages["messages"]] == ["worker"]
 
+    def test_session_stats_excludes_compression_children(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compressed-root", source="cli")
+            db.append_message(session_id="compressed-root", role="user", content="before")
+            db.end_session("compressed-root", "compression")
+            db.create_session(session_id="compressed-tip", source="cli", parent_session_id="compressed-root")
+            db.append_message(session_id="compressed-tip", role="user", content="after")
+            db.create_session(session_id="standalone", source="cli")
+            db.append_message(session_id="standalone", role="user", content="solo")
+        finally:
+            db.close()
+
+        listed = self.client.get("/api/sessions?limit=20&min_messages=0").json()
+        stats = self.client.get("/api/sessions/stats").json()
+
+        assert listed["total"] == 2
+        assert stats["total"] == listed["total"]
+        assert stats["active_store"] == listed["total"]
+
     def test_analytics_endpoints_read_requested_profile(self):
         from hermes_state import SessionDB
         from hermes_cli import profiles as profiles_mod

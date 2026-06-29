@@ -7911,9 +7911,9 @@ async def get_session_stats(profile: Optional[str] = None):
     """
     db = _open_session_db_for_profile(profile)
     try:
-        total = db.session_count(include_archived=True)
-        active_store = db.session_count(include_archived=False)
-        archived = db.session_count(archived_only=True)
+        total = db.session_count(include_archived=True, exclude_children=True)
+        active_store = db.session_count(include_archived=False, exclude_children=True)
+        archived = db.session_count(archived_only=True, exclude_children=True)
         messages = db.message_count()
         by_source: Dict[str, int] = {}
         try:

@@ -425,7 +425,9 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = strip_internal_tool_trace_lines(
+        _redact_gateway_user_facing_secrets(str(text))
+    )
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
@@ -443,7 +445,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    text = _redact_gateway_user_facing_secrets(text)
+    text = strip_internal_tool_trace_lines(_redact_gateway_user_facing_secrets(text))
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
@@ -1723,6 +1725,7 @@ from gateway.platforms.base import (
     MessageType,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    strip_internal_tool_trace_lines,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,

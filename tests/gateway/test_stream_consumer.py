@@ -84,6 +84,21 @@ class TestCleanForDisplay:
         # But "media:" is lowercase so won't match either
         assert result == text
 
+    def test_internal_tool_trace_line_stripped(self):
+        """Internal tool-trace banners are removed from streamed display text."""
+        text = (
+            "Done.\n"
+            "\u26a0\ufe0f \U0001f6e0\ufe0f `search repos (agent)` failed"
+        )
+
+        assert GatewayStreamConsumer._clean_for_display(text) == "Done."
+
+    def test_ordinary_tool_failure_prose_preserved(self):
+        """Normal explanations about failed tools are not trace banners."""
+        text = "The `pytest` command failed; rerun it after installing pytest."
+
+        assert GatewayStreamConsumer._clean_for_display(text) == text
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 

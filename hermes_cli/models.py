@@ -2415,7 +2415,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "bedrock":
         try:
             from agent.bedrock_adapter import bedrock_model_ids_or_none
-            ids = bedrock_model_ids_or_none()
+            ids = bedrock_model_ids_or_none(no_cache=force_refresh)
             if ids is not None:
                 return ids
         except Exception:
@@ -4110,9 +4110,15 @@ def validate_requested_model(
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
+            from agent.bedrock_adapter import (
+                discover_bedrock_models,
+                resolve_bedrock_region,
+                configured_bedrock_provider_filter,
+            )
             region = resolve_bedrock_region()
-            discovered = discover_bedrock_models(region)
+            discovered = discover_bedrock_models(
+                region, provider_filter=configured_bedrock_provider_filter()
+            )
             discovered_ids = {m["id"] for m in discovered}
             if requested in discovered_ids:
                 return {

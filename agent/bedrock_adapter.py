@@ -384,19 +384,46 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     return "us-east-1"
 
 
-def bedrock_model_ids_or_none() -> Optional[List[str]]:
+def configured_bedrock_provider_filter() -> Optional[List[str]]:
+    """Read ``bedrock.discovery.provider_filter`` from the user's config.
+
+    Returns the configured list of provider names (e.g. ``["anthropic"]``)
+    to restrict model discovery to, or ``None`` when unset/empty so callers
+    pass through to unfiltered discovery. Lazily imports the config loader to
+    avoid a circular import (``hermes_cli.config`` pulls in agent modules).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        discovery = (cfg.get("bedrock") or {}).get("discovery") or {}
+        raw = discovery.get("provider_filter") or []
+        filt = [str(p).strip() for p in raw if str(p).strip()]
+        return filt or None
+    except Exception:
+        return None
+
+
+def bedrock_model_ids_or_none(no_cache: bool = False) -> Optional[List[str]]:
     """Live-discover Bedrock model IDs for the active region.
 
     Returns a list of model ID strings if discovery succeeds and yields
     at least one model, or ``None`` on failure / empty result.  Callers
     should fall back to the static curated list when ``None`` is returned.
 
+    Pass ``no_cache=True`` to bypass the in-memory discovery cache so the
+    result reflects a live API call with the current ``provider_filter``.
+
     This helper consolidates the discover → extract-ids → fallback
     pattern that was previously duplicated across ``provider_model_ids``,
     ``list_authenticated_providers`` section 2, and section 3.
     """
     try:
-        discovered = discover_bedrock_models(resolve_bedrock_region())
+        discovered = discover_bedrock_models(
+            resolve_bedrock_region(),
+            provider_filter=configured_bedrock_provider_filter(),
+            no_cache=no_cache,
+        )
         if discovered:
             return [m["id"] for m in discovered]
     except Exception:
@@ -1095,6 +1122,7 @@ def reset_discovery_cache():
 def discover_bedrock_models(
     region: str,
     provider_filter: Optional[List[str]] = None,
+    no_cache: bool = False,
 ) -> List[Dict[str, Any]]:
     """Discover available Bedrock foundation models and inference profiles.
 
@@ -1107,6 +1135,10 @@ def discover_bedrock_models(
       - ``streaming``: Whether streaming is supported
 
     Caches results for 1 hour per region to avoid repeated API calls.
+    Pass ``no_cache=True`` to bypass the in-memory cache entirely (skip both
+    the read and the write) — useful for diagnostics where you need to prove
+    a result comes from a live API call with the current ``provider_filter``
+    rather than a stale cached entry.
 
     Mirrors OpenClaw's ``discoverBedrockModels()`` in
     ``extensions/amazon-bedrock/discovery.ts``.
@@ -1114,9 +1146,10 @@ def discover_bedrock_models(
     import time
 
     cache_key = f"{region}:{','.join(sorted(provider_filter or []))}"
-    cached = _discovery_cache.get(cache_key)
-    if cached and (time.time() - cached["timestamp"]) < _DISCOVERY_CACHE_TTL_SECONDS:
-        return cached["models"]
+    if not no_cache:
+        cached = _discovery_cache.get(cache_key)
+        if cached and (time.time() - cached["timestamp"]) < _DISCOVERY_CACHE_TTL_SECONDS:
+            return cached["models"]
 
     try:
         client = _get_bedrock_control_client(region)
@@ -1217,10 +1250,11 @@ def discover_bedrock_models(
         m["name"].lower(),
     ))
 
-    _discovery_cache[cache_key] = {
-        "timestamp": time.time(),
-        "models": models,
-    }
+    if not no_cache:
+        _discovery_cache[cache_key] = {
+            "timestamp": time.time(),
+            "models": models,
+        }
     return models
 
 

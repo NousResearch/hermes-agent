@@ -39,6 +39,15 @@ from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+def _repo_rel(path: Path) -> str | None:
+    """Repo-relative POSIX path, or None if `path` is outside REPO_ROOT."""
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return None
+
+
 SUPPRESS_MARKER = re.compile(r"#\s*windows-footgun\s*:\s*ok\b", re.IGNORECASE)
 
 # Line-level guard hints. If a line contains any of these tokens, we assume
@@ -337,9 +346,13 @@ def should_scan_file(path: Path) -> bool:
     for suffix in EXCLUDED_SUFFIXES:
         if str(path).endswith(suffix):
             return False
-    # Skip self and docs that intentionally mention the patterns
-    rel = path.relative_to(REPO_ROOT).as_posix()
-    if rel in EXCLUDED_FILES:
+    # Skip self and docs that intentionally mention the patterns. Paths
+    # outside REPO_ROOT (e.g. explicit-path mode on a sibling file or a
+    # relocated worktree) can never be in EXCLUDED_FILES, which only holds
+    # repo-relative paths — so treat "outside the repo" as "not excluded"
+    # rather than crashing on relative_to()'s ValueError.
+    rel = _repo_rel(path)
+    if rel is not None and rel in EXCLUDED_FILES:
         return False
     # Only scan text files (rough heuristic — .py, .md, .sh, .ps1, .yaml, etc.)
     if path.suffix in {".py", ".pyw", ".pyi"}:
@@ -600,7 +613,7 @@ def main(argv: list[str]) -> int:
         files_scanned += 1
         matches = scan_file(path, FOOTGUNS)
         for lineno, line, fg in matches:
-            rel = path.relative_to(REPO_ROOT).as_posix()
+            rel = _repo_rel(path) or str(path)
             print(f"{rel}:{lineno}: [{fg.name}]")
             print(f"    {line.strip()}")
             print(f"    — {fg.message}")

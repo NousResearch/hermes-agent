@@ -230,6 +230,8 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+# Feishu API token-invalid error codes — trigger a retry with a fresh token.
+_FEISHU_TOKEN_INVALID_CODES = frozenset({99991663, 99991664, 99991665, 99991666, 99991668})
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -1902,27 +1904,54 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
-        try:
-            msg_type, payload = self._build_outbound_payload(content)
-            body = self._build_update_message_body(msg_type=msg_type, content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            response = await self._run_blocking(self._client.im.v1.message.update, request)
-            result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
-                fallback_body = self._build_update_message_body(
-                    msg_type="text",
-                    content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
-                )
-                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
-                fallback_response = await self._run_blocking(self._client.im.v1.message.update, fallback_request)
-                result = self._finalize_send_result(fallback_response, "update failed")
-            if result.success:
-                result.message_id = message_id
-            return result
-        except Exception as exc:
-            logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+        _last_edit_error: Optional[Exception] = None
+        for attempt in range(_FEISHU_SEND_ATTEMPTS):
+            try:
+                msg_type, payload = self._build_outbound_payload(content)
+                body = self._build_update_message_body(msg_type=msg_type, content=payload)
+                request = self._build_update_message_request(message_id=message_id, request_body=body)
+                response = await self._run_blocking(self._client.im.v1.message.update, request)
+                if not self._response_succeeded(response):
+                    logger.warning(
+                        "[Feishu DIAG] edit failed: code=%s msg=%s raw.status_code=%s",
+                        getattr(response, "code"), getattr(response, "msg"),
+                        getattr(getattr(response, "raw", None), "status_code", None),
+                    )
+                # Token invalid — evict, force-refresh, and retry.
+                if not self._response_succeeded(response):
+                    code = getattr(response, "code", None)
+                    if code in _FEISHU_TOKEN_INVALID_CODES:
+                        logger.warning(
+                            "[Feishu] Token invalid (code=%s) on edit attempt %d/3 — evicting cache and force-refreshing",
+                            code, attempt + 1,
+                        )
+                        self._evict_feishu_token()
+                        await self._force_refresh_token()
+                        if attempt < _FEISHU_SEND_ATTEMPTS - 1:
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                result = self._finalize_send_result(response, "update failed")
+                if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                    logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+                    fallback_body = self._build_update_message_body(
+                        msg_type="text",
+                        content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                    )
+                    fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                    fallback_response = await self._run_blocking(self._client.im.v1.message.update, fallback_request)
+                    result = self._finalize_send_result(fallback_response, "update failed")
+                if result.success:
+                    result.message_id = message_id
+                return result
+            except Exception as exc:
+                _last_edit_error = exc
+                if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
+                    logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
+                    raise
+                await asyncio.sleep(2 ** attempt)
+                continue
+        err_msg = str(_last_edit_error) if _last_edit_error else "edit message failed after all retries"
+        return SendResult(success=False, error=err_msg)
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -3031,12 +3060,11 @@ class FeishuAdapter(BasePlatformAdapter):
             if response and getattr(response, "success", lambda: False)():
                 data = getattr(response, "data", None)
                 return getattr(data, "reaction_id", None)
-            logger.debug(
-                "[Feishu] Add reaction %s on %s rejected: code=%s msg=%s",
-                emoji_type,
-                message_id,
+            logger.warning(
+                "[Feishu DIAG] add_reaction failed: code=%s msg=%s raw.status=%s",
                 getattr(response, "code", None),
                 getattr(response, "msg", None),
+                getattr(getattr(response, "raw", None), "status_code", None),
             )
         except Exception:
             logger.warning(
@@ -3061,12 +3089,11 @@ class FeishuAdapter(BasePlatformAdapter):
             response = await self._run_blocking(self._client.im.v1.message_reaction.delete, request)
             if response and getattr(response, "success", lambda: False)():
                 return True
-            logger.debug(
-                "[Feishu] Remove reaction %s on %s rejected: code=%s msg=%s",
-                reaction_id,
-                message_id,
+            logger.warning(
+                "[Feishu DIAG] remove_reaction failed: code=%s msg=%s raw.status=%s",
                 getattr(response, "code", None),
                 getattr(response, "msg", None),
+                getattr(getattr(response, "raw", None), "status_code", None),
             )
         except Exception:
             logger.warning(
@@ -4531,7 +4558,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
-            return await self._run_blocking(self._client.im.v1.message.reply, request)
+            resp = await self._run_blocking(self._client.im.v1.message.reply, request)
+            if not self._response_succeeded(resp):
+                logger.warning(
+                    "[Feishu DIAG] reply failed: code=%s msg=%s raw=%s",
+                    getattr(resp, "code"), getattr(resp, "msg"),
+                    getattr(resp, "raw", None),
+                )
+            return resp
 
         # For topic/thread messages that fell back from reply→create, use
         # thread_id as receive_id so the message lands in the topic instead of
@@ -4561,7 +4595,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_create_message_request(receive_id_type, body)
-        return await self._run_blocking(self._client.im.v1.message.create, request)
+        resp = await self._run_blocking(self._client.im.v1.message.create, request)
+        if not self._response_succeeded(resp):
+            logger.warning(
+                "[Feishu DIAG] create failed: code=%s msg=%s raw=%s",
+                getattr(resp, "code"), getattr(resp, "msg"),
+                getattr(resp, "raw", None),
+            )
+        return resp
 
     @staticmethod
     def _response_succeeded(response: Any) -> bool:
@@ -4600,6 +4641,38 @@ class FeishuAdapter(BasePlatformAdapter):
     # Connection internals — websocket / webhook setup
     # =========================================================================
 
+    async def _warmup_token_cache(self) -> bool:
+        """Pre-fetch a tenant_access_token at startup so the first user
+        message doesn't trigger a cold-start token fetch that might fail.
+
+        Returns True on success, False on failure (caller retries as wanted).
+        """
+        if not self._client:
+            return False
+        for attempt in range(3):
+            try:
+                from lark_oapi.core import AccessTokenType, HttpMethod
+                from lark_oapi.core.model import BaseRequest
+                warmup_req = (
+                    BaseRequest.builder()
+                    .http_method(HttpMethod.GET)
+                    .uri("/open-apis/bot/v3/info")
+                    .token_types({AccessTokenType.TENANT})
+                    .build()
+                )
+                await asyncio.to_thread(self._client.request, warmup_req)
+                return True
+            except Exception as exc:
+                if attempt < 2:
+                    logger.warning(
+                        "[Feishu] Token warmup attempt %d/3 failed, retrying in 1s: %s",
+                        attempt + 1, exc,
+                    )
+                    await asyncio.sleep(1.0)
+                else:
+                    logger.warning("[Feishu] Token warmup failed after 3 attempts: %s", exc)
+        return False
+
     async def _connect_with_retry(self) -> None:
         for attempt in range(_FEISHU_CONNECT_ATTEMPTS):
             try:
@@ -4607,6 +4680,9 @@ class FeishuAdapter(BasePlatformAdapter):
                     await self._connect_websocket()
                 else:
                     await self._connect_webhook()
+                # Warm up the token cache so the first send doesn't trigger
+                # a cold-start token fetch that can fail and produce a 401.
+                await self._warmup_token_cache()
                 return
             except Exception as exc:
                 self._running = False
@@ -4726,6 +4802,20 @@ class FeishuAdapter(BasePlatformAdapter):
                             reply_to=None,
                             metadata=metadata,
                         )
+                # Token expired/invalid — clear cache and force-refresh before retry.
+                if not self._response_succeeded(response):
+                    code = getattr(response, "code", None)
+                    if code in _FEISHU_TOKEN_INVALID_CODES:
+                        logger.warning(
+                            "[Feishu] Token invalid (code=%s) on attempt %d/3 for chat %s — "
+                            "evicting cache and force-refreshing token",
+                            code, attempt + 1, chat_id,
+                        )
+                        self._evict_feishu_token()
+                        await self._force_refresh_token(context=f"chat {chat_id}")
+                        raise Exception(
+                            f"[Feishu] Token invalid (code={code}), retrying..."
+                        )
                 return response
             except Exception as exc:
                 last_error = exc
@@ -4744,6 +4834,133 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
                 await asyncio.sleep(wait_seconds)
         raise last_error or RuntimeError("Feishu send failed")
+
+    def _evict_feishu_token(self) -> None:
+        """Clear the cached tenant_access_token so the next SDK call fetches a fresh one.
+
+        Uses ``cache.pop`` to directly remove the entry (avoiding any risk
+        that a past-expiry empty string could be returned), with a
+        set-to-expired fallback for SDK versions that wrap the internal dict.
+        """
+        try:
+            from lark_oapi.core.cache.local_cache import LocalCache
+            app_id = self._app_id or os.getenv("FEISHU_APP_ID", "")
+            if not app_id:
+                return
+            cache = LocalCache.instance()
+            key = f"self_tenant_token:{app_id}"
+            # Try direct removal first (works with the standard LocalCache impl)
+            try:
+                cache.cache.pop(key, None)
+            except AttributeError:
+                pass
+            # Fallback: set to expired empty string (honoured by get() expiry check)
+            import time as _time
+            cache.set(key, "", int(_time.time() - 1))
+        except Exception:
+            logger.debug("[Feishu] Failed to evict cached token", exc_info=True)
+
+    async def _force_refresh_token(self, *, context: str = "") -> bool:
+        """Force-refresh the tenant_access_token by making a lightweight API call.
+
+        Call after ``_evict_feishu_token()`` so the retry doesn't inherit an
+        empty cache. Returns True on success, False on failure.
+
+        Note: ``client.request()`` returns a ``BaseResponse`` even on HTTP 401
+        (deserialized from the JSON body) — it does NOT raise. We check
+        ``resp.code == 0`` to confirm the refresh actually produced a working
+        token.
+        """
+        try:
+            from lark_oapi.core import AccessTokenType, HttpMethod
+            from lark_oapi.core.model import BaseRequest
+            refresh_req = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri("/open-apis/bot/v3/info")
+                .token_types({AccessTokenType.TENANT})
+                .build()
+            )
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(self._client.request, refresh_req),
+                timeout=10.0,
+            )
+            if resp is None or not resp.success():
+                ctx = f" ({context})" if context else ""
+                code = getattr(resp, "code", "unknown")
+                logger.warning(
+                    "[Feishu] Token refresh request returned code=%s%s",
+                    code, ctx,
+                )
+                return False
+            ctx = f" ({context})" if context else ""
+            logger.info("[Feishu] Token refreshed successfully after eviction%s", ctx)
+            return True
+        except Exception as refresh_exc:
+            ctx = f" ({context})" if context else ""
+            logger.warning(
+                "[Feishu] Token refresh after eviction failed%s: %s",
+                ctx, refresh_exc,
+            )
+            # Fallback: try a direct HTTP token fetch + manual cache set
+            return await self._force_refresh_token_http_fallback(context=context)
+
+    async def _force_refresh_token_http_fallback(self, *, context: str = "") -> bool:
+        """Fallback: fetch tenant_access_token via raw HTTP and manually set it in the SDK cache.
+
+        Used when the SDK-level refresh path fails. This bypasses any SDK
+        internal state issues (stale Config, wrapper cache, etc.) by making a
+        direct HTTP call and writing the result into ``TokenManager.cache``.
+        """
+        try:
+            import json as _json
+            import time as _time
+            from urllib.request import Request as _Req, urlopen as _urlopen
+            from urllib.error import URLError as _URLError
+
+            from lark_oapi.core.token import TokenManager
+
+            app_id = self._app_id or os.getenv("FEISHU_APP_ID", "")
+            app_secret = self._app_secret or os.getenv("FEISHU_APP_SECRET", "")
+            if not app_id or not app_secret:
+                return False
+
+            domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+            token_url = f"{domain}/open-apis/auth/v3/tenant_access_token/internal"
+
+            token_data = _json.dumps(
+                {"app_id": app_id, "app_secret": app_secret}
+            ).encode("utf-8")
+            req = _Req(
+                token_url,
+                data=token_data,
+                headers={"Content-Type": "application/json"},
+            )
+            with _urlopen(req, timeout=10) as resp:
+                body = _json.loads(resp.read().decode("utf-8"))
+
+            access_token = body.get("tenant_access_token")
+            expire = body.get("expire", 7200)
+            if not access_token:
+                return False
+
+            # Manually cache the new token so the next SDK call picks it up
+            cache_key = f"self_tenant_token:{app_id}"
+            cache_expire = int(_time.time() + expire - 600)
+            TokenManager.cache.set(cache_key, access_token, cache_expire)
+
+            ctx = f" ({context})" if context else ""
+            logger.info(
+                "[Feishu] Token refreshed via HTTP fallback%s", ctx
+            )
+            return True
+        except (_json.JSONDecodeError, _URLError, OSError, KeyError) as exc:
+            ctx = f" ({context})" if context else ""
+            logger.warning(
+                "[Feishu] Token HTTP fallback refresh failed%s: %s",
+                ctx, exc,
+            )
+            return False
 
     async def _release_app_lock(self) -> None:
         if not self._app_lock_identity:

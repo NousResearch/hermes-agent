@@ -51,6 +51,7 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
 import yaml
 
+from hermes_cli.config import get_project_root
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
@@ -372,7 +373,7 @@ def load_cli_config() -> Dict[str, Any]:
     """
     # Check user config first ({HERMES_HOME}/config.yaml)
     user_config_path = _hermes_home / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    project_config_path = get_project_root() / 'cli-config.yaml'
 
     # --ignore-user-config: force-skip the user config.yaml (still honor project
     # config as a fallback so defaults stay sensible).

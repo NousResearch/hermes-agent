@@ -120,6 +120,26 @@ def test_exact_preset_matching_is_not_fuzzy():
     assert exact_moa_preset_name(config, "coding please fix this") is None
 
 
+def test_exact_preset_skips_disabled_presets():
+    """Disabled presets must not be matched by name.
+
+    Prevents implicit MoA switches when the user has opted out of a
+    preset via ``enabled: false`` (issue #55187).
+    """
+    config = {
+        "presets": {
+            "default": {"enabled": False},
+            "review": {"enabled": True},
+        },
+    }
+
+    assert exact_moa_preset_name(config, "default") is None
+    assert exact_moa_preset_name(config, "review") == "review"
+    # Enabled defaults to True when key is absent.
+    config_missing = {"presets": {"coding": {}}}
+    assert exact_moa_preset_name(config_missing, "coding") == "coding"
+
+
 def test_active_preset_toggle_validation():
     config = {"default_preset": "coding", "presets": {"coding": {}, "review": {}}}
 

@@ -162,7 +162,14 @@ def exact_moa_preset_name(config: Any, text: str) -> str | None:
     if not wanted:
         return None
     cfg = normalize_moa_config(config)
-    return wanted if wanted in cfg["presets"] else None
+    if wanted not in cfg["presets"]:
+        return None
+    # Respect per-preset enabled flag: disabled presets must not be
+    # auto-selected by name matching (prevents implicit MoA switches
+    # when the user never explicitly opted in to the preset).
+    if not cfg["presets"][wanted].get("enabled", True):
+        return None
+    return wanted
 
 
 def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:

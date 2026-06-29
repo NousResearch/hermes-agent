@@ -260,6 +260,14 @@ class SessionOrchestrationRegistry:
             except sqlite3.OperationalError:
                 pass  # Column already exists — idempotent
 
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN discord_user_id TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
         self._write(_do)
 
     def _write(self, fn, conn: Optional[sqlite3.Connection] = None) -> Any:

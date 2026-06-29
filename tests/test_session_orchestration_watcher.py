@@ -735,3 +735,277 @@ class TestMarkerTailing:
         assert row.get("marker_offset") == 42, (
             "marker_offset column must be present and writable after migration"
         )
+
+
+# ---------------------------------------------------------------------------
+# Handoff marker tests (T009)
+# ---------------------------------------------------------------------------
+
+
+class FakeAdapterWithResume(FakeAdapter):
+    """FakeAdapter that records resume() calls instead of raising."""
+
+    def __init__(self, lifecycle: SessionLifecycle = SessionLifecycle.RUNNING):
+        super().__init__(lifecycle)
+        self.resume_calls: List[tuple] = []  # (handle, prompt) pairs
+
+    def resume(self, handle: SessionHandle, prompt: str) -> None:
+        self.resume_calls.append((handle, prompt))
+
+
+class TestHandoffMarkers:
+    """T009: handoff_continue auto-resumes; handoff_decision DMs the user."""
+
+    def test_handoff_continue_calls_resume_and_sets_running(self, registry, tmp_path):
+        """A recent handoff_continue marker must call adapter.resume(handle, '')
+        and override the lifecycle to RUNNING before the upsert."""
+        task_id = "t-hc-resume-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir)
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "handoff_continue",
+            {"handoff_text": "carry on"},
+            task=task_id,
+        )
+
+        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert len(adapter.resume_calls) == 1, (
+            "adapter.resume() must be called exactly once for handoff_continue"
+        )
+        _handle, prompt = adapter.resume_calls[0]
+        assert prompt == "", "resume must be called with an empty prompt"
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "RUNNING", (
+            "state must be RUNNING after handoff_continue overrides PAUSED_HANDOFF"
+        )
+
+    def test_handoff_continue_does_not_call_send_dm(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """handoff_continue must NOT trigger a DM — only auto-resume."""
+        task_id = "t-hc-no-dm-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir, discord_user_id="user-123")
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "handoff_continue",
+            {"handoff_text": "carry on"},
+            task=task_id,
+        )
+
+        dm_calls: List = []
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda *a, **kw: dm_calls.append(a),
+        )
+
+        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert dm_calls == [], "send_dm must NOT be called for handoff_continue"
+
+    def test_handoff_decision_calls_send_dm_with_question(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """A recent handoff_decision marker must send a DM containing the
+        marker payload's question text when discord_user_id is present."""
+        task_id = "t-hd-dm-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(
+            registry, task_id, workdir, discord_user_id="user-456"
+        )
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "handoff_decision",
+            {"question": "continue?", "handoff_text": "needs a decision"},
+            task=task_id,
+        )
+
+        # Inject a fake bot token so the DM branch executes
+        monkeypatch.setattr(
+            "tools.discord_tool._get_bot_token",
+            lambda: "fake-bot-token",
+        )
+
+        dm_calls: List = []
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda user_id, message, token, **kw: dm_calls.append(
+                (user_id, message, token)
+            ),
+        )
+
+        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert len(dm_calls) == 1, "send_dm must be called exactly once"
+        _, message, token = dm_calls[0]
+        assert "continue?" in message, "DM must include the question text"
+        assert token == "fake-bot-token"
+
+    def test_handoff_decision_does_not_call_resume(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """handoff_decision must NOT call adapter.resume() — DM only."""
+        task_id = "t-hd-no-resume-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(
+            registry, task_id, workdir, discord_user_id="user-789"
+        )
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "handoff_decision",
+            {"question": "what to do?", "handoff_text": "decision needed"},
+            task=task_id,
+        )
+
+        # Suppress network calls
+        monkeypatch.setattr("tools.discord_tool._get_bot_token", lambda: "tok")
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda *a, **kw: True,
+        )
+
+        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert adapter.resume_calls == [], (
+            "adapter.resume() must NOT be called for handoff_decision"
+        )
+
+    def test_handoff_decision_skips_dm_when_no_user_id(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """handoff_decision with no discord_user_id must be a no-op (no DM,
+        no exception)."""
+        task_id = "t-hd-no-uid-001"
+        workdir = str(tmp_path)
+        # No discord_user_id in the row
+        _seed_row_with_workdir(registry, task_id, workdir)
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "handoff_decision",
+            {"question": "no user?", "handoff_text": "need decision"},
+            task=task_id,
+        )
+
+        dm_calls: List = []
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda *a, **kw: dm_calls.append(a),
+        )
+
+        adapter = FakeAdapterWithResume(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+
+        # Must not raise
+        watcher.tick()
+
+        assert dm_calls == [], (
+            "send_dm must NOT be called when discord_user_id is absent"
+        )
+
+    def test_handoff_continue_resume_runs_under_lock(self, tmp_path):
+        """Lock-ordering contract: acquire_lock → adapter.resume → release_lock.
+
+        The watcher must hold the per-session lock when it calls adapter.resume()
+        for handoff_continue, so the relay cannot race on the same tmux pane.
+        We verify this by wrapping the registry and adapter to record a shared
+        event log and asserting the acquire/resume/release order.
+        """
+        from session_orchestration.registry import SessionOrchestrationRegistry
+
+        # --- shared event log ---
+        events: List[str] = []
+
+        # --- registry wrapper that records lock events ---
+        inner_registry = SessionOrchestrationRegistry(db_path=tmp_path / "lock-order.db")
+
+        class _LockRecordingRegistry:
+            """Thin proxy that records acquire/release into `events`."""
+
+            def __getattr__(self, name: str):
+                return getattr(inner_registry, name)
+
+            def acquire_lock(self, task_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
+                result = inner_registry.acquire_lock(task_id, holder, ttl_seconds=ttl_seconds)
+                if result:
+                    events.append(f"acquire:{task_id}")
+                return result
+
+            def release_lock(self, task_id: str, holder: str) -> None:
+                events.append(f"release:{task_id}")
+                return inner_registry.release_lock(task_id, holder)
+
+        recording_registry = _LockRecordingRegistry()
+
+        # --- adapter that records resume into the same event log ---
+        class _LockRecordingAdapter(FakeAdapterWithResume):
+            def resume(self, handle: "SessionHandle", prompt: str) -> None:
+                events.append("resume")
+                super().resume(handle, prompt)
+
+        task_id = "t-lock-order-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(inner_registry, task_id, workdir)
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(
+            str(marker_file),
+            "handoff_continue",
+            {"handoff_text": "carry on"},
+            task=task_id,
+        )
+
+        adapter = _LockRecordingAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(recording_registry, adapter, capture)
+        watcher.tick()
+
+        # Must have seen all three events
+        assert "resume" in events, "adapter.resume() must have been called"
+        acquire_idx = next(
+            (i for i, e in enumerate(events) if e == f"acquire:{task_id}"), None
+        )
+        resume_idx = next((i for i, e in enumerate(events) if e == "resume"), None)
+        release_idx = next(
+            (i for i, e in enumerate(events) if e == f"release:{task_id}"), None
+        )
+        assert acquire_idx is not None, "acquire_lock must have fired"
+        assert release_idx is not None, "release_lock must have fired"
+        assert acquire_idx < resume_idx, (
+            "acquire_lock must precede adapter.resume() — lock-contract violation"
+        )
+        assert resume_idx < release_idx, (
+            "adapter.resume() must precede release_lock — lock-contract violation"
+        )

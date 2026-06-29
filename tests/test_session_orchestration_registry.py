@@ -113,6 +113,34 @@ class TestSchemaCreation:
         conn.close()
         assert "idx_so_run_repo" in indexes
 
+    def test_migrate_schema_discord_user_id_idempotent(self, db_path):
+        """discord_user_id ALTER TABLE migration must be idempotent.
+
+        The second registry init on the same DB path triggers _migrate_schema
+        on an already-migrated table; the OperationalError must be swallowed
+        silently and the column must be present and writable.
+        """
+        import uuid
+        reg1 = SessionOrchestrationRegistry(db_path=db_path)
+        reg2 = SessionOrchestrationRegistry(db_path=db_path)  # must not raise
+        # Explicitly calling _migrate_schema a third time must also be silent
+        reg2._migrate_schema()
+
+        # Verify the column is present by inserting and reading back
+        tid = str(uuid.uuid4())
+        reg1.upsert(
+            tid,
+            agent="test",
+            run_id=f"run-{tid[:8]}",
+            repo=f"repo-{tid[:8]}",
+            discord_user_id="user-999",
+        )
+        row = reg1.get(tid)
+        assert row is not None
+        assert row.get("discord_user_id") == "user-999", (
+            "discord_user_id column must be present and writable after migration"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Basic CRUD

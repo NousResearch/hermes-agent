@@ -743,37 +743,85 @@ class SessionWatcher:
             return False  # SKIP; never read a half-rendered pane
 
         pane_text = ""
+        # Pre-compute marker kind from in-memory recent_markers — append-only read, no lock needed.
+        latest_marker_kind = recent_markers[-1].get("kind", "") if recent_markers else ""
+        latest_marker_payload = recent_markers[-1].get("payload", {}) if recent_markers else {}
+
         try:
             # Capture pane while we hold the lock
             if pane:
                 pane_text = self._tmux_capture(pane)
+
+            # ------------------------------------------------------------------
+            # 2. Determine authoritative lifecycle state (inside lock so the
+            #    handoff_continue resume runs atomically with state assignment)
+            #    Priority: recent marker > pane detect
+            # ------------------------------------------------------------------
+            marker_lifecycle: Optional[SessionLifecycle] = None
+            if has_recent_markers:
+                latest_kind = recent_markers[-1]["kind"]
+                marker_lifecycle = marker_kind_to_lifecycle(latest_kind)
+
+            if marker_lifecycle is not None:
+                new_lifecycle = marker_lifecycle
+            else:
+                # Fall back to pane-scraping via adapter.detect()
+                handle = self._build_handle(row)
+                try:
+                    new_lifecycle = adapter.detect(handle)
+                except Exception as exc:
+                    logger.error(
+                        "watcher.tick: adapter.detect() failed for task_id=%s: %s",
+                        task_id,
+                        exc,
+                    )
+                    return
+
+            # ------------------------------------------------------------------
+            # Handoff continue: resume INSIDE lock — avoids racing the relay's
+            # PAUSED_HANDOFF resume path on the same tmux pane (lock contract).
+            # Because we set RUNNING here under the lock, the relay won't
+            # subsequently see PAUSED_HANDOFF and double-resume.
+            # ------------------------------------------------------------------
+            if latest_marker_kind == "handoff_continue":
+                handle = _build_handle_from_row(row)
+                try:
+                    # Pane mutation runs under per-session lock (avoids race with relay's PAUSED_HANDOFF resume)
+                    adapter.resume(handle, "")  # autonomous /clear+resume, no user reply
+                    new_lifecycle = SessionLifecycle.RUNNING  # override PAUSED_HANDOFF
+                except Exception as exc:
+                    logger.error(
+                        "watcher._process_row: handoff_continue resume failed: %s", exc
+                    )
+                    # new_lifecycle stays as marker-derived value on failure
+
         finally:
             # Always release — crash-safe because relay reclaims after TTL
             self._registry.release_lock(task_id, holder)
 
         # ------------------------------------------------------------------
-        # 2. Determine authoritative lifecycle state
-        #    Priority: recent marker > pane detect
+        # Handoff decision: DM the user with the question — NOT a pane/tmux
+        # mutation, so the per-session lock is NOT required here.
+        # new_lifecycle stays PAUSED_HANDOFF; _on_turn_change fires for the transition.
         # ------------------------------------------------------------------
-        marker_lifecycle: Optional[SessionLifecycle] = None
-        if has_recent_markers:
-            latest_kind = recent_markers[-1]["kind"]
-            marker_lifecycle = marker_kind_to_lifecycle(latest_kind)
+        if latest_marker_kind == "handoff_decision":
+            question = (latest_marker_payload or {}).get(
+                "question", "(handoff decision required)"
+            )
+            user_id = row.get("discord_user_id")
+            if user_id:
+                try:
+                    from tools.discord_tool import _get_bot_token  # type: ignore[import]
+                    from session_orchestration.dm_transport import send_dm
 
-        if marker_lifecycle is not None:
-            new_lifecycle = marker_lifecycle
-        else:
-            # Fall back to pane-scraping via adapter.detect()
-            handle = self._build_handle(row)
-            try:
-                new_lifecycle = adapter.detect(handle)
-            except Exception as exc:
-                logger.error(
-                    "watcher.tick: adapter.detect() failed for task_id=%s: %s",
-                    task_id,
-                    exc,
-                )
-                return
+                    token = _get_bot_token()
+                    if token:
+                        send_dm(user_id, f"Handoff decision needed: {question}", token)
+                except Exception as exc:
+                    logger.error(
+                        "watcher._process_row: handoff_decision DM failed: %s", exc
+                    )
+            # new_lifecycle stays PAUSED_HANDOFF; _on_turn_change fires for the transition
 
         new_state = new_lifecycle.value
         old_state = row.get("state", SessionLifecycle.RUNNING.value)

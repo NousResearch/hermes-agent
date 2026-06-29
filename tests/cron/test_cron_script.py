@@ -565,3 +565,138 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+@pytest.fixture
+def profile_cron_env(tmp_path, monkeypatch):
+    """Profile-scoped cron environment.
+
+    ``HERMES_HOME`` points at a profile subdir (``<root>/profiles/work``), so
+    ``_get_hermes_home()`` returns the profile-local home.  Shared/"canonical"
+    scripts live under the default-profile root scripts dir (``<root>/scripts``),
+    exactly like ``~/.hermes/scripts/`` in a real multi-profile deployment.
+
+    Returns ``(root, profile_home)`` where ``root`` is the
+    ``get_default_hermes_root()`` equivalent.
+    """
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    (root / "scripts").mkdir()  # default-profile (shared) scripts
+    (root / "profiles").mkdir()
+    profile_home = root / "profiles" / "work"
+    profile_home.mkdir()
+    (profile_home / "cron").mkdir()
+    (profile_home / "cron" / "output").mkdir()
+    (profile_home / "scripts").mkdir()  # profile-local scripts
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    # The scheduler caches a module-level home; keep it unset so the env var
+    # path is exercised (the production code path for profile-scoped jobs).
+    from cron import scheduler as sched_mod
+    monkeypatch.setattr(sched_mod, "_hermes_home", None)
+
+    import cron.jobs as jobs_mod
+    monkeypatch.setattr(jobs_mod, "HERMES_DIR", profile_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", profile_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", profile_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", profile_home / "cron" / "output")
+    return root, profile_home
+
+
+class TestProfileScopedSharedScripts:
+    """Regression tests for #40801: profile-scoped jobs must be able to run
+    scripts that live in the default-profile (root) scripts directory.
+
+    Before the fix, the guard only accepted the profile-local scripts dir and
+    hard-rejected any reference to the shared/default-profile scripts dir,
+    breaking the most common multi-profile pattern (shared canonical scripts).
+    """
+
+    def test_absolute_path_to_root_script_runs(self, profile_cron_env):
+        """Layer 2: absolute path to a shared script in the root scripts dir."""
+        root, profile_home = profile_cron_env
+        from cron.scheduler import _run_job_script
+
+        shared = root / "scripts" / "shared.py"
+        shared.write_text('print("root shared")\n')
+
+        success, output = _run_job_script(str(shared))
+        assert success is True
+        assert output == "root shared"
+
+    def test_relative_name_resolves_to_root_script(self, profile_cron_env):
+        """Layer 1: a relative name whose only copy is in the root scripts dir."""
+        root, profile_home = profile_cron_env
+        from cron.scheduler import _run_job_script
+
+        (root / "scripts" / "collector.py").write_text('print("collected")\n')
+
+        success, output = _run_job_script("collector.py")
+        assert success is True
+        assert output == "collected"
+
+    def test_profile_local_relative_takes_precedence(self, profile_cron_env):
+        """A relative name present in BOTH dirs resolves to the profile-local copy."""
+        root, profile_home = profile_cron_env
+        from cron.scheduler import _run_job_script
+
+        (profile_home / "scripts" / "dup.py").write_text('print("local")\n')
+        (root / "scripts" / "dup.py").write_text('print("root")\n')
+
+        success, output = _run_job_script("dup.py")
+        assert success is True
+        assert output == "local"
+
+    def test_symlink_to_root_script_runs(self, profile_cron_env):
+        """Layer 3: a profile-local symlink whose realpath is in the root dir."""
+        root, profile_home = profile_cron_env
+        from cron.scheduler import _run_job_script
+
+        (root / "scripts" / "real.py").write_text('print("via symlink")\n')
+        link = profile_home / "scripts" / "link.py"
+        link.symlink_to(root / "scripts" / "real.py")
+
+        success, output = _run_job_script("link.py")
+        assert success is True
+        assert output == "via symlink"
+
+    def test_absolute_path_outside_both_dirs_still_blocked(self, profile_cron_env, tmp_path):
+        """Layer 4: a path outside BOTH roots must still be rejected."""
+        root, profile_home = profile_cron_env
+        from cron.scheduler import _run_job_script
+
+        outside = tmp_path / "evil.py"
+        outside.write_text('print("pwned")\n')
+
+        success, output = _run_job_script(str(outside))
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_traversal_escape_still_blocked(self, profile_cron_env):
+        """Layer 4: relative traversal escaping both roots must be blocked."""
+        root, profile_home = profile_cron_env
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("../../../../../etc/passwd")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_missing_relative_reports_not_found_not_blocked(self, profile_cron_env):
+        """A missing relative name should report 'not found', not 'blocked'."""
+        root, profile_home = profile_cron_env
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("does_not_exist_anywhere.py")
+        assert success is False
+        assert "not found" in output.lower()
+
+    def test_default_profile_single_root_unchanged(self, cron_env):
+        """Layer 5: with no profile scoping (root == active), behaviour is unchanged."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "plain.py"
+        script.write_text('print("plain ok")\n')
+
+        success, output = _run_job_script("plain.py")
+        assert success is True
+        assert output == "plain ok"

@@ -38,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -1545,12 +1545,24 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _path_within(candidate: Path, root: Path) -> bool:
+    """True if ``candidate`` resolves inside ``root`` (path-traversal guard)."""
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
+    Scripts must reside within the active scripts directory
+    (``HERMES_HOME/scripts/``) or, for profile-scoped jobs, the canonical
+    default-profile scripts directory (``~/.hermes/scripts/``) so shared
+    scripts referenced across profiles keep working (#40801).  Both relative
+    and absolute paths are resolved and validated against these directories
+    to prevent arbitrary script execution via path traversal or absolute
     path injection.
 
     Supported interpreters (chosen by file extension):
@@ -1569,8 +1581,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Args:
         script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            against ``HERMES_HOME/scripts/`` first, then the canonical
+            ``~/.hermes/scripts/`` directory (so profile-scoped jobs can run
+            shared scripts).  Absolute and ~-prefixed paths are validated to
+            ensure they stay within one of these directories.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -1578,23 +1592,59 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     """
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir_resolved = scripts_dir.resolve()
+
+    # Allowed script roots: the active (possibly profile-scoped) scripts
+    # directory, plus the canonical root scripts directory so that
+    # profile-scoped jobs can run shared scripts kept under the default-profile
+    # scripts dir (``~/.hermes/scripts/``) (#40801).  ``get_default_hermes_root()``
+    # returns ``~/.hermes`` even when the active ``HERMES_HOME`` points at a
+    # profile subdir (``~/.hermes/profiles/<name>``) and honours custom/Docker
+    # ``HERMES_HOME`` layouts — more correct than hardcoding ``Path.home()``.
+    active_scripts_dir = scripts_dir.resolve()
+    root_scripts_dir = (get_default_hermes_root() / "scripts").resolve()
+    allowed_roots: list[Path] = [active_scripts_dir]
+    if root_scripts_dir != active_scripts_dir:
+        allowed_roots.append(root_scripts_dir)
 
     raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
 
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
+    if raw.is_absolute():
+        # An absolute path resolves to a single location; accept it only if it
+        # sits inside one of the allowed roots (guards against path-traversal
+        # and absolute-path injection).
+        resolved = raw.resolve()
+        if not any(_path_within(resolved, r) for r in allowed_roots):
+            checked = " or ".join(str(d) for d in allowed_roots)
+            return False, (
+                f"Blocked: script path resolves outside the scripts directory "
+                f"({checked}): {script_path!r}"
+            )
+        path = resolved
+    else:
+        # Relative names are searched across every allowed root so a shared
+        # script resolves whether it lives in the profile-local or the root
+        # scripts directory.  Each candidate's realpath (symlinks followed) is
+        # validated against ANY root, so a profile-local symlink whose target
+        # is in the root dir is accepted while symlink-escape stays blocked.
+        valid_candidates: list[Path] = []
+        for root in allowed_roots:
+            resolved = (root / raw).resolve()
+            if any(_path_within(resolved, r) for r in allowed_roots):
+                valid_candidates.append(resolved)
+        existing = [c for c in valid_candidates if c.exists()]
+        if existing:
+            # Profile-local roots come first, so per-profile overrides win.
+            path = existing[0]
+        elif valid_candidates:
+            # In-bounds name with no existing copy in any root — report
+            # "not found" rather than "blocked".
+            path = valid_candidates[0]
+        else:
+            checked = " or ".join(str(d) for d in allowed_roots)
+            return False, (
+                f"Blocked: script path resolves outside the scripts directory "
+                f"({checked}): {script_path!r}"
+            )
 
     if not path.exists():
         return False, f"Script not found: {path}"

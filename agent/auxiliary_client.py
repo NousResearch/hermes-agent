@@ -124,6 +124,8 @@ def _openai_http_client_kwargs(
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
+    if "max_retries" not in kwargs:
+        kwargs["max_retries"] = 0
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 

@@ -344,10 +344,11 @@ class IRCAdapter(BasePlatformAdapter):
         # Italic: *text* or _text_ → text
         text = re.sub(r"\*(.+?)\*", r"\1", text)
         text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
+        # Code blocks: ```...``` → content (must come BEFORE inline code so the
+        # non-greedy inline regex doesn't consume the fence backticks first)
+        text = re.sub(r"```\w*\n?", "", text)
         # Inline code: `text` → text
         text = re.sub(r"`(.+?)`", r"\1", text)
-        # Code blocks: ```...``` → content
-        text = re.sub(r"```\w*\n?", "", text)
         # Images: ![alt](url) → url  (must come BEFORE links)
         text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", text)
         # Links: [text](url) → text (url)

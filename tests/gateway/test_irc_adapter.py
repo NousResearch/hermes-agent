@@ -434,6 +434,11 @@ class TestIRCAdapterMarkdown:
     def test_strip_code(self):
         assert IRCAdapter._strip_markdown("`code`") == "code"
 
+    def test_strip_code_block(self):
+        result = IRCAdapter._strip_markdown("```py\nprint(1)\n```")
+        assert "`" not in result
+        assert "print(1)" in result
+
     def test_strip_link(self):
         result = IRCAdapter._strip_markdown("[click here](https://example.com)")
         assert result == "click here (https://example.com)"

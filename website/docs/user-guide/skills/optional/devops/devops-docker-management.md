@@ -166,9 +166,10 @@ docker image prune -a --filter "until=168h"   # unused images older than 7 days
 
 **Port binding defaults for stateful services:**
 
+- Default to production multi-host deployments when generating deploy guidance or Compose templates. MySQL/PostgreSQL/Redis host ports must bind to the database/cache server's private interface via explicit required variables; do not use `127.0.0.1` as a production default.
 - If services run on the same Docker Compose network, prefer no host `ports:` mapping for databases/caches; application containers should connect by service name (for example `db:5432`, `mysql:3306`, `redis:6379`).
-- Single-host development or single-host production may bind host ports to loopback, for example `127.0.0.1:3306:3306`, when only the host machine needs operational access.
-- Multi-host deployments must not blindly keep `127.0.0.1`: an application server on another machine cannot reach that bind. Bind the database to a private interface or `0.0.0.0` only when the cloud security group/firewall restricts the port to trusted private source IPs.
+- For production multi-host deployments, require values such as `${MYSQL_BIND_ADDRESS:?set MYSQL_BIND_ADDRESS to the database server private IP}:3306:3306` and restrict the port to trusted app-server private IPs with cloud security groups/firewall rules.
+- `127.0.0.1` examples are local-development/admin-only patterns. Do not emit them as the default for production deployment repositories or runbooks.
 - Never expose MySQL/PostgreSQL/Redis directly to the public internet for convenience. Use private networking, source allowlists, VPN/Tailscale, or SSH tunnels for ad-hoc administration.
 
 ```bash
@@ -208,9 +209,10 @@ services:
 
   db:
     image: postgres:16-alpine
-    # No host ports by default: api reaches this as db:5432 on the Compose network.
-    # For single-host admin access use "127.0.0.1:5432:5432"; for multi-host
-    # access bind only to a private interface and restrict sources with firewall rules.
+    # Default for production multi-host deployments: require the DB server private IP.
+    # If the app and DB are only on the same Compose network, omit host ports entirely.
+    ports:
+      - "${POSTGRES_BIND_ADDRESS:?set POSTGRES_BIND_ADDRESS to the database server private IP}:5432:5432"
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass

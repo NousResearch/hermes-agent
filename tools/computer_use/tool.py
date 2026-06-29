@@ -380,10 +380,34 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         element = args.get("element")
         coord = args.get("coordinate") or (None, None)
         x, y = (coord[0], coord[1]) if coord and coord[0] is not None else (None, None)
+        dispatch = args.get("dispatch")
+        modifiers = args.get("modifiers")
+        if dispatch:
+            # Honor explicit dispatch override (e.g. "foreground" SendInput on
+            # Windows when the caller has UIAccess via cua-driver-uia worker).
+            # Surface 9 of #47072: click() defaults to background, but Windows
+            # apps (especially Qt clients like WeChat / Telegram) silently drop
+            # UIA Invoke — exposing the override lets the agent pick the path
+            # that actually delivers the event.
+            try:
+                res = backend._action(
+                    "double_click" if click_count == 2 else "click",
+                    {
+                        "pid": backend._active_pid,
+                        "x": x, "y": y,
+                        "element_index": element,
+                        "window_id": backend._active_window_id,
+                        "button": button or "left",
+                        "dispatch": dispatch,
+                    },
+                )
+                return _maybe_follow_capture(backend, res, capture_after)
+            except Exception:
+                pass  # fall through to the standard path on error
         res = backend.click(
             element=element if element is not None else None,
             x=x, y=y, button=button or "left", click_count=click_count,
-            modifiers=args.get("modifiers"),
+            modifiers=modifiers,
         )
         return _maybe_follow_capture(backend, res, capture_after)
 

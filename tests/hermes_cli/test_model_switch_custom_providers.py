@@ -129,6 +129,23 @@ def test_is_aggregator_leaves_unknown_provider_non_aggregator():
     assert providers_mod.is_aggregator("not-a-provider") is False
 
 
+def test_is_routing_aggregator_excludes_flat_namespace_resellers():
+    """opencode-go / opencode-zen stay ``is_aggregator=True`` (model-switch
+    relies on it to search their flat bare-name catalog), but they are NOT
+    routing aggregators — their models are first-party, so the picker dedup
+    must not strip them. (#47077)"""
+    # Still aggregators for model-switch flat-catalog resolution.
+    assert providers_mod.is_aggregator("opencode-go") is True
+    assert providers_mod.is_aggregator("opencode-zen") is True
+    # But NOT routing aggregators for picker-dedup purposes.
+    assert providers_mod.is_routing_aggregator("opencode-go") is False
+    assert providers_mod.is_routing_aggregator("opencode-zen") is False
+    # True routers and custom proxies remain routing aggregators.
+    assert providers_mod.is_routing_aggregator("openrouter") is True
+    assert providers_mod.is_routing_aggregator("custom:litellm") is True
+    assert providers_mod.is_routing_aggregator("not-a-provider") is False
+
+
 def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     """Shared /model switch pipeline should accept --provider for custom_providers."""
     monkeypatch.setattr(
@@ -317,6 +334,7 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
     ds_rows = [p for p in providers if p["name"] == "DeepSeek"]
     assert ds_rows[0]["models"].count("deepseek-chat") == 1
     assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]
+
 
 
 
@@ -774,3 +792,52 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
     assert gateway_prov is not None
     assert calls == [], "string 'false' must disable live discovery"
     assert gateway_prov["models"] == ["only-model"]
+
+
+def test_resolve_custom_provider_passes_key_env():
+    """resolve_custom_provider should propagate key_env into api_key_env_vars.
+
+    Regression: previously api_key_env_vars was always (), silently dropping
+    the configured env var and causing 401s on every request.
+    """
+    from hermes_cli.providers import resolve_custom_provider
+
+    resolved = resolve_custom_provider(
+        "custom:token-plan",
+        custom_providers=[
+            {
+                "name": "token-plan",
+                "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "key_env": "XIAOMI_MIMO_API_KEY",
+                "model": "mimo-v2-pro",
+            }
+        ],
+    )
+
+    assert resolved is not None
+    assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)
+    assert resolved.base_url == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+
+def test_resolve_custom_provider_bare_custom_self_heal_passes_key_env():
+    """The bare-'custom' self-heal path must also propagate key_env.
+
+    A corrupt stored provider of the bare string 'custom' falls back to the
+    first valid entry; that fallback previously hardcoded api_key_env_vars=(),
+    dropping the env var just like the named-match path did.
+    """
+    from hermes_cli.providers import resolve_custom_provider
+
+    resolved = resolve_custom_provider(
+        "custom",
+        custom_providers=[
+            {
+                "name": "token-plan",
+                "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "key_env": "XIAOMI_MIMO_API_KEY",
+            }
+        ],
+    )
+
+    assert resolved is not None
+    assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)

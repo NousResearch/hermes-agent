@@ -245,6 +245,56 @@ This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
 
+## Background review notifications (`display.memory_notifications`)
+
+After a turn, the background self-improvement review may quietly save a memory
+or update a skill. This is Hermes' consent-aware learning loop: repeated
+corrections and durable workflow lessons become compact memory entries or
+procedural skills, while `write_approval` can stage those writes for review
+before they affect future sessions. By default it surfaces a short
+`💾 Memory updated` line in chat so you know it happened. Control how chatty
+that is:
+
+```yaml
+display:
+  memory_notifications: on    # off | on (default) | verbose
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `off` | No chat notification. The review still runs and still writes — you just don't see a line for it. |
+| `on` (default) | Generic line, e.g. `💾 Memory updated`, `💾 Skill 'foo' patched`. |
+| `verbose` | Includes a compact preview of what changed, e.g. `💾 Memory ➕ User prefers terse replies` or a `"old" → "new"` skill diff snippet. |
+
+> This only governs the **gateway** chat notification. The review itself, and
+> writes to your memory/skill stores, are unaffected by this setting. Set it
+> per-platform via `display.platforms.<platform>.memory_notifications`.
+
+## Running the review on a cheaper model (`auxiliary.background_review`)
+
+The review runs on your **main chat model** by default, replaying the
+conversation — which is already warm in the prompt cache, so it's cheap cache
+reads. On an expensive main model you can run the review on a cheaper model
+instead:
+
+```yaml
+auxiliary:
+  background_review:
+    provider: openrouter
+    model: google/gemini-3-flash-preview   # auto (default) = main chat model
+```
+
+When you point it at a model **different** from your main one, the review runs
+there for substantially lower cost (~3–5× in benchmarks). Because a different
+model can't reuse your main model's prompt cache anyway, the fork automatically
+replays a compact **digest** of the conversation (recent turns verbatim + a
+summary of older ones) rather than the full transcript — minimizing what it
+writes to the new cache. Capture holds: in testing, memory capture was
+identical and skill capture near-identical to the main-model review.
+
+Leave it at `auto` (or set it to your main model) and nothing changes — the
+review keeps running on the main model with the full warm-cache replay.
+
 ## Controlling skill writes (`skills.write_approval`)
 
 Skills use the same on/off gate, but the review UX differs because a

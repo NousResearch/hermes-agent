@@ -142,6 +142,7 @@ class TestDefaultContextLengths:
                 ("grok-4", 256000),
                 ("grok-4-0709", 256000),
                 ("grok-build-0.1", 256000),
+                ("grok-composer-2.5-fast", 200000),
                 ("grok-code-fast-1", 256000),
                 ("grok-3", 131072),
                 ("grok-3-mini", 131072),
@@ -219,6 +220,31 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
+
+    def test_glm_52_context_1m(self):
+        """GLM-5.2 must resolve to 1M, not the generic GLM fallback of 202K.
+
+        Context window was verified empirically via needle-in-a-haystack
+        retrieval at 789K prompt tokens on api.z.ai/api/coding/paas/v4
+        (2026-06-13).
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        assert DEFAULT_CONTEXT_LENGTHS["glm-5.2"] == 1_048_576
+        assert DEFAULT_CONTEXT_LENGTHS["glm"] == 202752
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            # GLM-5.2 (1M) must NOT fall through to the generic 202K entry
+            assert get_model_context_length("glm-5.2") == 1_048_576
+            # Vendor-prefixed forms (zai provider, zhipu alias)
+            assert get_model_context_length("zai/glm-5.2") == 1_048_576
+            assert get_model_context_length("zhipu/glm-5.2") == 1_048_576
+            # Older GLM variants still resolve to the generic 202K fallback
+            assert get_model_context_length("glm-5") == 202752
+            assert get_model_context_length("glm-5.1") == 202752
 
     def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
         """OpenRouter-routed slugs resolve via the live OR catalog before the
@@ -1498,3 +1524,51 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+class TestMoAContextLength:
+    """MoA virtual provider resolves context from the aggregator slot, not 256K default."""
+
+    def _write_moa_config(self, home, aggregator):
+        import os
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "config.yaml"), "w") as f:
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": "p",
+                        "presets": {
+                            "p": {
+                                "enabled": True,
+                                "reference_models": [
+                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                                ],
+                                "aggregator": aggregator,
+                            }
+                        },
+                    }
+                },
+                f,
+            )
+
+    def test_moa_resolves_from_aggregator(self, tmp_path, monkeypatch):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(home, {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"})
+
+        # The MoA preset name + virtual base_url would otherwise fall through to
+        # the 256K default; instead it mirrors the aggregator's real window.
+        agg_ctx = get_model_context_length(
+            "anthropic/claude-opus-4.8", base_url="https://openrouter.ai/api/v1", provider="openrouter"
+        )
+        moa_ctx = get_model_context_length("p", base_url="http://127.0.0.1/v1", provider="moa")
+        assert moa_ctx == agg_ctx
+
+    def test_moa_config_override_still_wins(self, tmp_path, monkeypatch):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        self._write_moa_config(home, {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"})
+        ctx = get_model_context_length(
+            "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
+        )
+        assert ctx == 500_000

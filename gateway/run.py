@@ -10506,18 +10506,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        _proactive_turn_block = ""
         try:
             from gateway.proactive_events import build_proactive_context_prompt
 
-            _proactive_block = build_proactive_context_prompt(
+            _proactive_turn_block = build_proactive_context_prompt(
                 self.proactive_event_store,
                 session_key,
             ) if getattr(self, "proactive_event_store", None) is not None else ""
-            if _proactive_block:
-                context_prompt = (
-                    f"{context_prompt}\n\n{_proactive_block}"
-                    if context_prompt else _proactive_block
-                )
         except Exception as _proactive_err:
             logger.debug("Proactive event context injection failed: %s", _proactive_err)
         
@@ -11116,6 +11112,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text = _clean_message_text
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
+
+        if _proactive_turn_block:
+            try:
+                from gateway.proactive_events import wrap_user_message_with_proactive_context
+
+                if persist_user_message is None:
+                    persist_user_message = message_text
+                message_text = wrap_user_message_with_proactive_context(
+                    message_text,
+                    _proactive_turn_block,
+                )
+            except Exception as _proactive_wrap_err:
+                logger.debug("Proactive event turn wrapping failed: %s", _proactive_wrap_err)
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the

@@ -2,7 +2,7 @@
 
 Covers the threading behavior control for multi-chunk replies:
 - "off": Never thread replies to original message
-- "first": Only first chunk threads (default)
+- "first": Single-chunk replies thread; multi-chunk sends suppress native reply metadata
 - "all": All chunks thread to original message
 """
 import os
@@ -129,7 +129,7 @@ class TestSendWithReplyToMode:
             assert call.kwargs.get("reply_to_message_id") is None
 
     @pytest.mark.asyncio
-    async def test_first_mode_only_first_chunk_threads(self, adapter_factory):
+    async def test_first_mode_multipart_reply_suppresses_native_reply(self, adapter_factory):
         adapter = adapter_factory(reply_to_mode="first")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
@@ -139,7 +139,7 @@ class TestSendWithReplyToMode:
 
         calls = adapter._bot.send_message.call_args_list
         assert len(calls) == 3
-        assert calls[0].kwargs.get("reply_to_message_id") == 999
+        assert calls[0].kwargs.get("reply_to_message_id") is None
         assert calls[1].kwargs.get("reply_to_message_id") is None
         assert calls[2].kwargs.get("reply_to_message_id") is None
 

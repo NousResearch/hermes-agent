@@ -3001,6 +3001,9 @@ class TelegramAdapter(BasePlatformAdapter):
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
+            suppress_multipart_first_reply = (
+                len(chunks) > 1 and self._reply_to_mode not in {"all", "off"}
+            )
             used_thread_fallback = False
             
             try:
@@ -3040,6 +3043,12 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_source is not None
                         and self._reply_to_mode != "off"
                     )
+                elif suppress_multipart_first_reply:
+                    # Telegram Desktop/TDLib can render the first long native
+                    # reply chunk as unsupported. Keep single-chunk first
+                    # replies intact, but avoid attaching reply metadata to a
+                    # multipart "first" reply.
+                    should_thread = False
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None

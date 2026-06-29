@@ -13,27 +13,30 @@ from __future__ import annotations
 
 import argparse
 
-import pytest
-
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 
-_DASH = object()
-_REGISTER = object()
+
+def _dash(args):  # sentinel handler — identity-compared, never invoked
+    return args
+
+
+def _register(args):
+    return args
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     build_dashboard_parser(
         parser.add_subparsers(dest="command"),
-        cmd_dashboard=_DASH,
-        cmd_dashboard_register=_REGISTER,
+        cmd_dashboard=_dash,
+        cmd_dashboard_register=_register,
     )
     return parser
 
 
 def test_serve_routes_to_the_shared_dashboard_handler():
     args = _parser().parse_args(["serve"])
-    assert args.func is _DASH
+    assert args.func is _dash
 
 
 def test_serve_is_headless_by_default_but_dashboard_is_not():
@@ -55,6 +58,6 @@ def test_serve_takes_the_same_runtime_flags_as_dashboard():
         assert getattr(serve, field) == getattr(dash, field)
 
 
-@pytest.mark.parametrize("flag", ["--stop", "--status"])
-def test_serve_supports_the_lifecycle_flags(flag):
-    assert getattr(_parser().parse_args(["serve", flag]), flag.lstrip("-")) is True
+def test_serve_supports_the_lifecycle_flags():
+    for flag in ("--stop", "--status"):
+        assert getattr(_parser().parse_args(["serve", flag]), flag.lstrip("-")) is True

@@ -101,6 +101,25 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_NON_DISPATCHED_INITIAL_STATUSES = {"todo", "ready"}
+NON_DISPATCHED_CAPABILITY_NAME = "hermes_kanban_create_non_dispatched_task"
+FORBIDDEN_NON_DISPATCHED_STATUS_SUBSTITUTES = {
+    "running": "running cannot be used or interpreted as ready",
+    "blocked": "blocked cannot be used or interpreted as todo",
+}
+FORBIDDEN_NON_DISPATCHED_VERDICT_SOURCES = {
+    "github_comment_regex",
+    "github_comment",
+    "regex",
+    "timeout",
+    "fallback_request",
+    "owner_nudge",
+}
+FORBIDDEN_NON_DISPATCHED_INTEGRATION_PATHS = {
+    "direct_db_write",
+    "kanban_db_direct_write",
+    "db_write_primary_path",
+}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -914,6 +933,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    task_metadata: Optional[dict] = None
+    no_dispatch: bool = False
+    correlation_key: Optional[str] = None
+    dispatcher_pickup_count: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -927,6 +950,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        task_metadata_value: Optional[dict] = None
+        if "task_metadata" in keys and row["task_metadata"]:
+            try:
+                parsed_metadata = json.loads(row["task_metadata"])
+                if isinstance(parsed_metadata, dict):
+                    task_metadata_value = parsed_metadata
+            except Exception:
+                task_metadata_value = None
         return cls(
             id=row["id"],
             title=row["title"],
@@ -996,6 +1027,14 @@ class Task:
             block_recurrences=(
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
+                else 0
+            ),
+            task_metadata=task_metadata_value,
+            no_dispatch=(bool(row["no_dispatch"]) if "no_dispatch" in keys and row["no_dispatch"] else False),
+            correlation_key=(row["correlation_key"] if "correlation_key" in keys and row["correlation_key"] else None),
+            dispatcher_pickup_count=(
+                int(row["dispatcher_pickup_count"])
+                if "dispatcher_pickup_count" in keys and row["dispatcher_pickup_count"] is not None
                 else 0
             ),
         )
@@ -1175,7 +1214,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Native non-dispatched task capability (#595): optional metadata used
+    -- only when no_dispatch=1. Normal running/blocked task creation remains
+    -- unchanged and leaves these NULL/0.
+    task_metadata       TEXT,
+    no_dispatch         INTEGER NOT NULL DEFAULT 0,
+    correlation_key     TEXT,
+    dispatcher_pickup_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1867,6 +1913,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
+    if "task_metadata" not in cols:
+        _add_column_if_missing(conn, "tasks", "task_metadata", "task_metadata TEXT")
+    if "no_dispatch" not in cols:
+        _add_column_if_missing(conn, "tasks", "no_dispatch", "no_dispatch INTEGER NOT NULL DEFAULT 0")
+    if "correlation_key" not in cols:
+        _add_column_if_missing(conn, "tasks", "correlation_key", "correlation_key TEXT")
+    if "dispatcher_pickup_count" not in cols:
+        _add_column_if_missing(conn, "tasks", "dispatcher_pickup_count", "dispatcher_pickup_count INTEGER NOT NULL DEFAULT 0")
     # ``idx_tasks_idempotency`` is created unconditionally below alongside
     # the other additive-column indexes — see the block after the
     # legacy-column migration. Creating it here too would be redundant.
@@ -1996,6 +2050,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_correlation_key ON tasks(correlation_key)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
@@ -2687,6 +2744,173 @@ def create_task(
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+def _normalize_task_metadata(metadata: Optional[dict]) -> dict:
+    if metadata is None:
+        return {}
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object")
+    return json.loads(json.dumps(metadata))
+
+
+def _carries_audit_task_contract(body: Optional[str], metadata: dict) -> bool:
+    contract_from_metadata = metadata.get("audit_task_contract")
+    return (
+        isinstance(contract_from_metadata, dict)
+        and contract_from_metadata.get("schema_version") == "audit_task_contract.v1"
+    ) or (isinstance(body, str) and "audit_task_contract.v1" in body)
+
+
+def create_non_dispatched_task(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    body: Optional[str],
+    assignee: str,
+    initial_status: str,
+    no_dispatch: bool,
+    correlation_key: str,
+    metadata: Optional[dict] = None,
+    created_by: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    audit_verdict_source: Optional[str] = None,
+    created_via: Optional[str] = None,
+    direct_db_write: bool = False,
+    session_id: Optional[str] = None,
+) -> dict:
+    """Create a native non-dispatched task and return read-after-create proof.
+
+    This is the production wiring for the #595 / PR #598 contract. It is a
+    separate path from ordinary ``create_task`` so legacy running/blocked
+    dispatch semantics remain unchanged.
+    """
+    if not title or not str(title).strip():
+        raise ValueError("title is required")
+    assignee = _canonical_assignee(assignee)
+    if not assignee:
+        raise ValueError("assignee is required")
+    if initial_status in FORBIDDEN_NON_DISPATCHED_STATUS_SUBSTITUTES:
+        raise ValueError(FORBIDDEN_NON_DISPATCHED_STATUS_SUBSTITUTES[initial_status])
+    if initial_status not in VALID_NON_DISPATCHED_INITIAL_STATUSES:
+        raise ValueError("initial_status must be exactly todo or ready for non-dispatched capability")
+    if no_dispatch is not True:
+        raise ValueError("no_dispatch must be true for non-dispatched capability")
+    if not correlation_key or not str(correlation_key).strip():
+        raise ValueError("correlation_key is required for exactly-one-task guard")
+    correlation_key = str(correlation_key).strip()
+    if direct_db_write or created_via in FORBIDDEN_NON_DISPATCHED_INTEGRATION_PATHS:
+        raise ValueError("direct Kanban DB write cannot satisfy native integration contract")
+    if audit_verdict_source in FORBIDDEN_NON_DISPATCHED_VERDICT_SOURCES:
+        raise ValueError("GitHub comment / regex / timeout cannot produce audit verdict")
+    if body is not None and not isinstance(body, str):
+        raise ValueError("body must be a string when provided")
+    normalized_metadata = _normalize_task_metadata(metadata)
+    if not _carries_audit_task_contract(body, normalized_metadata):
+        raise ValueError("body or metadata must carry audit_task_contract.v1")
+
+    existing = conn.execute(
+        "SELECT id FROM tasks WHERE correlation_key = ? AND status != 'archived' LIMIT 1",
+        (correlation_key,),
+    ).fetchone()
+    if existing:
+        raise ValueError(
+            "exactly-one-task guard rejected duplicate correlation_key; "
+            f"existing_task_id={existing['id']}"
+        )
+
+    now = int(time.time())
+    task_id = _new_task_id()
+    with write_txn(conn):
+        # Re-check inside the write transaction so duplicate retries fail before
+        # the second task is inserted, even if another creator won the race.
+        existing = conn.execute(
+            "SELECT id FROM tasks WHERE correlation_key = ? AND status != 'archived' LIMIT 1",
+            (correlation_key,),
+        ).fetchone()
+        if existing:
+            raise ValueError(
+                "exactly-one-task guard rejected duplicate correlation_key; "
+                f"existing_task_id={existing['id']}"
+            )
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, body, assignee, status, priority,
+                created_by, created_at, workspace_kind, tenant, session_id,
+                task_metadata, no_dispatch, correlation_key, dispatcher_pickup_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scratch', ?, ?, ?, 1, ?, 0)
+            """,
+            (
+                task_id,
+                title.strip(),
+                body,
+                assignee,
+                initial_status,
+                int(priority),
+                created_by,
+                now,
+                tenant,
+                session_id,
+                json.dumps(normalized_metadata, sort_keys=True),
+                correlation_key,
+            ),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "created_non_dispatched",
+            {
+                "assignee": assignee,
+                "status": initial_status,
+                "no_dispatch": True,
+                "correlation_key": correlation_key,
+            },
+        )
+    return read_after_create_non_dispatched_task(
+        conn,
+        task_id,
+        expected_assignee=assignee,
+        expected_status=initial_status,
+        expected_metadata=normalized_metadata,
+    )
+
+
+def read_after_create_non_dispatched_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_assignee: Optional[str] = None,
+    expected_status: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
+) -> dict:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError("read-after-create could not find task_id")
+    if not task.no_dispatch:
+        raise ValueError("read-after-create no_dispatch mismatch")
+    if task.current_run_id is not None or task.worker_pid is not None or task.claim_lock is not None:
+        raise ValueError("no_dispatch invariant failed: worker execution or claim observed")
+    if task.dispatcher_pickup_count != 0:
+        raise ValueError("no_dispatch invariant failed: dispatcher pickup observed")
+    if expected_assignee is not None and task.assignee != expected_assignee:
+        raise ValueError("read-after-create assignee mismatch")
+    if expected_status is not None and task.status != expected_status:
+        raise ValueError("read-after-create status mismatch")
+    if expected_metadata is not None and task.task_metadata != expected_metadata:
+        raise ValueError("read-after-create metadata mismatch")
+    return {
+        "task_id": task.id,
+        "assignee": task.assignee,
+        "status": task.status,
+        "metadata": task.task_metadata,
+        "no_dispatch": task.no_dispatch,
+        "correlation_key": task.correlation_key,
+        "read_after_create_verified": True,
+        "worker_execution_started": False,
+        "dispatcher_pickup_count": task.dispatcher_pickup_count,
+    }
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
@@ -3440,6 +3664,7 @@ def claim_task(
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               AND COALESCE(no_dispatch, 0) = 0
             """,
             (lock, expires, now, task_id),
         )

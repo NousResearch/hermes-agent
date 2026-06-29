@@ -791,8 +791,19 @@ def _handle_create(args: dict, **kw) -> str:
     if bool_error:
         return tool_error(bool_error)
     idempotency_key = args.get("idempotency_key")
+    correlation_key = args.get("correlation_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    no_dispatch, no_dispatch_bool_error = _parse_bool_arg(args, "no_dispatch")
+    if no_dispatch_bool_error:
+        return tool_error(no_dispatch_bool_error)
+    direct_db_write, direct_db_write_bool_error = _parse_bool_arg(args, "direct_db_write")
+    if direct_db_write_bool_error:
+        return tool_error(direct_db_write_bool_error)
+    capability = args.get("capability")
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return tool_error(f"metadata must be an object, got {type(metadata).__name__}")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -828,6 +839,35 @@ def _handle_create(args: dict, **kw) -> str:
                         # whole subtree shares one repo + branch convention.
                         if project_id is None and _self_task.project_id:
                             project_id = _self_task.project_id
+            if no_dispatch or capability == getattr(kb, "NON_DISPATCHED_CAPABILITY_NAME", ""):
+                proof = kb.create_non_dispatched_task(
+                    conn,
+                    title=str(title).strip(),
+                    body=body,
+                    assignee=str(assignee),
+                    initial_status=str(initial_status),
+                    no_dispatch=bool(no_dispatch),
+                    correlation_key=str(correlation_key or ""),
+                    metadata=metadata,
+                    created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                    tenant=tenant,
+                    priority=int(priority) if priority is not None else 0,
+                    audit_verdict_source=args.get("audit_verdict_source"),
+                    created_via=args.get("created_via"),
+                    direct_db_write=direct_db_write,
+                    session_id=session_id,
+                )
+                return _ok(
+                    task_id=proof["task_id"],
+                    status=proof["status"],
+                    proof=proof,
+                    subscribed=False,
+                )
+            if str(initial_status) in {"todo", "ready"}:
+                return tool_error(
+                    "initial_status todo/ready requires no_dispatch=true for "
+                    "hermes_kanban_create_non_dispatched_task"
+                )
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -1414,13 +1454,52 @@ KANBAN_CREATE_SCHEMA = {
             },
             "initial_status": {
                 "type": "string",
-                "enum": ["running", "blocked"],
+                "enum": ["running", "blocked", "todo", "ready"],
                 "description": (
-                    "Initial card status. Use 'blocked' for tasks that "
-                    "require immediate human ops (R3 gate) to skip the "
-                    "brief running-to-blocked transition. Defaults to "
-                    "'running', which preserves the usual dispatch path."
+                    "Initial card status. 'running' and 'blocked' preserve "
+                    "the usual dispatch path. 'todo' and 'ready' are accepted "
+                    "only with no_dispatch=true for the native "
+                    "hermes_kanban_create_non_dispatched_task capability."
                 ),
+            },
+            "no_dispatch": {
+                "type": "boolean",
+                "description": (
+                    "When true, create a native non-dispatched task in todo "
+                    "or ready without starting worker execution. Required for "
+                    "hermes_kanban_create_non_dispatched_task."
+                ),
+            },
+            "correlation_key": {
+                "type": "string",
+                "description": (
+                    "Exactly-one guard key for no_dispatch task creation. "
+                    "Duplicate non-archived correlation keys are rejected "
+                    "before a second task is created."
+                ),
+            },
+            "metadata": {
+                "type": "object",
+                "description": (
+                    "Structured task metadata for no_dispatch creation; must "
+                    "carry audit_task_contract.v1 unless the body carries it."
+                ),
+            },
+            "capability": {
+                "type": "string",
+                "description": "Optional capability name, e.g. hermes_kanban_create_non_dispatched_task.",
+            },
+            "audit_verdict_source": {
+                "type": "string",
+                "description": "Rejected if set to github_comment/regex/timeout for the non-dispatched capability.",
+            },
+            "created_via": {
+                "type": "string",
+                "description": "Rejected for direct DB write markers in the non-dispatched capability.",
+            },
+            "direct_db_write": {
+                "type": "boolean",
+                "description": "Rejected when true for the non-dispatched capability.",
             },
             "skills": {
                 "type": "array",

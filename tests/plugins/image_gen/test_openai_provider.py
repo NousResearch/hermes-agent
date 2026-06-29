@@ -24,6 +24,16 @@ def _b64_png() -> str:
     return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
 
 
+def _b64_png_size(width: int, height: int) -> str:
+    import base64
+    return base64.b64encode(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x06\x00\x00\x00\x00\x00\x00\x00"
+    ).decode()
+
+
 def _fake_response(*, b64=None, url=None, revised_prompt=None):
     item = SimpleNamespace(b64_json=b64, url=url, revised_prompt=revised_prompt)
     return SimpleNamespace(data=[item])
@@ -207,6 +217,22 @@ class TestGenerate:
         assert result["size"] == "1280x1024"
         assert fake_client.images.generate.call_args.kwargs["size"] == "1280x1024"
 
+    def test_custom_size_metadata_reports_actual_saved_dimensions(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png_size(1086, 1448))
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", aspect_ratio="square", size="1152x1536")
+
+        assert result["success"] is True
+        assert result["size"] == "1152x1536"
+        assert result["requested_size"] == "1152x1536"
+        assert result["actual_size"] == "1086x1448"
+        assert result["actual_width"] == 1086
+        assert result["actual_height"] == 1448
+        assert "Requested image size 1152x1536" in result["warning"]
+        assert fake_client.images.generate.call_args.kwargs["size"] == "1152x1536"
+
     def test_invalid_custom_size_rejected_before_api_call(self, provider):
         fake_client = MagicMock()
 
@@ -229,6 +255,9 @@ class TestGenerate:
         assert result["success"] is True
         assert result["modality"] == "image"
         assert result["size"] == "1280x1024"
+        assert result["requested_size"] == "1280x1024"
+        assert result["actual_size"] == "1x1"
+        assert "Requested image size 1280x1024" in result["warning"]
         assert fake_client.images.edit.call_args.kwargs["size"] == "1280x1024"
         fake_client.images.generate.assert_not_called()
 

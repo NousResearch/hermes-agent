@@ -45,6 +45,7 @@ import abc
 import base64
 import datetime
 import logging
+import struct
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -259,6 +260,63 @@ def save_b64_image(
     path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
     path.write_bytes(raw)
     return path
+
+
+def image_dimensions(path: str | Path) -> Optional[Tuple[int, int]]:
+    """Return image dimensions for common generated-image formats, if readable."""
+    try:
+        data = Path(path).read_bytes()
+    except Exception:
+        return None
+
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        return struct.unpack(">II", data[16:24])
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        return struct.unpack("<HH", data[6:10])
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP" and len(data) >= 30:
+        if data[12:16] == b"VP8X":
+            return (int.from_bytes(data[24:27], "little") + 1, int.from_bytes(data[27:30], "little") + 1)
+        if data[12:16] == b"VP8 ":
+            start = data.find(b"\x9d\x01\x2a")
+            if start >= 0 and len(data) >= start + 7:
+                width, height = struct.unpack("<HH", data[start + 3:start + 7])
+                return (width & 0x3FFF, height & 0x3FFF)
+        if data[12:16] == b"VP8L" and len(data) >= 25:
+            bits = int.from_bytes(data[21:25], "little")
+            return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+    if data.startswith(b"\xff\xd8"):
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            i += 2
+            if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                continue
+            if i + 2 > len(data):
+                break
+            length = int.from_bytes(data[i:i + 2], "big")
+            if length < 2 or i + length > len(data):
+                break
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                height = int.from_bytes(data[i + 3:i + 5], "big")
+                width = int.from_bytes(data[i + 5:i + 7], "big")
+                return (width, height)
+            i += length
+    return None
+
+
+def size_metadata(path: str | Path, requested_size: str) -> Dict[str, Any]:
+    """Return requested/actual size metadata for a saved generated image."""
+    extra: Dict[str, Any] = {"requested_size": requested_size}
+    dims = image_dimensions(path)
+    if dims:
+        actual_size = f"{dims[0]}x{dims[1]}"
+        extra.update({"actual_size": actual_size, "actual_width": dims[0], "actual_height": dims[1]})
+        if requested_size != "auto" and actual_size != requested_size:
+            extra["warning"] = f"Requested image size {requested_size}, but saved image is {actual_size}."
+    return extra
 
 
 # Extension inference for save_url_image — keep small and explicit.  We don't

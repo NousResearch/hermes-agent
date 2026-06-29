@@ -35,6 +35,7 @@ from agent.image_gen_provider import (
     resolve_aspect_ratio,
     save_b64_image,
     save_url_image,
+    size_metadata,
     success_response,
 )
 
@@ -403,6 +404,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         url = getattr(first, "url", None)
         revised_prompt = getattr(first, "revised_prompt", None)
 
+        saved_path = None
         if b64:
             try:
                 saved_path = save_b64_image(b64, prefix=f"openai_{tier_id}")
@@ -443,6 +445,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
             )
 
         extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        if saved_path is not None and image_ref == str(saved_path):
+            extra.update(size_metadata(saved_path, size))
         if revised_prompt:
             extra["revised_prompt"] = revised_prompt
 

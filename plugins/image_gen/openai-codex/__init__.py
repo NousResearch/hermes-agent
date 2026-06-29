@@ -29,6 +29,7 @@ from agent.image_gen_provider import (
     error_response,
     resolve_aspect_ratio,
     save_b64_image,
+    size_metadata,
     success_response,
 )
 
@@ -192,7 +193,6 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
             "quality": quality,
             "output_format": "png",
             "background": "opaque",
-            "partial_images": 1,
         }],
         "tool_choice": {
             "type": "allowed_tools",
@@ -204,16 +204,13 @@ def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[st
 
 
 def _extract_image_b64(value: Any) -> Optional[str]:
-    """Return the newest image b64 embedded in a Responses event payload."""
+    """Return the newest final image b64 embedded in a Responses event payload."""
     found: Optional[str] = None
     if isinstance(value, dict):
         if value.get("type") == "image_generation_call":
             result = value.get("result")
             if isinstance(result, str) and result:
                 found = result
-        partial = value.get("partial_image_b64")
-        if isinstance(partial, str) and partial:
-            found = partial
         for child in value.values():
             nested = _extract_image_b64(child)
             if nested:
@@ -496,13 +493,15 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        extra.update(size_metadata(saved_path, size))
         return success_response(
             image=str(saved_path),
             model=tier_id,
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra=extra,
         )
 
 

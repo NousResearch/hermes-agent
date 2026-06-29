@@ -32,6 +32,16 @@ def _b64_png() -> str:
     return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
 
 
+def _b64_png_size(width: int, height: int) -> str:
+    import base64
+    return base64.b64encode(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x06\x00\x00\x00\x00\x00\x00\x00"
+    ).decode()
+
+
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -158,7 +168,7 @@ class TestGenerate:
         assert tool["size"] == "1024x1536"
         assert tool["output_format"] == "png"
         assert tool["background"] == "opaque"
-        assert tool["partial_images"] == 1
+        assert "partial_images" not in tool
 
     def test_generate_passes_requested_size(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
@@ -174,6 +184,19 @@ class TestGenerate:
         assert result["success"] is True
         assert captured["size"] == "1152x2496"
         assert result["size"] == "1152x2496"
+
+    def test_generate_size_metadata_reports_actual_saved_dimensions(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png_size(1086, 1448))
+
+        result = provider.generate("a cat", size="1152x1536")
+        assert result["success"] is True
+        assert result["size"] == "1152x1536"
+        assert result["requested_size"] == "1152x1536"
+        assert result["actual_size"] == "1086x1448"
+        assert result["actual_width"] == 1086
+        assert result["actual_height"] == 1448
+        assert "Requested image size 1152x1536" in result["warning"]
 
     def test_invalid_size_fails_before_stream(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
@@ -191,13 +214,12 @@ class TestGenerate:
         assert result["error_type"] == "invalid_argument"
         assert called is False
 
-    def test_partial_image_event_used_when_done_missing(self):
-        """If output_item.done is missing, partial_image_b64 is accepted."""
+    def test_partial_image_event_is_not_final_success(self):
         payload = {
             "type": "response.image_generation_call.partial_image",
             "partial_image_b64": _b64_png(),
         }
-        assert codex_plugin._extract_image_b64(payload) == _b64_png()
+        assert codex_plugin._extract_image_b64(payload) is None
 
     def test_sse_parser_handles_event_and_data_lines(self):
         class _Response:

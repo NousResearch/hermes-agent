@@ -28,28 +28,28 @@ def _read_config(home: Path) -> dict:
     return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
 # ---------------------------------------------------------------------------
-# _read_chain / _write_chain
+# read_chain / write_chain
 # ---------------------------------------------------------------------------
 
 class TestReadChain:
 
     def test_reads_new_list_format(self):
-        from hermes_cli.fallback_cmd import _read_chain
+        from hermes_cli.fallback_cmd import read_chain
         cfg = {
             "fallback_providers": [
                 {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
                 {"provider": "nous", "model": "Hermes-4-Llama-3.1-405B"},
             ]
         }
-        assert _read_chain(cfg) == [
+        assert read_chain(cfg) == [
             {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
             {"provider": "nous", "model": "Hermes-4-Llama-3.1-405B"},
         ]
 
     def test_returns_copies_not_aliases(self):
-        from hermes_cli.fallback_cmd import _read_chain
+        from hermes_cli.fallback_cmd import read_chain
         cfg = {"fallback_providers": [{"provider": "nous", "model": "foo"}]}
-        result = _read_chain(cfg)
+        result = read_chain(cfg)
         result[0]["provider"] = "mutated"
         assert cfg["fallback_providers"][0]["provider"] == "nous"
 

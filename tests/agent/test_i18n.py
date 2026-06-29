@@ -227,3 +227,69 @@ def test_t_resolves_real_string_in_source_checkout():
     regressions independent of packaging."""
     assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
     assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"
+
+
+# ---------------------------------------------------------------------------
+# User locale overrides -- the durable, update-proof translation layer.
+# A file under <hermes-home>/locale-overrides/<lang>.yaml (or wherever
+# HERMES_LOCALE_OVERRIDES points) is deep-merged ON TOP of the bundled catalog,
+# so user wording survives app updates that replace locales/*.yaml.
+# ---------------------------------------------------------------------------
+
+def _write_override(dir_path: Path, lang: str, mapping: dict) -> None:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    with (dir_path / f"{lang}.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump(mapping, f, allow_unicode=True)
+
+
+def test_user_override_replaces_bundled_value(tmp_path, monkeypatch):
+    """A key present in the override file wins over the bundled catalog."""
+    ov = tmp_path / "locale-overrides"
+    _write_override(ov, "ja", {"approval": {"denied": "却下しました（カスタム）"}})
+    monkeypatch.setenv("HERMES_LOCALE_OVERRIDES", str(ov))
+    i18n.reset_language_cache()
+    try:
+        assert i18n.t("approval.denied", lang="ja") == "却下しました（カスタム）"
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_user_override_only_touches_specified_keys(tmp_path, monkeypatch):
+    """Keys absent from the override keep their bundled translation."""
+    ov = tmp_path / "locale-overrides"
+    bundled_cancelled = i18n.t("approval.cancelled", lang="ja")
+    i18n.reset_language_cache()
+    _write_override(ov, "ja", {"approval": {"denied": "X"}})
+    monkeypatch.setenv("HERMES_LOCALE_OVERRIDES", str(ov))
+    i18n.reset_language_cache()
+    try:
+        assert i18n.t("approval.denied", lang="ja") == "X"
+        assert i18n.t("approval.cancelled", lang="ja") == bundled_cancelled
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_user_override_absent_is_noop(tmp_path, monkeypatch):
+    """An override dir with no file for the language leaves bundled intact."""
+    empty = tmp_path / "locale-overrides"
+    empty.mkdir()
+    bundled = i18n.t("approval.denied", lang="ja")
+    monkeypatch.setenv("HERMES_LOCALE_OVERRIDES", str(empty))
+    i18n.reset_language_cache()
+    try:
+        assert i18n.t("approval.denied", lang="ja") == bundled
+    finally:
+        i18n.reset_language_cache()
+
+
+def test_user_override_resolves_under_hermes_home(tmp_path, monkeypatch):
+    """With no explicit HERMES_LOCALE_OVERRIDES, the override is read from
+    <hermes-home>/locale-overrides/<lang>.yaml -- the update-proof default."""
+    monkeypatch.delenv("HERMES_LOCALE_OVERRIDES", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_override(tmp_path / "locale-overrides", "ja", {"approval": {"denied": "ホーム由来"}})
+    i18n.reset_language_cache()
+    try:
+        assert i18n.t("approval.denied", lang="ja") == "ホーム由来"
+    finally:
+        i18n.reset_language_cache()

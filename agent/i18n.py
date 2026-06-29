@@ -12,6 +12,12 @@ catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
 is missing too, the key path itself is returned so a broken catalog never
 crashes the agent.
 
+User overrides: a file at ``<hermes-home>/locale-overrides/<lang>.yaml`` (or
+wherever ``HERMES_LOCALE_OVERRIDES`` points) is deep-merged on top of the
+bundled catalog, key by key.  Because it lives outside the installed bundle,
+it is NOT overwritten when the app updates -- so it is the durable place to
+pin your own wording or carry translations that haven't landed upstream.
+
 Usage::
 
     from agent.i18n import t
@@ -162,36 +168,88 @@ def _normalize_lang(value: Any) -> str:
     return DEFAULT_LANGUAGE
 
 
-def _load_catalog(lang: str) -> dict[str, str]:
-    """Load and flatten one locale YAML file into a dotted-key dict.
+def _read_yaml_flat(path: Path) -> dict[str, str]:
+    """Load one locale YAML file and flatten it to a dotted-key dict.
 
-    YAML files can be nested for human readability; this produces the flat
-    key space :func:`t` expects.  Cached per-language for the process.
+    Returns an empty dict when the file is missing or unreadable -- a broken or
+    absent catalog must never crash callers; it just means more English
+    fallback.
     """
-    with _catalog_lock:
-        cached = _catalog_cache.get(lang)
-        if cached is not None:
-            return cached
-
-    path = _locales_dir() / f"{lang}.yaml"
     if not path.is_file():
-        logger.debug("i18n catalog missing for %s at %s", lang, path)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
+        logger.debug("i18n catalog not present at %s", path)
         return {}
-
     try:
         import yaml  # PyYAML is already a hermes dependency
         with path.open("r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
     except Exception as exc:
         logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        with _catalog_lock:
-            _catalog_cache[lang] = {}
         return {}
-
     flat: dict[str, str] = {}
     _flatten_into(raw, "", flat)
+    return flat
+
+
+def _user_overrides_path(lang: str) -> Path | None:
+    """Return the path to the user's locale-override file for ``lang``.
+
+    Overrides live under ``<hermes-home>/locale-overrides/<lang>.{yaml,yml}``
+    (or wherever ``HERMES_LOCALE_OVERRIDES`` points).  This directory sits
+    OUTSIDE the installed/bundled tree, so it is untouched by app updates that
+    replace the shipped catalog -- making it the durable home for a user's own
+    wording and for translations that haven't landed upstream yet.
+
+    Returns the first existing candidate, or ``None`` when none exists or the
+    Hermes home cannot be resolved.
+    """
+    base_env = os.getenv("HERMES_LOCALE_OVERRIDES", "").strip()
+    if base_env:
+        base = Path(base_env)
+    else:
+        try:
+            from hermes_constants import get_hermes_home
+            base = get_hermes_home() / "locale-overrides"
+        except Exception as exc:  # hermes_constants unavailable in some contexts
+            logger.debug("i18n: cannot resolve hermes home for overrides: %s", exc)
+            return None
+    for ext in ("yaml", "yml"):
+        candidate = base / f"{lang}.{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_catalog(lang: str) -> dict[str, str]:
+    """Load the effective catalog for ``lang`` as a flat dotted-key dict.
+
+    Two layers, merged in order (later wins):
+
+    1. The **bundled** catalog shipped with the app (``locales/<lang>.yaml``).
+    2. **User overrides** under ``<hermes-home>/locale-overrides/<lang>.yaml``,
+       which live outside the bundle and therefore survive updates.  Any key
+       present here replaces the bundled value; absent keys keep the bundled
+       (or, ultimately, English-fallback) text.
+
+    Cached per-language for the process; call :func:`reset_language_cache` to
+    pick up edits without a restart.
+    """
+    with _catalog_lock:
+        cached = _catalog_cache.get(lang)
+        if cached is not None:
+            return cached
+
+    flat = _read_yaml_flat(_locales_dir() / f"{lang}.yaml")
+
+    override_path = _user_overrides_path(lang)
+    if override_path is not None:
+        override_flat = _read_yaml_flat(override_path)
+        if override_flat:
+            flat = {**flat, **override_flat}
+            logger.debug(
+                "i18n: applied %d user override(s) for %s from %s",
+                len(override_flat), lang, override_path,
+            )
+
     with _catalog_lock:
         _catalog_cache[lang] = flat
     return flat

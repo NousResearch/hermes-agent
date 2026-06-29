@@ -204,6 +204,8 @@ GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
+TTS_RESPONSE_BODY_LIMIT_BYTES = 16 * 1024 * 1024
+TTS_RESPONSE_BODY_CHUNK_BYTES = 64 * 1024
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -259,6 +261,93 @@ def _config_bool(value: Any, default: bool = False) -> bool:
         if normalized in {"0", "false", "no", "off", "disabled"}:
             return False
     return default
+
+
+def _response_has_explicit_stream(response: Any) -> bool:
+    iter_content = getattr(response, "iter_content", None)
+    if not callable(iter_content):
+        return False
+    response_type = type(response)
+    if response_type.__module__.startswith("requests."):
+        return True
+    return "iter_content" in vars(response_type)
+
+
+def _close_response(response: Any) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _read_tts_response_bytes(
+    response: Any,
+    *,
+    label: str,
+    limit: Optional[int] = None,
+) -> bytes:
+    """Read an upstream TTS response with a hard byte cap."""
+    limit = TTS_RESPONSE_BODY_LIMIT_BYTES if limit is None else limit
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        if _response_has_explicit_stream(response):
+            iterator = response.iter_content(chunk_size=TTS_RESPONSE_BODY_CHUNK_BYTES)
+        else:
+            content = vars(response).get("content", getattr(type(response), "content", b""))
+            if isinstance(content, str):
+                content = content.encode("utf-8", errors="replace")
+            iterator = (content,) if isinstance(content, (bytes, bytearray)) else ()
+
+        for chunk in iterator:
+            if not chunk:
+                continue
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8", errors="replace")
+            chunk = bytes(chunk)
+            total += len(chunk)
+            if total > limit:
+                _close_response(response)
+                raise RuntimeError(f"{label} response exceeds {limit} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        _close_response(response)
+
+
+def _read_tts_response_json(
+    response: Any,
+    *,
+    label: str,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    raw = _read_tts_response_bytes(response, label=label, limit=limit)
+    if raw:
+        return json.loads(raw.decode("utf-8"))
+
+    # Unit-test doubles often only provide `.json()`. Real requests.Response
+    # objects use the streaming path above, so this fallback does not re-open
+    # the production eager-buffering behavior.
+    if not _response_has_explicit_stream(response):
+        json_reader = getattr(response, "json", None)
+        if callable(json_reader):
+            parsed = json_reader()
+            return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _write_tts_response_to_file(
+    response: Any,
+    output_path: str,
+    *,
+    label: str,
+    limit: Optional[int] = None,
+) -> None:
+    audio_bytes = _read_tts_response_bytes(response, label=label, limit=limit)
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
 
 # Final fallback when provider isn't recognised at all.
 FALLBACK_MAX_TEXT_LENGTH = 4000
@@ -1268,11 +1357,11 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         },
         json=payload,
         timeout=60,
+        stream=True,
     )
     response.raise_for_status()
 
-    with open(output_path, "wb") as f:
-        f.write(response.content)
+    _write_tts_response_to_file(response, output_path, label="xAI TTS")
 
     return output_path
 
@@ -1360,12 +1449,18 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
             "voice_id": voice_id,
         }
 
-    response = requests.post(base_url, json=payload, headers=headers, timeout=60)
+    response = requests.post(
+        base_url,
+        json=payload,
+        headers=headers,
+        timeout=60,
+        stream=True,
+    )
 
     if is_t2a_v2:
         # t2a_v2 returns JSON with hex-encoded audio
         response.raise_for_status()
-        result = response.json()
+        result = _read_tts_response_json(response, label="MiniMax TTS")
         base_resp = result.get("base_resp", {})
         status_code = base_resp.get("status_code", -1)
 
@@ -1387,23 +1482,23 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
         content_type = response.headers.get("Content-Type", "")
 
         if "audio/" in content_type:
-            with open(output_path, "wb") as f:
-                f.write(response.content)
+            _write_tts_response_to_file(response, output_path, label="MiniMax TTS")
             return output_path
 
         # Fallback: try parsing as JSON
         try:
-            result = response.json()
+            raw_body = _read_tts_response_bytes(response, label="MiniMax TTS")
+            result = json.loads(raw_body.decode("utf-8")) if raw_body else {}
             base_resp = result.get("base_resp", {})
             status_code = base_resp.get("status_code", -1)
             if status_code != 0:
                 status_msg = base_resp.get("status_msg", "unknown error")
                 raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
-        except Exception:
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
             response.raise_for_status()
             raise RuntimeError(
                 f"MiniMax TTS returned unexpected Content-Type '{content_type}' "
-                f"({len(response.content)} bytes)"
+                f"({len(raw_body) if 'raw_body' in locals() else 0} bytes)"
             )
 
         raise RuntimeError("MiniMax TTS returned no audio data")
@@ -1719,20 +1814,27 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         headers={"Content-Type": "application/json"},
         json=payload,
         timeout=60,
+        stream=True,
     )
     if response.status_code != 200:
         # Surface the API error message when present
+        raw_body = _read_tts_response_bytes(response, label="Gemini TTS")
         try:
-            err = response.json().get("error", {})
-            detail = err.get("message") or response.text[:300]
+            if raw_body:
+                err = json.loads(raw_body.decode("utf-8")).get("error", {})
+            elif not _response_has_explicit_stream(response) and callable(getattr(response, "json", None)):
+                err = response.json().get("error", {})
+            else:
+                err = {}
+            detail = err.get("message") or raw_body.decode("utf-8", errors="replace")[:300]
         except Exception:
-            detail = response.text[:300]
+            detail = raw_body.decode("utf-8", errors="replace")[:300]
         raise RuntimeError(
             f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
         )
 
     try:
-        data = response.json()
+        data = _read_tts_response_json(response, label="Gemini TTS")
         parts = data["candidates"][0]["content"]["parts"]
         audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
         if audio_part is None:

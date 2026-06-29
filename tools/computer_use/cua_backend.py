@@ -617,6 +617,10 @@ class _CuaDriverSession:
             # outer context-manager exits AFTER this block, so set to
             # None here is fine: stop() has already flipped _started.
             self._session = None
+            # If the lifecycle coroutine exited without stop() being called
+            # (e.g. MCP connection dropped), mark the session as not started
+            # so callers don't hang on a dead session.
+            self._started = False
 
     async def _populate_capabilities(self, session: Any) -> None:
         """Surface 4: cache per-tool capability sets + capability_version

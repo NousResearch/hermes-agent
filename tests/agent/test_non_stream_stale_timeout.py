@@ -76,6 +76,57 @@ def test_estimator_responses_api_long_session_triggers_tier():
     assert estimate_request_context_tokens(payload) > 50_000
 
 
+def test_estimator_chat_image_data_url_stays_bounded():
+    """Data-image payload bytes should not be counted as text context."""
+    from agent.chat_completion_helpers import estimate_request_context_tokens
+
+    payload = {
+        "model": "gpt-5.5",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64," + ("A" * (1024 * 1024))
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+
+    tokens = estimate_request_context_tokens(payload)
+    assert 1500 <= tokens < 10_000
+
+
+def test_estimator_responses_input_image_data_url_stays_bounded():
+    """Responses API input_image parts should use flat image cost."""
+    from agent.chat_completion_helpers import estimate_request_context_tokens
+
+    payload = {
+        "model": "gpt-5.5",
+        "instructions": "i" * 1000,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe"},
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64," + ("A" * (1024 * 1024)),
+                    },
+                ],
+            }
+        ],
+    }
+
+    tokens = estimate_request_context_tokens(payload)
+    assert 1750 <= tokens < 10_000
+
+
 def test_estimator_bare_list_back_compat():
     from agent.chat_completion_helpers import estimate_request_context_tokens
     messages = [

@@ -63,6 +63,11 @@ def _ra():
     return run_agent
 
 
+_IMAGE_CONTEXT_TOKEN_COST = 1500
+_IMAGE_CONTEXT_CHAR_COST = _IMAGE_CONTEXT_TOKEN_COST * 4
+_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+
+
 def estimate_request_context_tokens(api_payload: Any) -> int:
     """Estimate context/load tokens from an API payload, dict or messages list.
 
@@ -80,11 +85,28 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
       - any other dict -> fall back to summing string values
     """
 
+    def _is_image_part(value: Any) -> bool:
+        if not isinstance(value, dict):
+            return False
+        ptype = str(value.get("type") or "").strip().lower()
+        return ptype in _IMAGE_PART_TYPES
+
     def _chars(value: Any) -> int:
         if value is None:
             return 0
         if isinstance(value, str):
             return len(value)
+        if _is_image_part(value):
+            metadata_chars = 0
+            for key, item in value.items():
+                if key in {"image_url", "data", "source"}:
+                    continue
+                metadata_chars += len(str(key)) + _chars(item)
+            return _IMAGE_CONTEXT_CHAR_COST + metadata_chars
+        if isinstance(value, dict):
+            return sum(len(str(key)) + _chars(item) + 4 for key, item in value.items())
+        if isinstance(value, list):
+            return sum(_chars(item) + 2 for item in value)
         return len(str(value))
 
     def _message_chars(messages: Any) -> int:

@@ -1844,6 +1844,24 @@ export const en: Translations = {
       turnRunning: 'Running',
       currentTurnElapsed: 'Current turn elapsed',
       contextUsage: 'Context usage',
+      contextUsagePanel: {
+        categories: {
+          conversation: 'Conversation',
+          mcp: 'MCP',
+          memory: 'Memory',
+          rules: 'Rules',
+          skills: 'Skills',
+          subagent_definitions: 'Subagent definitions',
+          system_prompt: 'System prompt',
+          tool_definitions: 'Tool definitions'
+        },
+        empty: 'No context data yet',
+        loading: 'Loading breakdown…',
+        percentFull: percent => `${percent}% Full`,
+        title: 'Context Usage',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: 'Open context usage breakdown',
       session: 'Session',
       runtimeSessionElapsed: 'Runtime session elapsed',
       yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
@@ -2010,6 +2028,7 @@ export const en: Translations = {
       stopReading: 'Stop reading',
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
+      expandMessage: 'Expand message',
       scrollToBottom: 'Scroll to bottom',
       stop: 'Stop',
       restorePrevious: 'Restore previous checkpoint',

@@ -6165,6 +6165,36 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, usage)
 
 
+@method("session.context_breakdown")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        usage = _get_usage(None)
+        return _ok(
+            rid,
+            {
+                "categories": [],
+                "context_max": usage.get("context_max", 0) or 0,
+                "context_percent": usage.get("context_percent", 0) or 0,
+                "context_used": usage.get("context_used", 0) or 0,
+                "estimated_total": 0,
+                "model": "",
+            },
+        )
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    try:
+        from agent.context_breakdown import compute_session_context_breakdown
+
+        payload = compute_session_context_breakdown(agent, history)
+    except Exception as exc:
+        return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
+    return _ok(rid, payload)
+
+
 def _pet_frame_counts(spritesheet) -> dict:
     """Real (padding-trimmed) frame count per state, for the desktop canvas.
 

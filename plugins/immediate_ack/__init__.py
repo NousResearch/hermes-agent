@@ -226,8 +226,25 @@ def _on_pre_gateway_dispatch_sync(
         source = getattr(event, "source", None)
         if source is None:
             return None
-        user_id = str(getattr(source, "user_id", "") or "")
-        if user_id.startswith("B"):
+
+        # Bot-id check: a Slack user-token post that uses the workspace's
+        # app config will still get `bot_id` set on the event (because the
+        # message goes through the workspace's app). To avoid the
+        # CLI-posted-test case where the user-token post is treated as a
+        # bot event, we check `event.bot_id` directly (not `user_id`).
+        # The original `user_id.startswith("B")` check was wrong — Slack
+        # user ids start with "U" and bot ids start with "B" but
+        # `source.user_id` is the AUTHOR's user, not the bot.
+        bot_id = (
+            getattr(event, "bot_id", None)
+            or (getattr(event, "raw_message", None) or {}).get("bot_id")
+            or (getattr(source, "bot_id", None) if source is not None else None)
+        )
+        if bot_id:
+            # Bot-originated message — skip the plugin's ack (the gateway's
+            # own Slack adapter already filtered these at the dispatcher,
+            # but we double-check here in case the dispatcher logic was
+            # changed to allow them).
             return None
 
         chat_id = getattr(source, "chat_id", None)

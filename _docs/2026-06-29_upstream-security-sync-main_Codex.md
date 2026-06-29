@@ -108,3 +108,20 @@ SOPログ初回コミット後、公式 `upstream/main` がさらに進んだた
 - `uv lock --check`: passed
 - `uv run --extra dev python -m pytest tests/gateway/test_slack_group_dm_scope_warning.py tests/hermes_cli/test_slack_cli.py tests/test_windows_subprocess_no_window_flags.py -q`: `29 passed`
 - `uv run --extra dev python -m ruff check tests/gateway/test_slack_group_dm_scope_warning.py tests/hermes_cli/test_slack_cli.py tests/test_windows_subprocess_no_window_flags.py hermes_cli/config.py hermes_cli/slack_cli.py plugins/platforms/slack/adapter.py`: passed
+
+## 追記: Dependabot runtime alert対応
+
+`main` push時にGitHubから default branch の未解消Dependabot alert が3件通知されたため、
+`uv.lock` の runtime 依存をpatched versionへ更新した。
+
+| Alert | Package | 更新 |
+|-------|---------|------|
+| `#12` / `GHSA-3c37-wwvx-h642` | `cbor2` | `5.8.0` -> `6.1.2` |
+| `#113` / `GHSA-6v7p-g79w-8964` | `msgpack` | `1.1.2` -> `1.2.1` |
+| `#114` / `GHSA-4xgf-cpjx-pc3j` | `pydantic-settings` | `2.13.1` -> `2.14.2` |
+
+追加検証:
+
+- `uv lock --check`: passed
+- `uv run --with cbor2==6.1.2 --with msgpack==1.2.1 --with pydantic-settings==2.14.2 python - <<'PY' ...`: imports ok
+- `uv run --extra dev python -m pytest tests/test_project_metadata.py tests/test_windows_subprocess_no_window_flags.py tests/gateway/test_slack_group_dm_scope_warning.py tests/hermes_cli/test_slack_cli.py -q`: `40 passed`

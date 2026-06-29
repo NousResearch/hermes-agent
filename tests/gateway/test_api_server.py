@@ -531,6 +531,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/api/model/options", adapter._handle_model_options)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -772,6 +773,52 @@ class TestModelsEndpoint:
             )
             assert resp.status == 200
 
+    @pytest.mark.asyncio
+    async def test_model_options_returns_shared_inventory(self, adapter, monkeypatch):
+        """GET /api/model/options mirrors the dashboard/TUI provider catalog."""
+        from hermes_cli import inventory
+
+        ctx = object()
+        payload = {
+            "providers": [{"slug": "nous", "name": "Nous Portal", "models": ["gpt-5.5"]}],
+            "model": "gpt-5.5",
+            "provider": "nous",
+        }
+        seen = {}
+
+        monkeypatch.setattr(inventory, "load_picker_context", lambda: ctx)
+
+        def fake_build_models_payload(received_ctx, **kwargs):
+            seen["ctx"] = received_ctx
+            seen["kwargs"] = kwargs
+            return payload
+
+        monkeypatch.setattr(inventory, "build_models_payload", fake_build_models_payload)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/model/options?refresh=true")
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data == payload
+        assert seen["ctx"] is ctx
+        assert seen["kwargs"] == {
+            "include_unconfigured": True,
+            "picker_hints": True,
+            "canonical_order": True,
+            "pricing": True,
+            "capabilities": True,
+            "refresh": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_model_options_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/model/options")
+            assert resp.status == 401
+
 
 # ---------------------------------------------------------------------------
 # /v1/capabilities endpoint
@@ -798,8 +845,10 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 

@@ -43,6 +43,8 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
+from agent.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +56,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     stack traces into the delivery channel.
     """
     job_name = job.get("name") or job.get("id") or "cron job"
-    text = (error or "unknown error").strip()
+    text = redact_sensitive_text((error or "unknown error").strip(), force=True)
     lower = text.lower()
 
     # Provider/API failures are the common noisy path. Keep these short.

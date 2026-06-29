@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway } from './media'
+import { filePathFromMediaPath, gatewayMediaDataUrl, isRemoteGateway, mediaExternalUrl } from './media'
 
 describe('isRemoteGateway', () => {
   afterEach(() => {
@@ -32,6 +32,38 @@ describe('filePathFromMediaPath', () => {
 
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
+  })
+})
+
+describe('mediaExternalUrl', () => {
+  afterEach(() => {
+    $connection.set(null)
+  })
+
+  it('passes through http(s) URLs untouched', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
+    expect(mediaExternalUrl('https://example.com/a.png')).toBe('https://example.com/a.png')
+  })
+
+  it('keeps file:// form in local mode', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
+    expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
+  })
+
+  it('rewrites gateway-local paths to an authenticated download URL', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
+    expect(mediaExternalUrl('file:///tmp/a b.png')).toBe(
+      'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
+    )
+    expect(mediaExternalUrl('/tmp/a b.png')).toBe(
+      'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
+    )
+  })
+
+  it('falls back to file:// when remote connection lacks a token', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
+    expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
   })
 })
 

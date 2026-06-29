@@ -248,8 +248,23 @@ class TestLookupSupportsVisionOverride:
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
 
     def test_no_override_no_models_dev_entry_returns_none(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=False):
             assert _lookup_supports_vision("custom", "my-llava", {}) is None
+
+    def test_ollama_probe_when_models_dev_missing(self):
+        cfg = {"model": {"base_url": "http://localhost:11434/v1"}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("agent.model_metadata.query_ollama_supports_vision", return_value=True):
+            assert _lookup_supports_vision("ollama", "gemma4:e2b", cfg) is True
+
+    def test_ollama_probe_false_for_text_only_model(self):
+        cfg = {"model": {"base_url": "http://localhost:11434/v1"}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("agent.model_metadata.query_ollama_supports_vision", return_value=False):
+            assert _lookup_supports_vision("custom", "gemma4:31b", cfg) is False
 
     def test_cfg_none_falls_back_to_models_dev(self):
         # Caller didn't pass cfg at all — old call sites must still work.

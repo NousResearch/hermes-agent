@@ -127,11 +127,14 @@ export interface Translations {
       description: string
       remoteTitle: string
       remoteDescription: string
+      connectionLostTitle: string
+      connectionLostDescription: string
       retry: string
       repairInstall: string
       useLocalGateway: string
       openLogs: string
       repairHint: string
+      connectionLostHint: string
       remoteSignInHint: string
       hideRecentLogs: string
       showRecentLogs: string

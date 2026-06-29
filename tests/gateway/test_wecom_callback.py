@@ -277,6 +277,65 @@ class TestWecomCallbackSendTokenRefresh:
         assert len(post_calls) == 2
 
 
+class TestWecomCallbackBodyLimit:
+    @pytest.mark.asyncio
+    async def test_callback_rejects_oversized_body_via_content_length(self):
+        """POST with Content-Length exceeding 1 MiB returns 413 without reading the body."""
+        from plugins.platforms.wecom.callback_adapter import _WECOM_CALLBACK_MAX_BODY_BYTES
+
+        adapter = WecomCallbackAdapter(_config())
+        read_called = []
+
+        class FakeRequest:
+            query = {"msg_signature": "", "timestamp": "", "nonce": ""}
+            content_length = _WECOM_CALLBACK_MAX_BODY_BYTES + 1
+
+            async def read(self):
+                read_called.append(True)
+                return b""
+
+        response = await adapter._handle_callback(FakeRequest())
+        assert response.status == 413
+        assert not read_called, "body should not be read when Content-Length already exceeds limit"
+
+    @pytest.mark.asyncio
+    async def test_callback_rejects_oversized_body_via_actual_read(self):
+        """POST where Content-Length is absent but actual body exceeds 1 MiB returns 413."""
+        from plugins.platforms.wecom.callback_adapter import _WECOM_CALLBACK_MAX_BODY_BYTES
+
+        adapter = WecomCallbackAdapter(_config())
+
+        class FakeRequest:
+            query = {"msg_signature": "", "timestamp": "", "nonce": ""}
+            content_length = None  # chunked / no Content-Length header
+
+            async def read(self):
+                return b"x" * (_WECOM_CALLBACK_MAX_BODY_BYTES + 1)
+
+        response = await adapter._handle_callback(FakeRequest())
+        assert response.status == 413
+
+    @pytest.mark.asyncio
+    async def test_callback_accepts_body_at_exactly_limit(self):
+        """POST body exactly at the 1 MiB limit is accepted (no 413)."""
+        from plugins.platforms.wecom.callback_adapter import _WECOM_CALLBACK_MAX_BODY_BYTES
+
+        adapter = WecomCallbackAdapter(_config())
+
+        class FakeRequest:
+            query = {"msg_signature": "", "timestamp": "", "nonce": ""}
+            content_length = _WECOM_CALLBACK_MAX_BODY_BYTES
+
+            async def read(self):
+                # Return valid-size but unparseable body — adapter should
+                # fall through to its normal 400 decryption error, not 413.
+                return b"x" * _WECOM_CALLBACK_MAX_BODY_BYTES
+
+        response = await adapter._handle_callback(FakeRequest())
+        # 413 must NOT be returned; exact-limit bodies must pass the size gate
+        assert response.status != 413
+
+
 class TestWecomCallbackPollLoop:
     @pytest.mark.asyncio
     async def test_poll_loop_dispatches_handle_message(self, monkeypatch):

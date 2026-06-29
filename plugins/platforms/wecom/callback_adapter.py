@@ -56,6 +56,7 @@ DEFAULT_PORT = 8645
 DEFAULT_PATH = "/wecom/callback"
 ACCESS_TOKEN_TTL_SECONDS = 7200
 MESSAGE_DEDUP_TTL_SECONDS = 300
+_WECOM_CALLBACK_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB — mirrors feishu/line adapters
 
 
 def check_wecom_callback_requirements() -> bool:
@@ -273,7 +274,13 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         msg_signature = request.query.get("msg_signature", "")
         timestamp = request.query.get("timestamp", "")
         nonce = request.query.get("nonce", "")
-        body = await request.text()
+        content_length = request.content_length
+        if content_length is not None and content_length > _WECOM_CALLBACK_MAX_BODY_BYTES:
+            return web.Response(status=413, text="Request body too large")
+        raw = await request.read()
+        if len(raw) > _WECOM_CALLBACK_MAX_BODY_BYTES:
+            return web.Response(status=413, text="Request body too large")
+        body = raw.decode("utf-8", errors="replace")
 
         for app in self._apps:
             try:

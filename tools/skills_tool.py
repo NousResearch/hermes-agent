@@ -81,6 +81,7 @@ from hermes_cli.config import cfg_get
 from utils import env_var_enabled
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
+    is_excluded_skill_path as _is_excluded_skill_path,
     is_skill_support_path as _is_skill_support_path,
 )
 
@@ -628,7 +629,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+            if _is_excluded_skill_path(skill_md):
                 continue
 
             skill_dir = skill_md.parent
@@ -1026,14 +1027,15 @@ def skill_view(
             # at the top of the dir).
             direct_path = search_dir / name
             if (
-                not _is_skill_support_path(direct_path)
+                not _is_excluded_skill_path(direct_path)
+                and not _is_skill_support_path(direct_path)
                 and direct_path.is_dir()
                 and (direct_path / "SKILL.md").exists()
             ):
                 _record(direct_path, direct_path / "SKILL.md")
-            elif direct_path.with_suffix(".md").exists() and not _is_skill_support_path(
+            elif direct_path.with_suffix(".md").exists() and not _is_excluded_skill_path(
                 direct_path.with_suffix(".md")
-            ):
+            ) and not _is_skill_support_path(direct_path.with_suffix(".md")):
                 _record(None, direct_path.with_suffix(".md"))
 
             # Strategy 1b: categorized form for plugin namespace fall-through
@@ -1042,14 +1044,17 @@ def skill_view(
             if local_category_name:
                 categorized_path = search_dir / local_category_name
                 if (
-                    not _is_skill_support_path(categorized_path)
+                    not _is_excluded_skill_path(categorized_path)
+                    and not _is_skill_support_path(categorized_path)
                     and categorized_path.is_dir()
                     and (categorized_path / "SKILL.md").exists()
                 ):
                     _record(categorized_path, categorized_path / "SKILL.md")
                 elif categorized_path.with_suffix(
                     ".md"
-                ).exists() and not _is_skill_support_path(
+                ).exists() and not _is_excluded_skill_path(
+                    categorized_path.with_suffix(".md")
+                ) and not _is_skill_support_path(
                     categorized_path.with_suffix(".md")
                 ):
                     _record(None, categorized_path.with_suffix(".md"))
@@ -1076,7 +1081,9 @@ def skill_view(
             # are loaded through skill_view(skill, file_path=...) and must not
             # shadow or collide with real skills that share the same basename.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md" and not _is_skill_support_path(
+                if found_md.name != "SKILL.md" and not _is_excluded_skill_path(
+                    found_md
+                ) and not _is_skill_support_path(
                     found_md
                 ):
                     _record(None, found_md)

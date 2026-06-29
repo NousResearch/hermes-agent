@@ -217,6 +217,32 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 
+def test_iter_skill_index_files_prunes_backup_skill_dirs(tmp_path):
+    """Backup package directories are not active skills."""
+    real = tmp_path / "autonomous-ai-agents" / "hermes-agent"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("---\nname: hermes-agent\n---\n", encoding="utf-8")
+
+    for suffix in (".bak", ".backup", ".old"):
+        backup = tmp_path / "autonomous-ai-agents" / f"hermes-agent{suffix}"
+        backup.mkdir(parents=True)
+        (backup / "SKILL.md").write_text(
+            "---\nname: hermes-agent\n---\n", encoding="utf-8"
+        )
+
+    tilde_backup = tmp_path / "autonomous-ai-agents" / "hermes-agent~"
+    tilde_backup.mkdir(parents=True)
+    (tilde_backup / "SKILL.md").write_text(
+        "---\nname: hermes-agent\n---\n", encoding="utf-8"
+    )
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [real / "SKILL.md"]
+    assert is_excluded_skill_path(real / "SKILL.md") is False
+    assert is_excluded_skill_path(tmp_path / "autonomous-ai-agents" / "hermes-agent.bak" / "SKILL.md") is True
+
+
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     """A category named scripts/templates/assets/references is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"

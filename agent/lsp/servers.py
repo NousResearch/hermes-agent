@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from agent.lsp.workspace import nearest_root
 
 logger = logging.getLogger("agent.lsp.servers")
+_WINDOWS_WRAPPER_SUFFIXES = (".cmd", ".exe", ".bat")
 
 # Language IDs per LSP spec.  Used for ``textDocument/didOpen.languageId``.
 # Most servers don't care exactly, but a few (typescript-language-server,
@@ -188,10 +189,21 @@ def _file_ext_or_basename(path: str) -> str:
 def _which(*names: str) -> Optional[str]:
     """Return the full path of the first command found on PATH."""
     for n in names:
-        path = shutil.which(n)
-        if path:
-            return path
+        for candidate in _native_command_candidates(n):
+            path = shutil.which(candidate)
+            if path:
+                return path
     return None
+
+
+def _native_command_candidates(name: str) -> list[str]:
+    """Return command lookup names in platform-native preference order."""
+    if os.name != "nt":
+        return [name]
+    ext = os.path.splitext(name)[1]
+    if ext.lower() in _WINDOWS_WRAPPER_SUFFIXES:
+        return [name]
+    return [f"{name}{suffix}" for suffix in _WINDOWS_WRAPPER_SUFFIXES] + [name]
 
 
 def _root_or_workspace(file_path: str, workspace: str, markers: Sequence[str], excludes: Sequence[str] = ()) -> Optional[str]:

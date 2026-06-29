@@ -1177,7 +1177,7 @@ class TestSkillViewCollisionDetection:
         assert "matches" in result
         assert len(result["matches"]) == 2
         # Both paths surfaced
-        assert any("foundations/runtime" in p for p in result["matches"])
+        assert any("foundations/runtime" in p.replace("\\", "/") for p in result["matches"])
         assert any("external" in p for p in result["matches"])
         assert "hint" in result
 
@@ -1257,7 +1257,7 @@ class TestSkillViewCollisionDetection:
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["path"] == "creative/sketch/SKILL.md"
+        assert result["path"].replace("\\", "/") == "creative/sketch/SKILL.md"
         assert "REAL SKETCH SKILL" in result["content"]
 
     def test_reference_package_skill_md_is_not_active_skill(self, tmp_path):
@@ -1370,3 +1370,35 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+    def test_backup_skill_directory_does_not_collide_with_active_skill(self, tmp_path):
+        """A same-name .bak package is an archive, not an active collision."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "hermes-agent",
+            category="autonomous-ai-agents",
+            body="ACTIVE HERMES AGENT",
+        )
+        backup_dir = local_dir / "autonomous-ai-agents" / "hermes-agent.bak"
+        backup_dir.mkdir(parents=True)
+        (backup_dir / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Backup copy.\n---\n\nBACKUP BODY\n"
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("hermes-agent")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (
+            result["path"].replace("\\", "/")
+            == "autonomous-ai-agents/hermes-agent/SKILL.md"
+        )
+        assert "ACTIVE HERMES AGENT" in result["content"]
+        assert "BACKUP BODY" not in result["content"]

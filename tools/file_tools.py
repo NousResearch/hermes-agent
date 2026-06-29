@@ -670,6 +670,22 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
         for rp in resolved_paths:
             task_failures.pop(rp, None)
 
+
+def _looks_like_patch_context_failure(error_text: str) -> bool:
+    """Return True for patch errors likely caused by stale hunk context."""
+    if not error_text:
+        return False
+    lowered = error_text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "could not find",
+            "patch validation failed",
+            "hunk",
+            "no files were modified",
+        )
+    )
+
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
 # caps, a 10k-read session would accumulate ~1.5MB of dict/set state that
@@ -1633,33 +1649,56 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"
         # snippet (which is strictly more useful than the generic hint).
-        if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            # Track per-file consecutive failures for replace mode.  The
-            # ``path`` arg only exists for replace mode; for V4A patches
-            # we'd need to walk the headers, but in practice V4A failures
-            # are far rarer and the existing _hint covers them adequately.
+        error_text = str(result_dict.get("error") or "")
+        if result_dict.get("error") and _looks_like_patch_context_failure(error_text):
+            # Track per-file consecutive failures. Replace mode uses the
+            # explicit path argument; V4A patch mode uses extracted headers.
             failure_count = 0
+            failure_targets: list[str] = []
             if mode == "replace" and path:
                 resolved = _path_to_resolved.get(path) or path
                 failure_count = _record_patch_failure(task_id, resolved)
+                failure_targets = [path]
+            elif mode == "patch":
+                seen_failure_targets: set[str] = set()
+                for _p in _paths_to_check:
+                    resolved = _path_to_resolved.get(_p) or _p
+                    if not resolved or resolved in seen_failure_targets:
+                        continue
+                    seen_failure_targets.add(resolved)
+                    failure_count = max(
+                        failure_count,
+                        _record_patch_failure(task_id, resolved),
+                    )
+                    failure_targets.append(_p)
 
-            if failure_count >= 3:
-                # Escalating hint after multiple consecutive failures on the
-                # same path.  Most common cause is a stale view of the file —
-                # the model is retrying with the same old_string against
-                # content that has since changed.  Surface the failure count
-                # so the model recognises it's in a loop and breaks out by
-                # re-reading or falling back to write_file.
-                result_dict["_hint"] = (
-                    f"This is failure #{failure_count} patching {path!r}. "
-                    "Stop retrying with variations of the same old_string. "
-                    "Either: (1) re-read the file fresh to verify current "
-                    "content, (2) use a longer / more unique old_string with "
-                    "surrounding context lines, or (3) use write_file to "
-                    "replace the entire file if the targeted region is hard "
-                    "to anchor."
-                )
-            elif "Did you mean one of these sections?" not in str(result_dict["error"]):
+            if failure_count >= 2:
+                # Block patch loops after the second consecutive failure on
+                # the same path.  Most common cause is a stale view of the
+                # file — the model is retrying with old context against
+                # content that has since changed.  Keep the original failure
+                # payload intact and add a clear instruction to refresh
+                # context before attempting another hunk.
+                if mode == "patch":
+                    displayed_targets = ", ".join(repr(t) for t in failure_targets[:3])
+                    if len(failure_targets) > 3:
+                        displayed_targets += ", ..."
+                    result_dict["_hint"] = (
+                        f"PATCH-LOOP BLOCKER: This is the second consecutive failed V4A patch "
+                        f"on {displayed_targets or 'the target file(s)'} in the current task "
+                        f"(failure #{failure_count}). Stop retrying stale hunks. "
+                        "re-read the current target file, then patch against fresh context. "
+                        "Preserve any partial diff/details from this response; do not discard them."
+                    )
+                else:
+                    result_dict["_hint"] = (
+                        f"PATCH-LOOP BLOCKER: This is the second consecutive failed patch "
+                        f"on {path!r} in the current task (failure #{failure_count}). "
+                        "Stop retrying stale old_string variants. re-read the current target file, "
+                        "then patch against fresh context. Preserve any partial diff/details from "
+                        "this response; do not discard them."
+                    )
+            elif "Did you mean one of these sections?" not in error_text:
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."

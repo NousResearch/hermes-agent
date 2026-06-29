@@ -591,11 +591,20 @@ def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
     ``rustfmt``, ``go``, ...).  ``output`` is the stdout/stderr captured
     from running it.
     """
+    lower = output.lower()
+    if base_cmd == "npx" and _looks_like_windows_cmd_banner(lower):
+        return True
     patterns = _LINTER_UNUSABLE_PATTERNS.get(base_cmd)
     if not patterns:
         return False
-    lower = output.lower()
     return any(p in lower for p in patterns)
+
+
+def _looks_like_windows_cmd_banner(lower_output: str) -> bool:
+    return (
+        "microsoft windows [version" in lower_output
+        and "all rights reserved" in lower_output
+    )
 
 
 def _lint_json_inproc(content: str) -> tuple[bool, str]:
@@ -1680,12 +1689,13 @@ class ShellFileOperations(FileOperations):
         cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
 
-        if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
+        if _looks_like_linter_unusable(base_cmd, result.stdout):
             # The linter command exists on PATH but couldn't actually run
             # (e.g. ``npx tsc`` when tsc isn't in node_modules; ``rustfmt
-            # --check`` without a Cargo project).  This is a tooling gap,
-            # not a real lint failure — surface it as ``skipped`` so the
-            # write doesn't get flagged AND so the LSP tier still runs.
+            # --check`` without a Cargo project, or a Windows command shim
+            # returning only a cmd.exe banner with exit 0).  This is a
+            # tooling gap, not a real lint failure — surface it as ``skipped``
+            # so the write doesn't get flagged AND so the LSP tier still runs.
             from tools.ansi_strip import strip_ansi
             cleaned = strip_ansi(result.stdout).strip()
             # Collapse to a single line — the npx banner is multi-line ASCII.

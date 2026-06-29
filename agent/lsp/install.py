@@ -127,15 +127,24 @@ def hermes_lsp_bin_dir() -> Path:
 
 def _native_binary_candidates(base: Path) -> list[Path]:
     """Return platform-native executable candidates for a staged binary."""
-    candidates = [base]
-    if _is_windows():
-        existing = {str(base).lower()}
+    if not _is_windows():
+        return [base]
+
+    candidates: list[Path] = []
+    existing: set[str] = set()
+
+    def add(candidate: Path) -> None:
+        key = str(candidate).lower()
+        if key not in existing:
+            candidates.append(candidate)
+            existing.add(key)
+
+    if base.suffix.lower() in _WINDOWS_WRAPPER_SUFFIXES:
+        add(base)
+    else:
         for suffix in _WINDOWS_WRAPPER_SUFFIXES:
-            candidate = Path(str(base) + suffix)
-            key = str(candidate).lower()
-            if key not in existing:
-                candidates.append(candidate)
-                existing.add(key)
+            add(Path(str(base) + suffix))
+        add(base)
     return candidates
 
 

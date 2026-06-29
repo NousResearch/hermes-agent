@@ -473,7 +473,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_files_prompt = _r.build_context_files_prompt(
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
             context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
+            allow_install_tree_fallback=agent.platform in ("cli", "tui"),
+            session_id=getattr(agent, "session_id", None),
+            platform=getattr(agent, "platform", None),
+        )
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

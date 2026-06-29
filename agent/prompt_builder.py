@@ -1989,11 +1989,112 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     )
 
 
+def _resolve_context_experiment_file(cwd_path: Path, raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = cwd_path / path
+    return path.resolve()
+
+
+def _load_context_experiment_sections(
+    cwd_path: Path,
+    *,
+    session_id: Optional[str],
+    platform: Optional[str],
+    context_length: Optional[int],
+) -> list[str] | None:
+    """Return context sections for an active context experiment.
+
+    ``None`` means no experiment is active, so normal project-context discovery
+    should proceed. An empty list means an experiment is active but its chosen
+    arm intentionally supplied no context material, so normal discovery should
+    stay suppressed for a clean A/B arm.
+    """
+    try:
+        from agent.context_experiments import resolve_context_experiment_assignment
+
+        assignment = resolve_context_experiment_assignment(
+            session_id=session_id,
+            platform=platform,
+        )
+    except Exception as exc:
+        logger.debug("Context experiment assignment failed: %s", exc)
+        return None
+
+    if assignment is None:
+        return None
+
+    arm = assignment.arm or {}
+    sections: list[str] = []
+    raw_files: list[str] = []
+    if arm.get("context_file"):
+        raw_files.append(str(arm.get("context_file")))
+    context_files = arm.get("context_files")
+    if isinstance(context_files, list):
+        raw_files.extend(str(item) for item in context_files if str(item).strip())
+
+    for raw in raw_files:
+        path = _resolve_context_experiment_file(cwd_path, raw)
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            logger.debug("Could not read context experiment file %s: %s", path, exc)
+            sections.append(
+                f"## Context experiment {assignment.experiment_name}/{assignment.arm_name}: {path.name}\n\n"
+                f"[MISSING: configured context file {path} could not be read.]"
+            )
+            continue
+        if not content:
+            continue
+        content = _scan_context_content(content, path.name)
+        result = (
+            f"## Context experiment {assignment.experiment_name}/{assignment.arm_name}: {path.name}\n\n"
+            f"{content}"
+        )
+        sections.append(
+            _truncate_content(
+                result,
+                path.name,
+                context_length=context_length,
+                read_path=str(path),
+            )
+        )
+
+    skills = arm.get("skills")
+    if isinstance(skills, str):
+        skill_names = [skills]
+    elif isinstance(skills, list):
+        skill_names = [str(item) for item in skills if str(item).strip()]
+    else:
+        skill_names = []
+    if skill_names:
+        try:
+            from agent.skill_commands import build_preloaded_skills_prompt
+
+            skills_prompt, _loaded, missing = build_preloaded_skills_prompt(
+                skill_names,
+                task_id=session_id,
+            )
+            if skills_prompt:
+                sections.append(skills_prompt)
+            if missing:
+                sections.append(
+                    "[Context experiment missing skills: " + ", ".join(missing) + "]"
+                )
+        except Exception as exc:
+            logger.debug("Context experiment skill preload failed: %s", exc)
+            sections.append("[Context experiment skill preload failed; see logs.]")
+
+    return sections
+
+
 def build_context_files_prompt(
-    cwd: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
     skip_soul: bool = False,
     context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False,
+    session_id: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> str:
     """Discover and load context files for the system prompt.
 
@@ -2045,15 +2146,25 @@ def build_context_files_prompt(
         )
         project_context = ""
     else:
-        # Priority-based project context: first match wins
-        project_context = (
-            _load_hermes_md(cwd_path, context_length)
-            or _load_agents_md(cwd_path, context_length)
-            or _load_claude_md(cwd_path, context_length)
-            or _load_cursorrules(cwd_path, context_length)
+        experiment_sections = _load_context_experiment_sections(
+            cwd_path,
+            session_id=session_id,
+            platform=platform,
+            context_length=context_length,
         )
-    if project_context:
-        sections.append(project_context)
+
+        if experiment_sections is None:
+            # Priority-based project context: first match wins
+            project_context = (
+                _load_hermes_md(cwd_path, context_length)
+                or _load_agents_md(cwd_path, context_length)
+                or _load_claude_md(cwd_path, context_length)
+                or _load_cursorrules(cwd_path, context_length)
+            )
+            if project_context:
+                sections.append(project_context)
+        else:
+            sections.extend(experiment_sections)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

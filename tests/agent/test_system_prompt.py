@@ -27,15 +27,20 @@ def _make_agent(**overrides):
     return SimpleNamespace(**base)
 
 
-def _captured_context_cwd(agent):
-    """The cwd build_system_prompt_parts hands to build_context_files_prompt."""
+def _captured_context_args(agent):
+    """The context args build_system_prompt_parts hands to build_context_files_prompt."""
     captured = {}
 
     def fake_context_files(
         cwd=None, skip_soul=False, context_length=None,
         allow_install_tree_fallback=False,
+        session_id=None,
+        platform=None,
     ):
         captured["cwd"] = cwd
+        captured["allow_install_tree_fallback"] = allow_install_tree_fallback
+        captured["session_id"] = session_id
+        captured["platform"] = platform
         return ""
 
     with (
@@ -45,7 +50,12 @@ def _captured_context_cwd(agent):
         patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
     ):
         build_system_prompt_parts(agent)
-    return captured["cwd"]
+    return captured
+
+
+def _captured_context_cwd(agent):
+    """The cwd build_system_prompt_parts hands to build_context_files_prompt."""
+    return _captured_context_args(agent)["cwd"]
 
 
 class TestContextFileCwd:
@@ -58,6 +68,14 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+    def test_passes_session_context_to_context_file_builder(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        args = _captured_context_args(
+            _make_agent(session_id="session-123", platform="slack")
+        )
+        assert args["session_id"] == "session-123"
+        assert args["platform"] == "slack"
 
 
 def _stable_prompt(agent):

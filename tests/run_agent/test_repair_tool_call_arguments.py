@@ -140,3 +140,26 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+    # -- Stage 0.5: concatenated / duplicated argument objects --
+
+    def test_concatenated_duplicate_objects_keeps_first(self):
+        """Some local models emit their args twice: '{...}{...'. json.loads
+        rejects this as 'Extra data'; we keep the first complete object."""
+        raw = '{"attachment_id": "fil_x", "message_id": "msg_y"}{"attachment_id":'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"attachment_id": "fil_x", "message_id": "msg_y"}
+
+    def test_exact_duplicate_objects(self):
+        result = _repair_tool_call_arguments('{"a": 1}{"a": 1}', "t")
+        assert json.loads(result) == {"a": 1}
+
+    def test_empty_first_object_prefers_next(self):
+        """A leading '{}' followed by the real args -> take the real args."""
+        result = _repair_tool_call_arguments('{}{"a": 1}', "t")
+        assert json.loads(result) == {"a": 1}
+
+    def test_clean_single_object_untouched(self):
+        """A well-formed single object must pass through unchanged."""
+        result = _repair_tool_call_arguments('{"attachment_id": "fil_x"}', "t")
+        assert json.loads(result) == {"attachment_id": "fil_x"}
+

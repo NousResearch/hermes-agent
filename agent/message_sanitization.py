@@ -220,6 +220,31 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
+    # Repair pass 0.5: some local models (e.g. Qwen 4B) emit their tool-call
+    # arguments twice, concatenated — '{...}{...' — which json.loads rejects
+    # as "Extra data". Decode just the first complete JSON value (the model's
+    # intended args) and drop the duplicated/truncated tail. If that first
+    # value is an empty object but more data follows, prefer the next value.
+    try:
+        decoder = json.JSONDecoder()
+        obj, end = decoder.raw_decode(raw_stripped)
+        if isinstance(obj, dict) and not obj and end < len(raw_stripped):
+            try:
+                obj2, _ = decoder.raw_decode(raw_stripped[end:].lstrip())
+                if isinstance(obj2, dict) and obj2:
+                    obj = obj2
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if end < len(raw_stripped):
+            logger.warning(
+                "Repaired concatenated/duplicated tool_call arguments for %s "
+                "(kept first complete object)",
+                tool_name,
+            )
+        return json.dumps(obj, separators=(",", ":"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
     # Attempt common JSON repairs
     fixed = raw_stripped
     # 1. Strip trailing commas before } or ]

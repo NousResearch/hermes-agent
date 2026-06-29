@@ -33,21 +33,22 @@ _SECRET_SOURCES: dict[str, str] = {}
 # process.  ``load_hermes_dotenv()`` is called at module-import time from
 # several hot modules (cli.py, hermes_cli/main.py, run_agent.py,
 # trajectory_compressor.py, gateway/run.py, ...), so without this guard the
-# Bitwarden status line gets printed 3-5x per startup.  Bitwarden's own
-# in-process cache prevents redundant network calls, but the print, the
-# config re-parse, and the ASCII sanitization sweep still ran every time.
+# external-source status line gets printed 3-5x per startup.  Backend caches
+# prevent redundant CLI/network calls, but the print, config re-parse, and
+# ASCII sanitization sweep still ran every time.
 _APPLIED_HOMES: set[str] = set()
 
 
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
 
-    Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
-    during the current process's ``load_hermes_dotenv()`` call.  Returns
-    ``None`` for keys that came from ``.env``, the shell environment, or
-    aren't tracked.  The returned label is metadata only: credential-pool
-    persistence may store it to explain the origin of a borrowed secret, but
-    must never treat it as authorization to persist the raw value.
+    Returns labels like ``"bitwarden"`` or ``"onepassword"`` for keys pulled
+    from an external secret source during the current process's
+    ``load_hermes_dotenv()`` call.  Returns ``None`` for keys that came from
+    ``.env``, the shell environment, or aren't tracked.  The returned label is
+    metadata only: credential-pool persistence may store it to explain the
+    origin of a borrowed secret, but must never treat it as authorization to
+    persist the raw value.
     """
     return _SECRET_SOURCES.get(env_var)
 
@@ -78,9 +79,10 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "onepassword":
+        return " (from 1Password)"
     # Generic fallback — future-proofing for additional secret sources
-    # (e.g. 1Password, HashiCorp Vault) without having to update every
-    # call site.
+    # (e.g. HashiCorp Vault) without having to update every call site.
     return f" (from {source})"
 
 
@@ -281,21 +283,16 @@ def _apply_managed_env() -> None:
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from configured external sources into env.
 
-    Runs AFTER dotenv loads so .env values are visible (we use them to
-    locate the access token) but BEFORE the rest of Hermes reads
-    ``os.environ`` for credentials.  Any failure here is logged and
-    swallowed — external secret sources must never block startup.
+    Runs AFTER dotenv loads so bootstrap credentials / references are visible
+    but BEFORE the rest of Hermes reads ``os.environ`` for provider keys.  Any
+    failure here is logged and swallowed — external secret sources must never
+    block startup.
 
-    Idempotent within a process: subsequent calls for the same
-    ``home_path`` are no-ops.  ``load_hermes_dotenv()`` runs at import
-    time from several hot modules (cli.py, hermes_cli/main.py,
-    run_agent.py, trajectory_compressor.py, ...), so without this guard
-    the Bitwarden status line would print 3-5x per CLI startup.  Use
-    ``reset_secret_source_cache()`` if you need to force a re-pull
-    (tests, future ``hermes secrets bitwarden sync`` from a long-running
-    process).
+    Idempotent within a process: subsequent calls for the same ``home_path``
+    are no-ops.  Use ``reset_secret_source_cache()`` if you need to force a
+    re-pull (tests, or future sync flows from a long-running process).
     """
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
@@ -308,52 +305,72 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
-        return
+    if bw_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+        except ImportError:
+            apply_bitwarden_secrets = None  # type: ignore[assignment]
+        if apply_bitwarden_secrets is not None:
+            result = apply_bitwarden_secrets(
+                enabled=True,
+                access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
+                project_id=bw_cfg.get("project_id", ""),
+                override_existing=bool(bw_cfg.get("override_existing", False)),
+                cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+                auto_install=bool(bw_cfg.get("auto_install", True)),
+                server_url=str(bw_cfg.get("server_url", "") or "").strip(),
+                home_path=home_path,
+            )
+            _report_secret_source_result(
+                label="Bitwarden Secrets Manager",
+                source_key="bitwarden",
+                result=result,
+            )
 
-    try:
-        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
-    except ImportError:
-        return
+    op_cfg = (cfg or {}).get("onepassword") or {}
+    if op_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.onepassword import apply_onepassword_secrets
+        except ImportError:
+            apply_onepassword_secrets = None  # type: ignore[assignment]
+        if apply_onepassword_secrets is not None:
+            result = apply_onepassword_secrets(
+                enabled=True,
+                env_file=op_cfg.get("env_file", "~/.hermes/secrets/1password.env"),
+                service_account_token_env=op_cfg.get(
+                    "service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN"
+                ),
+                override_existing=bool(op_cfg.get("override_existing", False)),
+                cache_ttl_seconds=float(op_cfg.get("cache_ttl_seconds", 300)),
+                op_path=str(op_cfg.get("op_path", "") or ""),
+                home_path=home_path,
+            )
+            _report_secret_source_result(
+                label="1Password Secrets",
+                source_key="onepassword",
+                result=result,
+            )
 
-    result = apply_bitwarden_secrets(
-        enabled=True,
-        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-        project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
-        server_url=str(bw_cfg.get("server_url", "") or "").strip(),
-        home_path=home_path,
-    )
 
+def _report_secret_source_result(*, label: str, source_key: str, result) -> None:  # noqa: ANN001
+    """Record and print a backend fetch result without exposing values."""
     if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
+        # Re-run the ASCII sanitization pass: external secret values are
+        # user-supplied and might have the same copy-paste corruption as a
+        # manually edited .env (see #6843).
         _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
         for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
+            _SECRET_SOURCES[name] = source_key
         print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+            f"  {label}: applied {len(result.applied)} "
             f"secret{'s' if len(result.applied) != 1 else ''} "
             f"({', '.join(sorted(result.applied))})",
             file=sys.stderr,
         )
     if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
+        print(f"  {label}: {result.error}", file=sys.stderr)
     for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+        print(f"  {label}: {warn}", file=sys.stderr)
 
 
 def _load_secrets_config(home_path: Path) -> dict:

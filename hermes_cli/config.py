@@ -2959,6 +2959,22 @@ DEFAULT_CONFIG = {
             # `hermes secrets bitwarden setup`.
             "server_url": "",
         },
+        "onepassword": {
+            # Master switch.  When false, the op CLI is never contacted.
+            "enabled": False,
+            # Env-style file with NAME=op://vault/item/field references.
+            # This file should contain references only, not plaintext secrets.
+            "env_file": "~/.hermes/secrets/1password.env",
+            # Optional bootstrap token env var for 1Password Service Accounts.
+            # Users can also rely on an already authenticated op/app session.
+            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+            # Seconds to cache resolved references in-process.  0 disables.
+            "cache_ttl_seconds": 300,
+            # When True, 1Password values overwrite existing env vars.
+            "override_existing": True,
+            # Optional explicit op CLI path.  Empty string means resolve from PATH.
+            "op_path": "",
+        },
     },
 
     # Paste collapse thresholds (TUI + CLI).

@@ -248,10 +248,31 @@ class TestCursesBrowse:
     def _run_with_keys(self, sessions, key_sequence):
         """Simulate running the curses picker with a given key sequence."""
 
-        # Build a mock stdscr that returns keys from the sequence
-        mock_stdscr = MagicMock()
-        mock_stdscr.getmaxyx.return_value = (30, 120)
-        mock_stdscr.getch.side_effect = key_sequence
+        class FakeStdscr:
+            def __init__(self, keys):
+                self.keys = list(keys)
+                self.timeout_ms = -1
+                self.clear = MagicMock()
+                self.refresh = MagicMock()
+                self.addnstr = MagicMock()
+                self.addstr = MagicMock()
+
+            def getmaxyx(self):
+                return (30, 120)
+
+            def getch(self):
+                if self.timeout_ms > 0:
+                    if self.keys and self.keys[0] in (ord("["), ord("O")):
+                        return self.keys.pop(0)
+                    return -1
+                if not self.keys:
+                    raise StopIteration
+                return self.keys.pop(0)
+
+            def timeout(self, ms):
+                self.timeout_ms = ms
+
+        mock_stdscr = FakeStdscr(key_sequence)
 
         # Capture what curses.wrapper receives and call it with our mock
         with patch("curses.wrapper") as mock_wrapper:
@@ -278,6 +299,11 @@ class TestCursesBrowse:
         result = self._run_with_keys(sessions, [curses.KEY_DOWN, 10])
         assert result == sessions[1]["id"]
 
+    def test_raw_csi_down_then_enter_selects_second(self):
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [27, ord("["), ord("B"), 10])
+        assert result == sessions[1]["id"]
+
     def test_down_down_enter_selects_third(self):
         import curses
         sessions = _make_sessions(5)
@@ -288,6 +314,11 @@ class TestCursesBrowse:
         import curses
         sessions = _make_sessions(3)
         result = self._run_with_keys(sessions, [curses.KEY_UP, 10])
+        assert result == sessions[2]["id"]
+
+    def test_raw_csi_up_wraps_to_last(self):
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [27, ord("["), ord("A"), 10])
         assert result == sessions[2]["id"]
 
     def test_escape_cancels(self):

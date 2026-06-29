@@ -909,6 +909,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     # Try curses-based picker first
     try:
         import curses
+        from hermes_cli.curses_ui import (
+            NAV_CANCEL,
+            NAV_DOWN,
+            NAV_SELECT,
+            NAV_UP,
+            _decode_menu_key,
+        )
 
         result_holder = [None]
 
@@ -1064,17 +1071,40 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in {curses.KEY_UP,}:
+                if key in {curses.KEY_BACKSPACE, 127, 8}:
+                    if search_text:
+                        search_text = search_text[:-1]
+                        if search_text:
+                            filtered = [s for s in sessions if _match(s, search_text)]
+                        else:
+                            filtered = list(sessions)
+                        cursor = 0
+                        scroll_offset = 0
+                    continue
+
+                if 32 <= key <= 126:
+                    if key == ord("q") and not search_text:
+                        return
+                    # Printable character → add to search filter
+                    search_text += chr(key)
+                    filtered = [s for s in sessions if _match(s, search_text)]
+                    cursor = 0
+                    scroll_offset = 0
+                    continue
+
+                action = _decode_menu_key(stdscr, key)
+
+                if action == NAV_UP:
                     if filtered:
                         cursor = (cursor - 1) % len(filtered)
-                elif key in {curses.KEY_DOWN,}:
+                elif action == NAV_DOWN:
                     if filtered:
                         cursor = (cursor + 1) % len(filtered)
-                elif key in {curses.KEY_ENTER, 10, 13}:
+                elif action == NAV_SELECT:
                     if filtered:
                         result_holder[0] = filtered[cursor]["id"]
                     return
-                elif key == 27:  # Esc
+                elif action == NAV_CANCEL:
                     if search_text:
                         # First Esc clears the search
                         search_text = ""
@@ -1084,23 +1114,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     else:
                         # Second Esc exits
                         return
-                elif key in {curses.KEY_BACKSPACE, 127, 8}:
-                    if search_text:
-                        search_text = search_text[:-1]
-                        if search_text:
-                            filtered = [s for s in sessions if _match(s, search_text)]
-                        else:
-                            filtered = list(sessions)
-                        cursor = 0
-                        scroll_offset = 0
-                elif key == ord("q") and not search_text:
-                    return
-                elif 32 <= key <= 126:
-                    # Printable character → add to search filter
-                    search_text += chr(key)
-                    filtered = [s for s in sessions if _match(s, search_text)]
-                    cursor = 0
-                    scroll_offset = 0
 
         curses.wrapper(_curses_browse)
         return result_holder[0]

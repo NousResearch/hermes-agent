@@ -261,11 +261,14 @@ class TestSessionResetPolicy:
 
 
 class TestStreamingConfig:
-    def test_defaults_to_auto_transport(self):
-        # "auto" prefers native draft streaming where the platform supports
-        # it (Telegram DMs) and falls back to edit-based everywhere else, so
-        # it is safe as the global out-of-the-box default.
+    def test_defaults_to_edit_transport(self):
+        # Draft streaming remains opt-in via transport="auto" or "draft";
+        # the global default must preserve the edit-based delivery path.
         restored = StreamingConfig.from_dict({"enabled": "true"})
+        assert restored.transport == "edit"
+
+    def test_preserves_explicit_auto_transport(self):
+        restored = StreamingConfig.from_dict({"enabled": "true", "transport": "auto"})
         assert restored.transport == "auto"
 
     def test_from_dict_coerces_quoted_false_enabled(self):

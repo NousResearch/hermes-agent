@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { en } from './en.js'
+import { ja } from './ja.js'
 import {
   $tuiLocale,
   $tuiText,
@@ -98,6 +99,33 @@ describe('readUserOverrides', () => {
     process.env.HERMES_LOCALE_OVERRIDES = mkdtempSync(join(tmpdir(), 'hermes-tui-empty-'))
     expect(readUserOverrides('ja')).toBeNull()
     expect(readUserOverrides('../../etc/passwd')).toBeNull()
+  })
+})
+
+describe('catalog integrity', () => {
+  const flatten = (obj: unknown, prefix = ''): string[] => {
+    if (typeof obj !== 'object' || obj === null) {
+      return [prefix]
+    }
+    return Object.entries(obj as Record<string, unknown>).flatMap(([k, v]) =>
+      flatten(v, prefix ? `${prefix}.${k}` : k)
+    )
+  }
+
+  it('every Japanese key exists in English (no typos / stray keys)', () => {
+    const enKeys = new Set(flatten(en))
+    const strayJaKeys = flatten(ja).filter(k => !enKeys.has(k))
+    expect(strayJaKeys).toEqual([])
+  })
+
+  it('translates the migrated sections to Japanese', () => {
+    const cat = resolveTuiCatalog('ja')
+    expect(cat.skills.loading).toBe('スキルを読み込み中…')
+    expect(cat.plugins.none).toBe('プラグインがインストールされていません')
+    expect(cat.sessions.loading).toBe('セッションを読み込み中…')
+    expect(cat.pets.adopting).toBe('迎え入れ中…')
+    expect(cat.models.noProviders).toBe('利用可能なプロバイダーがありません')
+    expect(cat.agents.compareHint).toContain('esc/q')
   })
 })
 

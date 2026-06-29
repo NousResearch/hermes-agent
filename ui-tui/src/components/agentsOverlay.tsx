@@ -12,6 +12,7 @@ import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { useTuiText } from '../i18n/index.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import {
@@ -622,6 +623,7 @@ function DiffView({
   pair: { baseline: SpawnSnapshot; candidate: SpawnSnapshot }
   t: Theme
 }) {
+  const tr = useTuiText()
   const aTotals = useMemo(() => treeTotals(buildSubagentTree(pair.baseline.subagents)), [pair.baseline])
   const bTotals = useMemo(() => treeTotals(buildSubagentTree(pair.candidate.subagents)), [pair.candidate])
   const paneWidth = Math.floor((cols - 4) / 2)
@@ -641,7 +643,7 @@ function DiffView({
         <Text bold color={t.color.border}>
           Replay diff
         </Text>
-        <Text color={t.color.muted}>baseline vs candidate · esc/q close</Text>
+        <Text color={t.color.muted}>{tr.agents.compareHint}</Text>
       </Box>
 
       <Box flexDirection="row" marginBottom={1}>
@@ -674,6 +676,7 @@ function DiffView({
 // ── Main overlay ─────────────────────────────────────────────────────
 
 export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
+  const tr = useTuiText()
   const liveSubagents = useTurnSelector(state => state.subagents)
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
@@ -990,7 +993,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
       {rows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
-          <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
+          <Text color={t.color.muted}>{tr.agents.noSubagents}</Text>
         </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>

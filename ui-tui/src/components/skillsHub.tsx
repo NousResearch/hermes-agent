@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useTuiText } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -12,6 +13,7 @@ const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
 export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
+  const tr = useTuiText()
   const [skillsByCat, setSkillsByCat] = useState<Record<string, string[]>>({})
   const [selectedCat, setSelectedCat] = useState('')
   const [catIdx, setCatIdx] = useState(0)
@@ -179,7 +181,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading skills…</Text>
+    return <Text color={t.color.muted}>{tr.skills.loading}</Text>
   }
 
   if (err && stage === 'category') {
@@ -194,7 +196,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   if (!cats.length) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.muted}>no skills available</Text>
+        <Text color={t.color.muted}>{tr.skills.none}</Text>
         <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
@@ -210,7 +212,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
           Skills Hub
         </Text>
 
-        <Text color={t.color.muted}>select a category</Text>
+        <Text color={t.color.muted}>{tr.skills.selectCategory}</Text>
         {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
         {items.map((row, i) => {
@@ -246,7 +248,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         </Text>
 
         <Text color={t.color.muted}>{skills.length} skill(s)</Text>
-        {!skills.length ? <Text color={t.color.muted}>no skills in this category</Text> : null}
+        {!skills.length ? <Text color={t.color.muted}>{tr.skills.noneInCategory}</Text> : null}
         {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
         {items.map((row, i) => {
@@ -285,9 +287,9 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
       <Text color={t.color.muted}>{info?.category ?? selectedCat}</Text>
       {info?.description ? <Text color={t.color.text}>{info.description}</Text> : null}
       {info?.path ? <Text color={t.color.muted}>path: {info.path}</Text> : null}
-      {!info && !err ? <Text color={t.color.muted}>loading…</Text> : null}
+      {!info && !err ? <Text color={t.color.muted}>{tr.skills.loadingShort}</Text> : null}
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {installing ? <Text color={t.color.accent}>installing…</Text> : null}
+      {installing ? <Text color={t.color.accent}>{tr.skills.installing}</Text> : null}
 
       <OverlayHint t={t}>i reinspect · x reinstall · Enter/Esc back · q close</OverlayHint>
     </Box>

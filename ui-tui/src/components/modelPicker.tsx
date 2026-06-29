@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import { useTuiText } from '../i18n/index.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
@@ -28,6 +29,7 @@ export function providerIndexAfterClearingFilter(providerRows: ProviderRow[], pr
 }
 
 export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
+  const tr = useTuiText()
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -416,7 +418,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading models…</Text>
+    return <Text color={t.color.muted}>{tr.models.loading}</Text>
   }
 
   if (err) {
@@ -431,7 +433,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
   if (!providers.length) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.muted}>no providers available</Text>
+        <Text color={t.color.muted}>{tr.models.noProviders}</Text>
         <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )

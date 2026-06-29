@@ -13,6 +13,36 @@ export interface TuiTranslations {
     noSystemPrompt: string
     sessionLabel: string
   }
+  skills: {
+    loading: string
+    none: string
+    selectCategory: string
+    noneInCategory: string
+    loadingShort: string
+    installing: string
+  }
+  plugins: {
+    loading: string
+    none: string
+    installHint: string
+    updating: string
+  }
+  sessions: {
+    loading: string
+    noOther: string
+  }
+  pets: {
+    loading: string
+    adopting: string
+  }
+  models: {
+    loading: string
+    noProviders: string
+  }
+  agents: {
+    compareHint: string
+    noSubagents: string
+  }
 }
 
 export type DeepPartial<T> = {

@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
+import { useTuiText } from '../i18n/index.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -40,6 +41,7 @@ const GLYPH: Record<string, string> = {
 }
 
 export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
+  const tr = useTuiText()
   const [rows, setRows] = useState<PluginRow[]>([])
   const [bundledCount, setBundledCount] = useState(0)
   const [userCount, setUserCount] = useState(0)
@@ -150,7 +152,7 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading plugins…</Text>
+    return <Text color={t.color.muted}>{tr.plugins.loading}</Text>
   }
 
   if (err && !rows.length) {
@@ -168,8 +170,8 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
         <Text bold color={t.color.accent}>
           Plugins Hub
         </Text>
-        <Text color={t.color.muted}>no plugins installed</Text>
-        <Text color={t.color.muted}>install: hermes plugins install owner/repo</Text>
+        <Text color={t.color.muted}>{tr.plugins.none}</Text>
+        <Text color={t.color.muted}>{tr.plugins.installHint}</Text>
         <OverlayHint t={t}>Esc/q close</OverlayHint>
       </Box>
     )
@@ -224,7 +226,7 @@ export function PluginsHub({ gw, onClose, t }: PluginsHubProps) {
       )}
 
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {busy ? <Text color={t.color.accent}>updating…</Text> : null}
+      {busy ? <Text color={t.color.accent}>{tr.plugins.updating}</Text> : null}
 
       <OverlayHint t={t}>↑/↓ select · Enter/Space toggle · Tab user/all · 1-9,0 quick · Esc/q close</OverlayHint>
     </Box>

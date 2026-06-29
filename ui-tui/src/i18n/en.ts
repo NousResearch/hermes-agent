@@ -12,5 +12,35 @@ export const en: TuiTranslations = {
     },
     noSystemPrompt: 'No system prompt loaded.',
     sessionLabel: 'Session: '
+  },
+  skills: {
+    loading: 'loading skills…',
+    none: 'no skills available',
+    selectCategory: 'select a category',
+    noneInCategory: 'no skills in this category',
+    loadingShort: 'loading…',
+    installing: 'installing…'
+  },
+  plugins: {
+    loading: 'loading plugins…',
+    none: 'no plugins installed',
+    installHint: 'install: hermes plugins install owner/repo',
+    updating: 'updating…'
+  },
+  sessions: {
+    loading: 'loading sessions…',
+    noOther: 'no other sessions — Enter on +new to start one'
+  },
+  pets: {
+    loading: 'loading pets…',
+    adopting: 'adopting…'
+  },
+  models: {
+    loading: 'loading models…',
+    noProviders: 'no providers available'
+  },
+  agents: {
+    compareHint: 'baseline vs candidate · esc/q close',
+    noSubagents: 'No subagents this turn. Trigger delegate_task to populate the tree.'
   }
 }

@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
+import { useTuiText } from '../i18n/index.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -31,6 +32,7 @@ interface Gallery {
  * no restart. This is the interactive sibling of the text `/pet <slug>` path.
  */
 export function PetPicker({ gw, onClose, t }: PetPickerProps) {
+  const tr = useTuiText()
   const [gallery, setGallery] = useState<Gallery | null>(null)
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
@@ -117,7 +119,7 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading pets…</Text>
+    return <Text color={t.color.muted}>{tr.pets.loading}</Text>
   }
 
   if (err && !gallery) {
@@ -169,7 +171,7 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
       {offset + VISIBLE < view.length && <Text color={t.color.muted}> ↓ {view.length - offset - VISIBLE} more</Text>}
 
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {busy ? <Text color={t.color.accent}>adopting…</Text> : null}
+      {busy ? <Text color={t.color.accent}>{tr.pets.adopting}</Text> : null}
 
       <OverlayHint t={t}>↑/↓ select · Enter adopt · type to filter · Esc cancel</OverlayHint>
     </Box>

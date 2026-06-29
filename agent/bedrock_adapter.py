@@ -1324,11 +1324,14 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # Anthropic Claude models on Bedrock.
     # Context windows per Anthropic's official models comparison
     # (https://platform.claude.com/docs/en/about-claude/models/overview).
-    # Sonnet 5 / Opus 4.7 / Opus 4.6 / Sonnet 4.6 have 1M generally
+    # Sonnet 5 / Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6 have 1M generally
     # available (no beta header required as of April 2026). Sonnet 4.5 and
     # Sonnet 4 had their `context-1m-2025-08-07` beta retired on
     # April 30, 2026, so they are standard 200K; Haiku 4.5 is 200K.
+    # Keys are matched by longest-substring, so the versioned 4-6/4-7/4-8
+    # entries win over the generic "anthropic.claude-opus-4" fallback.
     "anthropic.claude-sonnet-5":     1_000_000,
+    "anthropic.claude-opus-4-8":     1_000_000,
     "anthropic.claude-opus-4-7":     1_000_000,
     "anthropic.claude-opus-4-6":     1_000_000,
     "anthropic.claude-sonnet-4-6":   1_000_000,

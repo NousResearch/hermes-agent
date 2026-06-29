@@ -111,6 +111,12 @@ The app checks for updates in the background and offers a one-click update when 
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
+### macOS Privacy permissions after local Desktop rebuilds
+
+For locally-built macOS Desktop apps, Hermes re-signs the unpacked app with a stable local designated requirement after rebuilds. If macOS Privacy & Security permissions were granted before this fix, quit and reopen Hermes Desktop and grant the permission one more time so macOS records the stable requirement.
+
+This only applies to local/source builds launched with `hermes desktop`; a notarized release build uses its Developer ID signature instead.
+
 ## Uninstalling
 
 Open **Settings → About → Danger zone** and pick how much to remove:

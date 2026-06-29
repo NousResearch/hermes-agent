@@ -257,12 +257,14 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import plistlib
 import shlex
 import shutil
 import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
+
 
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
@@ -5382,21 +5384,104 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+def _desktop_macos_bundle_id(bundle: Path) -> Optional[str]:
+    """Return a bundle/framework identifier for local macOS signing."""
+    info = bundle / "Contents" / "Info.plist"
+    if not info.exists() and bundle.suffix == ".framework":
+        candidates = list(bundle.glob("Versions/*/Resources/Info.plist")) + list(
+            bundle.glob("Resources/Info.plist")
+        )
+        if candidates:
+            info = candidates[0]
+    if not info.exists():
+        return None
+    try:
+        data = plistlib.loads(info.read_bytes())
+    except Exception:
+        return None
+    ident = data.get("CFBundleIdentifier")
+    return str(ident) if ident else None
+
+
+def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path) -> bool:
+    """Ad-hoc sign a local Desktop build with a stable designated requirement.
+
+    Plain ad-hoc signatures get a cdhash-only designated requirement. Every local
+    Desktop rebuild changes that cdhash, so macOS TCC/App Management treats the
+    rebuilt Hermes.app as different code and the user has to grant permission
+    again. Signing bundles with an explicit identifier-only designated
+    requirement keeps local rebuilds relaunchable *and* gives TCC a stable
+    requirement to persist against until a real Developer ID/notarized build is
+    available.
+    """
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+
+    ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
+    ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+
+    def sign_path(
+        path: Path,
+        *,
+        entitlements: Optional[Path] = None,
+        identifier: Optional[str] = None,
+        runtime: bool = True,
+    ) -> None:
+        args = [codesign, "--force", "--sign", "-"]
+        if runtime:
+            args += ["--options", "runtime"]
+        if entitlements and entitlements.exists():
+            args += ["--entitlements", str(entitlements)]
+        if identifier:
+            args += ["--requirements", f'=designated => identifier "{identifier}"']
+        args.append(str(path))
+        subprocess.run(args, check=True)
+
+    standalone: list[Path] = []
+    for root, _dirs, files in os.walk(app / "Contents"):
+        root_path = Path(root)
+        if any(part.endswith(".app") for part in root_path.parts):
+            continue
+        for name in files:
+            fp = root_path / name
+            if name in {"chrome_crashpad_handler", "spawn-helper"} or fp.suffix in {
+                ".node",
+                ".dylib",
+            }:
+                standalone.append(fp)
+    for fp in sorted(standalone, key=lambda p: len(p.parts), reverse=True):
+        sign_path(fp, runtime=False)
+
+    bundles: list[Path] = []
+    frameworks_dir = app / "Contents" / "Frameworks"
+    if frameworks_dir.exists():
+        for root, _dirs, _files in os.walk(frameworks_dir):
+            p = Path(root)
+            if p.suffix in {".framework", ".app"}:
+                bundles.append(p)
+    for bundle in sorted(set(bundles), key=lambda p: len(p.parts), reverse=True):
+        ident = _desktop_macos_bundle_id(bundle)
+        ent = ent_inherit if bundle.suffix == ".app" and "Helper" in bundle.name else None
+        sign_path(bundle, entitlements=ent, identifier=ident)
+
+    sign_path(app, entitlements=ent_main, identifier=_desktop_macos_bundle_id(app))
+    subprocess.run(
+        [codesign, "--verify", "--deep", "--strict", "--verbose=2", str(app)],
+        check=True,
+    )
+    return True
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
-    """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
+    """Make a locally-built macOS desktop app survive in-place self-update.
 
-    An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
-    when the self-updater rebuilds the bundle in place with a fresh build (a new,
-    different cdhash) Gatekeeper/LaunchServices treats the changed code as
-    tampering and macOS reports "Hermes is damaged and can't be opened." The
-    bundle also inherits the com.apple.quarantine flag from the downloaded
-    installer process chain. Both make the relaunch fail.
-
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
-    (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+    A default ad-hoc-signed .app has a cdhash-only Designated Requirement. When
+    Desktop rebuilds in place, the cdhash changes and macOS can treat the new
+    build as a different app for Gatekeeper/TCC/App Management, which makes Brian
+    re-enable permissions. Clear quarantine and re-sign the local bundle with a
+    stable identifier-only requirement while preserving Hermes' macOS
+    entitlements. No-op when a real signing identity is configured.
     """
     if sys.platform != "darwin":
         return
@@ -5409,12 +5494,12 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     app = exe.parents[2]
     if not str(app).endswith(".app") or not app.is_dir():
         return
-    codesign = shutil.which("codesign")
-    if not codesign:
-        return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        if _desktop_macos_local_codesign(app, desktop_dir=desktop_dir):
+            print(
+                "  → macOS local Desktop signing stabilized for TCC/App Management permissions"
+            )
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 

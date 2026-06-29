@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +49,104 @@ def _make_packaged_executable(root: Path, monkeypatch, platform: str = "darwin")
     exe.parent.mkdir(parents=True)
     exe.write_text("", encoding="utf-8")
     return exe
+
+
+def _write_info_plist(bundle: Path, identifier: str) -> None:
+    info = bundle / "Contents" / "Info.plist"
+    info.parent.mkdir(parents=True, exist_ok=True)
+    info.write_bytes(plistlib.dumps({"CFBundleIdentifier": identifier}))
+
+
+def test_desktop_macos_local_codesign_uses_stable_requirements_and_entitlements(tmp_path, monkeypatch):
+    """Local ad-hoc macOS fixup must not leave Desktop with cdhash-only identity.
+
+    TCC/App Management grants churn when the rebuilt ad-hoc app's designated
+    requirement is just a cdhash. The fixup signs each bundle with an explicit
+    identifier requirement and preserves main/helper entitlements.
+    """
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    ent_main = desktop_dir / "electron" / "entitlements.mac.plist"
+    ent_inherit = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    ent_main.parent.mkdir(parents=True)
+    ent_main.write_text("<plist/>", encoding="utf-8")
+    ent_inherit.write_text("<plist/>", encoding="utf-8")
+
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    _write_info_plist(app, "com.nousresearch.hermes")
+    helper = app / "Contents" / "Frameworks" / "Hermes Helper.app"
+    _write_info_plist(helper, "com.nousresearch.hermes.helper")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli_main.shutil, "which", lambda name: "/usr/bin/codesign" if name == "codesign" else None)
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+
+    assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is True
+
+    sign_calls = [call for call in calls if call[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
+    assert any(
+        "=designated => identifier \"com.nousresearch.hermes\"" in call
+        and str(ent_main) in call
+        for call in sign_calls
+    )
+    assert any(
+        "=designated => identifier \"com.nousresearch.hermes.helper\"" in call
+        and str(ent_inherit) in call
+        for call in sign_calls
+    )
+    assert calls[-1][:4] == ["/usr/bin/codesign", "--verify", "--deep", "--strict"]
+
+
+def test_desktop_macos_local_codesign_reports_false_without_codesign(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+
+    monkeypatch.setattr(cli_main.shutil, "which", lambda name: None)
+
+    assert cli_main._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is False
+
+
+def test_desktop_macos_relaunchable_fixup_clears_quarantine_and_stable_signs(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+
+    exe = _make_packaged_executable(root, monkeypatch, platform="darwin")
+    app = exe.parents[2]
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    signed = []
+
+    def fake_sign(target_app, *, desktop_dir):
+        signed.append((target_app, desktop_dir))
+        return True
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main, "_desktop_macos_local_codesign", fake_sign)
+
+    cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    assert ["xattr", "-cr", str(app)] in calls
+    assert signed == [(app, desktop_dir)]
+    assert "macOS local Desktop signing stabilized" in capsys.readouterr().out
 
 
 def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):

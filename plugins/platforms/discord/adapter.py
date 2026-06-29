@@ -328,6 +328,35 @@ def _build_allowed_mentions():
     )
 
 
+# ── PNG alpha → JPEG conversion for Discord media delivery ──────────────
+# Discord.py silently fails when sending PNG files with an alpha channel
+# (RGBA mode) as file attachments.  This helper converts such PNGs to
+# JPEG on the fly so delivery never breaks.  Caller is responsible for
+# cleaning up any temp file returned (original path is returned when no
+# conversion is needed).
+def _ensure_no_alpha_png(path: str) -> Tuple[str, Optional[str]]:
+    """Convert a PNG with alpha channel to JPEG.
+
+    Returns (usable_path, temp_path).  If conversion happened, temp_path
+    must be cleaned up by the caller after the file is sent.  If no
+    conversion was needed, returns (path, None).
+    """
+    if not path.lower().endswith(".png"):
+        return path, None
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            if img.mode in ("RGBA", "LA", "PA"):
+                rgb = img.convert("RGB")
+                fd, tmp = tempfile.mkstemp(suffix=".jpg", prefix="hermes_discord_")
+                os.close(fd)
+                rgb.save(tmp, "JPEG", quality=92)
+                return tmp, tmp
+    except Exception:
+        logger.debug("[discord] PNG alpha check failed for %s — sending as-is", path)
+    return path, None
+
+
 class VoiceReceiver:
     """Captures and decodes voice audio from a Discord voice channel.
 
@@ -2076,16 +2105,26 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
         filename = file_name or os.path.basename(file_path)
-        with open(file_path, "rb") as fh:
-            file = discord.File(fh, filename=filename)
-            if self._is_forum_parent(channel):
-                return await self._forum_post_file(
-                    channel,
-                    content=(caption or "").strip(),
-                    file=file,
-                )
-            msg = await channel.send(content=caption if caption else None, file=file)
-        return SendResult(success=True, message_id=str(msg.id))
+        usable, tmp = _ensure_no_alpha_png(file_path)
+        try:
+            if usable != file_path:
+                filename = filename.rsplit(".", 1)[0] + ".jpg" if "." in filename else filename + ".jpg"
+            with open(usable, "rb") as fh:
+                file = discord.File(fh, filename=filename)
+                if self._is_forum_parent(channel):
+                    return await self._forum_post_file(
+                        channel,
+                        content=(caption or "").strip(),
+                        file=file,
+                    )
+                msg = await channel.send(content=caption if caption else None, file=file)
+            return SendResult(success=True, message_id=str(msg.id))
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     async def send_multiple_images(
         self,
@@ -2138,6 +2177,7 @@ class DiscordAdapter(BasePlatformAdapter):
             files: List[Any] = []
             captions: List[str] = []
             aiohttp_session = None
+            _png_temp_paths: List[str] = []  # temp JPEGs from alpha-PNG conversion
             try:
                 for image_url, alt_text in chunk:
                     if alt_text:
@@ -2147,7 +2187,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         if not os.path.exists(local_path):
                             logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
                             continue
-                        files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
+                        usable, tmp = _ensure_no_alpha_png(local_path)
+                        if tmp:
+                            _png_temp_paths.append(tmp)
+                        fname = os.path.basename(usable)
+                        if usable != local_path and fname.endswith(".png"):
+                            fname = fname[:-4] + ".jpg"
+                        files.append(_discord_mod.File(usable, filename=fname))
                     else:
                         if not is_safe_url(image_url):
                             logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
@@ -2209,6 +2255,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
             finally:
+                # Clean up any temporary JPEG files created from alpha-PNG conversion
+                for _tp in _png_temp_paths:
+                    try:
+                        os.unlink(_tp)
+                    except OSError:
+                        pass
                 if aiohttp_session is not None:
                     try:
                         await aiohttp_session.close()

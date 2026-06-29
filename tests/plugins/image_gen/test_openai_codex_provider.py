@@ -170,11 +170,11 @@ class TestGenerate:
 
     def test_sse_parser_handles_event_and_data_lines(self):
         class _Response:
-            def iter_lines(self):
+            def iter_bytes(self):
                 return iter([
-                    "event: response.output_item.done",
-                    'data: {"item": {"type": "image_generation_call", "result": "abc"}}',
-                    "",
+                    b"event: response.output_item.done\n",
+                    b'data: {"item": {"type": "image_generation_call", "result": "abc"}}\n',
+                    b"\n",
                 ])
 
         events = list(codex_plugin._iter_sse_json(_Response()))
@@ -182,6 +182,51 @@ class TestGenerate:
             "type": "response.output_item.done",
             "item": {"type": "image_generation_call", "result": "abc"},
         }]
+
+    def test_sse_parser_handles_multiline_data_across_chunks(self):
+        class _Response:
+            def iter_bytes(self):
+                return iter([
+                    b"event: response.output_item.done\n",
+                    b'data: {"item":\n',
+                    b'data: {"type": "image_generation_call", "result": "abc"}}\n\n',
+                ])
+
+        events = list(codex_plugin._iter_sse_json(_Response()))
+        assert events == [{
+            "type": "response.output_item.done",
+            "item": {"type": "image_generation_call", "result": "abc"},
+        }]
+
+    def test_sse_parser_rejects_oversized_line(self, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_SSE_MAX_LINE_BYTES", 8)
+
+        class _Response:
+            def iter_bytes(self):
+                return iter([b"data: " + (b"x" * 9)])
+
+        with pytest.raises(RuntimeError, match="SSE line exceeded"):
+            list(codex_plugin._iter_sse_json(_Response()))
+
+    def test_sse_parser_rejects_oversized_event(self, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_SSE_MAX_EVENT_BYTES", 10)
+
+        class _Response:
+            def iter_bytes(self):
+                return iter([b"data: 12345\n\n"])
+
+        with pytest.raises(RuntimeError, match="SSE event exceeded"):
+            list(codex_plugin._iter_sse_json(_Response()))
+
+    def test_sse_parser_rejects_oversized_stream(self, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_SSE_MAX_STREAM_BYTES", 10)
+
+        class _Response:
+            def iter_bytes(self):
+                return iter([b":1234567890\n"])
+
+        with pytest.raises(RuntimeError, match="SSE stream exceeded"):
+            list(codex_plugin._iter_sse_json(_Response()))
 
     def test_final_response_sweep_recovers_image(self):
         """Completed response output is found by recursive payload scanning."""

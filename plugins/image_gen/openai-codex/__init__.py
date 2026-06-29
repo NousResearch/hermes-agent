@@ -75,6 +75,9 @@ _SIZES = {
 # done by ``API_MODEL``.
 _CODEX_CHAT_MODEL = "gpt-5.5"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_SSE_MAX_LINE_BYTES = 64 * 1024 * 1024
+_SSE_MAX_EVENT_BYTES = 96 * 1024 * 1024
+_SSE_MAX_STREAM_BYTES = 192 * 1024 * 1024
 _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
@@ -195,6 +198,45 @@ def _extract_image_b64(value: Any) -> Optional[str]:
     return found
 
 
+def _iter_sse_lines(response: Any):
+    """Yield SSE lines from bytes while enforcing parser-local size caps."""
+    pending = bytearray()
+    total_bytes = 0
+
+    for chunk in response.iter_bytes():
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8", errors="replace")
+        if not chunk:
+            continue
+        total_bytes += len(chunk)
+        if total_bytes > _SSE_MAX_STREAM_BYTES:
+            raise RuntimeError("Codex image SSE stream exceeded size limit")
+
+        pending.extend(chunk)
+        while True:
+            newline = pending.find(b"\n")
+            if newline < 0:
+                break
+            line = bytes(pending[:newline])
+            del pending[: newline + 1]
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            if len(line) > _SSE_MAX_LINE_BYTES:
+                raise RuntimeError("Codex image SSE line exceeded size limit")
+            yield line.decode("utf-8", errors="replace")
+
+        if len(pending) > _SSE_MAX_LINE_BYTES:
+            raise RuntimeError("Codex image SSE line exceeded size limit")
+
+    if pending:
+        line = bytes(pending)
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        if len(line) > _SSE_MAX_LINE_BYTES:
+            raise RuntimeError("Codex image SSE line exceeded size limit")
+        yield line.decode("utf-8", errors="replace")
+
+
 def _iter_sse_json(response: Any):
     """Yield JSON payloads from an SSE response without OpenAI SDK parsing.
 
@@ -204,16 +246,19 @@ def _iter_sse_json(response: Any):
     """
     event_name: Optional[str] = None
     data_lines: List[str] = []
+    event_bytes = 0
 
     def flush():
-        nonlocal event_name, data_lines
+        nonlocal event_name, data_lines, event_bytes
         if not data_lines:
             event_name = None
+            event_bytes = 0
             return None
         raw = "\n".join(data_lines).strip()
         event = event_name
         event_name = None
         data_lines = []
+        event_bytes = 0
         if not raw or raw == "[DONE]":
             return None
         payload = json.loads(raw)
@@ -221,15 +266,15 @@ def _iter_sse_json(response: Any):
             payload["type"] = event
         return payload
 
-    for line in response.iter_lines():
-        if isinstance(line, bytes):
-            line = line.decode("utf-8", errors="replace")
-        line = str(line)
+    for line in _iter_sse_lines(response):
         if line == "":
             payload = flush()
             if payload is not None:
                 yield payload
             continue
+        event_bytes += len(line.encode("utf-8", errors="replace")) + 1
+        if event_bytes > _SSE_MAX_EVENT_BYTES:
+            raise RuntimeError("Codex image SSE event exceeded size limit")
         if line.startswith(":"):
             continue
         if line.startswith("event:"):

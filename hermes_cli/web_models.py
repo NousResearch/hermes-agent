@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+from pydantic import BaseModel, SecretStr, StrictBool, ValidationInfo, field_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -103,6 +103,41 @@ class ModelAssignment(BaseModel):
     base_url: str = ""
     api_key: str = ""
     confirm_expensive_model: bool = False
+    profile: Optional[str] = None
+
+class FallbackProviderEntry(BaseModel):
+    """Single fallback provider entry persisted to config.yaml."""
+
+    provider: str
+    model: str
+    base_url: Optional[str] = None
+    api_mode: Optional[str] = None
+
+    @field_validator("provider", "model", mode="before")
+    @classmethod
+    def _trim_required(cls, value: Any, info: ValidationInfo) -> str:
+        if value is None:
+            raise ValueError(f"fallback {info.field_name} is required")
+        if not isinstance(value, str):
+            raise ValueError(f"fallback {info.field_name} must be a string")
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError(f"fallback {info.field_name} is required")
+        return trimmed
+
+    @field_validator("base_url", "api_mode", mode="before")
+    @classmethod
+    def _trim_optional(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("fallback optional fields must be strings")
+        return value.strip() or None
+
+class FallbackProvidersUpdate(BaseModel):
+    """Payload for PUT /api/model/fallbacks."""
+
+    fallbacks: List[FallbackProviderEntry]
     profile: Optional[str] = None
 
 class MoaModelSlot(BaseModel):
@@ -505,4 +540,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

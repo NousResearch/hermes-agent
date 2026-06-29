@@ -16,7 +16,9 @@ from hermes_cli.web_server_config import (
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
-from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
+from hermes_cli.web_models import (
+    FallbackProvidersUpdate, ModelAssignment, MoaConfigPayload, MoaModelSlot,
+)
 from hermes_cli.web_routers._common import http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -281,6 +283,31 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             cfg.setdefault("moa", {}).update(normalized)
             save_config(cfg)
             return {"ok": True, **normalized}
+
+
+@router.get("/api/model/fallbacks")
+def get_model_fallbacks(profile: Optional[str] = None):
+    """Return the configured fallback provider chain."""
+    with http_failure("GET /api/model/fallbacks failed", 500, detail="Failed to read fallback providers"):
+        from hermes_cli.fallback_cmd import read_chain
+
+        with _profile_scope(profile):
+            return {"fallbacks": read_chain(load_config())}
+
+
+@router.put("/api/model/fallbacks")
+def set_model_fallbacks(body: FallbackProvidersUpdate, profile: Optional[str] = None):
+    """Persist fallback providers in config.yaml order."""
+    cleaned = [entry.model_dump(exclude_none=True) for entry in body.fallbacks]
+
+    with http_failure("PUT /api/model/fallbacks failed", 500, detail="Failed to save fallback providers"):
+        from hermes_cli.fallback_cmd import write_chain
+
+        with _profile_scope(body.profile or profile):
+            cfg = load_config()
+            write_chain(cfg, cleaned)
+            save_config(cfg)
+        return {"ok": True, "fallbacks": cleaned}
 
 
 @router.post("/api/model/set")

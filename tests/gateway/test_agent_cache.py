@@ -240,6 +240,21 @@ class TestExtractCacheBustingConfig:
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
 
+    def test_reads_tool_surface_config(self):
+        """Tool surface config edits must bust stale cached agents."""
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {
+                "toolsets": ["hermes-cli"],
+                "platform_toolsets": {"telegram": ["web", "file"]},
+                "mcp_servers": {"posthog": {"enabled": False}},
+            }
+        )
+        assert out["toolsets"] == ["hermes-cli"]
+        assert out["platform_toolsets"] == {"telegram": ["web", "file"]}
+        assert out["mcp_servers"] == {"posthog": {"enabled": False}}
+
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
         from gateway.run import GatewayRunner
@@ -249,6 +264,9 @@ class TestExtractCacheBustingConfig:
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert f"{section}.{key}" in out
             assert out[f"{section}.{key}"] is None
+        for key in GatewayRunner._CACHE_BUSTING_TOP_LEVEL_CONFIG_KEYS:
+            assert key in out
+            assert out[key] is None
 
     def test_non_dict_section_treated_as_missing(self):
         from gateway.run import GatewayRunner
@@ -267,6 +285,8 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config(None)
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert out[f"{section}.{key}"] is None
+        for key in GatewayRunner._CACHE_BUSTING_TOP_LEVEL_CONFIG_KEYS:
+            assert out[key] is None
         assert "tools.registry_generation" in out
 
     def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
@@ -306,6 +326,30 @@ class TestExtractCacheBustingConfig:
             "Editing compression.threshold in config.yaml must bust the "
             "gateway's cached agent so the new threshold takes effect."
         )
+
+    def test_tool_surface_config_change_busts_cache(self):
+        """Changing configured tools must evict stale, oversized cached agents."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        cfg_before = {
+            "platform_toolsets": {"telegram": ["web", "file", "posthog"]},
+            "mcp_servers": {"posthog": {"enabled": True}},
+        }
+        cfg_after = {
+            "platform_toolsets": {"telegram": ["web", "file"]},
+            "mcp_servers": {"posthog": {"enabled": False}},
+        }
+
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, ["file", "posthog", "web"], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_before),
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, ["file", "web"], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_after),
+        )
+        assert sig_before != sig_after
 
 
 class TestAgentCacheLifecycle:

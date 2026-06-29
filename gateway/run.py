@@ -14961,6 +14961,16 @@ class GatewayRunner:
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
     )
+    _CACHE_BUSTING_TOP_LEVEL_CONFIG_KEYS: tuple = (
+        # Tool schemas are frozen into cached AIAgent instances.  Edits made
+        # via `hermes tools` or direct config.yaml changes must rebuild the
+        # gateway agent on the next message; otherwise a user can disable a
+        # huge MCP/toolset surface but keep sending turns through the stale,
+        # oversized cached agent until the gateway is restarted.
+        "toolsets",
+        "platform_toolsets",
+        "mcp_servers",
+    )
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
@@ -14984,6 +14994,8 @@ class GatewayRunner:
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        for key in cls._CACHE_BUSTING_TOP_LEVEL_CONFIG_KEYS:
+            out[key] = cfg.get(key)
         try:
             from tools.registry import registry
 
@@ -15010,8 +15022,9 @@ class GatewayRunner:
         ``cache_keys`` is an optional flat dict of additional config values
         that should invalidate the cache when they change.  Callers pass
         the output of ``_extract_cache_busting_config(user_config)`` so
-        edits to model.context_length / compression.* in config.yaml are
-        picked up on the next gateway message without a manual restart.
+        edits to model.context_length, compression.*, toolsets,
+        platform_toolsets, or mcp_servers in config.yaml are picked up on
+        the next gateway message without a manual restart.
         """
         import hashlib, json as _j
 

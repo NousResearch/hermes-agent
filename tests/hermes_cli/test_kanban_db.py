@@ -1936,6 +1936,77 @@ def test_spawn_preflight_credentials_passes_healthy_profile(
     assert result is None
 
 
+def test_spawn_preflight_credentials_passes_mixed_pool(
+    kanban_home, monkeypatch,
+):
+    """Regression coverage for kanban task t_e3e0256f (2026-06-29).
+
+    The original ``if blocking_providers:`` check raised whenever ANY
+    provider had every entry blocked, even when OTHER providers in the
+    pool still had healthy entries. The fix: spawn proceeds iff at
+    least one provider in the pool is healthy. This test mirrors the
+    live repro — one provider fully exhausted (``openrouter``,
+    ``last_status='exhausted'``), another healthy
+    (``minimax-oauth``, ``last_status=None``/missing).
+    """
+    import hermes_cli.kanban_db as _kb
+
+    auth_path = kanban_home / "auth.json"
+    auth_path.write_text(
+        json.dumps({
+            "credential_pool": {
+                "openrouter": [
+                    {"key_id": "or-1", "last_status": "exhausted",
+                     "last_error_code": 401,
+                     "last_error_message": "Missing Authentication header"},
+                ],
+                "minimax-oauth": [
+                    # last_status missing → counts as healthy (never failed).
+                    {"key_id": "mmo-1"},
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    # Must NOT raise — ``minimax-oauth`` has a healthy entry and the
+    # worker's credential pool can pick it.
+    result = _kb._spawn_preflight_credentials("default")
+    assert result is None
+
+
+def test_spawn_preflight_credentials_blocks_when_only_one_provider_and_blocked(
+    kanban_home, monkeypatch,
+):
+    """Edge case: a single-provider pool that is all-blocked must still
+    raise — sanity check that the fix didn't accidentally weaken the
+    all-dead-pools-still-block behavior. The earlier
+    ``blocks_exhausted_profile`` test covers the multi-provider all-dead
+    case; this one covers single-provider all-dead.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    auth_path = kanban_home / "auth.json"
+    auth_path.write_text(
+        json.dumps({
+            "credential_pool": {
+                "openrouter": [
+                    {"key_id": "or-1", "last_status": "exhausted",
+                     "last_error_code": 401},
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _kb._spawn_preflight_credentials("default")
+
+    msg = str(exc_info.value)
+    assert "no usable credentials" in msg
+    assert "openrouter" in msg
+
+
 def test_spawn_preflight_credentials_passes_when_no_auth_json(
     kanban_home, monkeypatch,
 ):

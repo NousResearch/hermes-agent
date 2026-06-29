@@ -7811,10 +7811,20 @@ def _spawn_preflight_credentials(profile_arg: str) -> None:
         # No pool entries recorded — same as no auth.json.
         return
 
+    # Classify every provider in the pool:
+    #   "blocking"   - every entry on this provider is exhausted/dead
+    #   "healthy"    - at least one entry has a non-blocking status
+    #                   (None / missing / "ok") — the credential pool may
+    #                   pick that one.
+    # Only block the spawn when EVERY provider in the pool is blocking.
+    # If even one provider is healthy, the worker's credential-pool
+    # rotation can still succeed and the spawn should proceed.
     blocking_providers: list[str] = []
+    total_providers = 0
     for provider_name, entries in pool.items():
         if not isinstance(entries, list) or not entries:
             continue
+        total_providers += 1
         # A provider is "blocking" iff EVERY entry is exhausted/dead.
         # An entry with status=None or missing counts as healthy
         # (never failed yet).
@@ -7836,7 +7846,13 @@ def _spawn_preflight_credentials(profile_arg: str) -> None:
                 f"message={message!r})"
             )
 
-    if blocking_providers:
+    # Spawn-proceeds iff there is at least one healthy provider in the
+    # pool. Fix for kanban task t_e3e0256f (2026-06-29): the prior
+    # condition `if blocking_providers:` false-blocked any profile where
+    # one provider was all-dead, even when other healthy providers
+    # coexisted in the same pool. A profile with one healthy provider
+    # is usable; only a profile with NO healthy providers is doomed.
+    if total_providers > 0 and len(blocking_providers) >= total_providers:
         raise RuntimeError(
             f"spawn preflight: profile {profile_arg!r} has no usable "
             f"credentials — every pool entry is exhausted or dead. "

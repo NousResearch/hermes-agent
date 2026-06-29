@@ -87,6 +87,9 @@ def _resolve_process_cwd(process_cwd: str | None = None, acp_cwd: str | None = N
 def _resolve_session_cwd(acp_cwd: str | None, process_cwd: str) -> str:
     if acp_cwd is None or not str(acp_cwd).strip():
         return process_cwd
+    candidate = Path(str(acp_cwd)).expanduser()
+    if candidate.is_dir():
+        return str(candidate.resolve())
     return str(acp_cwd)
 
 

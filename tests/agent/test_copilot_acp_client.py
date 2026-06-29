@@ -363,6 +363,40 @@ def test_run_prompt_uses_acp_cwd_as_process_cwd_when_local(tmp_path):
     assert captured["kwargs"]["cwd"] == str(tmp_path.resolve())
 
 
+def test_run_prompt_sends_resolved_session_cwd_for_relative_local_path(monkeypatch, tmp_path):
+    project = tmp_path / "repo"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+    proc = _FakeACPProcess()
+
+    def _fake(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return proc
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="copilot",
+        acp_args=["--acp", "--stdio"],
+        acp_cwd="repo",
+    )
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake):
+        client._run_prompt("hello", timeout_seconds=1)
+
+    expected = str(project.resolve())
+    assert captured["kwargs"]["cwd"] == expected
+    sent = [
+        json.loads(line)
+        for line in proc.stdin.getvalue().splitlines()
+        if line.strip()
+    ]
+    session_new = next(payload for payload in sent if payload["method"] == "session/new")
+    assert session_new["params"]["cwd"] == expected
+
+
 def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch, tmp_path):
     hermes_home = tmp_path / "hermes"
     (hermes_home / "home").mkdir(parents=True)

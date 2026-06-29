@@ -9,8 +9,13 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Info, Lightbulb } from "lucide-react";
 import { api } from "@/lib/api";
 import type { McpServerCreate, SkillInfo, SkillHubResult } from "@/lib/api";
+import {
+  PROFILE_EXAMPLES,
+  PROFILE_FIELD_GUIDANCE,
+} from "@/lib/profile-presets";
 import { cn } from "@/lib/utils";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
@@ -247,7 +252,7 @@ export default function ProfileBuilderPage() {
   const canAdvance = step !== "identity" || nameValid;
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-6 p-4">
+    <div className="mx-auto w-full max-w-5xl space-y-6 p-4">
       <div className="flex items-center justify-between">
         <H2>New profile</H2>
         <Button ghost onClick={() => navigate("/profiles")}>
@@ -278,18 +283,50 @@ export default function ProfileBuilderPage() {
         ))}
       </div>
 
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
       <Card>
         <CardContent className="space-y-4 p-5">
           {step === "identity" && (
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="pb-name">Profile name</Label>
+                <FieldLabel
+                  htmlFor="pb-name"
+                  label="Profile name"
+                  tooltip={PROFILE_FIELD_GUIDANCE.name.tooltip}
+                />
                 <Input
                   id="pb-name"
                   placeholder="coder"
                   value={name}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">
+                  {PROFILE_FIELD_GUIDANCE.name.hint} Try{" "}
+                  <button
+                    className="font-mono text-primary hover:underline"
+                    type="button"
+                    onClick={() => setName("coder")}
+                  >
+                    coder
+                  </button>
+                  ,{" "}
+                  <button
+                    className="font-mono text-primary hover:underline"
+                    type="button"
+                    onClick={() => setName("repo-researcher")}
+                  >
+                    repo-researcher
+                  </button>
+                  , or{" "}
+                  <button
+                    className="font-mono text-primary hover:underline"
+                    type="button"
+                    onClick={() => setName("support-triage")}
+                  >
+                    support-triage
+                  </button>
+                  .
+                </p>
                 {name && !nameValid && (
                   <p className="text-xs text-destructive">
                     Lowercase letters, digits, hyphens and underscores; must start with a letter or digit.
@@ -297,15 +334,22 @@ export default function ProfileBuilderPage() {
                 )}
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="pb-desc">Description (optional)</Label>
+                <FieldLabel
+                  htmlFor="pb-desc"
+                  label="Description (optional)"
+                  tooltip={PROFILE_FIELD_GUIDANCE.description.tooltip}
+                />
                 <Input
                   id="pb-desc"
-                  placeholder="What this agent profile is for"
+                  placeholder="Great at reading unfamiliar codebases, finding safe fixes, and explaining tradeoffs."
                   value={description}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setDescription(e.target.value)
                   }
                 />
+                <p className="text-xs text-muted-foreground">
+                  {PROFILE_FIELD_GUIDANCE.description.hint}
+                </p>
               </div>
             </div>
           )}
@@ -313,7 +357,7 @@ export default function ProfileBuilderPage() {
           {step === "model" && (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Pick the model+provider for this profile. Skip to use the default.
+                {PROFILE_FIELD_GUIDANCE.model.hint} Skip to use the default.
               </p>
               <Input
                 placeholder="Filter models…"
@@ -357,6 +401,9 @@ export default function ProfileBuilderPage() {
 
           {step === "skills" && (
             <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                {PROFILE_FIELD_GUIDANCE.skills.hint}
+              </p>
               <label className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={keepAll}
@@ -475,7 +522,7 @@ export default function ProfileBuilderPage() {
           {step === "mcp" && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                Add MCP servers for this profile. HTTP servers take a URL; stdio servers take a command + args.
+                {PROFILE_FIELD_GUIDANCE.mcp.hint} HTTP servers take a URL; stdio servers take a command + args.
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <Input
@@ -573,6 +620,15 @@ export default function ProfileBuilderPage() {
         </CardContent>
       </Card>
 
+      <ProfileReferencePanel
+        onUseExample={(example) => {
+          setName(example.name);
+          setDescription(example.description);
+          setStep("identity");
+        }}
+      />
+      </div>
+
       {/* Nav buttons */}
       <div className="flex items-center justify-between">
         <Button
@@ -607,5 +663,71 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
       <span className="w-24 shrink-0 text-muted-foreground">{label}</span>
       <span className="flex-1 break-words">{value}</span>
     </div>
+  );
+}
+
+function FieldLabel({
+  htmlFor,
+  label,
+  tooltip,
+}: {
+  htmlFor: string;
+  label: string;
+  tooltip: string;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <Label htmlFor={htmlFor}>{label}</Label>
+      <span
+        aria-label={tooltip}
+        className="inline-flex text-muted-foreground hover:text-foreground"
+        role="img"
+        title={tooltip}
+      >
+        <Info className="h-3.5 w-3.5" />
+      </span>
+    </div>
+  );
+}
+
+function ProfileReferencePanel({
+  onUseExample,
+}: {
+  onUseExample: (example: (typeof PROFILE_EXAMPLES)[number]) => void;
+}) {
+  return (
+    <aside className="border border-border bg-card p-4 text-sm lg:sticky lg:top-4 lg:self-start">
+      <div className="mb-3 flex items-center gap-2">
+        <Lightbulb className="h-4 w-4 text-primary" />
+        <h2 className="font-mondwest text-display text-sm tracking-wider">
+          Great Profiles
+        </h2>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Strong profiles are narrow, active, and easy to route work to. Describe the job, the preferred context, and the output bar.
+      </p>
+      <div className="space-y-3">
+        {PROFILE_EXAMPLES.map((example) => (
+          <div key={example.name} className="border-t border-border pt-3 first:border-t-0 first:pt-0">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-medium">{example.title}</h3>
+                <p className="text-xs text-muted-foreground">{example.bestFor}</p>
+              </div>
+              <Button
+                ghost
+                size="sm"
+                onClick={() => onUseExample(example)}
+              >
+                Use
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {example.description}
+            </p>
+          </div>
+        ))}
+      </div>
+    </aside>
   );
 }

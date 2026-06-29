@@ -13,6 +13,9 @@ import {
   Check,
   ChevronDown,
   Cpu,
+  Info,
+  Layers,
+  Lightbulb,
   MoreVertical,
   Pencil,
   Package,
@@ -43,6 +46,13 @@ import {
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import {
+  bundleProfileName,
+  PROFILE_BUNDLES,
+  PROFILE_EXAMPLES,
+  PROFILE_FIELD_GUIDANCE,
+  sanitizeProfilePrefix,
+} from "@/lib/profile-presets";
 import { cn, themedBody } from "@/lib/utils";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
@@ -332,6 +342,22 @@ export default function ProfilesPage() {
     onClose: closeCreateModal,
   });
 
+  // Bundle modal
+  const [bundleModalOpen, setBundleModalOpen] = useState(false);
+  const [bundleId, setBundleId] = useState(PROFILE_BUNDLES[0]?.id ?? "");
+  const selectedBundle =
+    PROFILE_BUNDLES.find((bundle) => bundle.id === bundleId) ??
+    PROFILE_BUNDLES[0];
+  const [bundlePrefix, setBundlePrefix] = useState(
+    selectedBundle?.prefix ?? "team",
+  );
+  const [bundleCreating, setBundleCreating] = useState(false);
+  const closeBundleModal = useCallback(() => setBundleModalOpen(false), []);
+  const bundleModalRef = useModalBehavior({
+    open: bundleModalOpen,
+    onClose: closeBundleModal,
+  });
+
   // Inline rename state
   const [renamingFrom, setRenamingFrom] = useState<string | null>(null);
   const [renameTo, setRenameTo] = useState("");
@@ -468,6 +494,64 @@ export default function ProfilesPage() {
     }
   };
 
+  const existingProfileNames = useMemo(
+    () => new Set(profiles.map((profile) => profile.name)),
+    [profiles],
+  );
+  const normalizedBundlePrefix = selectedBundle
+    ? sanitizeProfilePrefix(bundlePrefix, selectedBundle.prefix)
+    : "team";
+  const bundleProfiles = useMemo(
+    () =>
+      selectedBundle
+        ? selectedBundle.roles.map((role) => ({
+            role,
+            name: bundleProfileName(normalizedBundlePrefix, role),
+            exists: existingProfileNames.has(
+              bundleProfileName(normalizedBundlePrefix, role),
+            ),
+          }))
+        : [],
+    [existingProfileNames, normalizedBundlePrefix, selectedBundle],
+  );
+  const bundleHasConflicts = bundleProfiles.some((profile) => profile.exists);
+
+  const handleCreateBundle = async () => {
+    if (!selectedBundle) return;
+    if (bundleHasConflicts) {
+      showToast(
+        "Some bundle profile names already exist. Choose a different prefix.",
+        "error",
+      );
+      return;
+    }
+    setBundleCreating(true);
+    const created: string[] = [];
+    try {
+      for (const item of bundleProfiles) {
+        await api.createProfile({
+          name: item.name,
+          clone_from: "default",
+          description: item.role.description,
+        });
+        created.push(item.name);
+      }
+      showToast(
+        `Created ${created.length} ${selectedBundle.title} profiles`,
+        "success",
+      );
+      setBundleModalOpen(false);
+      setBundlePrefix(selectedBundle.prefix);
+      load();
+    } catch (e) {
+      const prefix = created.length ? `Created ${created.length} before stopping. ` : "";
+      showToast(`${prefix}${t.status.error}: ${e}`, "error");
+      load();
+    } finally {
+      setBundleCreating(false);
+    }
+  };
+
   const handleRenameSubmit = async () => {
     if (!renamingFrom) return;
     const target = renameTo.trim();
@@ -519,7 +603,7 @@ export default function ProfilesPage() {
     setEditingModelFor(null);
     setEditingDescFor(null);
     setEditingSoulFor(null);
-  }, []);
+  }, [setEditingDescFor, setEditingModelFor, setEditingSoulFor]);
 
   const openSoulEditor = useCallback(
     async (name: string) => {
@@ -545,7 +629,16 @@ export default function ProfilesPage() {
         }
       }
     },
-    [closeEditor, editingSoulFor, showToast, t.status.error],
+    [
+      closeEditor,
+      editingSoulFor,
+      setEditingDescFor,
+      setEditingModelFor,
+      setEditingSoulFor,
+      setSoulText,
+      showToast,
+      t.status.error,
+    ],
   );
 
   const handleSaveSoul = async (name: string) => {
@@ -574,7 +667,14 @@ export default function ProfilesPage() {
       setEditingDescFor(p.name);
       setDescText(p.description ?? "");
     },
-    [closeEditor, editingDescFor],
+    [
+      closeEditor,
+      editingDescFor,
+      setDescText,
+      setEditingDescFor,
+      setEditingModelFor,
+      setEditingSoulFor,
+    ],
   );
 
   const handleSaveDesc = async (name: string) => {
@@ -750,6 +850,15 @@ export default function ProfilesPage() {
     setEnd(
       <div className="flex items-center gap-2">
         <Button
+          className="gap-1.5 uppercase"
+          size="sm"
+          outlined
+          onClick={() => setBundleModalOpen(true)}
+        >
+          <Layers className="h-3.5 w-3.5" />
+          Bundles
+        </Button>
+        <Button
           className="uppercase"
           size="sm"
           outlined
@@ -800,6 +909,152 @@ export default function ProfilesPage() {
         loading={profileDelete.isDeleting}
       />
 
+      {/* Create bundle modal */}
+      {bundleModalOpen && selectedBundle && (
+        <div
+          ref={bundleModalRef}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          onClick={(e) =>
+            e.target === e.currentTarget && setBundleModalOpen(false)
+          }
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-bundle-title"
+        >
+          <div
+            className={cn(
+              themedBody,
+              "relative w-full max-w-5xl border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
+            )}
+          >
+            <Button
+              ghost
+              size="icon"
+              onClick={() => setBundleModalOpen(false)}
+              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              aria-label="Close"
+            >
+              <X />
+            </Button>
+
+            <header className="p-5 pb-3 border-b border-border">
+              <h2
+                id="create-bundle-title"
+                className="font-mondwest text-display text-base tracking-wider"
+              >
+                Agent Bundles
+              </h2>
+              <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
+                Bundles create a small team of ordinary profiles for one workflow. Each profile gets a focused role description, so kanban routing and profile switching have useful signals from day one.
+              </p>
+            </header>
+
+            <div className="min-h-0 overflow-y-auto p-5 grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
+              <div className="grid gap-3">
+                {PROFILE_BUNDLES.map((bundle) => (
+                  <button
+                    key={bundle.id}
+                    type="button"
+                    className={cn(
+                      "border border-border p-3 text-left transition-colors hover:bg-muted/40",
+                      bundle.id === selectedBundle.id && "border-primary bg-primary/10",
+                    )}
+                    onClick={() => {
+                      setBundleId(bundle.id);
+                      setBundlePrefix(bundle.prefix);
+                    }}
+                  >
+                    <span className="block text-sm font-medium">{bundle.title}</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      {bundle.summary}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <FieldLabel
+                    htmlFor="bundle-prefix"
+                    label="Profile name prefix"
+                    tooltip="The prefix keeps this team grouped in the profile list, for example dev-developer or fin-accountant."
+                  />
+                  <Input
+                    id="bundle-prefix"
+                    value={bundlePrefix}
+                    onChange={(e) => setBundlePrefix(e.target.value)}
+                    placeholder={selectedBundle.prefix}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Names will use{" "}
+                    <span className="font-mono text-foreground">
+                      {normalizedBundlePrefix}-role
+                    </span>
+                    . Choose another prefix when you want a second team of the same type.
+                  </p>
+                </div>
+
+                <div className="grid gap-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="font-mondwest text-display text-xs tracking-wider text-muted-foreground">
+                      Profiles to create
+                    </h3>
+                    <Badge tone={bundleHasConflicts ? "warning" : "outline"}>
+                      {bundleProfiles.length} profiles
+                    </Badge>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {bundleProfiles.map(({ role, name, exists }) => (
+                      <div
+                        key={role.slug}
+                        className={cn(
+                          "border border-border p-3",
+                          exists && "border-warning/70 bg-warning/10",
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-mono text-xs text-foreground">
+                              {name}
+                            </div>
+                            <div className="mt-1 text-sm font-medium">
+                              {role.title}
+                            </div>
+                          </div>
+                          {exists && <Badge tone="warning">exists</Badge>}
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {role.description}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {role.focus.map((item) => (
+                            <Badge key={item} tone="outline">
+                              {item}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex justify-end">
+                  <Button
+                    className="uppercase"
+                    size="sm"
+                    onClick={handleCreateBundle}
+                    disabled={bundleCreating || bundleHasConflicts}
+                  >
+                    {bundleCreating ? "Creating..." : "Create bundle"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Create profile modal */}
       {createModalOpen && (
         <div
@@ -815,7 +1070,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
+              "relative w-full max-w-5xl border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -837,9 +1092,14 @@ export default function ProfilesPage() {
               </h2>
             </header>
 
-            <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
+            <div className="min-h-0 overflow-y-auto p-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+              <div className="grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="profile-name">{t.profiles.name}</Label>
+                <FieldLabel
+                  htmlFor="profile-name"
+                  label={t.profiles.name}
+                  tooltip={PROFILE_FIELD_GUIDANCE.name.tooltip}
+                />
 
                 <Input
                   id="profile-name"
@@ -857,12 +1117,16 @@ export default function ProfilesPage() {
                 />
 
                 <p className="text-xs text-muted-foreground">
-                  {t.profiles.nameRule}
+                  {PROFILE_FIELD_GUIDANCE.name.hint} {t.profiles.nameRule}
                 </p>
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="clone-from">{t.profiles.cloneFrom}</Label>
+                <FieldLabel
+                  htmlFor="clone-from"
+                  label={t.profiles.cloneFrom}
+                  tooltip={PROFILE_FIELD_GUIDANCE.cloneFrom.tooltip}
+                />
                 <Select
                   id="clone-from"
                   value={cloneFrom ?? ""}
@@ -879,12 +1143,17 @@ export default function ProfilesPage() {
                     </SelectOption>
                   ))}
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  {PROFILE_FIELD_GUIDANCE.cloneFrom.hint}
+                </p>
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="profile-description">
-                  {L.descriptionOptional}
-                </Label>
+                <FieldLabel
+                  htmlFor="profile-description"
+                  label={L.descriptionOptional}
+                  tooltip={PROFILE_FIELD_GUIDANCE.description.tooltip}
+                />
 
                 <textarea
                   id="profile-description"
@@ -893,10 +1162,17 @@ export default function ProfilesPage() {
                   value={newDescription}
                   onChange={(e) => setNewDescription(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">
+                  {PROFILE_FIELD_GUIDANCE.description.hint}
+                </p>
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="profile-model">{L.modelOptional}</Label>
+                <FieldLabel
+                  htmlFor="profile-model"
+                  label={L.modelOptional}
+                  tooltip={PROFILE_FIELD_GUIDANCE.model.tooltip}
+                />
 
                 <Select
                   id="profile-model"
@@ -921,6 +1197,9 @@ export default function ProfilesPage() {
                 {modelChoices !== null && modelChoices.length === 0 && (
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>
                 )}
+                <p className="text-xs text-muted-foreground">
+                  {PROFILE_FIELD_GUIDANCE.model.hint}
+                </p>
               </div>
 
               <fieldset className="grid gap-3 border-t border-border pt-4">
@@ -977,10 +1256,50 @@ export default function ProfilesPage() {
                   {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
+              </div>
+
+              <QuickProfileExamples
+                onUseExample={(example) => {
+                  setNewName(example.name);
+                  setNewDescription(example.description);
+                }}
+              />
             </div>
           </div>
         </div>
       )}
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="max-w-2xl text-xs text-muted-foreground">
+          Create one focused profile, or start from a bundle when the work needs a small team of specialized roles.
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            className="gap-1.5 uppercase"
+            size="sm"
+            outlined
+            onClick={() => setBundleModalOpen(true)}
+          >
+            <Layers className="h-3.5 w-3.5" />
+            Bundles
+          </Button>
+          <Button
+            className="uppercase"
+            size="sm"
+            outlined
+            onClick={() => navigate("/profiles/new")}
+          >
+            Build
+          </Button>
+          <Button
+            className="uppercase"
+            size="sm"
+            onClick={() => setCreateModalOpen(true)}
+          >
+            {t.common.create}
+          </Button>
+        </div>
+      </div>
 
       {/* Active profile banner */}
       {activeInfo && (
@@ -1278,6 +1597,9 @@ export default function ProfilesPage() {
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>
                 ) : (
                   <>
+                    <p className="text-xs text-muted-foreground">
+                      {PROFILE_FIELD_GUIDANCE.model.hint}
+                    </p>
                     <Select
                       value={modelEditChoice}
                       disabled={modelChoices === null}
@@ -1345,6 +1667,9 @@ export default function ProfilesPage() {
                     value={descText}
                     onChange={(e) => setDescText(e.target.value)}
                   />
+                  <p className="text-xs text-muted-foreground">
+                    {PROFILE_FIELD_GUIDANCE.description.hint}
+                  </p>
 
                   <div className="flex justify-end">
                     <Button
@@ -1367,6 +1692,9 @@ export default function ProfilesPage() {
                   >
                     {t.profiles.soulSection}
                   </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {PROFILE_FIELD_GUIDANCE.soul.hint}
+                  </p>
 
                   <textarea
                     id="profile-soul-editor"
@@ -1393,6 +1721,73 @@ export default function ProfilesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function FieldLabel({
+  htmlFor,
+  label,
+  tooltip,
+}: {
+  htmlFor: string;
+  label: string;
+  tooltip: string;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <Label htmlFor={htmlFor}>{label}</Label>
+      <span
+        aria-label={tooltip}
+        className="inline-flex text-muted-foreground hover:text-foreground"
+        role="img"
+        title={tooltip}
+      >
+        <Info className="h-3.5 w-3.5" />
+      </span>
+    </div>
+  );
+}
+
+function QuickProfileExamples({
+  onUseExample,
+}: {
+  onUseExample: (example: (typeof PROFILE_EXAMPLES)[number]) => void;
+}) {
+  return (
+    <aside className="border border-border bg-background/40 p-4 text-sm">
+      <div className="mb-3 flex items-center gap-2">
+        <Lightbulb className="h-4 w-4 text-primary" />
+        <h3 className="font-mondwest text-display text-sm tracking-wider">
+          Sample Great Profiles
+        </h3>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Great profiles are specific enough to route work to. Borrow one, then make it yours.
+      </p>
+      <div className="space-y-3">
+        {PROFILE_EXAMPLES.map((example) => (
+          <div
+            key={example.name}
+            className="border-t border-border pt-3 first:border-t-0 first:pt-0"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-sm font-medium">{example.title}</div>
+                <div className="text-xs text-muted-foreground">
+                  {example.bestFor}
+                </div>
+              </div>
+              <Button ghost size="sm" onClick={() => onUseExample(example)}>
+                Use
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {example.description}
+            </p>
+          </div>
+        ))}
+      </div>
+    </aside>
   );
 }
 

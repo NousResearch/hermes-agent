@@ -97,6 +97,17 @@ _RAFT_TURN_IDS: set[str] = set()
 _RAFT_PROMPT_TURN_IDS: set[str] = set()
 
 
+async def _read_limited_request_body(request: "web.Request", max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from a request body, detecting overflow."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload_too_large")
+    return body
+
+
 def check_raft_requirements() -> bool:
     """Check if Raft channel dependencies are available.
 
@@ -599,7 +610,9 @@ class RaftAdapter(BasePlatformAdapter):
             return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
 
         try:
-            raw_body = await request.read()
+            raw_body = await _read_limited_request_body(request, self._max_body_bytes)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
         except Exception:
             return web.json_response({"ok": False, "error": "bad_request"}, status=400)
 
@@ -646,8 +659,11 @@ class RaftAdapter(BasePlatformAdapter):
             return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
 
         try:
-            payload = json.loads(await request.text())
+            raw_body = await _read_limited_request_body(request, self._max_body_bytes)
+            payload = json.loads(raw_body)
             self._activity_queue.push(payload)
+        except ValueError:
+            return web.json_response({"ok": False, "error": "payload_too_large"}, status=413)
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
         except Exception as exc:

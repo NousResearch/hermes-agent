@@ -5467,6 +5467,28 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    # Intercept --version / --help before initializing the agent.
+    # pyproject.toml maps the `hermes-agent` console script to this
+    # function, so `hermes-agent --version` must not start an agent run.
+    import sys as _sys
+    if len(_sys.argv) > 1:
+        _arg = _sys.argv[1]
+        if _arg in ("--version", "-V"):
+            try:
+                from hermes_cli import __release_date__, __version__
+                print(f"Hermes Agent v{__version__} ({__release_date__})")
+            except Exception:
+                print("Hermes Agent (version unavailable)")
+            return
+        if _arg in ("--help", "-h"):
+            print("Usage: hermes-agent [OPTIONS] [QUERY]")
+            print()
+            print("Options:")
+            print("  --version, -V    Show version and exit")
+            print("  --help, -h       Show this help and exit")
+            print()
+            print("For full CLI usage, run: hermes --help")
+            return
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     

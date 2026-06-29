@@ -11,8 +11,8 @@ import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } fro
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -60,15 +60,18 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
+  const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'error' =
+  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
       ? 'manual'
-      : apply.applying || apply.stage === 'restart'
-        ? 'applying'
-        : apply.stage === 'error'
-          ? 'error'
-          : 'idle'
+      : apply.stage === 'guiSkew'
+        ? 'guiSkew'
+        : apply.applying || apply.stage === 'restart'
+          ? 'applying'
+          : apply.stage === 'error'
+            ? 'error'
+            : 'idle'
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -77,7 +80,10 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (!next && (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual')) {
+    if (
+      !next &&
+      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
+    ) {
       resetUpdateApplyState()
     }
   }
@@ -95,8 +101,10 @@ export function UpdatesOverlay() {
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
+          <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
         )}
+
+        {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
         {phase === 'error' && (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
@@ -112,6 +120,7 @@ export function UpdatesOverlay() {
             onRetryCheck={() => void check()}
             status={status}
             target={target}
+            updateAvailable={updateAvailable}
           />
         )}
       </DialogContent>
@@ -127,7 +136,8 @@ function IdleView({
   onLater,
   onRetryCheck,
   status,
-  target
+  target,
+  updateAvailable
 }: {
   behind: number
   checking: boolean
@@ -137,13 +147,17 @@ function IdleView({
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
   target: UpdateTarget
+  updateAvailable: boolean
 }) {
   const { t } = useI18n()
   const u = t.updates
 
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />} title={u.checking} />
+      <CenteredStatus
+        icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />}
+        title={u.checking}
+      />
     )
   }
 
@@ -186,7 +200,7 @@ function IdleView({
     )
   }
 
-  if (behind === 0) {
+  if (!updateAvailable) {
     return (
       <CenteredStatus
         body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
@@ -212,9 +226,7 @@ function IdleView({
         <BrandMark className="size-16" />
 
         <DialogTitle className="text-center text-xl">{title}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
       <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
@@ -242,25 +254,44 @@ function IdleView({
         </Button>
       </div>
 
-      {remaining > 0 && (
-        <p className="text-center text-xs text-muted-foreground">
-          {u.moreChanges(remaining)}
-        </p>
-      )}
+      {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
     </div>
   )
 }
 
-function ManualView({ command, onDone }: { command: string; onDone: () => void }) {
+function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
+    if (!command) {
+      return
+    }
+
     void writeClipboardText(command).then(() => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
     })
+  }
+
+  // No command (e.g. the Linux sandbox-blocked relaunch): render the explanatory
+  // message + a Done button, not a copy-a-command box.
+  if (!command) {
+    return (
+      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Terminal className="size-8 text-primary" />
+
+          <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
+          <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
+        </div>
+
+        <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+          {u.done}
+        </Button>
+      </div>
+    )
   }
 
   return (
@@ -269,9 +300,7 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {u.manualBody}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{u.manualBody}</DialogDescription>
       </div>
 
       <button
@@ -298,9 +327,33 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">
-        {u.manualPickedUp}
-      </p>
+      <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>
+
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+        {u.done}
+      </Button>
+    </div>
+  )
+}
+
+// Linux GUI/backend skew (#45205): backend updated, but the running desktop app
+// package (AppImage/.deb/.rpm) was NOT changed. Closeable terminal state that
+// tells the user to update/reinstall the desktop app — never claims the GUI was
+// updated.
+function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void }) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AlertCircle className="size-8 text-amber-500" />
+
+        <DialogTitle className="text-center text-xl">{u.guiSkewTitle}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {message || u.guiSkewBody}
+        </DialogDescription>
+      </div>
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
@@ -314,6 +367,8 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
   const body = isBackend ? u.applyingBodyBackend : u.applyingBody
+  const currentMessage = apply.message.trim()
+  const recentLog = apply.log.slice(-4)
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -326,9 +381,11 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         <Loader className="size-16" label={label} type="lemniscate-bloom" />
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
+
+        {currentMessage ? (
+          <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">{currentMessage}</p>
+        ) : null}
       </div>
 
       <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -340,6 +397,16 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
           style={percent !== null ? { width: `${percent}%` } : undefined}
         />
       </div>
+
+      {recentLog.length > 1 ? (
+        <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">
+          {recentLog.map((entry, index) => (
+            <div className="truncate" key={`${entry.at}-${index}`}>
+              {entry.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
     </div>
@@ -358,9 +425,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
           {message || u.errorBody}
         </DialogDescription>
       }
-      title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
-      }
+      title={<DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>}
     >
       <Button className="font-semibold" onClick={onRetry} size="lg">
         {u.tryAgain}

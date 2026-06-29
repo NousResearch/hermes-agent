@@ -22,13 +22,14 @@ Usage::
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -44,10 +45,10 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
-    # Per-profile HOME for subprocesses: isolates system tool configs (git,
-    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
-    # this also ensures tool configs land inside the persistent volume.
-    # See hermes_constants.get_subprocess_home() and issue #4426.
+    # Back-compat/Docker HOME for tool subprocesses. Host subprocesses keep
+    # the user's real HOME by default so normal CLI credentials remain visible;
+    # containers still use this directory for persistent HOME state.
+    # See hermes_constants.get_subprocess_home().
     "home",
 ]
 
@@ -327,6 +328,22 @@ def validate_profile_name(name: str) -> None:
         )
 
 
+def validate_alias_name(name: str) -> None:
+    """Raise ``ValueError`` if *name* is not a safe wrapper-alias identifier.
+
+    The alias is used verbatim as a filename under :func:`_get_wrapper_dir`
+    (``~/.local/bin``), so it must be a single safe command name with no path
+    separators or traversal segments — otherwise a value like ``../../.bashrc``
+    would escape the wrapper directory and clobber arbitrary user files. We
+    reuse the profile id regex, which already forbids ``/``, ``.``, and ``..``.
+    """
+    if not _PROFILE_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid alias name {name!r}. Must match "
+            f"[a-z0-9][a-z0-9_-]{{0,63}}"
+        )
+
+
 def get_profile_dir(name: str) -> Path:
     """Resolve a profile name to its HERMES_HOME directory."""
     canon = normalize_profile_name(name)
@@ -350,9 +367,14 @@ def profile_exists(name: str) -> bool:
 def check_alias_collision(name: str) -> Optional[str]:
     """Return a human-readable collision message, or None if the name is safe.
 
-    Checks: reserved names, hermes subcommands, existing binaries in PATH.
+    Checks: alias-name validity, reserved names, hermes subcommands, existing
+    binaries in PATH.
     """
     canon = normalize_profile_name(name)
+    try:
+        validate_alias_name(canon)
+    except ValueError as exc:
+        return str(exc)
     if canon in _RESERVED_NAMES:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
@@ -402,6 +424,9 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     """
     canon = normalize_profile_name(name)
     profile = normalize_profile_name(target) if target else canon
+    # The alias is used verbatim as a filename under the wrapper dir; reject
+    # any value that isn't a single safe identifier so it can't traverse out.
+    validate_alias_name(canon)
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -421,7 +446,8 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     else:
         wrapper_path = wrapper_dir / canon
         try:
-            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {profile} "$@"\n')
+            hermes_exe = shutil.which("hermes") or "hermes"
+            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n')
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:
@@ -433,6 +459,12 @@ def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
     wrapper_dir = _get_wrapper_dir()
     canon = normalize_profile_name(name)
+    # A traversal-shaped name could point unlink() at a file outside the
+    # wrapper dir; refuse it rather than acting on an arbitrary path.
+    try:
+        validate_alias_name(canon)
+    except ValueError:
+        return False
     is_windows = sys.platform == "win32"
 
     # Check both the extensionless path (POSIX) and .bat (Windows)
@@ -451,6 +483,37 @@ def remove_wrapper_script(name: str) -> bool:
             except Exception:
                 pass
     return False
+
+
+def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
+    """Bring a copied profile config.yaml up to the current schema.
+
+    Profile creation can clone a config file that predates schema tracking (no
+    ``_config_version``) or that is simply older than the running Hermes. If we
+    leave it untouched, the first desktop/doctor view of the new profile shows a
+    scary ``v0 → latest`` warning even though we just created the profile. Scope
+    the normal migration pipeline to the new profile and keep it non-interactive.
+    """
+    config_path = profile_dir / "config.yaml"
+    if not config_path.exists():
+        return
+
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import check_config_version, migrate_config
+
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            current_ver, latest_ver = check_config_version()
+            if current_ver < latest_ver:
+                migrate_config(interactive=False, quiet=True)
+        finally:
+            reset_hermes_home_override(token)
+    except Exception:
+        # Profile creation should not fail because an old copied config could
+        # not be migrated. The next `hermes doctor --fix` can still surface the
+        # detailed error in the target profile.
+        pass
 
 
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
@@ -579,10 +642,34 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
-    """Check if a gateway is running for a given profile directory."""
+    """Check if a gateway is running for a given profile directory.
+
+    Primary signal is the profile's ``gateway.pid`` (verified against the
+    runtime lock).  That check fails closed whenever the lock isn't held by
+    *this* reader — which is exactly the case for a dashboard process that is
+    a separate s6 service from the gateway it's reporting on (Docker), or any
+    launch-service-managed gateway that left a fresh ``gateway_state.json`` but
+    no live PID file.  In those cases fall back to validating the PID recorded
+    in the profile's own ``gateway_state.json`` against the live process table,
+    mirroring the ``/api/status`` sidebar's liveness logic so the two surfaces
+    agree.  Parameterized by ``profile_dir`` so it never mutates ``HERMES_HOME``.
+    """
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if (
+            get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+            is not None
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        from gateway.status import (
+            get_runtime_status_running_pid,
+            read_runtime_status,
+        )
+        runtime = read_runtime_status(profile_dir / "gateway_state.json")
+        return get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None
     except Exception:
         return False
 
@@ -748,6 +835,47 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+    """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
+
+    This is the single chokepoint for "which profiles does the inbound gateway
+    handle" so later multiplexing phases never re-derive the set.
+
+    - ``multiplex=False`` (default): returns exactly one entry for the *active*
+      profile — byte-for-byte the single-profile behavior the gateway has
+      always had. The name is ``"default"`` for the default profile or the
+      active named profile's id.
+    - ``multiplex=True``: returns the default profile plus every valid named
+      profile under ``profiles/``, each paired with its own HERMES_HOME.
+
+    Intentionally lightweight (a directory scan + name validation only): no
+    per-profile config reads, gateway-running probes, or skill counts like
+    :func:`list_profiles`. It runs on gateway startup and must stay cheap.
+
+    The returned ``hermes_home`` is the path to pass to
+    ``set_hermes_home_override`` when scoping a turn to that profile.
+    """
+    active = get_active_profile_name() or "default"
+    if not multiplex:
+        return [(active, get_profile_dir(active))]
+
+    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name == "default":
+                continue  # default is the built-in entry already added above
+            if not _PROFILE_ID_RE.match(name):
+                continue
+            serve.append((name, entry))
+
+    return serve
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -784,9 +912,9 @@ def create_profile(
     Path
         The newly created profile directory.
     """
-    if no_skills and (clone_config or clone_all):
+    if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-all "
+            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = normalize_profile_name(name)
@@ -907,6 +1035,14 @@ def create_profile(
             )
         except OSError:
             pass  # best-effort — the feature still works via the empty skills/ dir
+
+    # Cloned configs can be older than the running Hermes (or predate schema
+    # tracking entirely). Migrate config-only clones immediately so
+    # desktop/status surfaces don't warn that a just-created profile is
+    # v0/outdated. Leave --clone-all snapshots byte-for-byte apart from the
+    # explicit runtime/history stripping above.
+    if not clone_all:
+        _migrate_profile_config_if_outdated(profile_dir)
 
     # Persist description if the caller provided one. Done last so a
     # partial-create failure doesn't strand a description file in an
@@ -1190,10 +1326,16 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     can re-register manually later via the gateway start command,
     which goes through the same dispatch path.
 
-    Port selection is governed by the profile's ``config.yaml``
-    (``[gateway] port = …``) — there is no Python-side allocator
-    (PR #30136 review item I5 retired the SHA-256-derived range
-    [9200, 9800) because it was dead code through the entire stack).
+    Port selection: each supervised profile gateway loads its own
+    ``HERMES_HOME`` and binds the port resolved by ``gateway/config.py``
+    from that profile's environment — ``API_SERVER_PORT`` (or
+    ``platforms.api_server.extra.port`` in the profile's
+    ``config.yaml``), defaulting to 8642. There is no ``[gateway] port``
+    key and no Python-side allocator (PR #30136 review item I5 retired
+    the SHA-256-derived range [9200, 9800) as dead code), so two
+    profiles that both leave the port at its default will both try to
+    bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in its
+    ``.env``.
 
     Host short-circuit: check ``detect_service_manager()`` first and
     return immediately if it isn't ``"s6"``. This keeps host
@@ -1221,7 +1363,7 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     if not mgr.supports_runtime_registration():
         return  # host backend; no-op
     try:
-        mgr.register_profile_gateway(profile_name)
+        mgr.register_profile_gateway(profile_name, start_now=False)
     except ValueError:
         # Already registered (e.g. the container-boot reconciler ran
         # first and brought up a stale slot). That's fine.

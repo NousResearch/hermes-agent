@@ -9,10 +9,10 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    redact_tool_args_for_display,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
-    _used_free_parallel,
     render_edit_diff_with_delta,
 )
 
@@ -41,6 +41,38 @@ class TestBuildToolPreview:
         assert result is not None
         assert "ls -la" in result
 
+    def test_terminal_preview_compacts_shell_plumbing(self):
+        result = build_tool_preview(
+            "terminal",
+            {
+                "command": (
+                    'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 '
+                    '| tail -20; echo "lint_exit=${PIPESTATUS[0]}"'
+                )
+            },
+        )
+        assert result == "pnpm run lint"
+
+    def test_terminal_preview_compacts_multi_command_probe(self):
+        result = build_tool_preview(
+            "terminal",
+            {
+                "command": (
+                    'which node pnpm corepack; node -v; echo "---"; '
+                    'corepack --version 2>&1; echo "---pnpm via corepack---"; '
+                    'pnpm --version 2>&1 | tail -5'
+                )
+            },
+        )
+        assert result == "which node pnpm corepack + 3 commands"
+
+    def test_execute_code_preview_uses_same_shell_summary(self):
+        result = build_tool_preview(
+            "execute_code",
+            {"code": 'cd /tmp/demo && python -m pytest -q 2>&1 | tail -5; echo "exit=$?"'},
+        )
+        assert result == "python -m pytest -q"
+
     def test_web_search_preview(self):
         result = build_tool_preview("web_search", {"query": "hello world"})
         assert result is not None
@@ -49,7 +81,40 @@ class TestBuildToolPreview:
     def test_read_file_preview(self):
         result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
         assert result is not None
-        assert "/tmp/test.py" in result
+        assert result == "test.py L1"
+
+    def test_read_file_preview_includes_requested_line_range(self):
+        result = build_tool_preview("read_file", {"path": "./package.json", "offset": 1, "limit": 5})
+        assert result == "package.json L1-5"
+
+    def test_browser_type_preview_redacts_api_key(self):
+        secret = "sk-proj-ABCD1234567890EFGH"
+        result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})
+        assert result is not None
+        assert secret not in result
+        assert "sk-pro" in result and "..." in result
+
+    def test_browser_type_preview_keeps_normal_text(self):
+        text = "hello world search query"
+        result = build_tool_preview("browser_type", {"ref": "@e3", "text": text})
+        assert result is not None
+        assert text in result
+
+    def test_browser_type_display_args_redact_api_key(self):
+        secret = "ghp_ABCDEFGHIJ1234567890"
+        safe_args = redact_tool_args_for_display(
+            "browser_type", {"ref": "@e3", "text": secret}
+        )
+        assert secret not in str(safe_args)
+        assert safe_args["ref"] == "@e3"
+        assert safe_args["text"].startswith("ghp_AB")
+
+    def test_browser_type_display_args_keep_normal_text(self):
+        text = "my_normal_password_123"
+        safe_args = redact_tool_args_for_display(
+            "browser_type", {"ref": "@e3", "text": text}
+        )
+        assert safe_args == {"ref": "@e3", "text": text}
 
     def test_unknown_tool_with_fallback_key(self):
         """Unknown tool but with a recognized fallback key should still preview."""
@@ -105,6 +170,33 @@ class TestBuildToolPreview:
         assert result is not None
         assert "find something" in result
 
+    def test_delegate_task_single_goal_preview(self):
+        result = build_tool_preview("delegate_task", {"goal": "Review gateway status"})
+        assert result == "Review gateway status"
+
+    def test_delegate_task_batch_goal_preview(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": "Review PR A"}, {"goal": "Review PR B"}]},
+        )
+        assert result == "2 tasks: Review PR A | Review PR B"
+
+    def test_delegate_task_batch_preview_handles_missing_non_string_goals(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": None}, {"goal": 123}, "not-a-task"]},
+        )
+        assert result == "2 tasks: ? | 123"
+
+    def test_delegate_task_batch_preview_respects_max_len(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
+            max_len=30,
+        )
+        assert result == "2 tasks: AAAAAAAAAAAAAAAAAA..."
+        assert len(result) == 30
+
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None
@@ -119,7 +211,8 @@ class TestCuteToolMessagePreviewLength:
 
         line = get_cute_tool_message("terminal", {"command": command}, 0.1)
 
-        assert command in line
+        assert "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")'" in line
+        assert "head -5" not in line
         assert "..." not in line
 
     def test_terminal_preview_uses_positive_configured_limit(self):
@@ -128,8 +221,8 @@ class TestCuteToolMessagePreviewLength:
 
         line = get_cute_tool_message("terminal", {"command": command}, 0.1)
 
-        assert command[:77] in line
-        assert "..." in line
+        assert "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")'" in line
+        assert "..." not in line
         assert "head -5" not in line
 
     def test_search_files_preview_uses_positive_configured_limit_not_default(self):
@@ -147,7 +240,7 @@ class TestCuteToolMessagePreviewLength:
 
         line = get_cute_tool_message("read_file", {"path": path}, 0.1)
 
-        assert path in line
+        assert "test-output.txt" in line
         assert "..." not in line
 
     def test_write_file_lint_error_result_is_not_marked_failed(self):
@@ -171,45 +264,36 @@ class TestCuteToolMessagePreviewLength:
 
         assert "[error]" not in line
 
+    def test_delegate_task_batch_message_includes_goals(self):
+        line = get_cute_tool_message(
+            "delegate_task",
+            {"tasks": [{"goal": "Review PR A"}, {"goal": "Review PR B"}]},
+            1.2,
+        )
+        assert "2x: Review PR A | Review PR B" in line
 
-class TestWebProviderLabel:
-    """The free-path "Parallel search"/"Parallel fetch" verb labeling."""
+    def test_browser_type_cute_message_redacts_api_key(self):
+        secret = "sk-proj-ABCD1234567890EFGH"
+        line = get_cute_tool_message(
+            "browser_type",
+            {"ref": "@password", "text": secret},
+            0.1,
+            result='{"success": true, "typed": "sk-pro...EFGH"}',
+        )
 
-    def test_free_search_verb_is_parallel(self):
-        result = json.dumps({"success": True, "data": {"web": []}, "provider": "parallel"})
-        line = get_cute_tool_message("web_search", {"query": "hello"}, 0.1, result=result)
-        assert "Parallel search" in line
-        assert "hello" in line
+        assert secret not in line
+        assert "sk-pro" in line
 
-    def test_paid_search_verb_is_plain(self):
-        result = json.dumps({"success": True, "data": {"web": [{"url": "u"}]}})
-        line = get_cute_tool_message("web_search", {"query": "hi"}, 0.1, result=result)
-        assert "Parallel" not in line
-        assert "search" in line
+    def test_browser_type_cute_message_keeps_normal_text(self):
+        text = "hello world"
+        line = get_cute_tool_message(
+            "browser_type",
+            {"ref": "@search", "text": text},
+            0.1,
+            result='{"success": true, "typed": "hello world"}',
+        )
 
-    def test_missing_result_verb_is_plain(self):
-        line = get_cute_tool_message("web_search", {"query": "hello"}, 0.1)
-        assert "Parallel" not in line
-        assert "search" in line
-
-    def test_helper_is_parallel_free_specific(self):
-        # Only Parallel's free MCP path marks results; nothing else does.
-        assert _used_free_parallel(json.dumps({"provider": "parallel"})) is True
-        assert _used_free_parallel(json.dumps({"provider": "exa"})) is False
-        assert _used_free_parallel(json.dumps({"provider": "firecrawl"})) is False
-        assert _used_free_parallel(json.dumps({"success": True, "data": {}})) is False
-        assert _used_free_parallel('not json') is False
-        assert _used_free_parallel(None) is False
-
-    def test_free_extract_verb_is_parallel(self):
-        result = json.dumps({"results": [{"url": "u", "content": "x"}], "provider": "parallel"})
-        line = get_cute_tool_message("web_extract", {"urls": ["https://a.test"]}, 0.1, result=result)
-        assert "Parallel fetch" in line
-
-    def test_paid_extract_verb_is_plain(self):
-        result = json.dumps({"results": [{"url": "u", "content": "x"}]})
-        line = get_cute_tool_message("web_extract", {"urls": ["https://a.test"]}, 0.1, result=result)
-        assert "Parallel" not in line
+        assert text in line
 
 
 class TestEditDiffPreview:

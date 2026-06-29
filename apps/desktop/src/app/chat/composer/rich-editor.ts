@@ -132,6 +132,117 @@ export function renderComposerContents(target: HTMLElement, text: string) {
   appendComposerContents(target, text)
 }
 
+/** Caret range when the selection lives inside `editor`; else null. */
+function composerSelectionRange(editor: HTMLElement) {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  if (!selection || !range || !editor.contains(range.commonAncestorContainer)) {
+    return null
+  }
+
+  return { range, selection }
+}
+
+/** Insert plain text at the caret (replacing any selection). Pastes use this
+ *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
+ *  ~O(n²) on large multiline blobs. */
+export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+  const hit = composerSelectionRange(editor)
+  const fragment = document.createDocumentFragment()
+
+  appendTextWithBreaks(fragment, text)
+
+  const tail = fragment.lastChild
+
+  if (hit) {
+    hit.range.deleteContents()
+    hit.range.insertNode(fragment)
+  } else {
+    editor.append(fragment)
+  }
+
+  if (tail) {
+    const caret = document.createRange()
+    caret.setStartAfter(tail)
+    caret.collapse(true)
+    const selection = hit?.selection ?? window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(caret)
+  }
+}
+
+/** Backspace at a collapsed caret immediately after a chip: delete the chip AND
+ *  the single trailing space we auto-insert after it, atomically — so removing a
+ *  directive never strands an orphaned space (the contenteditable-driven cleanup
+ *  was unreliable). Returns whether it ran. */
+export function deleteChipBeforeCaret(editor: HTMLElement): boolean {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit || !hit.range.collapsed) {
+    return false
+  }
+
+  const { startContainer, startOffset } = hit.range
+  let chip: ChildNode | null = null
+
+  if (startContainer === editor) {
+    chip = startOffset > 0 ? editor.childNodes[startOffset - 1] : null
+  } else if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
+    chip = startContainer.previousSibling
+  }
+
+  if (chip?.nodeType !== Node.ELEMENT_NODE || !(chip as HTMLElement).dataset.refText) {
+    return false
+  }
+
+  const after = chip.nextSibling
+  chip.remove()
+
+  // Drop the auto-inserted trailing space; keep any real following text.
+  if (after?.nodeType === Node.TEXT_NODE) {
+    const text = after.textContent ?? ''
+
+    if (text === ' ') {
+      after.remove()
+    } else if (text.startsWith(' ')) {
+      after.textContent = text.slice(1)
+    }
+  }
+
+  const caret = document.createRange()
+
+  if (after?.isConnected) {
+    caret.setStartBefore(after)
+  } else {
+    caret.selectNodeContents(editor)
+    caret.collapse(false)
+  }
+
+  caret.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(caret)
+
+  return true
+}
+
+/** Remove a non-collapsed selection in-editor. Skips collapsed carets so word/
+ *  line delete (Opt/Cmd+Backspace) stays native. Returns whether anything ran. */
+export function deleteSelectionInEditor(editor: HTMLElement) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit || hit.range.collapsed) {
+    return false
+  }
+
+  hit.range.deleteContents()
+  hit.range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(hit.range)
+
+  return true
+}
+
 /** Serialize a draft string into chip-HTML for the contenteditable surface. */
 export function composerHtml(text: string) {
   let cursor = 0
@@ -185,35 +296,68 @@ export function placeCaretEnd(element: HTMLElement) {
   selection?.addRange(range)
 }
 
-/** Drop contenteditable junk that serializes as `\n` and falsely expands the composer. */
-export function normalizeComposerEditorDom(editor: HTMLElement) {
-  if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-    editor.replaceChildren()
-
-    return
+/** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */
+function isBlankNode(node: ChildNode | null): boolean {
+  if (!node) {
+    return false
   }
 
+  if (node.nodeName === 'BR') {
+    return true
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return !(node.textContent || '').trim()
+  }
+
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const el = node as HTMLElement
+
+    return !el.dataset.refText && Array.from(el.childNodes).every(isBlankNode)
+  }
+
+  return false
+}
+
+/** Drop contenteditable junk that serializes as `\n` and falsely expands the
+ *  composer. Editing around a contenteditable=false chip makes Chromium wrap the
+ *  remainder in stray block <div>s / trailing <br>s — none of which our own
+ *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
+ *  (Shift+Enter, which sit after actual text) are preserved. */
+export function normalizeComposerEditorDom(editor: HTMLElement) {
+  // A trailing block wrapper holding only a break/whitespace is the phantom
+  // "new line" Chromium adds after a chip on backspace — drop it.
+  const tailBlock = editor.lastChild as HTMLElement | null
+
+  if (
+    tailBlock?.nodeType === Node.ELEMENT_NODE &&
+    (tailBlock.tagName === 'DIV' || tailBlock.tagName === 'P') &&
+    isBlankNode(tailBlock)
+  ) {
+    editor.removeChild(tailBlock)
+  }
+
+  // Unwrap a lone block wrapper back to inline content.
   if (editor.childNodes.length === 1 && editor.firstChild?.nodeType === Node.ELEMENT_NODE) {
     const wrapper = editor.firstChild as HTMLElement
 
-    if (wrapper.tagName === 'DIV' && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+    if ((wrapper.tagName === 'DIV' || wrapper.tagName === 'P') && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
       editor.replaceChildren(...Array.from(wrapper.childNodes))
     }
   }
 
+  // A trailing <br> right after a chip / only whitespace is a phantom line.
   const last = editor.lastChild
 
-  if (last?.nodeName !== 'BR') {
-    return
-  }
+  if (last?.nodeName === 'BR') {
+    let prev: ChildNode | null = last.previousSibling
 
-  let prev: ChildNode | null = last.previousSibling
+    while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {
+      prev = prev.previousSibling
+    }
 
-  while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {
-    prev = prev.previousSibling
-  }
-
-  if ((prev as HTMLElement | null)?.dataset.refText) {
-    editor.removeChild(last)
+    if (!prev || (prev as HTMLElement).dataset?.refText) {
+      editor.removeChild(last)
+    }
   }
 }

@@ -61,10 +61,17 @@ function buildDesktopBackendPath({
   const venvBin = venvRoot ? pathModule.join(venvRoot, platform === 'win32' ? 'Scripts' : 'bin') : null
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
-  return appendUniquePathEntries(
-    [hermesNodeBin, venvBin, currentPath, saneEntries],
-    { delimiter }
-  )
+  return appendUniquePathEntries([hermesNodeBin, venvBin, currentPath, saneEntries], { delimiter })
+}
+
+function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) } = {}) {
+  if (!hermesHome) return hermesHome
+  const resolved = pathModule.resolve(String(hermesHome))
+  const parent = pathModule.dirname(resolved)
+  if (pathModule.basename(parent).toLowerCase() === 'profiles') {
+    return pathModule.dirname(parent)
+  }
+  return resolved
 }
 
 function buildDesktopBackendEnv({
@@ -97,5 +104,6 @@ module.exports = {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   delimiterForPlatform,
+  normalizeHermesHomeRoot,
   pathEnvKey
 }

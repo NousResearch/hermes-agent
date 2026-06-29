@@ -888,6 +888,45 @@ _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 _SKILLS_SNAPSHOT_VERSION = 1
 
 
+def _get_layered_skills_config() -> tuple[bool, frozenset, str]:
+    """Read ``skills.layered`` config for the active/dormant index split.
+
+    Returns ``(enabled, active_names, dormant_header)``. When layering is
+    disabled (the default) the full ``name: description`` index is emitted for
+    every skill, preserving the historical behaviour byte-for-byte.
+
+    Config shape (``~/.hermes/config.yaml``)::
+
+        skills:
+          layered:
+            enabled: true
+            active_skills: [hermes-agent, writing-plans, ...]
+
+    The returned tuple is hashable so it can fold into the prompt cache key,
+    keeping the block byte-stable within a conversation.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = (load_config().get("skills", {}) or {}).get("layered", {}) or {}
+    except Exception as e:  # pragma: no cover - config read is best-effort
+        logger.debug("Could not read skills.layered config: %s", e)
+        return (False, frozenset(), "")
+    if not cfg.get("enabled"):
+        return (False, frozenset(), "")
+    active = cfg.get("active_skills") or []
+    if not isinstance(active, (list, tuple, set)):
+        active = []
+    header = str(
+        cfg.get(
+            "dormant_header",
+            "Additional skills are available but collapsed to names only. "
+            "Load any of them with skill_view(name) when relevant:",
+        )
+    )
+    return (True, frozenset(str(a) for a in active), header)
+
+
 def _skills_prompt_snapshot_path() -> Path:
     return get_hermes_home() / ".skills_prompt_snapshot.json"
 
@@ -1071,6 +1110,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    layered_enabled, layered_active, layered_header = _get_layered_skills_config()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1078,6 +1118,9 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        layered_enabled,
+        tuple(sorted(layered_active)),
+        layered_header,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1215,22 +1258,48 @@ def build_skills_system_prompt(
         result = ""
     else:
         index_lines = []
+        dormant_lines: list[str] = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
             # Deduplicate and sort skills within each category
             seen = set()
+            active_in_cat: list[tuple[str, str]] = []
+            dormant_in_cat: list[str] = []
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                # When layering is enabled, only the configured active skills
+                # keep their full description; everything else is demoted to a
+                # names-only dormant listing (still discoverable via skill_view).
+                if layered_enabled and name not in layered_active:
+                    dormant_in_cat.append(name)
                 else:
-                    index_lines.append(f"    - {name}")
+                    active_in_cat.append((name, desc))
+
+            if active_in_cat:
+                if cat_desc:
+                    index_lines.append(f"  {category}: {cat_desc}")
+                else:
+                    index_lines.append(f"  {category}:")
+                for name, desc in active_in_cat:
+                    if desc:
+                        index_lines.append(f"    - {name}: {desc}")
+                    else:
+                        index_lines.append(f"    - {name}")
+
+            if dormant_in_cat:
+                dormant_lines.append(f"  {category}: {', '.join(dormant_in_cat)}")
+
+        dormant_block = ""
+        if layered_enabled and dormant_lines:
+            dormant_block = (
+                "\n"
+                f"{layered_header}\n"
+                "<dormant_skills>\n"
+                + "\n".join(dormant_lines) + "\n"
+                "</dormant_skills>\n"
+            )
 
         result = (
             "## Skills (mandatory)\n"
@@ -1257,7 +1326,8 @@ def build_skills_system_prompt(
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
-            "\n"
+            + dormant_block
+            + "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
         )
 

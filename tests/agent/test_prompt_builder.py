@@ -428,6 +428,143 @@ class TestBuildSkillsSystemPrompt:
         assert "backend-skill" in result
 
 
+class TestLayeredSkillsIndex:
+    """Tests for the opt-in skills.layered active/dormant split.
+
+    NOTE: every test resolves the module fresh via ``import agent.prompt_builder
+    as pb`` and calls ``pb.build_skills_system_prompt`` / ``pb.clear_...`` rather
+    than the names imported at file top. ``TestPromptBuilderImports`` deletes and
+    re-imports ``agent.prompt_builder``, so the top-level ``build_skills_system_prompt``
+    binding can point at a STALE module while ``monkeypatch.setattr(pb, ...)``
+    patches the CURRENT one. Going through ``pb`` keeps the patched helper and the
+    called function in the same module object.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        import agent.prompt_builder as pb
+        pb.clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        pb.clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _make_skills(self, tmp_path):
+        # Descriptions are long (≈real-world avg ~130 chars) so the dormant
+        # names-only collapse actually saves space — the whole point of layering.
+        for cat, name, desc in [
+            ("coding", "python-debug",
+             "Debug Python scripts interactively with pdb and debugpy, set "
+             "breakpoints, inspect frames, and attach to remote processes over DAP."),
+            ("coding", "rust-build",
+             "Build, test, and cross-compile Rust crates with cargo, manage "
+             "workspaces, features, and release profiles for production binaries."),
+            ("media", "video-edit",
+             "Edit videos by conversation: transcribe, cut, color grade, add "
+             "captions, and re-encode with ffmpeg without manual timeline work."),
+        ]:
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+    def test_disabled_by_default_no_dormant_block(self, monkeypatch, tmp_path):
+        """With no config, behaviour is unchanged: full index, no dormant block."""
+        import agent.prompt_builder as pb
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path)
+        monkeypatch.setattr(
+            pb, "_get_layered_skills_config", lambda: (False, frozenset(), "")
+        )
+        result = pb.build_skills_system_prompt()
+        assert "<available_skills>" in result
+        assert "<dormant_skills>" not in result
+        # every skill keeps its description
+        assert "Debug Python scripts interactively" in result
+        assert "cross-compile Rust crates" in result
+        assert "transcribe, cut, color grade" in result
+
+    def test_disabled_output_byte_identical_to_legacy(self, monkeypatch, tmp_path):
+        """Disabled layering must produce the exact same string as before."""
+        import agent.prompt_builder as pb
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path)
+        # explicitly force disabled config
+        monkeypatch.setattr(
+            pb, "_get_layered_skills_config", lambda: (False, frozenset(), "")
+        )
+        disabled_out = pb.build_skills_system_prompt()
+        # legacy shape markers
+        assert disabled_out.rstrip().endswith(
+            "Only proceed without loading a skill if genuinely none are relevant to the task."
+        )
+        assert "</available_skills>\n\nOnly proceed" in disabled_out
+
+    def test_enabled_splits_active_and_dormant(self, monkeypatch, tmp_path):
+        import agent.prompt_builder as pb
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path)
+        monkeypatch.setattr(
+            pb,
+            "_get_layered_skills_config",
+            lambda: (True, frozenset({"python-debug"}), "More skills:"),
+        )
+        result = pb.build_skills_system_prompt()
+        assert "<dormant_skills>" in result
+        # active skill keeps its description in the main block
+        active_block = result.split("<available_skills>")[1].split("</available_skills>")[0]
+        assert "python-debug: Debug Python scripts interactively" in active_block
+        # dormant skills are names-only inside the dormant block
+        dormant_block = result.split("<dormant_skills>")[1].split("</dormant_skills>")[0]
+        assert "rust-build" in dormant_block
+        assert "video-edit" in dormant_block
+        # dormant descriptions must NOT leak
+        assert "cross-compile Rust crates" not in result
+        assert "transcribe, cut, color grade" not in result
+        assert "More skills:" in result
+
+    def test_enabled_cuts_token_size(self, monkeypatch, tmp_path):
+        import agent.prompt_builder as pb
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path)
+
+        monkeypatch.setattr(
+            pb, "_get_layered_skills_config", lambda: (False, frozenset(), "")
+        )
+        full = pb.build_skills_system_prompt()
+
+        pb.clear_skills_system_prompt_cache(clear_snapshot=True)
+        monkeypatch.setattr(
+            pb,
+            "_get_layered_skills_config",
+            lambda: (True, frozenset({"python-debug"}), "More:"),
+        )
+        layered = pb.build_skills_system_prompt()
+        # layered output drops two descriptions, so it must be shorter
+        assert len(layered) < len(full)
+
+    def test_config_folds_into_cache_key(self, monkeypatch, tmp_path):
+        """Different layered configs must not collide in the prompt cache."""
+        import agent.prompt_builder as pb
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skills(tmp_path)
+
+        monkeypatch.setattr(
+            pb, "_get_layered_skills_config", lambda: (False, frozenset(), "")
+        )
+        out_disabled = pb.build_skills_system_prompt()
+
+        monkeypatch.setattr(
+            pb,
+            "_get_layered_skills_config",
+            lambda: (True, frozenset({"python-debug"}), "More:"),
+        )
+        out_enabled = pb.build_skills_system_prompt()
+        # cache must not serve the disabled result for the enabled config
+        assert out_disabled != out_enabled
+        assert "<dormant_skills>" in out_enabled
+        assert "<dormant_skills>" not in out_disabled
+
+
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)

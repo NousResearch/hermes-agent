@@ -35,36 +35,58 @@ const OUT_DIR = path.join(DESKTOP_ROOT, "build")
 // (installScriptName) and prefers the bundled copy over the GitHub fetch.
 const INSTALLERS = ["install.sh", "install.ps1"]
 
+// ApexNodes overlay seam libs (scripts/lib/apexnodes-region-detect.{sh,ps1}).
+// install.sh / install.ps1 source these from a `lib/` dir RELATIVE to their own
+// on-disk location (see the "ApexNodes overlay seam" block in each installer).
+// The bundled installer runs from process.resourcesPath/install.{sh,ps1}, so the
+// lib MUST sit at process.resourcesPath/lib/ for the China mirror / COS source
+// downgrade to activate. We stage it into build/lib/ and map it through
+// electron-builder's extraResources ({ from: build/lib, to: lib }). Without this
+// the installer still runs, but a mainland-China desktop would lose its mirror
+// downgrade and fall back to (blocked) github.com / pypi.org / npmjs.org.
+const SEAM_LIBS = ["apexnodes-region-detect.sh", "apexnodes-region-detect.ps1"]
+
+function stageFile(srcAbs, outAbs, label, mode) {
+  if (!fs.existsSync(srcAbs)) {
+    console.error(
+      "[stage-install-script] ERROR: " +
+        label +
+        " not found at " +
+        srcAbs +
+        "\n  The desktop bootstrap ships this file inside the app; a packaged" +
+        "\n  build without it cannot install on a network-restricted machine."
+    )
+    process.exit(1)
+  }
+  fs.mkdirSync(path.dirname(outAbs), { recursive: true })
+  fs.copyFileSync(srcAbs, outAbs)
+  // Executable bit for tidiness; bootstrap-runner spawns install.sh via
+  // `bash <path>` and install.ps1 via PowerShell -File, so the mode is not
+  // strictly required, but keeps the staged copy faithful.
+  fs.chmodSync(outAbs, mode)
+  const bytes = fs.statSync(outAbs).size
+  console.log(
+    "[stage-install-script] staged " +
+      path.relative(REPO_ROOT, srcAbs) +
+      " -> " +
+      path.relative(REPO_ROOT, outAbs) +
+      " (" +
+      bytes +
+      " bytes)"
+  )
+}
+
 function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true })
   for (const name of INSTALLERS) {
-    const src = path.join(REPO_ROOT, "scripts", name)
-    const out = path.join(OUT_DIR, name)
-    if (!fs.existsSync(src)) {
-      console.error(
-        "[stage-install-script] ERROR: installer not found at " +
-          src +
-          "\n  The desktop bootstrap ships this file inside the app; a packaged" +
-          "\n  build without it cannot install on a network-restricted machine."
-      )
-      process.exit(1)
-    }
-
-    fs.copyFileSync(src, out)
-    // Executable bit for tidiness; bootstrap-runner spawns install.sh via
-    // `bash <path>` and install.ps1 via PowerShell -File, so the mode is not
-    // strictly required, but keeps the staged copy faithful.
-    fs.chmodSync(out, 0o755)
-
-    const bytes = fs.statSync(out).size
-    console.log(
-      "[stage-install-script] staged " +
-        path.relative(REPO_ROOT, src) +
-        " -> " +
-        path.relative(REPO_ROOT, out) +
-        " (" +
-        bytes +
-        " bytes)"
+    stageFile(path.join(REPO_ROOT, "scripts", name), path.join(OUT_DIR, name), "installer", 0o755)
+  }
+  for (const name of SEAM_LIBS) {
+    stageFile(
+      path.join(REPO_ROOT, "scripts", "lib", name),
+      path.join(OUT_DIR, "lib", name),
+      "overlay seam lib",
+      0o644
     )
   }
 }

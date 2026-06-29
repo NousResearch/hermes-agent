@@ -325,7 +325,11 @@ locales = ["locales/*.yaml"]
 "optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
 
 [tool.setuptools.package-data]
-hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
+# scripts/lib/*.{sh,ps1}: ApexNodes overlay seam libs (apexnodes-region-detect.*)
+# that install.{sh,ps1} source from a sibling lib/ dir. The wheel-bundled
+# installer (copied in by .github/workflows/upload_to_pypi.yml) must keep them as
+# siblings or a mainland-China install loses its mirror / COS downgrade.
+hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1", "scripts/lib/*.sh", "scripts/lib/*.ps1"]
 gateway = ["assets/**/*"]
 plugins = [
   "*/dashboard/manifest.json",

@@ -175,6 +175,10 @@
         "to": "install.ps1"
       },
       {
+        "from": "build/lib",
+        "to": "lib"
+      },
+      {
         "from": "build/native-deps",
         "to": "native-deps"
       },

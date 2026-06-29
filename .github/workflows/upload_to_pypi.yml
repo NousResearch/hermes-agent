@@ -73,9 +73,15 @@ jobs:
 
       - name: Bundle install scripts into wheel
         run: |
-          mkdir -p hermes_cli/scripts
+          mkdir -p hermes_cli/scripts/lib
           cp scripts/install.sh hermes_cli/scripts/install.sh
           cp scripts/install.ps1 hermes_cli/scripts/install.ps1
+          # ApexNodes overlay seam libs: install.{sh,ps1} source these from a
+          # lib/ dir relative to their own location, so the wheel-bundled copy
+          # must keep them as siblings for the China mirror / COS downgrade to
+          # work when the installer runs from the wheel (e.g. hermes_cli/dep_ensure).
+          cp scripts/lib/apexnodes-region-detect.sh hermes_cli/scripts/lib/apexnodes-region-detect.sh
+          cp scripts/lib/apexnodes-region-detect.ps1 hermes_cli/scripts/lib/apexnodes-region-detect.ps1
 
       - name: Build wheel and sdist
         run: uv build --sdist --wheel

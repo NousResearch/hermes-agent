@@ -43,6 +43,7 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
+BLUEBUBBLES_JSON_BODY_MAX_BYTES = 16 * 1024 * 1024
 
 # BlueBubbles/iMessage does not expose a stable bot mention identity like
 # Slack (<@U...>), Telegram (@botname), or Matrix (MXID). When users opt into
@@ -217,16 +218,51 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return text
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
-        assert self.client is not None
-        res = await self.client.get(self._api_url(path))
-        res.raise_for_status()
-        return res.json()
+        return await self._api_request_json("GET", path)
 
     async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         assert self.client is not None
-        res = await self.client.post(self._api_url(path), json=payload)
-        res.raise_for_status()
-        return res.json()
+        return await self._api_request_json("POST", path, json=payload)
+
+    async def _api_request_json(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        assert self.client is not None
+        async with self.client.stream(method, self._api_url(path), **kwargs) as res:
+            res.raise_for_status()
+            return await self._read_limited_json_response(res, label=path)
+
+    @staticmethod
+    async def _read_limited_json_response(
+        res: "httpx.Response",
+        *,
+        label: str,
+    ) -> Dict[str, Any]:
+        chunks: List[bytes] = []
+        total = 0
+        async for chunk in res.aiter_bytes():
+            total += len(chunk)
+            if total > BLUEBUBBLES_JSON_BODY_MAX_BYTES:
+                await res.aclose()
+                raise RuntimeError(
+                    f"BlueBubbles {label} response exceeds "
+                    f"{BLUEBUBBLES_JSON_BODY_MAX_BYTES} bytes"
+                )
+            chunks.append(chunk)
+
+        body = b"".join(chunks)
+        try:
+            data = json.loads(body.decode(res.encoding or "utf-8"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"BlueBubbles {label} returned invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise RuntimeError(f"BlueBubbles {label} returned non-object JSON")
+        return data
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -583,14 +619,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 }
                 if is_audio_message:
                     data["isAudioMessage"] = "true"
-                res = await self.client.post(
+                async with self.client.stream(
+                    "POST",
                     self._api_url("/api/v1/message/attachment"),
                     files=files,
                     data=data,
                     timeout=120,
-                )
-                res.raise_for_status()
-                result = res.json()
+                ) as res:
+                    res.raise_for_status()
+                    result = await self._read_limited_json_response(
+                        res,
+                        label="/api/v1/message/attachment",
+                    )
 
             if caption:
                 await self.send(chat_id, caption)

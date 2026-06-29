@@ -23,6 +23,45 @@ def _make_adapter(monkeypatch, **extra):
     return BlueBubblesAdapter(cfg)
 
 
+class _JsonStreamResponse:
+    encoding = "utf-8"
+
+    def __init__(self, payload=None, chunks=None, status_code=200):
+        self.payload = payload if payload is not None else {"status": 200, "data": {}}
+        self.chunks = chunks
+        self.status_code = status_code
+        self.closed = False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise Exception("request failed")
+
+    def json(self):
+        return self.payload
+
+    async def aiter_bytes(self):
+        chunks = self.chunks
+        if chunks is None:
+            chunks = [json.dumps(self.payload).encode()]
+        for chunk in chunks:
+            yield chunk
+
+    async def aclose(self):
+        self.closed = True
+
+
+class _JsonStreamContext:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.response.aclose()
+        return False
+
+
 class TestBlueBubblesConfigLoading:
     def test_apply_env_overrides_bluebubbles(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -103,6 +142,84 @@ class TestBlueBubblesHelpers:
 
         assert result.success is True
         assert sent == ["first thought", "second thought"]
+
+    @pytest.mark.asyncio
+    async def test_api_get_reads_json_via_stream(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def stream(self, method, url, **kwargs):
+                self.calls.append((method, url, kwargs))
+                return _JsonStreamContext(
+                    _JsonStreamResponse({"status": 200, "data": {"ok": True}})
+                )
+
+        client = Client()
+        adapter.client = client
+
+        result = await adapter._api_get("/api/v1/ping")
+
+        assert result == {"status": 200, "data": {"ok": True}}
+        assert client.calls[0][0] == "GET"
+        assert "password=secret" in client.calls[0][1]
+
+    @pytest.mark.asyncio
+    async def test_api_json_reader_closes_oversized_stream(self, monkeypatch):
+        from gateway.platforms import bluebubbles
+
+        monkeypatch.setattr(bluebubbles, "BLUEBUBBLES_JSON_BODY_MAX_BYTES", 12)
+        adapter = _make_adapter(monkeypatch)
+        response = _JsonStreamResponse(chunks=[b'{"data":"', b"x" * 20])
+
+        with pytest.raises(RuntimeError, match="response exceeds"):
+            await adapter._read_limited_json_response(
+                response,
+                label="/api/v1/ping",
+            )
+
+        assert response.closed is True
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_reads_upload_response_via_stream(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        adapter = _make_adapter(monkeypatch)
+        file_path = tmp_path / "photo.jpg"
+        file_path.write_bytes(b"jpeg")
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def stream(self, method, url, **kwargs):
+                self.calls.append((method, url, kwargs))
+                return _JsonStreamContext(
+                    _JsonStreamResponse({"status": 200, "data": {"guid": "msg-1"}})
+                )
+
+        client = Client()
+        adapter.client = client
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+
+        result = await adapter._send_attachment(
+            "user@example.com",
+            str(file_path),
+            filename="photo.jpg",
+        )
+
+        assert result.success is True
+        assert result.message_id == "msg-1"
+        assert client.calls[0][0] == "POST"
+        assert "files" in client.calls[0][2]
+        assert client.calls[0][2]["timeout"] == 120
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -636,9 +753,20 @@ class TestBlueBubblesWebhookRegistration:
                         raise Exception("delete failed")
             return R()
 
+        def mock_stream(self_inner, method, *args, **kwargs):
+            response = post_response if method.upper() == "POST" else get_response
+            return _JsonStreamContext(
+                _JsonStreamResponse(response or {"status": 200, "data": []})
+            )
+
         return type(
             "MockClient", (),
-            {"get": mock_get, "post": mock_post, "delete": mock_delete},
+            {
+                "get": mock_get,
+                "post": mock_post,
+                "delete": mock_delete,
+                "stream": mock_stream,
+            },
         )()
 
     # -- _find_registered_webhooks --

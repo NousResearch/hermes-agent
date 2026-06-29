@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { readKey, writeKey } from '@/lib/storage'
 import { $currentCwd } from '@/store/session'
 
 import { setTerminalTakeover } from '../store'
@@ -18,14 +19,126 @@ export interface TerminalEntry {
    *  (the project root if opened in one, else the backend's default). Switching
    *  sessions never moves or recreates a terminal. */
   cwd: string
+  /** Serialized xterm scrollback from the last session, replayed on relaunch so
+   *  the tab reopens with its recent history (VS Code parity). Processes are NOT
+   *  revived — a fresh shell starts beneath the restored buffer. Captured live
+   *  for user tabs only; agent mirrors stay runtime-only. */
+  reviveBuffer?: string
   /** `user` = interactive PTY shell. `agent` = read-only mirror of an agent
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
   procId?: string
 }
 
-export const $terminals = atom<readonly TerminalEntry[]>([])
-export const $activeTerminalId = atom<string | null>(null)
+interface PersistedTerminalEntry {
+  auto: boolean
+  cwd: string
+  id: string
+  reviveBuffer?: string
+  title: string
+}
+
+interface PersistedTerminalState {
+  activeTerminalId: null | string
+  terminals: PersistedTerminalEntry[]
+}
+
+const TERMINALS_STORAGE_KEY = 'hermes.desktop.terminals.v1'
+
+// Cap a single tab's replayed history so the persisted layout can't blow the
+// localStorage quota. Roughly mirrors VS Code's persistentSessionScrollback
+// default (100 lines) once the serialized escape codes are counted in.
+const MAX_REVIVE_BUFFER_CHARS = 48_000
+
+function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+
+  const record = value as Record<string, unknown>
+  const id = typeof record.id === 'string' ? record.id.trim() : ''
+  const title = typeof record.title === 'string' ? record.title.trim() : ''
+  const cwd = typeof record.cwd === 'string' ? record.cwd : ''
+  const reviveBuffer = typeof record.reviveBuffer === 'string' ? record.reviveBuffer : undefined
+
+  if (!id) {
+    return null
+  }
+
+  return {
+    auto: typeof record.auto === 'boolean' ? record.auto : true,
+    cwd,
+    id,
+    ...(reviveBuffer ? { reviveBuffer } : {}),
+    title: title || 'Terminal'
+  }
+}
+
+function loadPersistedTerminals(): PersistedTerminalState {
+  const fallback: PersistedTerminalState = { activeTerminalId: null, terminals: [] }
+  const raw = readKey(TERMINALS_STORAGE_KEY)
+
+  if (!raw) {
+    return fallback
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return fallback
+    }
+
+    const record = parsed as Record<string, unknown>
+
+    const terminals = Array.isArray(record.terminals)
+      ? record.terminals.map(sanitizePersistedTerminal).filter((term): term is PersistedTerminalEntry => Boolean(term))
+      : []
+
+    const active =
+      typeof record.activeTerminalId === 'string' && terminals.some(term => term.id === record.activeTerminalId)
+        ? record.activeTerminalId
+        : (terminals[0]?.id ?? null)
+
+    return { activeTerminalId: active, terminals }
+  } catch {
+    return fallback
+  }
+}
+
+// Persist synchronously on every change (the app-wide convention — see panes.ts
+// / layout.ts). Capturing history this way means a snapshot is already on disk
+// well before the renderer tears down, so app quit needs no unload hook.
+function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null | string) {
+  const terminals = list
+    .filter(term => term.kind === 'user')
+    .map(term => ({
+      auto: term.auto,
+      cwd: term.cwd,
+      id: term.id,
+      ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
+      title: term.title
+    }))
+
+  if (!terminals.length) {
+    writeKey(TERMINALS_STORAGE_KEY, null)
+
+    return
+  }
+
+  const active = terminals.some(term => term.id === activeTerminalId) ? activeTerminalId : (terminals[0]?.id ?? null)
+  writeKey(TERMINALS_STORAGE_KEY, JSON.stringify({ activeTerminalId: active, terminals }))
+}
+
+const restored = loadPersistedTerminals()
+
+export const $terminals = atom<readonly TerminalEntry[]>(
+  restored.terminals.map(term => ({ ...term, kind: 'user' as const }))
+)
+export const $activeTerminalId = atom<string | null>(restored.activeTerminalId)
+
+$terminals.subscribe(list => persistTerminals(list, $activeTerminalId.get()))
+$activeTerminalId.subscribe(active => persistTerminals($terminals.get(), active))
 
 export const $activeTerminal = computed(
   [$terminals, $activeTerminalId],
@@ -182,6 +295,18 @@ export function closeOtherTerminals(id: string): void {
     $terminals.set([keep])
     $activeTerminalId.set(keep.id)
   }
+}
+
+/** Record the latest serialized scrollback for a tab so it can be replayed on
+ *  the next launch. Oversized buffers are tail-trimmed to stay under the storage
+ *  budget; only user tabs ever carry one. */
+export function updateTerminalReviveBuffer(id: string, reviveBuffer: string): void {
+  const capped =
+    reviveBuffer.length > MAX_REVIVE_BUFFER_CHARS ? reviveBuffer.slice(-MAX_REVIVE_BUFFER_CHARS) : reviveBuffer
+
+  $terminals.set(
+    $terminals.get().map(term => (term.id === id && term.kind === 'user' ? { ...term, reviveBuffer: capped } : term))
+  )
 }
 
 export function renameTerminal(id: string, title: string): void {

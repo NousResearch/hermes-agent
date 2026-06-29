@@ -2162,6 +2162,117 @@ class TestAttachmentSSRFGuard:
         assert mime == "application/pdf"
 
     @pytest.mark.asyncio
+    async def test_bot_media_download_rejects_oversized_chunks(self, adapter, monkeypatch):
+        """media.download_media should validate each downloaded chunk before cache."""
+        attachment = {
+            "source": "DRIVE_FILE",
+            "contentType": "application/pdf",
+            "name": "spaces/S/messages/M/attachments/A",
+            "attachmentDataRef": {
+                "resourceName": "spaces/S/messages/M/attachments/A",
+            },
+        }
+        adapter._chat_api.media.return_value.download_media.return_value = object()
+        seen = {}
+
+        def _fake_validate(size, *, media_type="media", max_bytes=None):
+            seen.setdefault("sizes", []).append(size)
+            if size > 8:
+                raise ValueError("too large")
+
+        class _FakeDownloader:
+            def __init__(self, buf, _req, chunksize=None):
+                seen["chunksize"] = chunksize
+                self._buf = buf
+
+            def next_chunk(self):
+                self._buf.write(b"A" * 9)
+                return None, True
+
+        google_http = sys.modules["googleapiclient.http"]
+        monkeypatch.setattr(google_http, "MediaIoBaseDownload", _FakeDownloader, raising=False)
+        monkeypatch.setattr(_gc_mod, "validate_inbound_media_size", _fake_validate)
+
+        path, mime = await adapter._download_attachment(attachment)
+
+        assert path is None
+        assert mime == "application/pdf"
+        assert seen["chunksize"] == _gc_mod._ATTACHMENT_DOWNLOAD_CHUNK_BYTES
+        assert seen["sizes"] == [9]
+
+    @pytest.mark.asyncio
+    async def test_download_uri_uses_streaming_size_guard(self, adapter, monkeypatch):
+        """downloadUri fallback must stream and close instead of reading .content."""
+        attachment = {
+            "contentType": "image/png",
+            "downloadUri": "https://chat.googleapis.com/media/x",
+        }
+        seen = {}
+
+        def _fake_validate(size, *, media_type="media", max_bytes=None):
+            seen.setdefault("sizes", []).append(size)
+            if size > 8:
+                raise ValueError("too large")
+
+        class _FakeResponse:
+            headers = {}
+
+            def __init__(self):
+                self.closed = False
+                self.content_accessed = False
+
+            @property
+            def content(self):
+                self.content_accessed = True
+                raise AssertionError("downloadUri fallback should stream")
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size=1):
+                seen["chunk_size"] = chunk_size
+                yield b"A" * 9
+
+            def close(self):
+                self.closed = True
+
+        response = _FakeResponse()
+
+        class _FakeAuthorizedSession:
+            def __init__(self, _credentials):
+                pass
+
+            def get(self, url, **kwargs):
+                seen["url"] = url
+                seen["kwargs"] = kwargs
+                return response
+
+        google_root = types.ModuleType("google")
+        google_auth = types.ModuleType("google.auth")
+        google_auth_transport = types.ModuleType("google.auth.transport")
+        google_auth_requests = types.ModuleType("google.auth.transport.requests")
+        google_auth_requests.AuthorizedSession = _FakeAuthorizedSession
+        google_root.auth = google_auth
+        google_auth.transport = google_auth_transport
+        google_auth_transport.requests = google_auth_requests
+        monkeypatch.setitem(sys.modules, "google", google_root)
+        monkeypatch.setitem(sys.modules, "google.auth", google_auth)
+        monkeypatch.setitem(sys.modules, "google.auth.transport", google_auth_transport)
+        monkeypatch.setitem(sys.modules, "google.auth.transport.requests", google_auth_requests)
+        monkeypatch.setattr(_gc_mod, "validate_inbound_media_size", _fake_validate)
+
+        path, mime = await adapter._download_attachment(attachment)
+
+        assert path is None
+        assert mime == "image/png"
+        assert seen["url"] == "https://chat.googleapis.com/media/x"
+        assert seen["kwargs"]["stream"] is True
+        assert seen["chunk_size"] == _gc_mod._ATTACHMENT_DOWNLOAD_CHUNK_BYTES
+        assert seen["sizes"] == [9]
+        assert response.closed is True
+        assert response.content_accessed is False
+
+    @pytest.mark.asyncio
     async def test_rejects_non_google_host(self, adapter):
         attachment = {
             "contentType": "image/png",

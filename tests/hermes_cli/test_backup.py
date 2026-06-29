@@ -2056,7 +2056,8 @@ class TestRunPreUpdateBackup:
         assert "Saved:" in out
         assert "Restore:" in out
         assert "hermes import" in out
-        assert "Disable:" in out
+        assert "Disable:  omit --backup" in out
+        assert "backups are off by default" not in out
         # Actual backup was created
         backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
         assert len(backups) == 1
@@ -2103,6 +2104,9 @@ class TestRunPreUpdateBackup:
         out = capsys.readouterr().out
         assert "Creating pre-update backup" in out
         assert "Saved:" in out
+        assert "Disable:  set updates.pre_update_backup: false" in out
+        assert "omit --backup" not in out
+        assert "backups are off by default" not in out
         backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
         assert len(backups) == 1
 

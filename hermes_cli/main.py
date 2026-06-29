@@ -8712,8 +8712,11 @@ def _run_pre_update_backup(args) -> None:
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
     print(f"  Restore:  hermes import {out_path}")
-    print(f"  Disable:  omit --backup (backups are off by default)")
-    print(f"            set updates.pre_update_backup: false in config.yaml")
+    if enabled:
+        print("  Disable:  set updates.pre_update_backup: false in config.yaml")
+    else:
+        print("  Disable:  omit --backup")
+        print("            or set updates.pre_update_backup: false in config.yaml")
     print()
 
 

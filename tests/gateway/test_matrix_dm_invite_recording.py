@@ -31,6 +31,10 @@ def _make_adapter(tmp_path=None):
     adapter._text_batch_delay_seconds = 0
     adapter.handle_message = AsyncMock()
     adapter._startup_ts = time.time() - 10
+    # Authorize the inviter used throughout this module so the invite-auth
+    # gate in _on_invite (rejects auto-joins from non-allow-listed users)
+    # lets the join through and the DM-recording side effects are exercised.
+    adapter._allowed_user_ids = {"@alice:example.org"}
     return adapter
 
 

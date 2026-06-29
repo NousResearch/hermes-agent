@@ -78,10 +78,13 @@ def _kill_port_process(port: int) -> None:
     """Kill any process *listening* on the given TCP port (a stale bridge)."""
     try:
         if _IS_WINDOWS:
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=windows_hide_flags(),
             )
             for line in result.stdout.splitlines():
                 parts = line.split()
@@ -92,6 +95,7 @@ def _kill_port_process(port: int) -> None:
                             subprocess.run(
                                 ["taskkill", "/PID", parts[4], "/F"],
                                 capture_output=True, timeout=5,
+                                creationflags=windows_hide_flags(),
                             )
                         except subprocess.SubprocessError:
                             pass

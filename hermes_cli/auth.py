@@ -704,6 +704,22 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     return default_url
 
 
+def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
+    """Return the OpenAI-compatible LM Studio runtime base URL.
+
+    LM Studio's native management API lives under ``/api/v1`` while its
+    OpenAI-compatible chat endpoint lives under ``/v1``. Users often paste
+    either form into ``LM_BASE_URL`` or ``model.base_url``; normalize before
+    the OpenAI SDK appends ``/chat/completions``.
+    """
+    root = str(base_url or "").strip().rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
+    return (root or "http://127.0.0.1:1234") + "/v1"
+
+
 # =============================================================================
 # Error Types
 # =============================================================================
@@ -6340,6 +6356,9 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = env_url.rstrip("/")
     else:
         base_url = pconfig.inference_base_url
+
+    if provider_id == "lmstudio":
+        base_url = _normalize_lmstudio_runtime_base_url(base_url)
 
     return {
         "provider": provider_id,

@@ -236,7 +236,14 @@ class ToolRegistry:
         return self._snapshot_state()[1]
 
     def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
-        """Run a toolset check, treating missing or failing checks as unavailable/available."""
+        """Run a legacy toolset-level check.
+
+        Newer availability surfaces should prefer
+        :meth:`_evaluate_toolset_entries`, because a toolset may mix generally
+        available tools with optional helpers that have their own stricter
+        checks.  This helper remains for backward-compatible metadata that
+        still stores one representative check per toolset.
+        """
         if not check:
             return True
         try:
@@ -244,6 +251,31 @@ class ToolRegistry:
         except Exception:
             logger.debug("Toolset %s check raised; marking unavailable", toolset)
             return False
+
+    def _evaluate_entry_check(self, entry: ToolEntry) -> bool:
+        """Return whether a single tool entry is currently available."""
+        if not entry.check_fn:
+            return True
+        try:
+            return bool(entry.check_fn())
+        except Exception:
+            logger.debug("Tool %s check raised; marking unavailable", entry.name)
+            return False
+
+    def _evaluate_toolset_entries(self, toolset: str, entries: List[ToolEntry]) -> bool:
+        """Return whether any tool in *toolset* is available.
+
+        Toolset-level health is shown in coarse surfaces such as ``doctor`` and
+        startup banners.  A mixed toolset should stay available when its core
+        tools are usable even if optional helpers are not.  For example, the
+        ``terminal`` toolset contains normal ``terminal``/``process`` tools and
+        desktop-only ``read_terminal``/``close_terminal`` helpers; missing the
+        desktop helpers must not make the whole terminal toolset look broken.
+        """
+        toolset_entries = [entry for entry in entries if entry.toolset == toolset]
+        if not toolset_entries:
+            return False
+        return any(self._evaluate_entry_check(entry) for entry in toolset_entries)
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
         """Return a registered tool entry by name, or None."""
@@ -518,30 +550,27 @@ class ToolRegistry:
         Returns False (rather than crashing) when the check function raises
         an unexpected exception (e.g. network error, missing import, bad config).
         """
-        with self._lock:
-            check = self._toolset_checks.get(toolset)
-        return self._evaluate_toolset_check(toolset, check)
+        entries = self._snapshot_entries()
+        return self._evaluate_toolset_entries(toolset, entries)
 
     def check_toolset_requirements(self) -> Dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""
-        entries, toolset_checks = self._snapshot_state()
+        entries = self._snapshot_entries()
         toolsets = sorted({entry.toolset for entry in entries})
         return {
-            toolset: self._evaluate_toolset_check(toolset, toolset_checks.get(toolset))
+            toolset: self._evaluate_toolset_entries(toolset, entries)
             for toolset in toolsets
         }
 
     def get_available_toolsets(self) -> Dict[str, dict]:
         """Return toolset metadata for UI display."""
         toolsets: Dict[str, dict] = {}
-        entries, toolset_checks = self._snapshot_state()
+        entries = self._snapshot_entries()
         for entry in entries:
             ts = entry.toolset
             if ts not in toolsets:
                 toolsets[ts] = {
-                    "available": self._evaluate_toolset_check(
-                        ts, toolset_checks.get(ts)
-                    ),
+                    "available": self._evaluate_toolset_entries(ts, entries),
                     "tools": [],
                     "description": "",
                     "requirements": [],
@@ -579,13 +608,13 @@ class ToolRegistry:
         available = []
         unavailable = []
         seen = set()
-        entries, toolset_checks = self._snapshot_state()
+        entries = self._snapshot_entries()
         for entry in entries:
             ts = entry.toolset
             if ts in seen:
                 continue
             seen.add(ts)
-            if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
+            if self._evaluate_toolset_entries(ts, entries):
                 available.append(ts)
             else:
                 unavailable.append({

@@ -139,6 +139,57 @@ class TestToolsetAvailability:
         )
         assert reg.is_toolset_available("locked") is False
 
+    def test_mixed_toolset_available_when_any_tool_available(self):
+        """Optional helper tools must not make a mixed toolset look broken."""
+        reg = ToolRegistry()
+        reg.register(
+            name="desktop_only_helper",
+            toolset="terminal",
+            schema=_make_schema("desktop_only_helper"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        reg.register(
+            name="terminal",
+            toolset="terminal",
+            schema=_make_schema("terminal"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        reg.register(
+            name="process",
+            toolset="terminal",
+            schema=_make_schema("process"),
+            handler=_dummy_handler,
+        )
+
+        assert reg.is_toolset_available("terminal") is True
+        assert reg.check_toolset_requirements()["terminal"] is True
+        assert reg.get_available_toolsets()["terminal"]["available"] is True
+        available, unavailable = reg.check_tool_availability()
+        assert "terminal" in available
+        assert not any(item["name"] == "terminal" for item in unavailable)
+
+    def test_mixed_toolset_unavailable_when_all_tools_unavailable(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="a",
+            toolset="locked",
+            schema=_make_schema("a"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        reg.register(
+            name="b",
+            toolset="locked",
+            schema=_make_schema("b"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+
+        assert reg.is_toolset_available("locked") is False
+        assert reg.check_toolset_requirements()["locked"] is False
+
     def test_check_toolset_requirements(self):
         reg = ToolRegistry()
         reg.register(

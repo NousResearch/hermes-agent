@@ -433,6 +433,14 @@ export const hu: Translations = {
     replaceCurrentValue: "Jelenlegi érték cseréje ({preview})",
     showValue: "Tényleges érték megjelenítése",
     hideValue: "Érték elrejtése",
+    customTitle: "Egyéni kulcsok",
+    customHint: "A .env fájlban tárolt tetszőleges környezeti változók, amelyeket a Hermes nem ismer fel. Használd ezeket környezeti változók beillesztésére képességekhez, MCP-kiszolgálókhoz vagy saját eszközeidhez.",
+    customConfigured: "{count} egyéni kulcs beállítva",
+    addCustomKey: "Egyéni kulcs hozzáadása",
+    customKeyName: "Változó neve",
+    customKeyNamePlaceholder: "pl. MY_SERVICE_API_KEY",
+    add: "Hozzáadás",
+    invalidKeyName: "Csak betűket, számokat és aláhúzásokat használj (betűvel vagy aláhúzással kell kezdődnie).",
   },
 
   oauth: {

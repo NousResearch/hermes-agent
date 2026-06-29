@@ -175,6 +175,22 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
     assert "req_abc" not in sanitized
 
 
+def test_telegram_final_response_sanitizes_unexpected_status_401():
+    """'unexpected status 401 Unauthorized' envelopes must be sanitized.
+
+    Regression test for #55071: the gateway sanitizer previously leaked
+    raw auth envelopes like 'unexpected status 401 Unauthorized: Missing
+    bearer or basic authentication in header' to chat surfaces.
+    """
+    raw = "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "401" not in sanitized or "credentials" in sanitized.lower()
+    assert "unexpected status" not in sanitized
+    assert "Missing bearer" not in sanitized
+
+
 def test_telegram_final_response_redacts_auth_secrets():
     """Authentication errors should be useful without leaking key material."""
     raw = (

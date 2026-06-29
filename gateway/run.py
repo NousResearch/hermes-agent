@@ -135,7 +135,7 @@ _GATEWAY_PROVIDER_POLICY_RE = re.compile(
 )
 
 _GATEWAY_AUTH_ERROR_RE = re.compile(
-    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|unexpected\s+status\s+401\b|\b401\b)",
     re.IGNORECASE,
 )
 
@@ -380,6 +380,7 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|http\s*\d{3}\b"
     r"|incorrect\s+api\s+key"
     r"|invalid\s+api\s+key"
+    r"|unexpected\s+status\s+\d{3}\b"
     r")",
     re.IGNORECASE,
 )

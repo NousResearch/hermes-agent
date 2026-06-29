@@ -9514,6 +9514,16 @@ async def remove_credential_pool_entry(provider: str, index: int):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if removed is None:
         raise HTTPException(status_code=404, detail="No pool entry at that index")
+    # Suppress the source so _seed_from_env/_seed_from_singletons do not
+    # resurrect the entry on the next load_pool() call. The CLI auth remove
+    # command does this (auth_commands.py:475) but the dashboard endpoint
+    # was missing it — entries came back after refresh.
+    if removed.source:
+        try:
+            from hermes_cli.auth import suppress_credential_source
+            suppress_credential_source(provider, removed.source)
+        except Exception:
+            _log.warning("Could not suppress source %s for %s", removed.source, provider)
     return {"ok": True, "provider": provider, "count": len(pool.entries())}
 
 

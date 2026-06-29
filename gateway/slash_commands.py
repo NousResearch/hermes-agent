@@ -710,9 +710,19 @@ class GatewaySlashCommandsMixin:
         chat_type = (getattr(current, "chat_type", "") or "").lower()
         # DM-like chats are always per-user.
         if chat_type in {"dm", "direct", "private", ""}:
-            if origin.user_id and current.user_id:
-                return origin.user_id == current.user_id
-            return True
+            # chat_id was already required equal above and, when present, IS the
+            # DM session key — so an equal non-empty chat_id is sufficient.
+            # build_session_key only falls back to the participant id
+            # (``user_id_alt or user_id`` — Signal/Feishu key on user_id_alt)
+            # when there is NO chat_id; mirror that and fail closed on a
+            # missing/different participant so two no-chat_id DM origins are
+            # never conflated (was: compared user_id only and allowed when
+            # either side was missing).
+            if str(getattr(current, "chat_id", "") or ""):
+                return True
+            cur_pid = str(current.user_id_alt or current.user_id or "")
+            org_pid = str(origin.user_id_alt or origin.user_id or "")
+            return bool(cur_pid) and cur_pid == org_pid
         # Non-DM: scope by participant whenever the session key for this source
         # is per-user. is_shared_multi_user_session mirrors build_session_key's
         # isolation rules exactly, so the guard stays in lock-step with the key.
@@ -787,22 +797,37 @@ class GatewaySlashCommandsMixin:
             return False  # different platform / source
         caller_uid = str(getattr(source, "user_id", "") or "")
         row_uid = str(row.get("user_id") or "")
+        # Chat/thread origin recorded at session creation (see
+        # SessionDB._insert_session_row). The sessions table historically stored
+        # only source + user_id, so a same-user row could belong to a DIFFERENT
+        # chat; comparing the persisted origin closes that gap. Legacy rows
+        # created before origin capture have NULL here and therefore fail closed
+        # (they cannot prove the caller's chat) — resume them via a live session
+        # or an admin override.
+        caller_chat = str(getattr(source, "chat_id", "") or "")
+        row_chat = str(row.get("chat_id") or "")
+        caller_thread = str(getattr(source, "thread_id", "") or "")
+        row_thread = str(row.get("thread_id") or "")
         if caller_uid:
             # Identity-bearing caller: allow only when the row PROVES the same
-            # owner AND the same platform/origin. A row with no/blank user_id
-            # cannot be proven to belong to this caller; a row with no/blank
-            # source cannot be proven to share the caller's platform (the
-            # row_src check above only rejects a *mismatching* non-blank source,
-            # so a blank/legacy source would otherwise slip through on user_id
-            # equality alone). Either gap fails closed — an identified user must
-            # not bind to an unowned, other-owned, or unproven-origin persisted
-            # session by id/title. (Legacy NULL-owner or blank-source rows are
-            # intentionally not resumable this way; use a live session or an
-            # explicit admin override.)
+            # owner AND the same platform/origin AND the same chat/thread. A row
+            # with no/blank user_id cannot be proven to belong to this caller; a
+            # row with no/blank source cannot be proven to share the caller's
+            # platform (the row_src check above only rejects a *mismatching*
+            # non-blank source, so a blank/legacy source would otherwise slip
+            # through on user_id equality alone); and a row whose origin chat
+            # (or thread) differs from the caller's belongs to a different
+            # conversation. Any gap fails closed — an identified user must not
+            # bind to an unowned, other-owned, other-chat, or unproven-origin
+            # persisted session by id/title. (Legacy NULL-owner/blank-source/
+            # NULL-chat rows are intentionally not resumable this way; use a
+            # live session or an explicit admin override.)
             return (
                 bool(row_uid) and row_uid == caller_uid
                 and bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
+                and row_chat == caller_chat
+                and row_thread == caller_thread
             )
         # No caller identity: the persisted row carries only source + user_id
         # (the sessions table has no chat_id), so a same-platform row can belong
@@ -3238,6 +3263,12 @@ class GatewaySlashCommandsMixin:
                     session_id=session_id,
                     source=source.platform.value if source.platform else "unknown",
                     user_id=source.user_id,
+                    # Persist the messaging origin so a later /resume of this
+                    # titled-but-now-inactive session can prove it belongs to the
+                    # caller's chat/thread (IDOR scoping).
+                    chat_id=source.chat_id,
+                    chat_type=source.chat_type,
+                    thread_id=source.thread_id,
                 )
             except Exception:
                 pass  # Session might already exist, ignore errors

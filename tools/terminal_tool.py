@@ -1237,11 +1237,40 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+def _resolve_backend_type() -> str:
+    """Return the terminal backend type, bypassing env var propagation race.
+
+    ``TERMINAL_ENV`` is bridged from ``terminal.backend`` via
+    ``apply_terminal_config_to_env()``, but that bridging may not have
+    completed by the time the first tool call arrives — especially in
+    gateway/launchd-managed processes where env propagation is asynchronous.
+
+    When ``TERMINAL_ENV`` is explicitly set it is still authoritative
+    (child processes, operator overrides).  When it is missing, fall back
+    to reading ``terminal.backend`` directly from config.yaml so we never
+    silently downgrade to local on the first cold-start tool call (#54354).
+    """
+    env_val = os.getenv("TERMINAL_ENV")
+    if env_val:
+        return env_val
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        backend = cfg.get("terminal", {}).get("backend")
+        if isinstance(backend, str) and backend:
+            return backend
+    except Exception:
+        pass
+
+    return "local"
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    env_type = _resolve_backend_type()
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona"}

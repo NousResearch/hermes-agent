@@ -1,8 +1,8 @@
 ---
 name: parallel-extract
-description: "Use when bulk-fetching many public URLs into markdown for a RAG or agent KB via Parallel Extract API (JS pages, PDFs, >5 URLs, objective-focused excerpts or full_content)."
+description: "Bulk public URLs to markdown via Parallel Extract for RAG."
 version: 1.0.0
-author: Hermes Agent
+author: Nietzsche-Ubermensch, Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -35,7 +35,9 @@ Don't use for:
 ## Prerequisites
 
 ```bash
-pip install "parallel-web>=1.0.1"   # import: from parallel import Parallel
+# v1 Extract API needs parallel-web>=1.0.1 (install in a venv).
+# Hermes optional extra pins parallel-web==0.4.2 — upgrade only in that venv.
+pip install "parallel-web>=1.0.1"
 export PARALLEL_API_KEY="..."       # platform.parallel.ai — never commit keys
 ```
 

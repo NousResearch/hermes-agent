@@ -137,18 +137,6 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     return RedirectResponse(url=login_url, status_code=302)
 
 
-def _interactive_providers():
-    """Registered providers that can drive an interactive browser login.
-
-    A token-only credential (e.g. a drain/service provider) advertises
-    ``supports_session = False`` and is not an auto-SSO candidate.
-    """
-    return [
-        p for p in list_session_providers()
-        if getattr(p, "supports_session", True)
-    ]
-
-
 def _auto_sso_response(request: Request) -> Response | None:
     """Maybe auto-initiate the portal OAuth redirect on an unauth HTML load.
 
@@ -187,7 +175,9 @@ def _auto_sso_response(request: Request) -> Response | None:
         clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request))
         return resp
 
-    providers = _interactive_providers()
+    # list_session_providers() already filters on supports_session=True, so
+    # token-only credentials (drain/service providers) are never candidates.
+    providers = list_session_providers()
     if len(providers) != 1:
         # Zero → nothing to redirect to. Two+ → user must choose at /login.
         return None

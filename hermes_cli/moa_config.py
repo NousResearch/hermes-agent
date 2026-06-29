@@ -87,7 +87,12 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
     aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
 
-    return {
+    # MoA v2: pass-through fields. The runtime in agent/moa_loop.py reads
+    # these — they let preset authors give each reference model an explicit
+    # role (e.g. Scientist / Engineer / Critic via reference_system_hints),
+    # cap per-reference output (per_reference_max_tokens), and opt out of
+    # the visible per-reference blocks (show_reference_outputs = False).
+    out: dict[str, Any] = {
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
         "aggregator": aggregator,
@@ -95,6 +100,33 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
         "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
     }
+
+    # reference_system_hints: dict["nvidia<provider>:<model>"] -> str role text.
+    hints = raw.get("reference_system_hints")
+    if isinstance(hints, dict) and hints:
+        cleaned: dict[str, str] = {}
+        for key, value in hints.items():
+            ks = str(key or "").strip()
+            vs = str(value or "").strip()
+            if ks and vs:
+                cleaned[ks] = vs
+        if cleaned:
+            out["reference_system_hints"] = cleaned
+
+    # show_reference_outputs: bool. Default True preserves the legacy visible
+    # reference-block behaviour; only an explicit False silences them. Absent
+    # field is NOT written to the normalised preset — the runtime defaults to
+    # True on its own — so legacy preset dicts stay byte-identical.
+    if raw.get("show_reference_outputs") is False:
+        out["show_reference_outputs"] = False
+
+    # per_reference_max_tokens: int or None (None means "use preset max_tokens").
+    if raw.get("per_reference_max_tokens") is not None:
+        out["per_reference_max_tokens"] = _coerce_int(
+            raw.get("per_reference_max_tokens"), 4096
+        )
+
+    return out
 
 
 def normalize_moa_config(raw: Any) -> dict[str, Any]:

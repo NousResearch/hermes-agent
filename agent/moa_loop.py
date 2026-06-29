@@ -163,6 +163,8 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    reference_system_hints: dict[str, str] | None = None,
+    per_reference_max_tokens: int | None = None,
 ) -> list[tuple[str, str]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -171,10 +173,22 @@ def _run_references_parallel(
     the aggregator. Output order matches ``reference_models`` so the
     ``Reference {idx}`` labelling stays stable. MoA presets that reference
     another MoA preset are skipped here (recursion guard) with a labelled note.
+
+    MoA v2: when *reference_system_hints* is given, each slot whose key
+    matches ``"provider:model"`` (or the bare model name as a fallback) gets
+    its own prepended system message so the reference receives a directional
+    role prompt (Scientist, Engineer, Critic, ...) instead of a blank context.
+    *per_reference_max_tokens*, when set, overrides the global *max_tokens*
+    for each reference call (used for cheap adversarial judges that don't need
+    long output).
     """
     if not reference_models:
         return []
 
+    hints = reference_system_hints or {}
+    slot_max_per_ref = (
+        per_reference_max_tokens if per_reference_max_tokens is not None else max_tokens
+    )
     results: list[tuple[str, str] | None] = [None] * len(reference_models)
     futures = {}
     workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
@@ -186,13 +200,22 @@ def _run_references_parallel(
                     "[skipped: MoA presets cannot recursively reference MoA]",
                 )
                 continue
+            label = _slot_label(slot)
+            # Match by exact "provider:model" first, then bare model name as a
+            # fallback so preset authors don't have to remember vendor prefixes.
+            hint = hints.get(label) or hints.get(slot.get("model", ""))
+            slot_messages = (
+                _reference_messages(ref_messages, system_hint=hint)
+                if hint
+                else ref_messages
+            )
             futures[
                 executor.submit(
                     _run_reference,
                     slot,
-                    ref_messages,
+                    slot_messages,
                     temperature=temperature,
-                    max_tokens=max_tokens,
+                    max_tokens=slot_max_per_ref,
                 )
             ] = idx
         # Collect every reference before returning — the aggregator needs the
@@ -244,7 +267,10 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
-def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _reference_messages(
+    messages: list[dict[str, Any]],
+    system_hint: str | None = None,
+) -> list[dict[str, Any]]:
     """Build an advisory view of the conversation for reference models.
 
     A reference gives an INFORMED judgement on the current state, so it must
@@ -274,6 +300,14 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     The acting aggregator always receives the full, untrimmed transcript; this
     function only shapes the disposable advisory copy.
+
+    MoA v2: when ``system_hint`` is provided, a short synthetic system turn is
+    prepended to the rendered advisory view so each reference can receive a
+    directional role prompt (e.g. "You are the Architect. Focus on rigor.")
+    without the full Hermes system prompt or tool schemas. The hint is
+    intentionally lightweight — references treat it as advisory, anchoring
+    behaviour more than binding it. Passing the hint per-slot lets one
+    reference play "Scientist" while another plays "Critic" in the same run.
     """
     advisory_instruction = (
         "[The conversation above is the current state of the task. Give your "
@@ -332,11 +366,33 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not rendered:
         # Degenerate case: nothing rendered. Fall back to the latest user turn.
         if last_user_content is not None:
-            return [{"role": "user", "content": last_user_content}]
-        for msg in reversed(messages):
-            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                return [{"role": "user", "content": msg["content"]}]
-    return rendered
+            fallback = [{"role": "user", "content": last_user_content}]
+        else:
+            fallback = []
+            for msg in reversed(messages):
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                    fallback = [{"role": "user", "content": msg["content"]}]
+                    break
+    else:
+        fallback = rendered
+    return _apply_role_hint(fallback, system_hint)
+
+
+def _apply_role_hint(
+    rendered: list[dict[str, Any]],
+    system_hint: str | None,
+) -> list[dict[str, Any]]:
+    """Prepend a synthetic system turn when a role hint is provided.
+
+    MoA v2 lets preset authors give each reference model a directional role
+    (Scientist, Engineer, Critic, ...) via ``reference_system_hints``. The hint
+    is dropped into the FIRST message of the rendered advisory view so the
+    model sees it before any user/assistant content. When ``system_hint`` is
+    None or empty, the rendered view passes through unchanged.
+    """
+    if not system_hint or not rendered:
+        return rendered
+    return [{"role": "system", "content": system_hint}] + rendered
 
 
 
@@ -480,6 +536,16 @@ class MoAChatCompletions:
         temperature = float(preset.get("reference_temperature", 0.6) or 0.6)
         aggregator_temperature = float(preset.get("aggregator_temperature", api_kwargs.get("temperature") or 0.4) or 0.4)
 
+        # MoA v2 (opt-in): per-slot role hints, per-reference token cap, and
+        # the show_reference_outputs toggle. Missing keys fall back to legacy
+        # behaviour so old presets keep working unchanged.
+        reference_system_hints = preset.get("reference_system_hints") or {}
+        per_reference_max_tokens = preset.get("per_reference_max_tokens")
+        # show_reference_outputs defaults to True (legacy) so old presets
+        # keep their visible reference blocks. Only an explicit False
+        # silences them; the normalizer only writes the key when set to False.
+        show_reference_outputs = preset.get("show_reference_outputs", True) is not False
+
         # When the preset is disabled, skip the reference fan-out and let the
         # configured aggregator act alone — it is the preset's acting model, so
         # a disabled MoA preset is simply "use the aggregator directly."
@@ -509,6 +575,8 @@ class MoAChatCompletions:
                 ref_messages,
                 temperature=temperature,
                 max_tokens=None,
+                reference_system_hints=reference_system_hints,
+                per_reference_max_tokens=per_reference_max_tokens,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -519,21 +587,25 @@ class MoAChatCompletions:
             # reference (rendered like a thinking block) so the MoA process is
             # visible rather than a silent pause. Best-effort: never blocks the
             # turn.
-            _ref_count = len(reference_outputs)
-            for _idx, (_label, _text) in enumerate(reference_outputs, start=1):
-                self._emit(
-                    "moa.reference",
-                    index=_idx,
-                    count=_ref_count,
-                    label=_label,
-                    text=_text,
-                )
-            if _ref_count:
-                self._emit(
-                    "moa.aggregating",
-                    aggregator=_slot_label(aggregator),
-                    ref_count=_ref_count,
-                )
+            #
+            # MoA v2: gated on show_reference_outputs. Default True preserves
+            # legacy behaviour. Opt-out only — explicit False in the preset.
+            if show_reference_outputs:
+                _ref_count = len(reference_outputs)
+                for _idx, (_label, _text) in enumerate(reference_outputs, start=1):
+                    self._emit(
+                        "moa.reference",
+                        index=_idx,
+                        count=_ref_count,
+                        label=_label,
+                        text=_text,
+                    )
+                if _ref_count:
+                    self._emit(
+                        "moa.aggregating",
+                        aggregator=_slot_label(aggregator),
+                        ref_count=_ref_count,
+                    )
 
         agg_messages = [dict(m) for m in messages]
         if reference_outputs:

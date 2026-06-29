@@ -4358,6 +4358,24 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_auto_thread_channels(self) -> set:
+        """Return free-response channel IDs that should still auto-thread.
+
+        A single ``"*"`` entry forces auto-threading for every eligible server
+        channel, while ``discord.no_thread_channels`` remains a hard opt-out.
+        This lets deployments combine mention-free top-level posts with
+        per-conversation thread isolation for selected channels.
+        """
+        raw = self.config.extra.get("auto_thread_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_AUTO_THREAD_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -5315,6 +5333,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
+        #   discord.auto_thread_channels: Free-response channel IDs that still auto-thread; '*' matches all eligible channels
 
         thread_id = None
         parent_channel_id = None
@@ -5402,14 +5421,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
+        # auto_thread_channels: free-response channels that should still start threads.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            force_thread_channels_raw = os.getenv("DISCORD_FORCE_AUTO_THREAD_CHANNELS", "")
-            force_thread_channels = {ch.strip() for ch in force_thread_channels_raw.split(",") if ch.strip()}
-            force_thread = "*" in force_thread_channels or bool(channel_ids & force_thread_channels)
-            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not force_thread)
+            auto_thread_channels = self._discord_auto_thread_channels()
+            force_auto_thread = "*" in auto_thread_channels or bool(channel_ids & auto_thread_channels)
+            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not force_auto_thread)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -7160,9 +7179,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
     ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
-    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
-    ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
-    ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
+    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_AUTO_THREAD_CHANNELS``,
+    ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
+    ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
+    ``DISCORD_THREAD_REQUIRE_MENTION``).
+
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
     env-driven model and merely owns the YAML→env translation here, next to
@@ -7200,6 +7221,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    atc = discord_cfg.get("auto_thread_channels")
+    if atc is not None and not os.getenv("DISCORD_AUTO_THREAD_CHANNELS"):
+        if isinstance(atc, list):
+            atc = ",".join(str(v) for v in atc)
+        os.environ["DISCORD_AUTO_THREAD_CHANNELS"] = str(atc)
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     # ignored_channels: channels where bot never responds (even when mentioned)

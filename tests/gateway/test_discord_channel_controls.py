@@ -282,11 +282,11 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_force_auto_thread_channel_overrides_free_response(adapter, monkeypatch):
-    """Configured force-auto-thread channels still thread even when ambient/free-response."""
+async def test_auto_thread_channel_overrides_free_response(adapter, monkeypatch):
+    """Configured auto-thread channels still thread even when ambient/free-response."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "777")
-    monkeypatch.setenv("DISCORD_FORCE_AUTO_THREAD_CHANNELS", "777")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_CHANNELS", "777")
     monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
 
@@ -305,11 +305,11 @@ async def test_force_auto_thread_channel_overrides_free_response(adapter, monkey
 
 
 @pytest.mark.asyncio
-async def test_force_auto_thread_does_not_override_no_thread_channel(adapter, monkeypatch):
+async def test_auto_thread_channels_do_not_override_no_thread_channel(adapter, monkeypatch):
     """Explicit no_thread_channels remains the stronger opt-out."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "777")
-    monkeypatch.setenv("DISCORD_FORCE_AUTO_THREAD_CHANNELS", "777")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_CHANNELS", "777")
     monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "777")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
 
@@ -365,6 +365,25 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_auto_thread_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.auto_thread_channels to env var."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "auto_thread_channels": ["444", "555"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_AUTO_THREAD_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_AUTO_THREAD_CHANNELS") == "444,555"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

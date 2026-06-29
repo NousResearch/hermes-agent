@@ -1396,6 +1396,73 @@ def run_doctor(args):
                 else:
                     issues.append(f"Missing {_cmd_link_display}/hermes symlink — run 'hermes doctor --fix'")
 
+    else:
+        _section("Command Installation (Windows)")
+        # On Windows, uv pip install can create uv-trampoline entry points (.exe
+        # files) that hardcode the path to uv-managed Python. If that Python is
+        # moved or deleted, every `hermes` command fails with "uv trampoline
+        # failed to spawn Python child process". Pip-generated setuptools C
+        # launchers reference the venv's own python.exe (self-contained) and
+        # avoid this failure mode.
+        _scripts_dir = PROJECT_ROOT / "venv" / "Scripts"
+        _hermes_exe = _scripts_dir / "hermes.exe"
+        if _hermes_exe.exists():
+            try:
+                _result = subprocess.run(
+                    [str(_hermes_exe), "--version"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if _result.returncode == 0:
+                    _ver = _result.stdout.strip()
+                    check_ok(f"Entry point works ({_ver})")
+                else:
+                    check_warn(
+                        "Entry point smoke test failed",
+                        f"(exit {_result.returncode}: {_result.stderr[:120]})"
+                    )
+                    if should_fix:
+                        _python_exe = _scripts_dir / "python.exe"
+                        if _python_exe.exists():
+                            check_info("Regenerating entry points with self-contained launchers...")
+                            _fix_result = subprocess.run(
+                                [str(_python_exe), "-m", "pip", "install",
+                                 "--no-build-isolation", "--no-deps",
+                                 "--force-reinstall", "-e", str(PROJECT_ROOT)],
+                                capture_output=True, text=True, timeout=120,
+                            )
+                            if _fix_result.returncode == 0:
+                                check_ok("Entry points regenerated via pip")
+                                fixed_count += 1
+                            else:
+                                check_warn(
+                                    "pip regeneration failed",
+                                    _fix_result.stderr[:200]
+                                )
+                                manual_issues.append(
+                                    f"Run: {_python_exe} -m pip install "
+                                    f"--no-build-isolation --no-deps "
+                                    f"--force-reinstall -e \"{PROJECT_ROOT}\""
+                                )
+                    else:
+                        issues.append(
+                            "Entry point smoke test failed — run 'hermes doctor --fix'"
+                        )
+            except FileNotFoundError:
+                check_warn(
+                    "Entry point not found",
+                    f"(expected at {_hermes_exe})"
+                )
+            except subprocess.TimeoutExpired:
+                check_warn(
+                    "Entry point smoke test timed out",
+                    "(entry point may be hanging)"
+                )
+        else:
+            check_warn(
+                "Entry point not found: hermes.exe",
+                "(reinstall Hermes or run the PowerShell installer again)"
+            )
+
     _section("External Tools")
     # Git
     if _safe_which("git"):

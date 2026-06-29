@@ -232,3 +232,20 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+def test_tool_trace_banner_stripped_from_chat():
+    """Internal tool-trace lines like ⚠️ 🛠️ `tool (agent)` failed must be
+    stripped from chat delivery. Regression test for #54957.
+    """
+    raw = "Done.\n⚠️ 🛠️ `search repos (agent)` failed"
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+    assert sanitized == "Done."
+    assert "failed" not in sanitized
+
+
+def test_tool_trace_banner_kept_on_raw_surface():
+    """Programmatic surfaces (local, api_server) should keep raw trace text."""
+    raw = "Done.\n⚠️ 🛠️ `search repos (agent)` failed"
+    result = _sanitize_gateway_final_response("local", raw)
+    assert "failed" in result

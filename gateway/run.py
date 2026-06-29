@@ -69,6 +69,14 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+# Internal tool-trace banner lines that should be stripped from chat delivery.
+# Matches lines like: ⚠️ 🛠️ `search repos (agent)` failed
+# These are diagnostic scaffolding, not user-facing content.
+_TOOL_TRACE_BANNER_RE = re.compile(
+    r"^[ \t]*(?:⚠️?\s*)?(?:🛠️?\s*)?`[^`]+`\s+failed\s*$",
+    re.MULTILINE,
+)
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -426,6 +434,8 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
+    # Strip internal tool-trace banner lines (e.g. ⚠️ 🛠️ `tool (agent)` failed)
+    redacted = _TOOL_TRACE_BANNER_RE.sub("", redacted).strip()
     return redacted
 
 

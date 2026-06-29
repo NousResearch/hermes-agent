@@ -114,7 +114,7 @@ class CloudTempleImageGenProvider(ImageGenProvider):
                 "display": "z-image-turbo",
                 "speed": "~5s",
                 "strengths": "Fast text-to-image generation",
-                "price": "free",
+                "price": "requires Cloud Temple API key",
             }
         ]
 
@@ -124,7 +124,7 @@ class CloudTempleImageGenProvider(ImageGenProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Cloud Temple",
-            "badge": "free",
+            "badge": "paid",
             "tag": "z-image-turbo fast text-to-image via OpenAI-compatible API",
             "env_vars": [
                 {

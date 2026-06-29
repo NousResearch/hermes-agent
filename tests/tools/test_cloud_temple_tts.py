@@ -33,3 +33,11 @@ def test_provider_config_lang_code_wins():
 
     assert mod._configured_lang_code({"cloud-temple": {"language": "fr"}}) == "f"
     assert mod._configured_lang_code({"lang_code": "en"}) == "a"
+
+def test_setup_schema_marks_cloud_temple_as_paid():
+    mod = _load_module()
+
+    schema = mod.CloudTempleTTSProvider().get_setup_schema()
+
+    assert schema["badge"] == "paid"
+    assert schema["env_vars"][0]["key"] == "CLOUD_TEMPLE_API_KEY"

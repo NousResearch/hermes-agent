@@ -192,7 +192,7 @@ class CloudTempleTTSProvider(TTSProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Cloud Temple",
-            "badge": "free",
+            "badge": "paid",
             "tag": "Kokoro multilingual TTS via OpenAI-compatible API",
             "env_vars": [
                 {

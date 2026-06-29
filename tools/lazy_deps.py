@@ -135,7 +135,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "image.fal": ("fal-client==0.13.1",),
 
     # ─── Memory providers ──────────────────────────────────────────────────
-    "memory.honcho": ("honcho-ai==2.0.1",),
+    "memory.honcho": ("honcho-ai==2.1.2",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
     # supermemory + mem0 are opt-in cloud memory providers with their own
     # SDKs. On the published Docker image the agent venv is sealed

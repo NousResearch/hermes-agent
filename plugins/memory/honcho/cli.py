@@ -510,15 +510,15 @@ def _ensure_sdk_installed() -> bool:
         pass
 
     print("  honcho-ai is not installed.")
-    answer = _prompt("Install it now? (honcho-ai>=2.0.1)", default="y")
+    answer = _prompt("Install it now? (honcho-ai>=2.1.2)", default="y")
     if answer.lower() not in {"y", "yes"}:
-        print("  Skipping install. Run: pip install 'honcho-ai>=2.0.1'\n")
+        print("  Skipping install. Run: pip install 'honcho-ai>=2.1.2'\n")
         return False
 
     import subprocess
     print("  Installing honcho-ai...", flush=True)
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "honcho-ai>=2.0.1"],
+        [sys.executable, "-m", "pip", "install", "honcho-ai>=2.1.2"],
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
@@ -528,7 +528,7 @@ def _ensure_sdk_installed() -> bool:
         return True
     else:
         print(f"  Install failed:\n{result.stderr.strip()}")
-        print("  Run manually: pip install 'honcho-ai>=2.0.1'\n")
+        print("  Run manually: pip install 'honcho-ai>=2.1.2'\n")
         return False
 
 

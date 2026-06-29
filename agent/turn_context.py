@@ -442,6 +442,7 @@ def build_turn_context(
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
+    agent._turn_tool_failures = []
     agent._verification_stop_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope

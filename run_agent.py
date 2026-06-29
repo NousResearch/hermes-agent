@@ -2621,6 +2621,24 @@ class AIAgent:
             for path in targets:
                 state.pop(path, None)
 
+    def _record_tool_failure(self, tool_name: str, result: Any) -> None:
+        """Record a generic tool failure for the turn-end verifier footer.
+
+        Unlike ``_record_file_mutation_result`` which tracks per-path state
+        for write_file/patch tools, this captures ANY tool that failed this
+        turn.  The aggregated list drives the tool-verifier footer appended
+        in ``finalize_turn``, a generalised version of the file-mutation
+        verifier pattern (#54722).
+        """
+        state = getattr(self, "_turn_tool_failures", None)
+        if state is None:
+            return
+        preview = _extract_error_preview(result)
+        state.append({
+            "tool": tool_name,
+            "error_preview": preview,
+        })
+
     def _file_mutation_verifier_enabled(self) -> bool:
         """Check whether the per-turn file-mutation verifier footer is on.
 
@@ -2644,6 +2662,31 @@ class AIAgent:
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
                 return bool(_display.get("file_mutation_verifier"))
+        except Exception:
+            pass
+        return True  # safe default: verifier on
+
+    def _tool_failure_verifier_enabled(self) -> bool:
+        """Check whether the per-turn tool-failure verifier footer is on.
+
+        Config path: ``display.tool_failure_verifier`` (bool, default True).
+        ``HERMES_TOOL_FAILURE_VERIFIER`` env var overrides config.  Exposed
+        as a method so tests can patch the seam independently of the
+        file-mutation verifier.
+        """
+        try:
+            import os as _os
+            env = _os.environ.get("HERMES_TOOL_FAILURE_VERIFIER")
+            if env is not None:
+                return env.strip().lower() not in {"0", "false", "no", "off"}
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "tool_failure_verifier" in _display:
+                return bool(_display.get("tool_failure_verifier"))
         except Exception:
             pass
         return True  # safe default: verifier on
@@ -2716,6 +2759,41 @@ class AIAgent:
         # Neutralize any path the preview text echoed (the bullet path is
         # already backticked above; the lookbehind keeps it from being
         # double-wrapped).
+        return cls._neutralize_footer_paths("\n".join(lines))
+
+    @classmethod
+    def _format_tool_failure_footer(cls, failures: list) -> str:
+        """Render the per-turn tool-failure list as a user-facing footer.
+
+        Displays up to 5 unique tool names with their first error preview,
+        then a count of any additional failures.  Returns empty string when
+        the list is empty so callers can concatenate unconditionally.
+
+        Every file path that reaches the user-facing text is backtick-wrapped
+        via ``_neutralize_footer_paths``, mirroring the file-mutation verifier
+        (#35584).
+        """
+        if not failures:
+            return ""
+        lines = [
+            "⚠️ Tool-verifier: "
+            f"{len(failures)} tool call(s) returned errors this turn — "
+            "double-check claims above against the actual results."
+        ]
+        shown = 0
+        for f in failures:
+            if shown >= 5:
+                break
+            tool = f.get("tool", "?")
+            preview = (f.get("error_preview") or "").strip()
+            if preview:
+                lines.append(f"  • {tool} — {preview}")
+            else:
+                lines.append(f"  • {tool} — failed")
+            shown += 1
+        remaining = len(failures) - shown
+        if remaining > 0:
+            lines.append(f"  • … and {remaining} more")
         return cls._neutralize_footer_paths("\n".join(lines))
 
     def _turn_completion_explainer_enabled(self) -> bool:

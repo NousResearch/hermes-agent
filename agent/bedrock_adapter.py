@@ -1296,7 +1296,18 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
+    # Anthropic Claude 4-7 / 4-8 generation — 1M context, matching the
+    # native Anthropic table in agent/model_metadata.py (claude-opus-4-8 etc.).
+    # Without explicit keys here these newer slugs collide on the shorter
+    # "anthropic.claude-opus-4" substring below and silently under-report at
+    # 200K. Longest-key-first matching in get_bedrock_context_length() ensures
+    # these win over the generic claude-4 entries.
+    "anthropic.claude-opus-4-8":     1_000_000,
+    "anthropic.claude-opus-4-7":     1_000_000,
+    "anthropic.claude-sonnet-4-8":   1_000_000,
+    "anthropic.claude-sonnet-4-7":   1_000_000,
+    "anthropic.claude-haiku-4-7":    1_000_000,
+    # Anthropic Claude 4-6 and earlier on Bedrock (200K window)
     "anthropic.claude-opus-4-6":     200_000,
     "anthropic.claude-sonnet-4-6":   200_000,
     "anthropic.claude-sonnet-4-5":   200_000,

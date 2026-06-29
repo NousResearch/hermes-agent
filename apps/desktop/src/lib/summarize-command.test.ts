@@ -57,6 +57,10 @@ describe('summarizeShellCommand', () => {
     expect(summarizeShellCommand('cd /x && tsc --noEmit 2>&1 | tail -20')).toBe('tsc --noEmit')
   })
 
+  it('strips a pipe tail from a single bare command (no leading cd)', () => {
+    expect(summarizeShellCommand('tsc --noEmit 2>&1 | tail -20')).toBe('tsc --noEmit')
+  })
+
   it('drops a leading echo banner around a single command', () => {
     expect(
       summarizeShellCommand(

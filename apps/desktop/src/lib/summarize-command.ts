@@ -195,7 +195,7 @@ export function summarizeShellCommand(raw: string): string {
   const segments = splitCompoundCommand(original)
 
   if (segments.length <= 1) {
-    return cleanSegment(original) || original
+    return (segments.length === 1 ? cleanSegment(segments[0]!) : '') || original
   }
 
   const core = segments.map(cleanSegment).filter(segment => {

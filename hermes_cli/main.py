@@ -13081,7 +13081,8 @@ def main():
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        aliases=["session"],
+        help="Manage session history (list, rename, export, prune, delete, wipe)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13108,6 +13109,33 @@ def main():
     )
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     sessions_delete.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation"
+    )
+
+    sessions_wipe = sessions_subparsers.add_parser(
+        "wipe",
+        help="Wipe one session by platform+chat (clears a contaminated chat)",
+        description=(
+            "Delete a single session's messages + row and drop it from the "
+            "gateway session index, so the next inbound on that chat starts "
+            "fresh. Target it by --platform + --chat (e.g. the chat key from "
+            "the gateway log) or by an explicit session id. Other sessions are "
+            "untouched."
+        ),
+    )
+    sessions_wipe.add_argument(
+        "session_id",
+        nargs="?",
+        help="Explicit session id to wipe (alternative to --platform/--chat)",
+    )
+    sessions_wipe.add_argument(
+        "--platform", help="Platform to match (e.g. photon, telegram, discord)"
+    )
+    sessions_wipe.add_argument(
+        "--chat",
+        help="Chat key to match (chat_id / user_id; 'any;-;+1...' or bare '+1...')",
+    )
+    sessions_wipe.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
 
@@ -13312,6 +13340,118 @@ def main():
                 print(f"Deleted session '{resolved_session_id}'.")
             else:
                 print(f"Session '{args.session_id}' not found.")
+
+        elif action == "wipe":
+            sessions_dir = get_hermes_home() / "sessions"
+            index_path = sessions_dir / "sessions.json"
+            explicit_sid = (getattr(args, "session_id", None) or "").strip()
+            platform = (getattr(args, "platform", None) or "").strip()
+            chat = (getattr(args, "chat", None) or "").strip()
+
+            # The gateway's session index (session_key -> entry) is the
+            # canonical map from a platform+chat to a concrete session_id.
+            index = {}
+            if index_path.exists():
+                try:
+                    index = _json.loads(index_path.read_text(encoding="utf-8"))
+                except Exception as e:
+                    print(f"Warning: could not read session index {index_path}: {e}")
+                    index = {}
+
+            def _norm_chat(s):
+                s = (s or "").strip()
+                # iMessage DM GUIDs look like 'any;-;+1555...'; also match the
+                # bare identifier so '+1555...' or '1555...' resolve the same.
+                if s.startswith("any;-;"):
+                    s = s[len("any;-;"):]
+                return s.lstrip("+").lower()
+
+            # targets: list of (session_key_or_None, session_id)
+            targets = []
+            if explicit_sid:
+                resolved = db.resolve_session_id(explicit_sid)
+                if not resolved:
+                    print(f"Session '{explicit_sid}' not found.")
+                    return
+                key = next(
+                    (k for k, v in index.items()
+                     if v.get("session_id") == resolved),
+                    None,
+                )
+                targets.append((key, resolved))
+            else:
+                if not platform or not chat:
+                    print(
+                        "Provide a session id, or both --platform and --chat. "
+                        "Example: hermes session wipe --platform photon "
+                        "--chat '+15551234567'"
+                    )
+                    return
+                want = _norm_chat(chat)
+                for k, v in index.items():
+                    if (v.get("platform") or "").lower() != platform.lower():
+                        continue
+                    origin = v.get("origin") or {}
+                    candidates = {
+                        _norm_chat(origin.get("chat_id") or ""),
+                        _norm_chat(origin.get("user_id") or ""),
+                        _norm_chat(v.get("display_name") or ""),
+                    }
+                    if want and want in candidates:
+                        sid = v.get("session_id")
+                        if sid:
+                            targets.append((k, sid))
+                if not targets:
+                    print(f"No {platform} session found for chat '{chat}'.")
+                    print(f"(Looked in {index_path}.)")
+                    return
+
+            if not getattr(args, "yes", False):
+                desc = ", ".join(sid for _, sid in targets)
+                if not _confirm_prompt(
+                    f"Wipe {len(targets)} session(s) [{desc}] and all their "
+                    f"messages? [y/N] "
+                ):
+                    print("Cancelled.")
+                    return
+
+            wiped = 0
+            changed_index = False
+            for key, sid in targets:
+                if db.delete_session(sid, sessions_dir=sessions_dir):
+                    wiped += 1
+                if key and key in index:
+                    del index[key]
+                    changed_index = True
+                print(
+                    f"Wiped session '{sid}'"
+                    + (f" (key {key})" if key else "")
+                )
+
+            if changed_index:
+                # Atomic rewrite of the gateway session index so the wiped
+                # key is gone and the next inbound creates a fresh session.
+                try:
+                    import tempfile as _tempfile
+
+                    fd, tmp = _tempfile.mkstemp(
+                        dir=str(sessions_dir), prefix=".sessions_", suffix=".tmp"
+                    )
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        _json.dump(index, f, indent=2)
+                    os.replace(tmp, index_path)
+                except Exception as e:
+                    print(
+                        f"Warning: wiped DB rows but could not update index "
+                        f"{index_path}: {e}"
+                    )
+
+            print(f"Done. Wiped {wiped} session(s).")
+            print(
+                "If the gateway is running, restart it so it reloads the "
+                "cleared index (otherwise it keeps the old key in memory and "
+                "may rewrite it — the deleted history is already gone either way)."
+            )
 
         elif action == "prune":
             days = args.older_than

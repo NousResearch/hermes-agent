@@ -1032,6 +1032,15 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                # stateless_inbound: when true, every inbound message on this
+                # platform starts a FRESH session (no prior history loaded) so a
+                # strict router contract isn't fought by accumulated context.
+                # Bridged here so ``platforms.<p>.stateless_inbound: true`` (or a
+                # top-level ``<p>:`` block / ``gateway.platforms.<p>``) lands in
+                # ``extra`` like the other shared keys. Default off. See
+                # GatewayRunner._inbound_is_stateless.
+                if "stateless_inbound" in platform_cfg:
+                    bridged["stateless_inbound"] = platform_cfg["stateless_inbound"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

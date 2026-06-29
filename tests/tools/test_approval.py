@@ -12,6 +12,7 @@ import tools.approval as approval_module
 from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
+    _normalize_approval_mode,
     _smart_approve,
     approve_session,
     detect_dangerous_command,
@@ -29,6 +30,27 @@ class TestApprovalModeParsing:
     def test_string_off_still_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
             assert _get_approval_mode() == "off"
+
+    def test_valid_modes_pass_through(self):
+        assert _normalize_approval_mode("manual") == "manual"
+        assert _normalize_approval_mode("smart") == "smart"
+        assert _normalize_approval_mode("off") == "off"
+
+    def test_valid_mode_is_case_insensitive_and_trimmed(self):
+        assert _normalize_approval_mode("  SMART  ") == "smart"
+
+    def test_unknown_mode_defaults_to_manual_with_warning(self):
+        with mock_patch.object(approval_module.logger, "warning") as warn:
+            assert _normalize_approval_mode("auto") == "manual"
+            warn.assert_called_once()
+
+    def test_empty_string_defaults_to_manual_without_warning(self):
+        with mock_patch.object(approval_module.logger, "warning") as warn:
+            assert _normalize_approval_mode("") == "manual"
+            warn.assert_not_called()
+
+    def test_yaml_bool_true_maps_to_manual(self):
+        assert _normalize_approval_mode(True) == "manual"
 
 
 class TestSmartApproval:

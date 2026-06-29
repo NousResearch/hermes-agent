@@ -38,19 +38,40 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   requireHiddenChildOptions(source, /hermesProcess = spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /spawn\(\s*py,\s*\['-m', 'hermes_cli\.main', 'uninstall', '--gui-summary'\]/)
 
-  assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, dashboardArgs\)/)
-  assert.match(source, /existing Hermes no-console Python at/)
-  assert.match(source, /function getNoConsoleVenvPython\(venvRoot\)/)
-  assert.match(source, /function toNoConsolePython\(pythonPath\)/)
-  assert.match(source, /function applyWindowsNoConsoleSpawnHints\(backend\)/)
-  assert.match(source, /function readVenvHome\(venvRoot\)/)
-  assert.match(source, /path\.join\(venvRoot, 'Scripts', 'pythonw\.exe'\)/)
-  assert.match(source, /backendStartFailure/)
-  assert.match(source, /HERMES_DESKTOP_READY_FILE/)
-  assert.match(source, /readyFile: true/)
+  assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, backendArgs\)/)
   assert.match(source, /function getVenvSitePackagesEntries\(venvRoot\)/)
   assert.match(source, /path\.join\(venvRoot, 'Lib', 'site-packages'\)/)
-  assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.dashboardArgs\]/)
+  assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.backendArgs\]/)
+})
+
+test('desktop backend launches console python so child consoles are inherited, not pythonw', () => {
+  const source = readElectronFile('main.cjs')
+
+  // The flash fix is structural: the backend runs as a console-subsystem
+  // python.exe under hiddenWindowsChildOptions() (-> CREATE_NO_WINDOW), so it
+  // owns ONE windowless console that every descendant spawn inherits. Launching
+  // it as GUI-subsystem pythonw.exe is what made each child allocate (and flash)
+  // its own console, so the backend command must never be pythonw.
+  assert.doesNotMatch(source, /pythonw\.exe'\)/, 'backend must not be launched via pythonw.exe')
+  assert.doesNotMatch(
+    source,
+    /function getNoConsoleVenvPython\b/,
+    'pythonw-conversion helper should be gone; console python is launched directly'
+  )
+  assert.doesNotMatch(
+    source,
+    /function applyWindowsNoConsoleSpawnHints\b/,
+    'pythonw spawn-hint rewriter should be gone'
+  )
+
+  // Console python restores stdout, so the port is announced on the normal
+  // HERMES_DASHBOARD_READY stdout line — no ready-file side channel is set.
+  assert.doesNotMatch(source, /readyFile: true/, 'no backend should opt into the pythonw ready-file path')
+
+  // Both desktop backend launches must still go through hiddenWindowsChildOptions
+  // so the single backend console is created windowless.
+  requireHiddenChildOptions(source, /spawn\(\s*backend\.command,\s*backend\.args/)
+  requireHiddenChildOptions(source, /hermesProcess = spawn\(\s*backend\.command,\s*backend\.args/)
 })
 
 test('intentional or interactive desktop child processes stay documented', () => {
@@ -68,5 +89,5 @@ test('bootstrap PowerShell runner hides Windows console children', () => {
   const source = readElectronFile('bootstrap-runner.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
-  requireHiddenChildOptions(source, 'spawn(ps, fullArgs')
+  requireHiddenChildOptions(source, /spawn\(\s*ps,\s*fullArgs/)
 })

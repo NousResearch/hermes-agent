@@ -7,6 +7,7 @@ import asyncio
 import httpx
 import pytest
 
+import tools.microsoft_graph_auth as graph_auth
 from tools.microsoft_graph_auth import (
     CachedAccessToken,
     DEFAULT_GRAPH_SCOPE,
@@ -15,6 +16,17 @@ from tools.microsoft_graph_auth import (
     MicrosoftGraphTokenError,
     MicrosoftGraphTokenProvider,
 )
+
+
+class _ChunkStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.yielded_chunks = 0
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            self.yielded_chunks += 1
+            yield chunk
 
 
 class TestGraphCredentials:
@@ -177,3 +189,21 @@ class TestMicrosoftGraphTokenProvider:
         with pytest.raises(MicrosoftGraphTokenError) as exc:
             await provider.get_access_token()
         assert "bad secret" in str(exc.value)
+
+    async def test_token_response_body_is_bounded_while_reading(self, monkeypatch):
+        monkeypatch.setattr(graph_auth, "GRAPH_TOKEN_RESPONSE_MAX_BYTES", 10)
+        stream = _ChunkStream([b"12345", b"67890", b"X", b"unread"])
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=stream)
+
+        provider = MicrosoftGraphTokenProvider(
+            GraphCredentials("tenant", "client", "secret"),
+            transport=httpx.MockTransport(handler),
+        )
+
+        with pytest.raises(MicrosoftGraphTokenError) as exc:
+            await provider.get_access_token()
+
+        assert "exceeded 10 bytes" in str(exc.value)
+        assert stream.yielded_chunks == 3

@@ -291,6 +291,14 @@ class _DirectRestMem0Client:
         dedup_hash -> 20 unfiltered rows; nested filters -> exact 1). The dedup ladder
         needs real server-side metadata filtering, so this builds the nested shape:
         ``{"query":..., "user_id":..., "filters": {<meta equality>}, "top_k":...}``.
+
+        Deliberately does NOT send ``agent_id``: the self-host server treats a top-level
+        ``agent_id`` as a RESULT filter (probe 2026-06-28: searching agent_id=apollo for
+        a row written by another agent_id returns 0 even on a matching dedup_hash). So
+        adding it would narrow dedup to same-agent rows — the "live-cutover 0-results"
+        class _read_filters guards against. The accepted cost is that these dedup lookups
+        log as agent_id=null in recall_events (digest "unattributed"); correct recall
+        scope is user-only, and attribution must never narrow results.
         """
         body = {"query": query or "", "user_id": self._user_id,
                 "filters": dict(meta_filters or {}), "top_k": top_k}

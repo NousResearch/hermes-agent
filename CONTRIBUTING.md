@@ -996,6 +996,69 @@ test(tools): add unit tests for file_operations
 
 ---
 
+## Adding a Locale (i18n Translation)
+
+Hermes Agent supports multiple languages for its static-message catalog
+(gateway slash-command replies, CLI approval prompts). Adding a new
+language is a three-step process:
+
+### 1. Generate the locale scaffold
+
+Run the helper script from the repo root:
+
+```bash
+python scripts/add_locale.py <code> <display_name> [--aliases a1,a2,...]
+```
+
+Example for Indonesian:
+
+```bash
+python scripts/add_locale.py id Indonesian --aliases bahasa,indonesian
+```
+
+This creates `locales/id.yaml` with English values as placeholders and
+prints the registration steps you need to complete.
+
+### 2. Translate the values
+
+Open the generated file and translate every English value to the target
+language. Preserve all `{placeholder}` tokens exactly — they are used by
+`str.format()` and the test suite verifies parity with `en.yaml`.
+
+### 3. Register the locale
+
+In `agent/i18n.py`:
+
+1. Add the code to `SUPPORTED_LANGUAGES`:
+
+```python
+SUPPORTED_LANGUAGES: tuple[str, ...] = (
+    "en", "zh", ..., "hu", "id",
+)
+```
+
+2. Add language aliases to `_LANGUAGE_ALIASES`:
+
+```python
+"indonesian": "id", "bahasa": "id", "id-id": "id",
+```
+
+3. Update the `en.yaml` header comment to list the new code alongside
+   the other locales.
+
+### Verification
+
+Run the i18n test suite to confirm key and placeholder parity:
+
+```bash
+python -m pytest tests/agent/test_i18n.py -v
+```
+
+All 49+ tests must pass. Commit all changes (locale file + `i18n.py` +
+`en.yaml` header) in a single commit.
+
+---
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).

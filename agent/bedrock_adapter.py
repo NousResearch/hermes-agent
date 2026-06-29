@@ -398,6 +398,10 @@ def configured_bedrock_provider_filter() -> Optional[List[str]]:
         cfg = load_config_readonly()
         discovery = (cfg.get("bedrock") or {}).get("discovery") or {}
         raw = discovery.get("provider_filter") or []
+        # Tolerate a bare string (e.g. ``provider_filter: anthropic``) — wrap
+        # it in a list so we don't iterate its characters into a broken filter.
+        if isinstance(raw, str):
+            raw = [raw]
         filt = [str(p).strip() for p in raw if str(p).strip()]
         return filt or None
     except Exception:

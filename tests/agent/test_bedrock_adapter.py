@@ -1712,3 +1712,163 @@ class TestRequireBoto3VersionCheck:
         with patch.dict("sys.modules", {"boto3": fake_boto3}):
             result = _require_boto3()
             assert result is fake_boto3
+
+
+# ---------------------------------------------------------------------------
+# provider_filter config plumbing + discovery cache bypass
+# ---------------------------------------------------------------------------
+
+class TestConfiguredBedrockProviderFilter:
+    """``bedrock.discovery.provider_filter`` is read and normalized correctly."""
+
+    def _patch_config(self, value):
+        """Patch hermes_cli.config.load_config_readonly to return a config
+        whose bedrock.discovery.provider_filter is ``value``."""
+        import hermes_cli.config as cfg_mod
+        return patch.object(
+            cfg_mod,
+            "load_config_readonly",
+            return_value={"bedrock": {"discovery": {"provider_filter": value}}},
+        )
+
+    def test_returns_list_when_configured(self):
+        from agent.bedrock_adapter import configured_bedrock_provider_filter
+        with self._patch_config(["anthropic", "meta"]):
+            assert configured_bedrock_provider_filter() == ["anthropic", "meta"]
+
+    def test_coerces_bare_string_to_single_element_list(self):
+        """A scalar ``provider_filter: anthropic`` must not be iterated into
+        characters (['a','n','t',...]) — it should become ['anthropic']."""
+        from agent.bedrock_adapter import configured_bedrock_provider_filter
+        with self._patch_config("anthropic"):
+            assert configured_bedrock_provider_filter() == ["anthropic"]
+
+    def test_strips_whitespace_and_drops_empties(self):
+        from agent.bedrock_adapter import configured_bedrock_provider_filter
+        with self._patch_config(["  anthropic  ", "", "   "]):
+            assert configured_bedrock_provider_filter() == ["anthropic"]
+
+    def test_returns_none_when_unset(self):
+        from agent.bedrock_adapter import configured_bedrock_provider_filter
+        with self._patch_config([]):
+            assert configured_bedrock_provider_filter() is None
+
+    def test_returns_none_on_config_error(self):
+        from agent.bedrock_adapter import configured_bedrock_provider_filter
+        import hermes_cli.config as cfg_mod
+        with patch.object(cfg_mod, "load_config_readonly", side_effect=Exception("boom")):
+            assert configured_bedrock_provider_filter() is None
+
+
+class TestDiscoverBedrockModelsFilterPlumbing:
+    """The configured filter must actually reach the foundation-model loop."""
+
+    def _fake_control_client(self):
+        client = MagicMock()
+        client.list_foundation_models.return_value = {
+            "modelSummaries": [
+                {
+                    "modelId": "anthropic.claude-opus-4",
+                    "modelName": "Claude Opus 4",
+                    "providerName": "Anthropic",
+                    "modelLifecycle": {"status": "ACTIVE"},
+                    "responseStreamingSupported": True,
+                    "outputModalities": ["TEXT"],
+                    "inputModalities": ["TEXT"],
+                },
+                {
+                    "modelId": "meta.llama4",
+                    "modelName": "Llama 4",
+                    "providerName": "Meta",
+                    "modelLifecycle": {"status": "ACTIVE"},
+                    "responseStreamingSupported": True,
+                    "outputModalities": ["TEXT"],
+                    "inputModalities": ["TEXT"],
+                },
+            ]
+        }
+        client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+        return client
+
+    def test_filter_excludes_non_matching_providers(self):
+        import agent.bedrock_adapter as ba
+        ba._discovery_cache.clear()
+        with patch.object(ba, "_get_bedrock_control_client", return_value=self._fake_control_client()):
+            models = ba.discover_bedrock_models(
+                "us-east-1", provider_filter=["anthropic"], no_cache=True
+            )
+        ids = {m["id"] for m in models}
+        assert "anthropic.claude-opus-4" in ids
+        assert "meta.llama4" not in ids
+
+    def test_no_filter_returns_all_providers(self):
+        import agent.bedrock_adapter as ba
+        ba._discovery_cache.clear()
+        with patch.object(ba, "_get_bedrock_control_client", return_value=self._fake_control_client()):
+            models = ba.discover_bedrock_models("us-east-1", provider_filter=None, no_cache=True)
+        ids = {m["id"] for m in models}
+        assert {"anthropic.claude-opus-4", "meta.llama4"} <= ids
+
+
+class TestDiscoverBedrockModelsNoCache:
+    """``no_cache=True`` bypasses both the cache read and the cache write."""
+
+    def _fake_control_client(self, model_id="anthropic.claude-opus-4"):
+        client = MagicMock()
+        client.list_foundation_models.return_value = {
+            "modelSummaries": [{
+                "modelId": model_id,
+                "modelName": model_id,
+                "providerName": "Anthropic",
+                "modelLifecycle": {"status": "ACTIVE"},
+                "responseStreamingSupported": True,
+                "outputModalities": ["TEXT"],
+                "inputModalities": ["TEXT"],
+            }]
+        }
+        client.list_inference_profiles.return_value = {"inferenceProfileSummaries": []}
+        return client
+
+    def test_no_cache_ignores_a_primed_cache_entry(self):
+        """A stale cache entry must NOT be returned when no_cache=True."""
+        import agent.bedrock_adapter as ba
+        import time
+        ba._discovery_cache.clear()
+        # Prime the cache for the unfiltered key with a bogus stale value.
+        ba._discovery_cache["us-east-1:"] = {
+            "timestamp": time.time(),
+            "models": [{"id": "STALE.cached-model"}],
+        }
+        with patch.object(ba, "_get_bedrock_control_client",
+                          return_value=self._fake_control_client()):
+            models = ba.discover_bedrock_models("us-east-1", provider_filter=None, no_cache=True)
+        ids = {m["id"] for m in models}
+        assert "STALE.cached-model" not in ids
+        assert "anthropic.claude-opus-4" in ids
+
+    def test_no_cache_does_not_write_to_cache(self):
+        """no_cache=True must not populate _discovery_cache."""
+        import agent.bedrock_adapter as ba
+        ba._discovery_cache.clear()
+        with patch.object(ba, "_get_bedrock_control_client",
+                          return_value=self._fake_control_client()):
+            ba.discover_bedrock_models("us-east-1", provider_filter=None, no_cache=True)
+        assert ba._discovery_cache == {}, (
+            "no_cache=True must not write a cache entry"
+        )
+
+    def test_default_path_reads_and_writes_cache(self):
+        """Sanity: without no_cache, the cache is used (write then read)."""
+        import agent.bedrock_adapter as ba
+        ba._discovery_cache.clear()
+        fake = self._fake_control_client()
+        with patch.object(ba, "_get_bedrock_control_client", return_value=fake):
+            first = ba.discover_bedrock_models("us-east-1", provider_filter=None)
+            # Cache key for an empty/None filter is "<region>:".
+            assert "us-east-1:" in ba._discovery_cache
+            # Second call should hit the cache and not re-list models.
+            second = ba.discover_bedrock_models("us-east-1", provider_filter=None)
+        assert first == second
+        assert fake.list_foundation_models.call_count == 1, (
+            "cached call must not re-invoke the AWS API"
+        )

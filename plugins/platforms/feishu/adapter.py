@@ -2919,6 +2919,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or "")
+        open_message_id = str(getattr(context, "open_message_id", "") or "")
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         if not chat_id or not open_id:
@@ -2953,7 +2954,7 @@ class FeishuAdapter(BasePlatformAdapter):
             message_type=MessageType.COMMAND,
             source=source,
             raw_message=data,
-            message_id=token or str(uuid.uuid4()),
+            message_id=open_message_id or token or str(uuid.uuid4()),
             timestamp=datetime.now(),
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)

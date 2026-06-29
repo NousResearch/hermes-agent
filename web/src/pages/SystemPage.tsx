@@ -32,6 +32,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -749,15 +750,21 @@ export default function SystemPage() {
                   />
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                <input
-                  type="checkbox"
+              <div className="flex items-center gap-2.5">
+                <Checkbox
                   checked={hookApprove}
-                  onChange={(e) => setHookApprove(e.target.checked)}
+                  id="hook-approve"
+                  onCheckedChange={(checked) => setHookApprove(checked === true)}
                 />
-                Approve now (grant consent so it fires; otherwise it stays
-                configured but inactive)
-              </label>
+
+                <Label
+                  className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
+                  htmlFor="hook-approve"
+                >
+                  Approve now (grant consent so it fires; otherwise it stays
+                  configured but inactive)
+                </Label>
+              </div>
               <p className="text-xs text-warning">
                 Shell hooks run arbitrary commands on this host. Only add scripts
                 you trust. Takes effect on the next gateway/session restart.
@@ -1325,16 +1332,21 @@ export default function SystemPage() {
               </Button>
             </div>
 
-            <label className="flex items-center gap-2 text-xs text-muted-foreground select-none">
-              <input
-                type="checkbox"
-                className="accent-current"
+            <div className="flex items-center gap-2.5">
+              <Checkbox
                 checked={shareRedact}
                 disabled={sharing}
-                onChange={(e) => setShareRedact(e.target.checked)}
+                id="share-redact"
+                onCheckedChange={(checked) => setShareRedact(checked === true)}
               />
-              Redact credential-shaped tokens before upload (recommended)
-            </label>
+
+              <Label
+                className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
+                htmlFor="share-redact"
+              >
+                Redact credential-shaped tokens before upload (recommended)
+              </Label>
+            </div>
 
             {shareResult && (
               <div className="flex flex-col gap-2 border-t border-border pt-3">

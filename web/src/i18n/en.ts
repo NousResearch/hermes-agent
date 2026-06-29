@@ -121,6 +121,9 @@ export const en: Translations = {
     platformError: "error",
     recentSessions: "Recent Sessions",
     restartGateway: "Restart Gateway",
+    restartGatewayConfirmMessage:
+      "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.",
+    restartGatewayConfirmTitle: "Restart gateway?",
     restartingGateway: "Restarting gateway…",
     running: "Running",
     runningRemote: "Running (remote)",

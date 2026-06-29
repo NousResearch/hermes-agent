@@ -229,6 +229,72 @@ def test_starting_state_does_not_autostart(tmp_path: Path) -> None:
     assert named[0].action == "registered"
 
 
+def test_draining_runtime_state_autostarts(tmp_path: Path) -> None:
+    """A gateway hard-killed mid-drain leaves `gateway_state=draining` as its
+    last persisted value (the recreate SIGTERMs it before `_stop_impl` can
+    write a terminal `stopped`/`running`). `draining` is a transient sub-state
+    of RUNNING, not an operator stop, so with no explicit `desired_state` it
+    must normalise to running-intent and auto-start — otherwise the gateway
+    stays DOWN forever and messaging silently goes dark (the relay-opted-in
+    staging wedge, 2026-06)."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "drained", state="draining")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="drained", prior_state="running", action="started",
+    )]
+    # Autostart means NO down-marker — the gateway comes back up.
+    assert not (scandir / "gateway-drained" / "down").exists()
+
+
+def test_draining_default_root_autostarts(tmp_path: Path) -> None:
+    """The hosted-agent path: the default (root) profile, not a named one.
+    A managed Fly instance runs the root profile; a stranded `draining` there
+    is exactly what wedged the relay-opted-in staging instance. Mirror the
+    named-profile case for the default slot."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _seed_default_root(tmp_path, state="draining")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    default_action = next(a for a in actions if a.profile == "default")
+    assert default_action.prior_state == "running"
+    assert default_action.action == "started"
+    assert not (scandir / "gateway-default" / "down").exists()
+
+
+def test_desired_state_stopped_overrides_draining_runtime(tmp_path: Path) -> None:
+    """An explicit operator stop must survive even when the transient runtime
+    state is `draining`. The `desired_state` is the durable intent and is
+    honoured verbatim — the draining→running normalisation only applies to the
+    legacy/transient `gateway_state` fallback, never over an explicit
+    `desired_state`."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(
+        tmp_path,
+        "stopped-while-draining",
+        state="draining",
+        desired_state="stopped",
+    )
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="stopped-while-draining",
+        prior_state="stopped",
+        action="registered",
+    )]
+    assert (scandir / "gateway-stopped-while-draining" / "down").exists()
+
+
 def test_stale_runtime_files_are_removed(tmp_path: Path) -> None:
     scandir = tmp_path / "run-service"; scandir.mkdir()
     profile = _make_profile(tmp_path, "coder", state="running", with_pid=True)

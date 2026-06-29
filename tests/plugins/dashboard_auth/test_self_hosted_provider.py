@@ -496,6 +496,16 @@ class TestStartLogin:
         with pytest.raises(ProviderError, match="/auth/callback"):
             provider.start_login(redirect_uri="https://x.example/oauth/cb")
 
+    def test_allows_http_with_arbitrary_host(self, provider):
+        # http:// is permitted for any host now, not just localhost — the
+        # IDP-side allowlist is authoritative on which redirect_uris are
+        # accepted; this client-side fast-fail must not reject self-hosted
+        # dashboards reached over plain HTTP (LAN IPs, internal hostnames,
+        # TLS-terminating reverse proxies). Should not raise.
+        provider.start_login(redirect_uri="http://hermes.example/auth/callback")
+        provider.start_login(redirect_uri="http://192.168.1.50:9119/auth/callback")
+        provider.start_login(redirect_uri="http://my-internal-host/auth/callback")
+
     def test_allows_http_localhost_redirect(self, provider):
         provider.start_login(redirect_uri="http://localhost:8080/auth/callback")
         provider.start_login(redirect_uri="http://127.0.0.1:8080/auth/callback")

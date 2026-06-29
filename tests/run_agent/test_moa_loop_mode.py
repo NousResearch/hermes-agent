@@ -198,6 +198,36 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
 
 
+def test_moa_bedrock_slot_preserves_provider_identity(monkeypatch):
+    """Bedrock slots must stay on the aws_sdk provider branch.
+
+    Bedrock GPT-5.5 resolves to Bedrock Mantle's OpenAI Responses endpoint with
+    api_key="aws-sdk" as an IAM sentinel. If MoA forwards that base_url/api_key
+    directly, call_llm downgrades it to provider=custom and sends the sentinel
+    as an invalid bearer token. Keeping provider=bedrock lets
+    resolve_provider_client attach the SigV4 Responses client.
+    """
+    from agent import moa_loop
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "codex_responses",
+            "model": target_model,
+            "base_url": "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+            "api_key": "aws-sdk",
+            "bedrock_openai": True,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "bedrock", "model": "openai.gpt-5.5"})
+
+    assert rt == {"provider": "bedrock", "model": "openai.gpt-5.5"}
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

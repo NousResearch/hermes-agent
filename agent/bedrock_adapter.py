@@ -33,6 +33,9 @@ import os
 import re
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,18 @@ except Exception:
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
+
+# Bedrock-hosted OpenAI GPT-5.5 is not exposed through the native Converse
+# runtime. AWS serves it from the Bedrock Mantle OpenAI-compatible Responses
+# endpoint instead (https://bedrock-mantle.<region>.api.aws/openai/v1).
+# Keep the allowlist intentionally narrow so OpenAI GPT-OSS models that are
+# Converse-capable continue to use the native Bedrock path.
+BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
+    "openai.gpt-5.5",
+)
+_BEDROCK_OPENAI_HOST_RE = re.compile(
+    r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE
+)
 
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
@@ -131,6 +146,143 @@ def invalidate_runtime_client(region: str) -> bool:
     existed = region in _bedrock_runtime_client_cache
     _bedrock_runtime_client_cache.pop(region, None)
     return existed
+
+
+# ---------------------------------------------------------------------------
+# Bedrock Mantle / OpenAI Responses support
+# ---------------------------------------------------------------------------
+
+
+def is_openai_bedrock_model(model_id: str) -> bool:
+    """Return True for Bedrock-hosted OpenAI models that require Mantle.
+
+    Bedrock's GPT-OSS models are Converse-capable and intentionally do not
+    match this helper. The allowlist tracks models served by the OpenAI
+    Responses-compatible ``bedrock-mantle`` route.
+    """
+    normalized = str(model_id or "").strip().lower()
+    return normalized in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
+
+
+def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:
+    """Append Bedrock OpenAI Responses models to a discovered Bedrock list.
+
+    The Bedrock control plane's ListFoundationModels/ListInferenceProfiles
+    discovery covers Converse models but does not enumerate Mantle-only
+    OpenAI Responses models. The picker needs both surfaces under AWS Bedrock.
+    """
+    merged = list(model_ids or [])
+    seen = {str(m).lower() for m in merged}
+    for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+        if model_id.lower() not in seen:
+            merged.append(model_id)
+            seen.add(model_id.lower())
+    return merged
+
+
+def bedrock_openai_base_url(region: str) -> str:
+    """Return Bedrock Mantle's OpenAI-compatible base URL for *region*."""
+    resolved = (region or "").strip() or resolve_bedrock_region()
+    return f"https://bedrock-mantle.{resolved}.api.aws/openai/v1"
+
+
+def bedrock_openai_region_from_base_url(base_url: str) -> Optional[str]:
+    """Extract the AWS region from a Bedrock Mantle OpenAI base URL."""
+    host = urlparse(str(base_url or "")).hostname or ""
+    match = _BEDROCK_OPENAI_HOST_RE.match(host)
+    return match.group(1) if match else None
+
+
+def is_bedrock_openai_base_url(base_url: str) -> bool:
+    """Return True for Bedrock Mantle OpenAI-compatible endpoints."""
+    parsed = urlparse(str(base_url or ""))
+    host = parsed.hostname or ""
+    if not _BEDROCK_OPENAI_HOST_RE.match(host):
+        return False
+    # The OpenAI GPT-5.5 Bedrock route lives under /openai/v1. Accept a bare
+    # host too so callers can normalize before appending the path.
+    path = (parsed.path or "").rstrip("/").lower()
+    return path in {"", "/openai", "/openai/v1"}
+
+
+def resolve_bedrock_bearer_token(env: Optional[Dict[str, str]] = None) -> str:
+    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured."""
+    env = env if env is not None else os.environ
+    return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+
+
+class BedrockOpenAISigV4Auth(httpx.Auth):
+    """httpx auth hook that SigV4-signs Bedrock Mantle OpenAI requests."""
+
+    requires_request_body = True
+
+    def __init__(self, region: str, service: str = "bedrock"):
+        self.region = (region or "").strip() or resolve_bedrock_region()
+        self.service = service
+
+    def auth_flow(self, request):  # pragma: no cover - exercised by live call
+        import botocore.session
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        credentials = botocore.session.get_session().get_credentials()
+        if credentials is None:
+            raise RuntimeError(
+                "No AWS credentials available for Bedrock OpenAI Responses. "
+                "Configure AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, AWS_PROFILE, "
+                "SSO, or an instance/task role."
+            )
+        frozen = credentials.get_frozen_credentials()
+        # Drop the OpenAI SDK's placeholder bearer header before signing; SigV4
+        # must own Authorization. Keep all other SDK headers so AWS receives
+        # content-type, accept, request IDs, etc.
+        headers = {
+            str(k): str(v)
+            for k, v in request.headers.items()
+            if str(k).lower() not in {"authorization", "x-amz-date", "x-amz-security-token"}
+        }
+        aws_request = AWSRequest(
+            method=request.method,
+            url=str(request.url),
+            data=request.content or b"",
+            headers=headers,
+        )
+        SigV4Auth(frozen, self.service, self.region).add_auth(aws_request)
+        request.headers.update(dict(aws_request.headers.items()))
+        yield request
+
+
+def build_bedrock_openai_http_client(region: str, *, timeout: Optional[float] = None):
+    """Build an httpx client that SigV4-signs Bedrock OpenAI requests."""
+    import httpx
+
+    kwargs: Dict[str, Any] = {"auth": BedrockOpenAISigV4Auth(region)}
+    if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+        kwargs["timeout"] = timeout
+    return httpx.Client(**kwargs)
+
+
+def configure_bedrock_openai_client_kwargs(
+    client_kwargs: Dict[str, Any],
+    *,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Install SigV4 auth on OpenAI SDK kwargs for Bedrock Mantle.
+
+    ``AWS_BEARER_TOKEN_BEDROCK``/explicit Bedrock API keys continue to use the
+    SDK's normal bearer auth. The special ``aws-sdk`` placeholder means IAM
+    credential-chain auth, so we attach a per-request SigV4 httpx client.
+    """
+    base_url = str(client_kwargs.get("base_url") or "")
+    if not is_bedrock_openai_base_url(base_url):
+        return client_kwargs
+    api_key = client_kwargs.get("api_key")
+    if isinstance(api_key, str) and api_key.strip() and api_key not in {"aws-sdk", "no-key-required"}:
+        return client_kwargs
+    region = bedrock_openai_region_from_base_url(base_url) or resolve_bedrock_region()
+    client_kwargs["api_key"] = "aws-sdk"
+    client_kwargs["http_client"] = build_bedrock_openai_http_client(region, timeout=timeout)
+    return client_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +550,7 @@ def bedrock_model_ids_or_none() -> Optional[List[str]]:
     try:
         discovered = discover_bedrock_models(resolve_bedrock_region())
         if discovered:
-            return [m["id"] for m in discovered]
+            return merge_bedrock_openai_model_ids([m["id"] for m in discovered])
     except Exception:
         pass
     return None

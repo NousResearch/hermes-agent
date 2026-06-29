@@ -164,6 +164,13 @@ docker image prune -a --filter "until=168h"   # unused images older than 7 days
 
 ### 4. Docker Compose
 
+**Port binding defaults for stateful services:**
+
+- If services run on the same Docker Compose network, prefer no host `ports:` mapping for databases/caches; application containers should connect by service name (for example `db:5432`, `mysql:3306`, `redis:6379`).
+- Single-host development or single-host production may bind host ports to loopback, for example `127.0.0.1:3306:3306`, when only the host machine needs operational access.
+- Multi-host deployments must not blindly keep `127.0.0.1`: an application server on another machine cannot reach that bind. Bind the database to a private interface or `0.0.0.0` only when the cloud security group/firewall restricts the port to trusted private source IPs.
+- Never expose MySQL/PostgreSQL/Redis directly to the public internet for convenience. Use private networking, source allowlists, VPN/Tailscale, or SSH tunnels for ad-hoc administration.
+
 ```bash
 # Start/stop
 docker compose up -d                   # start all services detached
@@ -201,6 +208,9 @@ services:
 
   db:
     image: postgres:16-alpine
+    # No host ports by default: api reaches this as db:5432 on the Compose network.
+    # For single-host admin access use "127.0.0.1:5432:5432"; for multi-host
+    # access bind only to a private interface and restrict sources with firewall rules.
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pass
@@ -268,6 +278,7 @@ docker system prune -a --volumes       # EVERYTHING — named volumes too
 | "port is already allocated" | Another process using that port | `docker ps` or `lsof -i :PORT` to find it |
 | "no space left on device" | Docker disk full | `docker system df` then targeted prune |
 | Can't connect to container | App binds to 127.0.0.1 inside container | App must bind to `0.0.0.0`, check `-p` mapping |
+| Remote app server can't reach database | Database host port is bound to `127.0.0.1` on the DB server | In multi-host deployments bind to the DB server private IP or `0.0.0.0`, then restrict the port to trusted app-server private IPs with security groups/firewall rules |
 | Permission denied on volume | UID/GID mismatch host vs container | Use `--user $(id -u):$(id -g)` or fix permissions |
 | Compose services can't reach each other | Wrong network or service name | Services use service name as hostname, check `docker compose config` |
 | Build cache not working | Layer order wrong in Dockerfile | Put rarely-changing layers first (deps before source code) |

@@ -2296,6 +2296,13 @@ def run_conversation(
                         _ld_reason, agent._loop_retry_count, _ld_max,
                         agent._loop_guard_total, getattr(agent, "session_id", "?"),
                     )
+                    # Surface the trip as an out-of-band notice so GUI drivers
+                    # (desktop toast, TUI status bar) show it — not just agent.log.
+                    from agent.credits_tracker import AgentNotice
+                    agent._emit_notice(AgentNotice(
+                        text=f"Loop guard stopped a repetition ({_ld_reason}).",
+                        level="warn", kind="ttl", ttl_ms=6000, key="guard.loop",
+                    ))
                     if agent._loop_retry_count > _ld_max:
                         logger.warning(
                             "LOOP_GUARD: exhausted after %d retries; returning fallback. session=%s",
@@ -5307,6 +5314,12 @@ def run_conversation(
                         agent._larp_reprompts, agent._larp_guard_total,
                         _larp_nudge[:120], getattr(agent, "session_id", "?"),
                     )
+                    # Surface the reprompt as an out-of-band notice (see loop guard).
+                    from agent.credits_tracker import AgentNotice
+                    agent._emit_notice(AgentNotice(
+                        text=f"LARP guard re-prompted the model (attempt {agent._larp_reprompts}).",
+                        level="warn", kind="ttl", ttl_ms=6000, key="guard.larp",
+                    ))
                     continue
 
                 messages.append(final_msg)

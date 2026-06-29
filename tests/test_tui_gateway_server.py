@@ -2284,6 +2284,153 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
         server._sessions.pop("trunc-sid", None)
 
 
+def test_notification_poller_drops_orphaned_events(monkeypatch):
+    """Completion events whose owner is gone are dropped, not hijacked."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    emitted = []
+
+    sess = _session(session_key="session-a")
+    server._sessions["sid_a"] = sess
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    # Isolate the completion queue so no other test/poller can interfere.
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_ghost")
+
+    # An event owned by session-b — but session-b is NOT in _sessions (gone).
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc_ghost",
+        "session_key": "session-b",
+        "command": "echo from ghost",
+        "exit_code": 0,
+        "output": "ghost output",
+    })
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_a", sess)
+
+        # No status.update emitted — the orphaned event was dropped.
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 0, (
+            f"orphaned event should be dropped, got {len(status_calls)} status.update calls"
+        )
+    finally:
+        server._sessions.pop("sid_a", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_delivers_owned_events(monkeypatch):
+    """Events owned by *this* session are delivered normally (regression guard)."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    turns = []
+    emitted = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            turns.append(prompt)
+            return {"final_response": "ok", "messages": [{"role": "assistant", "content": "ok"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            self._target()
+
+    sess = _session(session_key="session-a", agent=_Agent())
+    server._sessions["sid_a"] = sess
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    process_registry._completion_consumed.discard("proc_mine")
+
+    # An event owned by THIS session.
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc_mine",
+        "session_key": "session-a",
+        "command": "echo mine",
+        "exit_code": 0,
+        "output": "mine",
+    })
+
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_a", sess)
+
+        status_calls = [a for a in emitted if a[0] == "status.update"]
+        assert len(status_calls) == 1
+        assert status_calls[0][2]["kind"] == "process"
+        assert len(turns) == 1
+        assert "proc_mine" in turns[0]
+    finally:
+        server._sessions.pop("sid_a", None)
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_owned_notifications_routes_by_session_key(monkeypatch):
+    """_drain_owned_notifications filters events by session ownership."""
+    import queue as _queue_mod
+
+    sess_a = _session(session_key="session-a")
+    sess_b = _session(session_key="session-b")
+    server._sessions["sid_a"] = sess_a
+    server._sessions["sid_b"] = sess_b
+
+    q: _queue_mod.Queue = _queue_mod.Queue()
+    # Mix of events: ours, foreign (live), orphan, global
+    q.put({"type": "completion", "session_id": "1", "session_key": "session-a",
+           "command": "a", "exit_code": 0, "output": "a"})
+    q.put({"type": "completion", "session_id": "2", "session_key": "session-b",
+           "command": "b", "exit_code": 0, "output": "b"})
+    q.put({"type": "completion", "session_id": "3", "session_key": "ghost",
+           "command": "c", "exit_code": 0, "output": "c"})
+    q.put({"type": "completion", "session_id": "4",
+           "command": "d", "exit_code": 0, "output": "d"})
+
+    results = server._drain_owned_notifications(q, sess_a)
+
+    # Only our event (session-a) + global (no session_key) should be returned.
+    assert len(results) == 2, f"expected 2 events (ours + global), got {len(results)}"
+    owned_sids = {evt.get("session_id") for evt, _ in results}
+    assert "1" in owned_sids  # ours
+    assert "4" in owned_sids  # global
+
+    # session-b's event should be re-queued for its poller.
+    # Orphan should be dropped (not in results, not re-queued).
+    assert q.qsize() == 1, f"1 event (session-b) should be re-queued, got {q.qsize()}"
+
+    # Now drain as session-b — should get its re-queued event.
+    results_b = server._drain_owned_notifications(q, sess_b)
+    assert len(results_b) == 1, f"session-b should pick up its re-queued event, got {len(results_b)}"
+    assert results_b[0][0].get("session_id") == "2"
+    assert q.empty(), f"queue should be empty after both drains, got {q.qsize()}"
+
+    # Cleanup
+    server._sessions.pop("sid_a", None)
+    server._sessions.pop("sid_b", None)
+
+
 def test_session_create_does_not_persist_empty_row(monkeypatch):
     """session.create must NOT eagerly write a DB row.
 

@@ -710,7 +710,7 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2, headers=None) -> str:
     """
     Download an image from a URL and save it to the local cache.
 
@@ -721,6 +721,9 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".jpg", ".png").
         retries: Number of retry attempts on transient failures.
+        headers: Optional extra request headers merged over the defaults — e.g. an
+            ``Authorization: Bearer`` for endpoints that require auth (Teams attachment
+            URLs on Bot Framework hosts). Public CDNs pass ``None``.
 
     Returns:
         Absolute path to the cached image file as a string.
@@ -742,13 +745,16 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     ) as client:
         for attempt in range(retries + 1):
             try:
+                _req_headers = {
+                    "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                    "Accept": "image/*,*/*;q=0.8",
+                }
+                if headers:
+                    _req_headers.update(headers)
                 async with client.stream(
                     "GET",
                     url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                        "Accept": "image/*,*/*;q=0.8",
-                    },
+                    headers=_req_headers,
                 ) as response:
                     response.raise_for_status()
                     content = await _read_httpx_body_with_limit(

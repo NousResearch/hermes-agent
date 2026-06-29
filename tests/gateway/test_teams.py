@@ -1125,3 +1125,125 @@ class TestTeamsMediaAttachments:
         result = await adapter.send_document("19:abc@thread.v2", "/no/such/file.pdf")
         assert not result.success
         adapter._app.send.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Inbound image attachment auth (Bot Framework bearer token)
+#
+# Teams serves message attachments from Bot Framework hosts (smba.*) whose URLs
+# require the bot's bearer token; the shared image downloader sends none, so the
+# download 401s and the image is silently dropped. Regression coverage for the
+# fix: the adapter mints the token (same client-credentials flow it uses to send
+# activities) and the cache forwards it — gated to allowlisted BF hosts.
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpxResponse:
+    def __init__(self, payload=None):
+        self._payload = payload or {}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeStreamCtx:
+    async def __aenter__(self):
+        return _FakeHttpxResponse()
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _FakeHttpxClient:
+    """Async-context ``httpx.AsyncClient`` stand-in recording the last request."""
+
+    last: dict = {}
+    token_payload: dict = {"access_token": "tok-abc", "expires_in": 3600}
+    post_error = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def post(self, url, **kwargs):
+        _FakeHttpxClient.last = {"method": "post", "url": url, "kwargs": kwargs}
+        if _FakeHttpxClient.post_error is not None:
+            raise _FakeHttpxClient.post_error
+        return _FakeHttpxResponse(payload=_FakeHttpxClient.token_payload)
+
+    def stream(self, method, url, headers=None):
+        _FakeHttpxClient.last = {"method": method, "url": url, "headers": headers}
+        return _FakeStreamCtx()
+
+
+class TestTeamsAttachmentAuth:
+    def _adapter(self):
+        return TeamsAdapter(
+            _make_config(client_id="cid", client_secret="csec", tenant_id="tid")
+        )
+
+    @pytest.mark.asyncio
+    async def test_token_minted_with_botframework_scope(self, monkeypatch):
+        _FakeHttpxClient.post_error = None
+        _FakeHttpxClient.token_payload = {"access_token": "tok-abc", "expires_in": 3600}
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHttpxClient)
+        token = await self._adapter()._bot_framework_token()
+        assert token == "tok-abc"
+        data = _FakeHttpxClient.last["kwargs"]["data"]
+        assert data["grant_type"] == "client_credentials"
+        assert data["scope"] == "https://api.botframework.com/.default"
+        assert "login.microsoftonline.com/tid/" in _FakeHttpxClient.last["url"]
+
+    @pytest.mark.asyncio
+    async def test_token_cached_between_calls(self, monkeypatch):
+        _FakeHttpxClient.post_error = None
+        _FakeHttpxClient.token_payload = {"access_token": "tok-1", "expires_in": 3600}
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHttpxClient)
+        adapter = self._adapter()
+        assert await adapter._bot_framework_token() == "tok-1"
+        # A fresh mint would now return tok-2; the cached value must persist.
+        _FakeHttpxClient.token_payload = {"access_token": "tok-2", "expires_in": 3600}
+        _FakeHttpxClient.last = {}
+        assert await adapter._bot_framework_token() == "tok-1"
+        assert _FakeHttpxClient.last == {}  # no second network call
+
+    @pytest.mark.asyncio
+    async def test_token_fail_soft_returns_none(self, monkeypatch):
+        _FakeHttpxClient.post_error = httpx.ConnectError("down")
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHttpxClient)
+        try:
+            assert await self._adapter()._bot_framework_token() is None
+        finally:
+            _FakeHttpxClient.post_error = None
+
+    @pytest.mark.asyncio
+    async def test_token_none_without_credentials(self, monkeypatch):
+        for var in ("TEAMS_CLIENT_ID", "TEAMS_CLIENT_SECRET", "TEAMS_TENANT_ID"):
+            monkeypatch.delenv(var, raising=False)
+        assert await TeamsAdapter(_make_config())._bot_framework_token() is None
+
+    @pytest.mark.asyncio
+    async def test_cache_image_from_url_forwards_auth_header(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        from gateway.platforms import base as base_mod
+
+        _FakeHttpxClient.last = {}
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHttpxClient)
+        monkeypatch.setattr(base_mod, "_read_httpx_body_with_limit", AsyncMock(return_value=b"\x89PNG\r\n\x1a\n"))
+        monkeypatch.setattr(base_mod, "cache_image_from_bytes", lambda data, ext=".jpg": "/tmp/cached.png")
+        out = await base_mod.cache_image_from_url(
+            "https://smba.trafficmanager.net/amer/x/v3/attachments/abc/views/original",
+            headers={"Authorization": "Bearer T"},
+        )
+        assert out == "/tmp/cached.png"
+        sent = _FakeHttpxClient.last["headers"]
+        assert sent["Authorization"] == "Bearer T"
+        assert "User-Agent" in sent  # default headers preserved alongside the override

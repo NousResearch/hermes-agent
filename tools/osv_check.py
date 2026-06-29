@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _OSV_ENDPOINT = os.getenv("OSV_ENDPOINT", "https://api.osv.dev/v1/query")
 _TIMEOUT = 10  # seconds
+_OSV_RESPONSE_BODY_MAX_BYTES = 16 * 1024 * 1024
 
 
 def check_package_for_malware(
@@ -162,8 +163,18 @@ def _query_osv(
     )
 
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        result = json.loads(resp.read())
+        result = _read_osv_json_response(resp)
 
     vulns = result.get("vulns", [])
     # Only malware advisories — ignore regular CVEs
     return [v for v in vulns if v.get("id", "").startswith("MAL-")]
+
+
+def _read_osv_json_response(resp) -> dict:
+    raw = resp.read(_OSV_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _OSV_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(f"OSV response exceeded {_OSV_RESPONSE_BODY_MAX_BYTES} bytes")
+    result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise ValueError("OSV response was not a JSON object")
+    return result

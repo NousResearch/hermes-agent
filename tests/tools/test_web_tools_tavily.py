@@ -31,34 +31,48 @@ class TestTavilyRequest:
 
     def test_posts_with_api_key_in_body(self):
         """api_key is injected into the JSON payload."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"results": []}
-        mock_response.raise_for_status = MagicMock()
-
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test-key"}):
-            with patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post:
+            with patch(
+                "plugins.web.tavily.provider._httpx_json_request",
+                return_value={"results": []},
+            ) as mock_request:
                 from tools.web_tools import _tavily_request
                 result = _tavily_request("search", {"query": "hello"})
 
-                mock_post.assert_called_once()
-                call_kwargs = mock_post.call_args
+                mock_request.assert_called_once()
+                call_kwargs = mock_request.call_args
+                assert call_kwargs.args[0] == "POST"
                 payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
                 assert payload["api_key"] == "tvly-test-key"
                 assert payload["query"] == "hello"
-                assert "api.tavily.com/search" in call_kwargs.args[0]
+                assert "api.tavily.com/search" in call_kwargs.args[1]
 
     def test_raises_on_http_error(self):
         """Non-2xx responses propagate as httpx.HTTPStatusError."""
         import httpx as _httpx
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = _httpx.HTTPStatusError(
-            "401 Unauthorized", request=MagicMock(), response=mock_response
+        http_error = _httpx.HTTPStatusError(
+            "401 Unauthorized", request=MagicMock(), response=MagicMock()
         )
 
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-bad-key"}):
-            with patch("tools.web_tools.httpx.post", return_value=mock_response):
+            with patch(
+                "plugins.web.tavily.provider._httpx_json_request",
+                side_effect=http_error,
+            ):
                 from tools.web_tools import _tavily_request
                 with pytest.raises(_httpx.HTTPStatusError):
+                    _tavily_request("search", {"query": "test"})
+
+    def test_raises_on_oversized_response(self):
+        from plugins.web._bounded_json import WebProviderResponseTooLarge
+
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test-key"}):
+            with patch(
+                "plugins.web.tavily.provider._httpx_json_request",
+                side_effect=WebProviderResponseTooLarge("web provider JSON response exceeded 16 bytes"),
+            ):
+                from tools.web_tools import _tavily_request
+                with pytest.raises(WebProviderResponseTooLarge):
                     _tavily_request("search", {"query": "test"})
 
 
@@ -175,15 +189,13 @@ class TestWebSearchTavily:
         _reset_for_tests()
 
     def test_search_dispatches_to_tavily(self):
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
+        payload = {
             "results": [{"title": "Result", "url": "https://r.com", "content": "desc", "score": 0.9}]
         }
-        mock_response.raise_for_status = MagicMock()
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
-             patch("tools.web_tools.httpx.post", return_value=mock_response), \
+             patch("plugins.web.tavily.provider._httpx_json_request", return_value=payload), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             from tools.web_tools import web_search_tool
             result = json.loads(web_search_tool("test query", limit=3))
@@ -207,15 +219,13 @@ class TestWebExtractTavily:
         _reset_for_tests()
 
     def test_extract_dispatches_to_tavily(self):
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
+        payload = {
             "results": [{"url": "https://example.com", "raw_content": "Extracted content", "title": "Page"}]
         }
-        mock_response.raise_for_status = MagicMock()
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
-             patch("tools.web_tools.httpx.post", return_value=mock_response):
+             patch("plugins.web.tavily.provider._httpx_json_request", return_value=payload):
             from tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(
                 web_extract_tool(["https://example.com"])
@@ -224,4 +234,3 @@ class TestWebExtractTavily:
             assert len(result["results"]) == 1
             assert result["results"][0]["url"] == "https://example.com"
             assert "Extracted content" in result["results"][0]["content"]
-

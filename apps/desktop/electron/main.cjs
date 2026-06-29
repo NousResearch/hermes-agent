@@ -39,6 +39,7 @@ const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
+const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
@@ -1334,9 +1335,71 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
       venvRoot
     }),
     kind: 'python',
+    // Surfaced so backendSupportsServe() can read this runtime's source for the
+    // `serve` capability check instead of falling back to a heavyweight probe.
+    root,
     readyFile: true,
     shell: false
   }
+}
+
+// Does the resolved runtime understand the `serve` subcommand? The desktop
+// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
+// detect support so getBackendArgsForRuntime() can route old runtimes through
+// the legacy `dashboard --no-open` form instead of crashing on an unknown
+// subcommand (would brick every user mid-upgrade — #54568 follow-up).
+//
+// Fast path: read the runtime's own dashboard.py (instant, covers managed
+// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
+// (covers a bare `hermes` resolved from PATH with no known source root). Result
+// is cached per resolved runtime so we probe at most once per backend.
+const _serveSupportCache = new Map()
+function backendSupportsServe(backend) {
+  if (!backend || !backend.command) return true
+  const key = `${backend.command}::${backend.root || ''}`
+  if (_serveSupportCache.has(key)) return _serveSupportCache.get(key)
+
+  let supported = null
+  if (backend.root) {
+    try {
+      const src = fs.readFileSync(
+        path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
+        'utf8'
+      )
+      supported = sourceDeclaresServe(src)
+    } catch {
+      supported = null // source unreadable — fall through to the probe
+    }
+  }
+
+  if (supported === null) {
+    try {
+      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
+      execFileSync(backend.command, [...prefix, 'serve', '--help'], {
+        cwd: backend.root || undefined,
+        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
+        timeout: 15000,
+        stdio: 'ignore',
+        windowsHide: true
+      })
+      supported = true
+    } catch {
+      supported = false
+    }
+  }
+
+  _serveSupportCache.set(key, supported)
+  rememberLog(
+    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
+  )
+  return supported
+}
+
+// Given a resolved backend whose args target `serve`, return the args the
+// runtime actually understands: unchanged when `serve` is supported, or
+// rewritten to `dashboard --no-open` for older runtimes.
+function getBackendArgsForRuntime(backend) {
+  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -5244,6 +5307,8 @@ async function spawnPoolBackend(profile, entry) {
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
   const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
   const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+  // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
+  backend.args = getBackendArgsForRuntime(backend)
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -5471,6 +5536,8 @@ async function startHermes() {
     }
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
     const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
+    // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
+    backend.args = getBackendArgsForRuntime(backend)
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null

@@ -203,6 +203,15 @@ function isToolTitleKey(name: string): name is ToolTitleKey {
   return name in TOOL_META
 }
 
+function stripMcpWirePrefix(name: string): string {
+  if (!name.startsWith('mcp__')) {
+    return name
+  }
+
+  // Anthropic OAuth leaks tool names onto the wire as `mcp__<name>`; strip the prefix so it never reaches the UI.
+  return name.slice('mcp__'.length)
+}
+
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
 const BACKTICK_NOISE_RE = /`{3,}/g
@@ -1350,31 +1359,33 @@ function dynamicTitle(
 }
 
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
-  const argsRecord = parseMaybeObject(part.args)
-  const resultRecord = parseMaybeObject(part.result)
-  const meta = toolMeta(part.toolName)
-  const status = toolStatus(part, resultRecord)
-  const error = toolErrorText(part, resultRecord)
-  const baseTitle = part.result === undefined ? meta.pending : meta.done
+  const toolName = stripMcpWirePrefix(part.toolName)
+  const viewPart = toolName === part.toolName ? part : { ...part, toolName }
+  const argsRecord = parseMaybeObject(viewPart.args)
+  const resultRecord = parseMaybeObject(viewPart.result)
+  const meta = toolMeta(toolName)
+  const status = toolStatus(viewPart, resultRecord)
+  const error = toolErrorText(viewPart, resultRecord)
+  const baseTitle = viewPart.result === undefined ? meta.pending : meta.done
 
   const titleParts = dynamicTitle(
-    part,
+    viewPart,
     argsRecord,
     resultRecord,
-    titlePartsFromAction(baseTitle, part.result === undefined ? meta.pendingAction : undefined)
+    titlePartsFromAction(baseTitle, viewPart.result === undefined ? meta.pendingAction : undefined)
   )
 
   const title = titleParts.title
   const titleEnriched = title !== baseTitle
-  const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
+  const baseSubtitle = error || toolSubtitle(viewPart, argsRecord, resultRecord)
 
   const keepSubtitleWithTitle =
-    part.toolName === 'terminal' ||
-    part.toolName === 'execute_code' ||
-    (isFileEditTool(part.toolName) && Boolean(baseSubtitle.trim()))
+    toolName === 'terminal' ||
+    toolName === 'execute_code' ||
+    (isFileEditTool(toolName) && Boolean(baseSubtitle.trim()))
 
   const subtitle = titleEnriched && !error && !keepSubtitleWithTitle ? '' : baseSubtitle
-  const detailBody = stripDividerLines(toolDetailText(part, argsRecord, resultRecord))
+  const detailBody = stripDividerLines(toolDetailText(viewPart, argsRecord, resultRecord))
 
   const detail = error
     ? [error, detailBody]
@@ -1383,16 +1394,15 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
         .join('\n\n')
     : detailBody
 
-  const searchHits =
-    part.toolName === 'web_search' && status !== 'error' ? extractSearchResults(part.result) : undefined
+  const searchHits = toolName === 'web_search' && status !== 'error' ? extractSearchResults(viewPart.result) : undefined
 
-  const resultCount = status === 'error' ? null : toolResultCount(part, argsRecord, resultRecord)
+  const resultCount = status === 'error' ? null : toolResultCount(viewPart, argsRecord, resultRecord)
 
   // For shell/code tools we surface stdout and stderr as separate labeled
   // streams in the renderer. Many CLIs use stderr for informational
   // messages (npm progress, git hints), so we deliberately don't paint
   // stderr destructively even though it's tagged.
-  const rendersAnsi = part.toolName === 'terminal' || part.toolName === 'execute_code'
+  const rendersAnsi = toolName === 'terminal' || toolName === 'execute_code'
   const stdout = rendersAnsi ? firstStringField(resultRecord, ['stdout']) : ''
   const stderrRaw = rendersAnsi ? firstStringField(resultRecord, ['stderr']) : ''
   // Only attach stderr when the backend actually returned it as its own
@@ -1403,12 +1413,12 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   return {
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
     detail,
-    detailLabel: error ? 'Error details' : toolDetailLabel(part.toolName),
+    detailLabel: error ? 'Error details' : toolDetailLabel(toolName),
     durationLabel: durationLabel(resultRecord),
     icon: meta.icon,
     imageUrl: toolImageUrl(argsRecord, resultRecord),
     inlineDiff,
-    previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
+    previewTarget: toolPreviewTarget(toolName, argsRecord, resultRecord),
     rawArgs: prettyJson(part.args),
     rawResult: prettyJson(part.result),
     rendersAnsi: rendersAnsi || undefined,

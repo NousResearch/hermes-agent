@@ -307,6 +307,37 @@ describe('buildToolView title actions', () => {
     expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
   })
 
+  it('normalizes Anthropic OAuth wire prefixes for built-in tool rows', () => {
+    const terminal = buildToolView(
+      part({
+        args: { command: 'git status --short', context: 'git status --short' },
+        result: undefined,
+        toolName: 'mcp__terminal'
+      }),
+      ''
+    )
+
+    const write = buildToolView(
+      part({
+        args: { path: 'src/demo.ts' },
+        result: undefined,
+        toolName: 'mcp__write_file'
+      }),
+      ''
+    )
+
+    expect(terminal.title).toBe('Running git status --short')
+    expect(terminal.tone).toBe('terminal')
+    expect(write.title).toBe('demo.ts')
+    expect(write.tone).toBe('file')
+  })
+
+  it('keeps real MCP server tool names visible', () => {
+    const view = buildToolView(part({ result: undefined, toolName: 'mcp__filesystem_write_file' }), '')
+
+    expect(view.title).toBe('Running filesystem write file')
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 

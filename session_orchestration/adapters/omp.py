@@ -70,14 +70,16 @@ For one-shot continuations, -c re-attaches the most recent session.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 from session_orchestration.adapters.base import AgentAdapter
+from session_orchestration.markers import MARKER_DONE, MARKER_HEARTBEAT, MARKER_NEEDS_INPUT, MARKER_STATUS, append_marker
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 
 # ---------------------------------------------------------------------------
@@ -369,6 +371,122 @@ def build_interactive_argv(
 
 
 # ---------------------------------------------------------------------------
+# RPC translation helpers (fully testable, no subprocess dependency)
+# ---------------------------------------------------------------------------
+
+
+def translate_rpc_line(raw_line: str) -> "dict | None":
+    """Parse one omp ``--mode=rpc`` NDJSON line into a ``{kind, payload}`` dict.
+
+    Maps the omp RPC event vocabulary to the marker vocabulary defined in
+    ``markers.py``.  Unknown event types return ``None`` (caller skips them).
+
+    Mapping
+    -------
+    ``ready``        → ``status{phase="ready", detail=""}``
+    ``turn_start``   → ``status{phase="running", detail=""}``
+    ``message_end``  with ``role=assistant`` → ``heartbeat{note=content[:120]}``
+    ``agent_end``    → ``done{summary=<last assistant text>, artifacts=None}``
+    ``needs_input``  → ``needs_input{question=..., options=None, context=None}``
+
+    Parameters
+    ----------
+    raw_line:
+        A single raw line from omp's ``--mode=rpc`` NDJSON stream.
+
+    Returns
+    -------
+    dict | None
+        ``{"kind": <marker_kind>, "payload": {...}}`` on a recognised event,
+        or ``None`` for blank lines, non-JSON lines, and unrecognised types.
+
+    Notes
+    -----
+    The ``turn_start``, ``message_end``, ``agent_end``, and ``needs_input``
+    event names are inferred from the ``--mode=json`` schema (see docstring at
+    the top of this file).  The ``--mode=rpc`` interactive session is confirmed
+    to emit ``ready`` and ``available_commands_update`` on startup; the
+    remaining event names are assumed to overlap with ``--mode=json`` and
+    should be verified against live omp ``--mode=rpc`` output when wired live.
+    """
+    line = raw_line.strip()
+    if not line:
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+    event_type = event.get("type", "")
+
+    if event_type == "ready":
+        return {"kind": MARKER_STATUS, "payload": {"phase": "ready", "detail": ""}}
+
+    if event_type == "turn_start":
+        return {"kind": MARKER_STATUS, "payload": {"phase": "running", "detail": ""}}
+
+    if event_type == "message_end":
+        msg = event.get("message", {})
+        if msg.get("role") == "assistant":
+            content = msg.get("content", [])
+            text = content[0].get("text", "") if content else ""
+            return {"kind": MARKER_HEARTBEAT, "payload": {"note": text[:120]}}
+        return None
+
+    if event_type == "agent_end":
+        messages = event.get("messages", [])
+        last_text: str = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", [])
+                last_text = content[0].get("text", "") if content else ""
+                break
+        return {"kind": MARKER_DONE, "payload": {"summary": last_text, "artifacts": None}}
+
+    if event_type == "needs_input":
+        question = event.get("question", "")
+        return {
+            "kind": MARKER_NEEDS_INPUT,
+            "payload": {"question": question, "options": None, "context": None},
+        }
+
+    return None
+
+
+def tail_rpc_stream(
+    stdout_iter: Iterable[str],
+    marker_path: str,
+    task_id: str,
+    append_fn: Callable[..., None] = append_marker,
+) -> None:
+    """Iterate omp ``--mode=rpc`` NDJSON lines and write markers to *marker_path*.
+
+    For each line in *stdout_iter*, calls ``translate_rpc_line``; if the result
+    is not ``None``, calls ``append_fn(marker_path, kind, payload, task_id)``
+    to persist the marker.  Lines that produce ``None`` (blank, non-JSON, or
+    unrecognised type) are silently skipped.
+
+    Parameters
+    ----------
+    stdout_iter:
+        An iterable of raw text lines (e.g. a file-like object or a list of
+        strings) representing omp's ``--mode=rpc`` output stream.
+    marker_path:
+        Absolute path to the ``.jsonl`` marker file to append to.
+    task_id:
+        Opaque task/session identifier written into each marker envelope.
+    append_fn:
+        Callable with signature ``(path, kind, payload, task_id)`` used to
+        write each marker.  Defaults to ``append_marker`` from ``markers.py``.
+        Inject a stub in tests to capture written markers without touching disk.
+    """
+    for raw_line in stdout_iter:
+        result = translate_rpc_line(raw_line)
+        if result is not None:
+            append_fn(marker_path, result["kind"], result["payload"], task_id)
+
+
+# ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
 
@@ -534,12 +652,17 @@ class OmpAdapter(AgentAdapter):
         tmux_session = f"{self._session_prefix}-{session_id[:8]}"
         pane = f"{tmux_session}:0.0"
 
-        # 1. Create a detached tmux session.
+        # Compute the marker file path and ensure its parent directory exists.
+        marker_file = f"{workdir}/.hermes/sessions/{session_id}.jsonl"
+        os.makedirs(os.path.dirname(marker_file), exist_ok=True)
+
+        # 1. Create a detached tmux session, injecting the marker file env var.
         self._tmux.run([
             "new-session", "-d",
             "-s", tmux_session,
             "-x", "200",
             "-y", "50",
+            "-e", f"HERMES_MARKER_FILE={marker_file}",
         ])
 
         # 2. Build and send the omp command into the session.
@@ -555,6 +678,7 @@ class OmpAdapter(AgentAdapter):
             tmux_session=tmux_session,
             pane=pane,
             launch_ts=datetime.now(tz=timezone.utc),
+            marker_file=marker_file,
         )
 
     # ------------------------------------------------------------------
@@ -654,6 +778,28 @@ class OmpAdapter(AgentAdapter):
         cmd = " ".join([self._binary] + argv)
         self._tmux.run(["send-keys", "-t", handle.pane, cmd, "Enter"])
         self._wait_for_prompt(handle.pane, timeout=_LAUNCH_READY_TIMEOUT)
+
+    # ------------------------------------------------------------------
+    # terminate()  [testable with stubbed TmuxRunner]
+    # ------------------------------------------------------------------
+
+    def terminate(self, handle: SessionHandle) -> None:
+        """Kill the tmux session associated with ``handle``.
+
+        Sends ``tmux kill-session -t <tmux_session>`` with ``check=False`` so a
+        nonzero exit (e.g. session already gone) is silently ignored.
+        ``CalledProcessError`` is also swallowed for belt-and-suspenders safety
+        when a custom ``TmuxRunner`` raises on failure.
+
+        Parameters
+        ----------
+        handle:
+            The ``SessionHandle`` whose tmux session should be destroyed.
+        """
+        try:
+            self._tmux.run(["kill-session", "-t", handle.tmux_session], check=False)
+        except subprocess.CalledProcessError:
+            pass
 
     # ------------------------------------------------------------------
     # Internal helpers

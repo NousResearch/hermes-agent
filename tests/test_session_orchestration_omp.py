@@ -15,9 +15,16 @@ Everything testable without a live tmux/omp session is covered here:
 8. ``resume()`` — asserts -c re-launch when PAUSED_HANDOFF; no-op otherwise.
 9. ``run_oneshot()`` — asserts the OmpRunner is called with correct argv and
    parse_oneshot_result is applied to stdout.
+10. ``launch()`` — marker-file injection: verifies -e HERMES_MARKER_FILE in
+    tmux args and handle.marker_file is set to expected path.
+11. ``terminate()`` — issues kill-session and swallows nonzero exit.
+12. ``translate_rpc_line()`` — round-trip tests for every mapped type + None
+    for unknown / blank / non-JSON input.
+13. ``tail_rpc_stream()`` — drives a fake stdout iter and asserts correct
+    marker kinds are written via the injected append_fn.
 
 LIVE-ONLY (not tested here):
-- ``launch()`` — requires real tmux + omp binary.
+- The actual tmux new-session system call in ``launch()`` (real tmux binary).
 - ``_wait_for_prompt()`` timing with real sleeps.
 - ``_load_buffer()`` — requires real tmux process.
 """
@@ -40,6 +47,14 @@ from session_orchestration.adapters.omp import (
     build_oneshot_argv,
     parse_oneshot_result,
     parse_pane_lifecycle,
+    tail_rpc_stream,
+    translate_rpc_line,
+)
+from session_orchestration.markers import (
+    MARKER_DONE,
+    MARKER_HEARTBEAT,
+    MARKER_NEEDS_INPUT,
+    MARKER_STATUS,
 )
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 
@@ -675,3 +690,294 @@ class TestResume:
             adapter.resume(handle, "prompt")
 
         mock_wait.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# launch() — marker-file injection (stubbed tmux + mocked prompt wait)
+# ---------------------------------------------------------------------------
+
+
+class TestLaunchMarkerInjection:
+    """Verify that launch() computes marker_file and passes -e HERMES_MARKER_FILE."""
+
+    def _run_launch(self, workdir: str) -> tuple[SessionHandle, FakeTmuxRunner]:
+        fake_tmux = FakeTmuxRunner(capture_output="last line\n> ")
+        adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=fake_tmux)
+        with (
+            patch.object(adapter, "_wait_for_prompt"),
+            patch("os.makedirs"),
+        ):
+            handle = adapter.launch(workdir=workdir, prompt="start")
+        return handle, fake_tmux
+
+    def test_new_session_args_contain_hermes_marker_file_flag(self):
+        """The '-e HERMES_MARKER_FILE=...' pair must appear in new-session args."""
+        handle, fake_tmux = self._run_launch("/some/workdir")
+        new_session_call = next(
+            c for c in fake_tmux.calls if c[0] == "new-session"
+        )
+        flat = " ".join(new_session_call)
+        assert "HERMES_MARKER_FILE" in flat, (
+            f"Expected HERMES_MARKER_FILE in new-session args; got: {new_session_call}"
+        )
+        assert "-e" in new_session_call
+
+    def test_marker_file_path_formula(self):
+        """marker_file must equal {workdir}/.hermes/sessions/{session_id}.jsonl."""
+        workdir = "/projects/myapp"
+        handle, _ = self._run_launch(workdir)
+        assert handle.marker_file is not None
+        expected_prefix = f"{workdir}/.hermes/sessions/"
+        assert handle.marker_file.startswith(expected_prefix)
+        assert handle.marker_file.endswith(".jsonl")
+
+    def test_marker_file_contains_session_id(self):
+        """The marker_file path must embed handle.session_id."""
+        handle, _ = self._run_launch("/workdir")
+        assert handle.marker_file is not None
+        assert handle.session_id in handle.marker_file
+
+    def test_marker_file_matches_env_var_in_tmux_args(self):
+        """The marker_file on handle must be the same value passed via -e."""
+        handle, fake_tmux = self._run_launch("/workdir")
+        new_session_call = next(
+            c for c in fake_tmux.calls if c[0] == "new-session"
+        )
+        # Find the value after '-e'
+        e_idx = new_session_call.index("-e")
+        env_val = new_session_call[e_idx + 1]  # "HERMES_MARKER_FILE=<path>"
+        assert env_val == f"HERMES_MARKER_FILE={handle.marker_file}"
+
+
+# ---------------------------------------------------------------------------
+# terminate()
+# ---------------------------------------------------------------------------
+
+
+class TestTerminate:
+    def test_terminate_issues_kill_session(self):
+        """terminate() must call tmux kill-session -t <tmux_session>."""
+        fake_tmux = FakeTmuxRunner()
+        adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=fake_tmux)
+        handle = _make_handle()
+
+        adapter.terminate(handle)
+
+        kill_calls = [c for c in fake_tmux.calls if c[0] == "kill-session"]
+        assert kill_calls, "Expected at least one kill-session call"
+        assert handle.tmux_session in kill_calls[0]
+
+    def test_terminate_passes_check_false(self):
+        """terminate() must not raise even when kill-session returns nonzero."""
+
+        class ErrorOnKillRunner:
+            def run(self, args: list[str], check: bool = True) -> str:
+                if args[0] == "kill-session":
+                    raise subprocess.CalledProcessError(1, "tmux kill-session")
+                return ""
+
+        adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=ErrorOnKillRunner())
+        handle = _make_handle()
+        # Must not raise — CalledProcessError is swallowed.
+        adapter.terminate(handle)
+
+    def test_terminate_targets_correct_session(self):
+        """terminate() must target handle.tmux_session, not a hard-coded name."""
+        fake_tmux = FakeTmuxRunner()
+        adapter = OmpAdapter(omp_runner=FakeOmpRunner(), tmux_runner=fake_tmux)
+        handle = _make_handle(pane="custom-session-xyz:0.0")
+        handle = SessionHandle(
+            session_id=handle.session_id,
+            tmux_session="custom-session-xyz",
+            pane=handle.pane,
+            launch_ts=handle.launch_ts,
+        )
+
+        adapter.terminate(handle)
+
+        kill_call = next(c for c in fake_tmux.calls if c[0] == "kill-session")
+        assert "custom-session-xyz" in kill_call
+
+
+# ---------------------------------------------------------------------------
+# translate_rpc_line()
+# ---------------------------------------------------------------------------
+
+
+class TestTranslateRpcLine:
+    """Round-trip tests: every mapped omp RPC event type + None for unknowns."""
+
+    def test_ready_maps_to_status_phase_ready(self):
+        line = json.dumps({"type": "ready"})
+        result = translate_rpc_line(line)
+        assert result is not None
+        assert result["kind"] == MARKER_STATUS
+        assert result["payload"]["phase"] == "ready"
+
+    def test_turn_start_maps_to_status_phase_running(self):
+        line = json.dumps({"type": "turn_start"})
+        result = translate_rpc_line(line)
+        assert result is not None
+        assert result["kind"] == MARKER_STATUS
+        assert result["payload"]["phase"] == "running"
+
+    def test_message_end_assistant_maps_to_heartbeat(self):
+        line = json.dumps({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Here is my answer."}],
+            },
+        })
+        result = translate_rpc_line(line)
+        assert result is not None
+        assert result["kind"] == MARKER_HEARTBEAT
+        assert result["payload"]["note"] == "Here is my answer."
+
+    def test_message_end_user_role_returns_none(self):
+        """message_end with role=user must not produce a marker."""
+        line = json.dumps({
+            "type": "message_end",
+            "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        })
+        assert translate_rpc_line(line) is None
+
+    def test_heartbeat_note_truncated_to_120_chars(self):
+        long_text = "x" * 200
+        line = json.dumps({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": long_text}],
+            },
+        })
+        result = translate_rpc_line(line)
+        assert result is not None
+        assert len(result["payload"]["note"]) == 120
+
+    def test_agent_end_maps_to_done_with_last_assistant_text(self):
+        line = json.dumps({
+            "type": "agent_end",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "do it"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "done!"}]},
+            ],
+        })
+        result = translate_rpc_line(line)
+        assert result is not None
+        assert result["kind"] == MARKER_DONE
+        assert result["payload"]["summary"] == "done!"
+        assert result["payload"]["artifacts"] is None
+
+    def test_agent_end_no_assistant_messages_gives_empty_summary(self):
+        line = json.dumps({"type": "agent_end", "messages": []})
+        result = translate_rpc_line(line)
+        assert result is not None
+        assert result["kind"] == MARKER_DONE
+        assert result["payload"]["summary"] == ""
+
+    def test_needs_input_maps_correctly(self):
+        line = json.dumps({"type": "needs_input", "question": "Which branch?"})
+        result = translate_rpc_line(line)
+        assert result is not None
+        assert result["kind"] == MARKER_NEEDS_INPUT
+        assert result["payload"]["question"] == "Which branch?"
+        assert result["payload"]["options"] is None
+        assert result["payload"]["context"] is None
+
+    def test_unknown_type_returns_none(self):
+        line = json.dumps({"type": "available_commands_update", "commands": []})
+        assert translate_rpc_line(line) is None
+
+    def test_blank_line_returns_none(self):
+        assert translate_rpc_line("") is None
+        assert translate_rpc_line("   ") is None
+
+    def test_non_json_line_returns_none(self):
+        assert translate_rpc_line("not json at all") is None
+
+    def test_session_type_returns_none(self):
+        """session event (startup info) is not a marker event."""
+        line = json.dumps({"type": "session", "version": 3, "id": "abc"})
+        assert translate_rpc_line(line) is None
+
+    def test_agent_start_returns_none(self):
+        line = json.dumps({"type": "agent_start"})
+        assert translate_rpc_line(line) is None
+
+
+# ---------------------------------------------------------------------------
+# tail_rpc_stream()
+# ---------------------------------------------------------------------------
+
+
+class TestTailRpcStream:
+    """Drive a fake stdout iter and assert correct marker kinds are written."""
+
+    def _run_stream(self, lines: list[str]) -> list[tuple]:
+        """Run tail_rpc_stream with a capturing append_fn; return recorded calls."""
+        recorded: list[tuple] = []
+
+        def fake_append(path: str, kind: str, payload: dict, task_id: str) -> None:
+            recorded.append((path, kind, payload, task_id))
+
+        tail_rpc_stream(
+            stdout_iter=iter(lines),
+            marker_path="/fake/marker.jsonl",
+            task_id="test-task-001",
+            append_fn=fake_append,
+        )
+        return recorded
+
+    def test_ready_event_writes_status_marker(self):
+        lines = [json.dumps({"type": "ready"})]
+        calls = self._run_stream(lines)
+        assert len(calls) == 1
+        assert calls[0][1] == MARKER_STATUS  # kind
+        assert calls[0][2]["phase"] == "ready"
+
+    def test_multiple_events_write_multiple_markers(self):
+        lines = [
+            json.dumps({"type": "ready"}),
+            json.dumps({"type": "turn_start"}),
+            json.dumps({
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "progress"}],
+                },
+            }),
+            json.dumps({
+                "type": "agent_end",
+                "messages": [
+                    {"role": "assistant", "content": [{"type": "text", "text": "final"}]},
+                ],
+            }),
+        ]
+        calls = self._run_stream(lines)
+        kinds = [c[1] for c in calls]
+        assert kinds == [MARKER_STATUS, MARKER_STATUS, MARKER_HEARTBEAT, MARKER_DONE]
+
+    def test_unknown_events_skipped(self):
+        lines = [
+            json.dumps({"type": "available_commands_update", "commands": []}),
+            json.dumps({"type": "ready"}),
+        ]
+        calls = self._run_stream(lines)
+        assert len(calls) == 1
+        assert calls[0][1] == MARKER_STATUS
+
+    def test_blank_and_non_json_lines_skipped(self):
+        lines = ["", "  ", "omp v16.1.15 starting up", json.dumps({"type": "ready"})]
+        calls = self._run_stream(lines)
+        assert len(calls) == 1
+
+    def test_path_and_task_id_passed_to_append_fn(self):
+        lines = [json.dumps({"type": "ready"})]
+        calls = self._run_stream(lines)
+        assert calls[0][0] == "/fake/marker.jsonl"  # path
+        assert calls[0][3] == "test-task-001"  # task_id
+
+    def test_empty_stream_writes_no_markers(self):
+        calls = self._run_stream([])
+        assert calls == []

@@ -189,7 +189,17 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         stripped = [line.replace("\x00", "") for line in original]
         sanitized = _sanitize_env_lines(stripped)
         if sanitized != original:
+            import stat
             import tempfile
+
+            # Preserve original permissions so Docker volume mounts
+            # aren't clobbered (mirrors save_env_value / remove_env_value).
+            original_mode = None
+            try:
+                original_mode = stat.S_IMODE(path.stat().st_mode)
+            except OSError:
+                pass
+
             fd, tmp = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
             )
@@ -199,6 +209,14 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                     f.flush()
                     os.fsync(f.fileno())
                 atomic_replace(tmp, path)
+                # Restore the original file mode instead of relying on
+                # mkstemp's default (0600).  For new files without a
+                # prior mode, _secure_file tightens to 0600.
+                if original_mode is not None:
+                    try:
+                        os.chmod(path, original_mode)
+                    except OSError:
+                        pass
             except BaseException:
                 try:
                     os.unlink(tmp)

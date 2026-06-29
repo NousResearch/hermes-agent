@@ -89,3 +89,42 @@ def test_env_loader_sanitizes_before_dotenv():
         assert parsed_token == token
     finally:
         env_path.unlink(missing_ok=True)
+
+
+def test_sanitize_env_file_if_needed_preserves_permissions():
+    """_sanitize_env_file_if_needed preserves the original file mode.
+
+    Mirrors the sanitize_env_file permission-preservation tests in
+    test_config.py.  When a .env file has an operator-set mode (e.g.
+    0o640 for Docker volume mounts), the sanitize rewrite must not
+    clobber it to 0o600 (mkstemp default).
+    """
+    import os
+    import stat
+
+    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+
+    token = "0123456789:test"
+    # Concatenated line that triggers sanitization
+    corrupted = f"TELEGRAM_BOT_TOKEN={token}ANTHROPIC_API_KEY=sk-ant-test\n"
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(corrupted)
+        env_path = Path(f.name)
+
+    try:
+        # Set a non-default mode (simulates Docker volume mount at 0640)
+        target_mode = 0o640
+        os.chmod(env_path, target_mode)
+
+        _sanitize_env_file_if_needed(env_path)
+
+        actual_mode = stat.S_IMODE(env_path.stat().st_mode)
+        assert actual_mode == target_mode, (
+            f"Expected mode {oct(target_mode)}, got {oct(actual_mode)} — "
+            "permissions were clobbered by sanitize"
+        )
+    finally:
+        env_path.unlink(missing_ok=True)

@@ -2000,6 +2000,7 @@ export const en: Translations = {
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
+      messageTimestampAria: 'Message sent at',
       copy: 'Copy',
       refresh: 'Refresh',
       moreActions: 'More actions',

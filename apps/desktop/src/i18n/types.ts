@@ -1647,6 +1647,7 @@ export interface Translations {
       thinking: string
       today: (time: string) => string
       yesterday: (time: string) => string
+      messageTimestampAria: string
       copy: string
       refresh: string
       moreActions: string

@@ -2121,6 +2121,7 @@ export const ja = defineLocale({
       thinking: '考え中',
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
+      messageTimestampAria: '送信日時',
       copy: 'コピー',
       refresh: '更新',
       moreActions: 'その他のアクション',

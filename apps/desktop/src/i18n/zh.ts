@@ -2167,6 +2167,7 @@ export const zh: Translations = {
       thinking: '思考中',
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,
+      messageTimestampAria: '消息发送于',
       copy: '复制',
       refresh: '刷新',
       moreActions: '更多操作',

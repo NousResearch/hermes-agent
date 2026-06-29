@@ -1044,6 +1044,7 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
     tag = str(value.get("tag", "") or value.get("type", "")).strip().lower()
     next_in_rich_block = in_rich_block or tag in {
         "plain_text",
+        "text",
         "lark_md",
         "markdown",
         "note",
@@ -4190,6 +4191,24 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
+        # Feishu doesn't include full card JSON in webhook events for bots
+        # that didn't send the card. Fall back to im.v1.message.get API.
+        if (
+            normalized.raw_type in ("interactive", "card")
+            and normalized.text_content == FALLBACK_INTERACTIVE_TEXT
+            and message_id
+        ):
+            api_text = await self._fetch_message_text(message_id)
+            if api_text and api_text != FALLBACK_INTERACTIVE_TEXT:
+                normalized = FeishuNormalizedMessage(
+                    raw_type=normalized.raw_type,
+                    text_content=api_text,
+                    relation_kind="interactive",
+                    metadata=normalized.metadata,
+                    mentions=list(normalized.mentions),
+                )
+                logger.info("[Feishu] Interactive card %s: API fallback extracted text", message_id)
+
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id,
             normalized=normalized,

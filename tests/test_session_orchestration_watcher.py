@@ -35,11 +35,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import json
+from datetime import timedelta
+
 from session_orchestration.adapters.base import AgentAdapter
 from session_orchestration.adapters.verify import AdapterProbeSpec
+from session_orchestration.markers import append_marker
 from session_orchestration.registry import SessionOrchestrationRegistry
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
-from session_orchestration.watcher import SessionWatcher, _pane_hash, run_tick
+from session_orchestration.watcher import (
+    SessionWatcher,
+    _parse_marker_ts,
+    _pane_hash,
+    run_tick,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -480,3 +489,249 @@ class TestIdleTickIncrement:
         watcher.tick()
         row = registry.get(task_id)
         assert (row.get("idle_ticks") or 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Marker tailing tests (T008)
+# ---------------------------------------------------------------------------
+
+
+def _seed_row_with_workdir(
+    registry: SessionOrchestrationRegistry,
+    task_id: str,
+    workdir: str,
+    *,
+    agent: str = "fake",
+    state: str = "RUNNING",
+    tmux_session: str = "hermes-fake-marker",
+    **extra,
+) -> None:
+    """Insert a row that includes a workdir so the watcher can locate the
+    marker file at ``{workdir}/.hermes/sessions/{task_id}.jsonl``."""
+    registry.upsert(
+        task_id,
+        agent=agent,
+        run_id=f"run-{uuid.uuid4().hex[:8]}",
+        repo=f"repo-{uuid.uuid4().hex[:8]}",
+        state=state,
+        tmux_session=tmux_session,
+        workdir=workdir,
+        **extra,
+    )
+
+
+def _write_stale_marker(marker_file: Path, kind: str, task_id: str, age_seconds: int = 400) -> None:
+    """Write a marker line with a timestamp ``age_seconds`` in the past."""
+    stale_ts = (datetime.now(tz=timezone.utc) - timedelta(seconds=age_seconds)).isoformat()
+    line = json.dumps({"v": 1, "ts": stale_ts, "kind": kind, "task": task_id, "payload": {}})
+    marker_file.parent.mkdir(parents=True, exist_ok=True)
+    with marker_file.open("ab") as fh:
+        fh.write((line + "\n").encode())
+
+
+class TestMarkerTailing:
+    """Per-tick marker tailing: authoritative state + heartbeat hang-guard."""
+
+    def test_recent_marker_overrides_pane_state(self, registry, tmp_path):
+        """A recent marker's kind determines state; adapter.detect() is NOT called."""
+        task_id = "t-marker-recent-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir)
+
+        # Write a recent 'status' marker (maps to RUNNING)
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(str(marker_file), "status", {"phase": "running"}, task=task_id)
+
+        # Adapter would return WAITING_USER if called — marker must override it
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "RUNNING", (
+            "status marker (->RUNNING) must override adapter WAITING_USER"
+        )
+        assert adapter.detect_calls == [], (
+            "adapter.detect() must NOT be called when a recent marker provides state"
+        )
+
+    def test_stale_marker_falls_back_to_pane(self, registry, tmp_path):
+        """A marker older than the recency window is ignored; pane detect() is used."""
+        task_id = "t-marker-stale-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir)
+
+        # Write a stale 'status' marker (400 s old — outside 300 s window)
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        _write_stale_marker(marker_file, "status", task_id, age_seconds=400)
+
+        # Adapter returns WAITING_USER (pane fallback should win)
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "WAITING_USER", (
+            "stale marker must not override state; pane detect() should win"
+        )
+        assert len(adapter.detect_calls) == 1, (
+            "adapter.detect() must be called when all markers are stale"
+        )
+
+    def test_absent_marker_file_falls_back_to_pane(self, registry, tmp_path):
+        """When the marker file does not exist, pane detect() is the sole signal."""
+        task_id = "t-marker-absent-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir)
+        # No marker file created
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        capture = FakeCapture("pane output")
+        watcher = _make_watcher(registry, adapter, capture)
+
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "WAITING_USER"
+        assert len(adapter.detect_calls) == 1
+
+    def test_marker_offset_advances_across_ticks(self, registry, tmp_path):
+        """marker_offset in the registry advances after each tick so each tick
+        reads only NEW marker lines (never re-reads previously consumed lines)."""
+        task_id = "t-marker-offset-001"
+        workdir = str(tmp_path)
+        _seed_row_with_workdir(registry, task_id, workdir)
+
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write first marker and run tick 1
+        append_marker(str(marker_file), "status", {"phase": "running"}, task=task_id)
+        offset_after_first_marker = marker_file.stat().st_size
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("pane text")
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        row_after_tick1 = registry.get(task_id)
+        assert row_after_tick1 is not None
+        assert row_after_tick1.get("marker_offset", 0) == offset_after_first_marker, (
+            "marker_offset must advance to end of first marker after tick 1"
+        )
+
+        # Write second marker and run tick 2
+        append_marker(str(marker_file), "heartbeat", {"note": None}, task=task_id)
+        offset_after_second_marker = marker_file.stat().st_size
+
+        watcher.tick()
+
+        row_after_tick2 = registry.get(task_id)
+        assert row_after_tick2 is not None
+        assert row_after_tick2.get("marker_offset", 0) == offset_after_second_marker, (
+            "marker_offset must advance to end of second marker after tick 2"
+        )
+        assert row_after_tick2["marker_offset"] > row_after_tick1["marker_offset"], (
+            "marker_offset must be strictly larger after tick 2 than tick 1"
+        )
+
+    def test_heartbeat_marker_suppresses_hang_guard(self, registry, tmp_path, monkeypatch):
+        """A recent heartbeat marker prevents _on_hang from firing even when pane
+        hash is unchanged past idle/stale thresholds."""
+        task_id = "t-hang-suppress-001"
+        workdir = str(tmp_path)
+        static_pane = "static pane text"
+        # Pre-set idle_ticks=5 and last_pane_hash matching the static pane text so
+        # the hang condition (idle_ticks > 0, pane unchanged) would normally fire.
+        _seed_row_with_workdir(
+            registry,
+            task_id,
+            workdir,
+            idle_ticks=5,
+            last_pane_hash=_pane_hash(static_pane),
+        )
+
+        # Write a recent heartbeat marker
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        append_marker(str(marker_file), "heartbeat", {"note": None}, task=task_id)
+
+        hang_called = []
+        monkeypatch.setattr(
+            "session_orchestration.watcher._on_hang",
+            lambda *a, **kw: hang_called.append(True),
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture(static_pane)
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert hang_called == [], (
+            "_on_hang must NOT be called when a recent heartbeat marker exists"
+        )
+
+    def test_stale_heartbeat_does_not_suppress_hang_guard(self, registry, tmp_path, monkeypatch):
+        """A heartbeat marker older than the recency window must not suppress _on_hang."""
+        task_id = "t-hang-stale-001"
+        workdir = str(tmp_path)
+        static_pane = "static pane text stale"
+        _seed_row_with_workdir(
+            registry,
+            task_id,
+            workdir,
+            idle_ticks=5,
+            last_pane_hash=_pane_hash(static_pane),
+        )
+
+        # Write a stale heartbeat marker (400 s old — outside window)
+        marker_file = tmp_path / ".hermes" / "sessions" / f"{task_id}.jsonl"
+        _write_stale_marker(marker_file, "heartbeat", task_id, age_seconds=400)
+
+        hang_called = []
+        monkeypatch.setattr(
+            "session_orchestration.watcher._on_hang",
+            lambda *a, **kw: hang_called.append(True),
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture(static_pane)
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert hang_called == [True], (
+            "_on_hang must be called when the only heartbeat marker is stale"
+        )
+
+    def test_migrate_schema_idempotent(self, db_path):
+        """Creating two registry instances on the same DB must not raise.
+
+        The second creation triggers _migrate_schema on an already-migrated DB
+        (the marker_offset column already exists); the idempotent ALTER TABLE
+        must swallow the OperationalError silently.
+        """
+        reg1 = SessionOrchestrationRegistry(db_path=db_path)
+        reg2 = SessionOrchestrationRegistry(db_path=db_path)
+        # Explicitly calling _migrate_schema a third time must also be silent
+        reg2._migrate_schema()
+        # Verify the column is present by inserting and reading back a row
+        reg1.upsert(
+            "t-migrate-001",
+            agent="fake",
+            run_id="run-mig-001",
+            repo="repo-mig-001",
+            marker_offset=42,
+        )
+        row = reg1.get("t-migrate-001")
+        assert row is not None
+        assert row.get("marker_offset") == 42, (
+            "marker_offset column must be present and writable after migration"
+        )

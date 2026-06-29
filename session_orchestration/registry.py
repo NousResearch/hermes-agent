@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS session_orchestration (
     source                 TEXT NOT NULL DEFAULT 'spawn',
     run_id                 TEXT,
     repo                   TEXT,
+    marker_offset          INTEGER NOT NULL DEFAULT 0,
     created_at             TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(run_id, repo)
@@ -206,6 +207,7 @@ class SessionOrchestrationRegistry:
         self._db_path = db_path
         self._busy_timeout_ms = busy_timeout_ms
         self._ensure_schema()
+        self._migrate_schema()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -240,6 +242,25 @@ class SessionOrchestrationRegistry:
             conn.executescript(SESSION_ORCHESTRATION_DDL)
         finally:
             conn.close()
+
+    def _migrate_schema(self) -> None:
+        """Add new columns to existing tables (idempotent ALTER TABLE).
+
+        Called after ``_ensure_schema`` on every startup.  Each ALTER TABLE
+        is wrapped in a try/except so repeated calls on an already-migrated
+        DB are silent no-ops (SQLite raises OperationalError when the column
+        already exists).
+        """
+        def _do(conn: sqlite3.Connection) -> None:
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN marker_offset INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+        self._write(_do)
 
     def _write(self, fn, conn: Optional[sqlite3.Connection] = None) -> Any:
         """Execute *fn(conn)* inside a BEGIN IMMEDIATE transaction.

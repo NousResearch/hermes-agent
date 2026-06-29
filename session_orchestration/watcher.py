@@ -56,6 +56,7 @@ from typing import Any, Dict, List, Optional
 
 from session_orchestration.adapters.base import AgentAdapter
 from session_orchestration.adapters.verify import verify_adapters
+from session_orchestration.markers import marker_kind_to_lifecycle, read_markers_since
 from session_orchestration.registry import SessionOrchestrationRegistry
 from session_orchestration.types import SessionHandle, SessionLifecycle
 
@@ -70,6 +71,12 @@ _LOCK_TTL_SECONDS: float = 300.0
 
 #: Heartbeat cadence: fire every N ticks (~5 min at 1-min cron).
 _HEARTBEAT_CADENCE: int = 5
+
+#: Recency window for marker-derived state (seconds).  Markers older than
+#: this threshold are treated as stale and the watcher falls back to pane
+#: detection.  Matches the lock TTL so a single missed cron tick does not
+#: cause a spurious fallback.
+_MARKER_RECENCY_SECONDS: float = 300.0
 
 #: Active states — rows in these states are iterated by the watcher.
 _ACTIVE_STATES = frozenset(
@@ -88,6 +95,26 @@ _TERMINAL_STATES = frozenset(
         SessionLifecycle.ERROR.value,
     }
 )
+
+
+# ---------------------------------------------------------------------------
+# Marker-recency helper
+# ---------------------------------------------------------------------------
+
+
+def _parse_marker_ts(ts_str: str) -> float:
+    """Parse an ISO-8601 UTC timestamp string to a POSIX float.
+
+    Returns 0.0 on any parse failure so malformed or missing timestamps are
+    always treated as maximally stale (never recent).
+    """
+    try:
+        dt = datetime.fromisoformat(ts_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -670,13 +697,41 @@ class SessionWatcher:
         Returns True if the row was fully processed, False if it was skipped
         (e.g. because the per-session lock was held by the relay).
         """
+        # ------------------------------------------------------------------
+        # 0. Read new marker lines (append-only; no lock needed)
+        # ------------------------------------------------------------------
+        workdir = row.get("workdir")
+        old_marker_offset = int(row.get("marker_offset") or 0)
+        new_offset = old_marker_offset
+        new_markers: List[Any] = []
+
+        if workdir:
+            marker_file = f"{workdir}/.hermes/sessions/{task_id}.jsonl"
+            try:
+                new_markers, new_offset = read_markers_since(marker_file, old_marker_offset)
+            except OSError as exc:
+                logger.warning(
+                    "watcher._process_row: read_markers_since failed for task_id=%s: %s",
+                    task_id,
+                    exc,
+                )
+
+        now = time.time()
+        recent_markers = [
+            m for m in new_markers
+            if _parse_marker_ts(m.get("ts", "")) >= now - _MARKER_RECENCY_SECONDS
+        ]
+        has_recent_markers = bool(recent_markers)
+
+        # ------------------------------------------------------------------
+        # 1. Acquire per-session lock — BEFORE any capture-pane call
+        # ------------------------------------------------------------------
         # The registry has tmux_session but not a separate pane column;
         # derive the pane target using the same logic as _build_handle.
         tmux_session = row.get("tmux_session") or ""
         pane = f"{tmux_session}:0.0" if tmux_session else ""
         holder = f"watcher:pid:{os.getpid()}:{time.time():.3f}"
 
-        # Acquire per-session lock — BEFORE any capture-pane call
         lock_acquired = self._registry.acquire_lock(
             task_id, holder, ttl_seconds=self._lock_ttl
         )
@@ -696,17 +751,29 @@ class SessionWatcher:
             # Always release — crash-safe because relay reclaims after TTL
             self._registry.release_lock(task_id, holder)
 
-        # Detect state via adapter (no lock needed for pure detection)
-        handle = self._build_handle(row)
-        try:
-            new_lifecycle = adapter.detect(handle)
-        except Exception as exc:
-            logger.error(
-                "watcher.tick: adapter.detect() failed for task_id=%s: %s",
-                task_id,
-                exc,
-            )
-            return
+        # ------------------------------------------------------------------
+        # 2. Determine authoritative lifecycle state
+        #    Priority: recent marker > pane detect
+        # ------------------------------------------------------------------
+        marker_lifecycle: Optional[SessionLifecycle] = None
+        if has_recent_markers:
+            latest_kind = recent_markers[-1]["kind"]
+            marker_lifecycle = marker_kind_to_lifecycle(latest_kind)
+
+        if marker_lifecycle is not None:
+            new_lifecycle = marker_lifecycle
+        else:
+            # Fall back to pane-scraping via adapter.detect()
+            handle = self._build_handle(row)
+            try:
+                new_lifecycle = adapter.detect(handle)
+            except Exception as exc:
+                logger.error(
+                    "watcher.tick: adapter.detect() failed for task_id=%s: %s",
+                    task_id,
+                    exc,
+                )
+                return
 
         new_state = new_lifecycle.value
         old_state = row.get("state", SessionLifecycle.RUNNING.value)
@@ -731,6 +798,9 @@ class SessionWatcher:
         else:
             # Atomic increment — done via registry.increment_counter
             pass  # handled below
+        # Persist advanced marker offset (only when new lines were consumed)
+        if new_offset != old_marker_offset:
+            update_fields["marker_offset"] = new_offset
 
         # Write state update (single writer)
         self._registry.upsert(
@@ -779,10 +849,14 @@ class SessionWatcher:
         _on_heartbeat_tick(task_id, fresh_row)
 
         # Hang hook — only when state is RUNNING (never WAITING_USER / PAUSED_HANDOFF)
+        # Suppressed when any marker was written within the recency window:
+        # a recent marker proves the agent is alive even if the pane hash is
+        # frozen past the idle/stale thresholds.
         if (
             new_state == SessionLifecycle.RUNNING.value
             and not pane_changed
             and (fresh_row.get("idle_ticks") or 0) > 0
+            and not has_recent_markers
         ):
             _on_hang(
                 task_id,

@@ -2572,6 +2572,25 @@ class SlackAdapter(BasePlatformAdapter):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
+        # Early auth check: reject unauthorized users before any API calls
+        # (thread context fetch, user name resolution, file downloads).
+        # Pattern matches Telegram fix #54164 — gate at the adapter level
+        # BEFORE event construction consumes resources.
+        if user_id:
+            _source = self.build_source(
+                chat_id=channel_id, chat_name="",
+                chat_type="dm" if is_dm else "group",
+                user_id=user_id, user_name="",
+            )
+            _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+            _auth_fn = getattr(_runner, "_is_user_authorized", None)
+            if callable(_auth_fn) and not _auth_fn(_source):
+                logger.warning(
+                    "[Slack] Early reject of unauthorized user %s in channel %s",
+                    user_id, channel_id,
+                )
+                return
+
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).

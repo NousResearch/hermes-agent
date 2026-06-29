@@ -816,6 +816,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Council-mode huddles opened by the coordinator. While a huddle is
+        # open/closed, the coordinator must not ambiently respond to worker
+        # chatter in that thread; only explicit direct mentions should wake it.
+        self._council_huddle_threads: Dict[str, str] = {}
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
@@ -1045,12 +1049,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 _role_authorized = False
+                _self_role_mentions = adapter_self._message_mentions_own_role(message)
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not self._client.user or (
+                            self._client.user not in message.mentions
+                            and not _self_role_mentions
+                        ):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -1082,7 +1090,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not isinstance(message.channel, discord.DMChannel) and message.mentions:
                     _self_mentioned = (
                         self._client.user is not None
-                        and self._client.user in message.mentions
+                        and (
+                            self._client.user in message.mentions
+                            or bool(_self_role_mentions)
+                        )
                     )
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
@@ -4358,6 +4369,31 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _message_mentions_own_role(self, message: Any) -> list[Any]:
+        """Return role mentions that belong to this bot's guild member.
+
+        Discord role mentions are separate from ``message.mentions``. For a
+        shared role like @Crew, every participating bot should treat that role
+        mention as an explicit call even when the message also mentions a human.
+        """
+        if not self._client.user or not getattr(message, "guild", None) or not getattr(message, "role_mentions", None):
+            return []
+        try:
+            guild_me = getattr(message.guild, "me", None)
+            if guild_me is None and hasattr(message.guild, "get_member"):
+                guild_me = message.guild.get_member(getattr(self._client.user, "id", None))
+            own_role_ids = {
+                int(getattr(role, "id"))
+                for role in getattr(guild_me, "roles", []) or []
+                if getattr(role, "id", None) is not None
+            }
+            return [
+                role for role in (getattr(message, "role_mentions", []) or [])
+                if int(getattr(role, "id", 0)) in own_role_ids
+            ]
+        except Exception:
+            return []
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4376,6 +4412,428 @@ class DiscordAdapter(BasePlatformAdapter):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
         return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _discord_crew_call_aliases(self) -> set[str]:
+        """Return phrases that intentionally wake every participating crew bot."""
+        raw = os.getenv("DISCORD_CREW_ALIASES", "")
+        return {alias.strip().lower() for alias in raw.split(",") if alias.strip()}
+
+    def _matches_crew_call_alias(self, content: str) -> bool:
+        """Return True when a message explicitly calls the configured crew."""
+        aliases = self._discord_crew_call_aliases()
+        if not aliases:
+            return False
+        normalized = re.sub(r"\s+", " ", (content or "").strip().lower())
+        if not normalized:
+            return False
+        for alias in aliases:
+            if alias.endswith(":"):
+                if normalized.startswith(alias):
+                    return True
+                continue
+            escaped = re.escape(alias)
+            if re.search(rf"(?:^|\b){escaped}(?:\b|\s*[:!,.-])", normalized):
+                return True
+        return False
+
+    @staticmethod
+    def _discord_council_no_tools_requested(content: str) -> bool:
+        """Return True when the user explicitly forbids tool/huddle work.
+
+        Council mode creates/uses Discord huddle threads and wakes worker bots.
+        If a smoke test says "don't run tools" or "no tools", acknowledge the
+        boundary instead of silently falling through to a bare LLM answer or
+        opening a huddle anyway.
+        """
+        text = re.sub(r"\s+", " ", (content or "").strip().lower())
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r"\b(?:do\s+not|don't|dont)\s+(?:run|use)\s+(?:any\s+)?tools?\b"
+                r"|\bno\s+tools?\b"
+                r"|\bwithout\s+tools?\b",
+                text,
+            )
+        )
+
+    @staticmethod
+    def _coerce_discord_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+    def _discord_council_config(self) -> dict:
+        """Return coordinator council-mode config.
+
+        ``discord.council_mode`` keeps @Crew as a coordinator trigger: Pixoid
+        opens a bounded workbench huddle, explicitly invites worker bots, waits
+        one short round, closes the huddle, then synthesizes back in the origin
+        chat. Worker profiles should keep ``thread_require_mention: true`` so
+        the close marker and acknowledgements do not wake them again.
+        """
+        raw = self.config.extra.get("council_mode")
+        if raw is None:
+            raw = self.config.extra.get("council")
+        return raw if isinstance(raw, dict) else {}
+
+    def _discord_council_enabled(self) -> bool:
+        cfg = self._discord_council_config()
+        raw = cfg.get("enabled")
+        if raw is None:
+            raw = os.getenv("DISCORD_COUNCIL_MODE_ENABLED")
+        return self._coerce_discord_bool(raw, default=False)
+
+    def _discord_council_wait_seconds(self) -> float:
+        cfg = self._discord_council_config()
+        raw = cfg.get("wait_seconds", os.getenv("DISCORD_COUNCIL_WAIT_SECONDS", 75))
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 75.0
+
+    def _discord_council_history_limit(self) -> int:
+        cfg = self._discord_council_config()
+        raw = cfg.get("history_limit", os.getenv("DISCORD_COUNCIL_HISTORY_LIMIT", 80))
+        try:
+            return max(5, min(200, int(raw)))
+        except (TypeError, ValueError):
+            return 80
+
+    def _discord_council_workbench_channel_id(self) -> Optional[str]:
+        cfg = self._discord_council_config()
+        raw = cfg.get("workbench_channel_id") or cfg.get("channel_id") or os.getenv("DISCORD_COUNCIL_WORKBENCH_CHANNEL_ID")
+        raw_s = str(raw).strip() if raw is not None else ""
+        return raw_s or None
+
+    def _discord_council_workers(self) -> list[dict[str, str]]:
+        cfg = self._discord_council_config()
+        workers = cfg.get("workers")
+        if isinstance(workers, str) and workers.strip():
+            try:
+                workers = json.loads(workers)
+            except Exception:
+                workers = [part.strip() for part in workers.split(",") if part.strip()]
+        if workers is None:
+            raw = os.getenv("DISCORD_COUNCIL_WORKERS", "").strip()
+            if raw:
+                try:
+                    workers = json.loads(raw)
+                except Exception:
+                    workers = [part.strip() for part in raw.split(",") if part.strip()]
+        if workers is None:
+            workers = []
+        result: list[dict[str, str]] = []
+        for item in workers:
+            if isinstance(item, dict):
+                name = str(item.get("name") or item.get("label") or item.get("id") or "worker").strip()
+                user_id = str(item.get("id") or item.get("user_id") or "").strip()
+                role = str(item.get("role") or item.get("assignment") or "").strip()
+            else:
+                name = str(item).strip()
+                user_id = ""
+                role = ""
+            if user_id.startswith("<@") and user_id.endswith(">"):
+                user_id = user_id.lstrip("<@!").rstrip(">")
+            if not user_id:
+                continue
+            result.append({"name": name or user_id, "id": user_id, "role": role})
+        return result
+
+    def _derive_council_thread_name(self, request_text: str) -> str:
+        cfg = self._discord_council_config()
+        prefix = str(cfg.get("thread_prefix") or "crew-huddle").strip() or "crew-huddle"
+        cleaned = re.sub(r"<@!?\d+>|<@&\d+>", "", request_text or "")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:,.\n\t")
+        if not cleaned:
+            cleaned = "untitled"
+        if len(cleaned) > 48:
+            cleaned = cleaned[:45].rstrip() + "..."
+        name = f"{prefix}: {cleaned}"
+        return name[:90]
+
+    def _format_council_brief(self, request_text: str, workers: list[dict[str, str]], origin_channel_id: str) -> str:
+        lines = [
+            "Council brief — bounded huddle.",
+            "",
+            f"User request: {request_text.strip() or '(no text)'}",
+            f"Origin channel/thread: <#{origin_channel_id}>",
+            "",
+            "Worker rules:",
+            "- Reply once, briefly, only for your assigned perspective.",
+            "- Do not run tools unless the brief explicitly asks you to.",
+            "- Do not reply to acknowledgements, thanks, lol/ok, or the close marker.",
+            "- When the coordinator posts `Huddle closed`, stop unless this huddle is reopened or you are tagged directly.",
+            "",
+            "Assignments:",
+        ]
+        default_roles = {
+            "boba": "reality check / outside-in risks",
+            "quill": "source-of-truth, docs, vault implications",
+            "tinker": "implementation feasibility and breakage risks",
+        }
+        mention_line = []
+        for worker in workers:
+            name = worker["name"]
+            wid = worker["id"]
+            role = worker.get("role") or default_roles.get(name.lower(), "specialist input")
+            mention = f"<@{wid}>"
+            mention_line.append(mention)
+            lines.append(f"- {mention} ({name}): {role}")
+        lines.extend([
+            "",
+            "Council members: " + " ".join(mention_line),
+            "",
+            "Pixoid will collect one round, close this huddle, then return one final answer to the user.",
+        ])
+        return "\n".join(lines)
+
+    async def _resolve_council_huddle_thread(self, message: Any, thread_name: str) -> Optional[Any]:
+        workbench_id = self._discord_council_workbench_channel_id()
+        current = getattr(message, "channel", None)
+        parent_id = str(getattr(current, "parent_id", "") or "")
+
+        # If the user is already in the configured workbench thread, use it as
+        # the huddle so @Crew can invite the workers into the current thread.
+        if isinstance(current, discord.Thread) and workbench_id and parent_id == workbench_id:
+            return current
+
+        parent = None
+        if workbench_id and self._client:
+            parent = self._client.get_channel(int(workbench_id))
+            if parent is None:
+                parent = await self._client.fetch_channel(int(workbench_id))
+        if parent is None:
+            parent = getattr(current, "parent", None) if isinstance(current, discord.Thread) else current
+        if parent is None:
+            return None
+
+        try:
+            return await parent.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+                reason="Hermes council-mode huddle",
+            )
+        except Exception:
+            try:
+                seed = await parent.send(f"🧵 Council huddle: **{thread_name}**")
+                return await seed.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason="Hermes council-mode huddle fallback",
+                )
+            except Exception:
+                logger.warning("[%s] Failed to create council huddle thread", self.name, exc_info=True)
+                return None
+
+    async def _add_council_workers_to_thread(self, thread: Any, workers: list[dict[str, str]]) -> list[str]:
+        failures: list[str] = []
+        add_user = getattr(thread, "add_user", None)
+        if not callable(add_user):
+            return failures
+        for worker in workers:
+            wid = worker.get("id") or ""
+            try:
+                user_obj = None
+                if self._client and hasattr(self._client, "get_user"):
+                    user_obj = self._client.get_user(int(wid))
+                if user_obj is None and self._client and hasattr(self._client, "fetch_user"):
+                    with suppress(Exception):
+                        user_obj = await self._client.fetch_user(int(wid))
+                if user_obj is None:
+                    user_obj = discord.Object(id=int(wid))
+                await add_user(user_obj)
+            except Exception as exc:
+                failures.append(f"{worker.get('name') or wid}: {exc}")
+        return failures
+
+    async def _collect_council_transcript(self, thread: Any, limit: int) -> str:
+        history = getattr(thread, "history", None)
+        if not callable(history):
+            return "(No readable huddle transcript; thread history unavailable.)"
+        lines: list[str] = []
+        try:
+            async for msg in history(limit=limit, oldest_first=True):
+                content = getattr(msg, "clean_content", None) or getattr(msg, "content", "") or ""
+                if not content:
+                    continue
+                author = getattr(msg, "author", None)
+                name = getattr(author, "display_name", None) or getattr(author, "name", None) or "unknown"
+                if getattr(author, "bot", False):
+                    name = f"{name} [bot]"
+                lines.append(f"[{name}] {content}")
+        except Exception as exc:
+            return f"(Failed to read huddle transcript: {exc})"
+        return "\n".join(lines) if lines else "(No worker replies captured.)"
+
+    async def _run_council_synthesis_after_wait(
+        self,
+        *,
+        origin_message: Any,
+        huddle_thread: Any,
+        request_text: str,
+        wait_seconds: float,
+    ) -> None:
+        thread_id = str(getattr(huddle_thread, "id", ""))
+        try:
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            transcript = await self._collect_council_transcript(
+                huddle_thread,
+                self._discord_council_history_limit(),
+            )
+            close_text = (
+                "Huddle closed. I have enough for this round. "
+                "Workers, stop here unless this thread is reopened or you are tagged directly."
+            )
+            with suppress(Exception):
+                await huddle_thread.send(close_text)
+            if thread_id:
+                self._council_huddle_threads[thread_id] = "closed"
+
+            origin_channel = getattr(origin_message, "channel", None)
+            origin_is_thread = isinstance(origin_channel, discord.Thread)
+            origin_parent_id = self._get_parent_channel_id(origin_channel) if origin_is_thread else None
+            chat_type = "thread" if origin_is_thread else "group"
+            chat_name = self._format_thread_chat_name(origin_channel) if origin_is_thread else getattr(origin_channel, "name", str(getattr(origin_channel, "id", "")))
+            if not origin_is_thread and getattr(origin_channel, "guild", None):
+                chat_name = f"{origin_channel.guild.name} / #{chat_name}"
+            guild = getattr(origin_message, "guild", None)
+            source = self.build_source(
+                chat_id=str(getattr(origin_channel, "id", "")),
+                chat_name=chat_name,
+                chat_type=chat_type,
+                user_id=str(getattr(getattr(origin_message, "author", None), "id", "council")),
+                user_name=getattr(getattr(origin_message, "author", None), "display_name", "Council"),
+                thread_id=str(getattr(origin_channel, "id", "")) if origin_is_thread else None,
+                chat_topic=self._get_effective_topic(origin_channel, is_thread=origin_is_thread),
+                is_bot=False,
+                guild_id=str(getattr(guild, "id", "")) if guild else None,
+                parent_chat_id=origin_parent_id,
+                message_id=str(getattr(origin_message, "id", "")),
+                role_authorized=True,
+            )
+            huddle_ref = f"<#{thread_id}>" if thread_id else "the council huddle"
+            event = MessageEvent(
+                text=(
+                    "[COUNCIL MODE SYNTHESIS]\n"
+                    f"Original user request: {request_text.strip() or '(no text)'}\n"
+                    f"Huddle: {huddle_ref}\n\n"
+                    "Huddle transcript:\n"
+                    f"{transcript}\n\n"
+                    "Now answer the original user with one concise final answer. "
+                    "Do not continue the huddle unless the user explicitly asks. "
+                    "Mention that the huddle is closed if relevant."
+                ),
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=origin_message,
+                message_id=str(getattr(origin_message, "id", "")),
+                timestamp=getattr(origin_message, "created_at", None),
+                internal=True,
+            )
+            await self.handle_message(event)
+        except Exception:
+            logger.warning("[%s] Council synthesis task failed", self.name, exc_info=True)
+        finally:
+            if thread_id:
+                self._council_huddle_threads[thread_id] = "closed"
+
+    async def _maybe_start_council_huddle(
+        self,
+        message: Any,
+        *,
+        normalized_content: str,
+        bot_role_mentions: list[Any],
+        crew_call_prefix: bool,
+    ) -> bool:
+        if not self._discord_council_enabled():
+            return False
+        if not (bot_role_mentions or crew_call_prefix):
+            return False
+        if self._discord_council_no_tools_requested(normalized_content):
+            with suppress(Exception):
+                await message.channel.send(
+                    "Yes — I hear you. @Crew is coordinator-led by default. "
+                    "Because you asked me not to run tools, I won't open a huddle "
+                    "or summon Boba/Quill/Tinker. When tools are allowed, @Crew "
+                    "opens a bounded #agent-workbench huddle and I bring back one "
+                    "final answer. You can also directly mention @Boba, @Quill, "
+                    "or @Tinker when you want one specialist."
+                )
+            return True
+        workers = self._discord_council_workers()
+        if not workers:
+            with suppress(Exception):
+                await message.channel.send(
+                    "Yes — I hear you. @Crew is coordinator-led by default, but I "
+                    "couldn't start a crew huddle because no council workers are "
+                    "configured for this gateway. Direct specialist summons remain "
+                    "available via @Boba, @Quill, and @Tinker when those bots are "
+                    "configured to listen here."
+                )
+            return True
+        if isinstance(getattr(message, "channel", None), discord.DMChannel):
+            with suppress(Exception):
+                await message.channel.send(
+                    "Yes — I hear you. @Crew is coordinator-led by default, but I "
+                    "can't open a Discord crew huddle inside a DM. Use @Crew in a "
+                    "server channel/thread, or directly mention @Boba, @Quill, or "
+                    "@Tinker where those specialists are configured."
+                )
+            return True
+
+        request_text = normalized_content
+        for role in bot_role_mentions:
+            request_text = request_text.replace(f"<@&{getattr(role, 'id')}>", "").strip()
+        thread_name = self._derive_council_thread_name(request_text)
+        huddle = await self._resolve_council_huddle_thread(message, thread_name)
+        if huddle is None:
+            with suppress(Exception):
+                await message.channel.send(
+                    "Yes — I hear you. @Crew is coordinator-led by default, but I "
+                    "couldn't open the crew huddle in Discord. Direct specialist "
+                    "summons remain available via @Boba, @Quill, and @Tinker; "
+                    "otherwise I can answer as Pixoid here."
+                )
+            return True
+
+        thread_id = str(getattr(huddle, "id", ""))
+        if thread_id:
+            self._council_huddle_threads[thread_id] = "open"
+        add_failures = await self._add_council_workers_to_thread(huddle, workers)
+        brief = self._format_council_brief(
+            request_text,
+            workers,
+            str(getattr(getattr(message, "channel", None), "id", "")),
+        )
+        if add_failures:
+            brief += "\n\nWorker thread-add warnings (continuing with direct mentions):\n" + "\n".join(f"- {item}" for item in add_failures)
+        await huddle.send(brief)
+
+        ack = (
+            "Yes — I hear you. @Crew is coordinator-led by default, so I'm "
+            f"opening a bounded crew huddle in <#{thread_id}>. "
+            "I’ll collect one round, close it, then bring back one answer. "
+            "You can also directly mention @Boba, @Quill, or @Tinker when "
+            "you want one specialist."
+        )
+        with suppress(Exception):
+            await message.channel.send(ack)
+
+        asyncio.create_task(
+            self._run_council_synthesis_after_wait(
+                origin_message=message,
+                huddle_thread=huddle,
+                request_text=request_text,
+                wait_seconds=self._discord_council_wait_seconds(),
+            )
+        )
+        return True
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
@@ -4722,6 +5180,29 @@ class DiscordAdapter(BasePlatformAdapter):
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
             return thread
         except Exception as direct_error:
+            # Multi-agent Discord setups can race here: Boba/Quill/Tinker may
+            # all receive the same multi-mention and try to create the starter
+            # thread. Discord permits only one thread per starter message, so
+            # later bots can see "already has a thread" failures. Reuse the
+            # existing thread instead of falling back to a seed message, which
+            # would create one private thread per bot and split the council.
+            existing_thread = getattr(message, "thread", None)
+            if existing_thread is not None:
+                return existing_thread
+            fetch_message = getattr(getattr(message, "channel", None), "fetch_message", None)
+            if callable(fetch_message):
+                try:
+                    refreshed = await fetch_message(message.id)
+                    existing_thread = getattr(refreshed, "thread", None)
+                    if existing_thread is not None:
+                        return existing_thread
+                except Exception:
+                    logger.debug(
+                        "[%s] Failed to fetch existing Discord starter thread after create_thread error",
+                        self.name,
+                        exc_info=True,
+                    )
+
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
             reason = f"Auto-threaded from mention by {display_name}"
             try:
@@ -5341,11 +5822,32 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
+        bot_role_mentions = self._message_mentions_own_role(message)
+        crew_call_prefix = self._matches_crew_call_alias(normalized_content)
+
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        elif bot_role_mentions:
+            mention_prefix = True
+            for role in bot_role_mentions:
+                normalized_content = normalized_content.replace(f"<@&{getattr(role, 'id')}>", "").strip()
+            message.content = normalized_content
+        elif crew_call_prefix:
+            mention_prefix = True
+
+        if (
+            is_thread
+            and thread_id in self._council_huddle_threads
+            and not mention_prefix
+            and (not self._client.user or self._client.user not in message.mentions)
+        ):
+            # Council huddles are deliberately bounded. Once Pixoid has opened
+            # or closed one, worker replies and casual acks in that thread must
+            # not wake the coordinator ambiently via thread participation.
+            return
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -5396,6 +5898,14 @@ class DiscordAdapter(BasePlatformAdapter):
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
+
+            if await self._maybe_start_council_huddle(
+                message,
+                normalized_content=normalized_content,
+                bot_role_mentions=bot_role_mentions,
+                crew_call_prefix=crew_call_prefix,
+            ):
+                return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -7156,7 +7666,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
     ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
-    ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
+    ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_BOTS``,
+    ``DISCORD_CREW_ALIASES``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``).
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
@@ -7223,6 +7734,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
         os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    # allow_bots controls whether other bot/webhook messages are accepted and
+    # included in history context. "mentions" is the safe multi-agent default:
+    # other bots can be seen in context, but only trigger this bot when they
+    # explicitly @mention it.
+    allow_bots = discord_cfg.get("allow_bots")
+    if allow_bots is not None and not os.getenv("DISCORD_ALLOW_BOTS"):
+        os.environ["DISCORD_ALLOW_BOTS"] = str(allow_bots).lower()
+    crew_aliases = discord_cfg.get("crew_aliases")
+    if crew_aliases is not None and not os.getenv("DISCORD_CREW_ALIASES"):
+        if isinstance(crew_aliases, list):
+            crew_aliases = ",".join(str(v) for v in crew_aliases)
+        os.environ["DISCORD_CREW_ALIASES"] = str(crew_aliases).lower()
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
     # these YAML keys only override when set and let users opt back
@@ -7294,10 +7817,10 @@ def register(ctx) -> None:
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
         # auto_thread, reactions, ignored_channels, allowed_channels,
-        # no_thread_channels, allow_mentions.*, reply_to_mode,
-        # thread_require_mention) into ``DISCORD_*`` env vars that the
-        # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
-        # that used to live in ``gateway/config.py``.  Hook contract: #24836.
+        # no_thread_channels, history_backfill, allow_bots, crew_aliases,
+        # allow_mentions.*, reply_to_mode, thread_require_mention) into
+        # ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``.
+        # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration
         allowed_users_env="DISCORD_ALLOWED_USERS",

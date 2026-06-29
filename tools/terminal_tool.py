@@ -1864,7 +1864,7 @@ def _wrap_windows_gui_exe(command: str) -> str | None:
     return f'powershell -Command "Start-Process \'{escaped}\''
 
 
-    _LONG_LIVED_FOREGROUND_PATTERNS = (
+_LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
     re.compile(r"\bnext\s+dev\b", re.IGNORECASE),
     re.compile(r"\bvite(?:\s|$)", re.IGNORECASE),

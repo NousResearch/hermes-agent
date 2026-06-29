@@ -18,7 +18,7 @@ the leaked plain string. We assert on ``repr`` (the member-name carrier), NOT ``
 is True for BOTH the real enum AND the leaked string — a ``==`` check would pass
 against the poison and could not RED-prove the fix.
 """
-import gateway.platforms.telegram as _consumer
+import plugins.platforms.telegram.adapter as _consumer  # path relocated upstream (2026-06-29 merge)
 
 
 def test_consumer_markdown_v2_not_leaked_plain_string():

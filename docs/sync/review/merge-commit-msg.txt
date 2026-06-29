@@ -1,0 +1,116 @@
+Merge upstream NousResearch/main into fork/main (2026-06-29 parity sync)
+
+Bounded upstream catch-up: 1734 commits behind origin/main (frozen target
+929dd9c0d). 36 conflicts resolved (84 hunks). The fleet runs fork/main, so
+every fork-only fleet-critical system was preserved; upstream's 1546 inbound
+commits were absorbed.
+
+ARCHITECTURAL PORTS / SEMANTIC RECONCILIATIONS (the genuine merges, not picks):
+
+- plugins/memory/mem0/__init__.py: TWO incompatible self-hosted mem0
+  implementations. Took the fork's 1653-line self-contained client
+  (_DirectRestMem0Client + Wave-2 hybrid retrieval + dedup ladder + temporal
+  boost + forget/restore + user-id pinning) wholesale; upstream's thin
+  delegating __init__ + _backend.py/_oss_providers.py/_setup.py (and their
+  tests test_mem0_backend/_setup/_providers/_v3) are a DIFFERENT architecture
+  the fork supersedes — removed as orphans. test_mem0_v2.py (UD) accept-deleted
+  (coverage lives in fork's test_mem0_remember/_selfhost/_destructive).
+  Rationale recorded in docs/sync/review/mem0-resolution-decision.md.
+
+- gateway/run.py hygiene compaction: merged BOTH data-loss guards — fork's
+  Issue-8 ABORT guard (don't rewrite the user/asst-only subset on summarizer
+  abort) AND upstream's #21301 no-rotation guard (don't DELETE the transcript
+  when the hygiene agent has no session_db). Rewrite now requires
+  (not aborted) AND (rotated OR in-place). Plus fork's F2 restart-loop
+  breaker page (_notify_restart_loop_suspended) on upstream's async
+  _finalize_shutdown_agents; both sides' os.environ[HERMES_SESSION_KEY]
+  removal kept.
+
+- agent/context_compressor.py: fork's per-model threshold re-resolution
+  (compaction-thrash fix) threaded BEFORE upstream's max_tokens +
+  _compute_threshold_tokens; constructor takes both fork (skew_floor,
+  per_model_threshold, codex_gpt55_autoraise, calibration_hard_frac) and
+  upstream (max_tokens) params; fork's should_defer removal kept.
+
+- agent/turn_context.py: interleaved upstream's _compression_made_progress
+  anti-infinite-loop guard + history rebuild + retry-state resets WITH fork's
+  P2 calibrated re-check (note_rough_sent + should_compress_calibrated).
+
+- agent/auxiliary_client.py: fork's route-scoped compaction resilience
+  (timeout + max_retries=0 via .with_options) threaded through upstream's
+  create_anthropic_message(); fork's atomic provider/model pair + upstream's
+  MoA aggregator resolution; both new helper fns kept.
+
+- agent/chat_completion_helpers.py: fork's fallback-announce stack
+  (_emit_fallback_announce, _primary_cooldown_seconds, error_context-aware
+  try_activate_fallback) + upstream's rewrite_prompt_model_identity (used by
+  agent_runtime_helpers); fork's reasoning-effort override + aux-routing
+  re-sync; merged fork's stream tail-flush/surrogate-repair WITH upstream's
+  interrupt-guard.
+
+- cron/scheduler.py: kept BOTH firing functions — fork's _process_one_job +
+  run_job_now (backs `cron run --wait`) AND upstream's run_one_job (the
+  external-provider contract: cronjob_tools, web_server, Chronos plugin).
+  Folded upstream's correctness fixes (_is_cron_silence_response,
+  _summarize_cron_failure_for_delivery, _confirm_adapter_delivery) into fork's
+  _process_one_job. tick() fires via _process_one_job.
+
+- agent/agent_init.py: union compression-cfg + max_tokens constructor args;
+  took upstream's normalize_tool_schema + #47707 nameless-schema poison-guard.
+
+- tools/delegate_tool.py: adopted upstream's lockstep blocklist-derived strip
+  set BUT preserved the fork's intent that code_execution is NOT blocked for
+  subagents (they already have terminal) — only `delegation` stays composite-
+  blocked. Kept fork's child send-origin/cron binding + upstream's
+  stream_callback relay.
+
+- hermes_cli/kanban_db.py: union — both model_override (fork per-task model)
+  and project_id (upstream) columns + both set_task_model / set_branch_name;
+  reconciled the INSERT (21 cols == 21 placeholders == 21 values).
+
+MECHANICAL keep-both / take-upstream / take-fork resolutions:
+hermes_state.py (union schema cols last_turn_*/git_*; trigram degrade +
+_trigram_available flag + include_trigram param), gateway/session.py (fork
+had_any_turn durable signal), gateway/session_context.py (both send-origin +
+async_delivery_supported), hermes_cli/config.py (fork fleet-tuned
+restart_drain_timeout=180 + F2 breaker config + hygiene limits),
+hermes_cli/commands.py (union: undo/redo half-turn + prompt/compose;
+slack-via-hermes {credits,version,billing,moa,debug}), hermes_cli/models.py
+(both provider_label_oauth + plausibility gate), hermes_cli/backup.py (union
+excludes + external-memory-provider backup), agent/conversation_loop.py (fork
+error_context + upstream failover-system-message), agent/usage_pricing.py
+(fork date-strip/codex-normalize + upstream bedrock, placed in the right fn),
+toolsets.py (fork mem0_remember resident + upstream project-tools note),
+tui_gateway/server.py (both undo-clear + branch-seed).
+
+Test conflicts: add/add unions where both appended new tests (no name
+collisions); test_run_agent.py (DU) accept-deleted (fork split it into
+per-shard files); test_update_check.py call_count corrected to 5 empirically
+(merged path does fork's HEAD cache-key AND upstream's --is-shallow probe).
+
+LCM vendoring provenance re-validated (PASS). uv.lock + package-lock.json
+auto-merged clean. All 15 INV-1 modules import; run_agent/gateway/cli import
+end-to-end.
+
+POST-MERGE RECONCILIATION FIXES (caught by the per-subsystem gates, 16 reds → 0):
+- agent/redact.py: re-applied the fork GIT_AUTHOR_*/GIT_COMMITTER_* allowlist to
+  upstream's NEW _CFG_ANCHORED_RE pass (it matched the "auth" substring and
+  re-redacted git identity vars the fork deliberately exempts).
+- tools/delegate_tool.py: hybrid strip-set — derive from DELEGATE_BLOCKED_TOOLS
+  (upstream #43466, strips cronjob) but EXEMPT code_execution (fork intent;
+  subagents already get terminal). Updated upstream's derived-from-blocklist test
+  to honor the exemption.
+- hermes_cli/kanban_db.py: restored the fork-only _kanban_worker_skill_available
+  helper + its gated `--skills kanban-worker` injection (silently dropped when the
+  worker-build region auto-merged to upstream's side).
+- agent/conversation_compression.py: in-place compaction (upstream
+  compression.in_place=True default) rewrites WITHOUT rotating the session, which
+  killed the fork's built-in compaction ANNOUNCE (gate required old!=new session).
+  Threaded an `in_place` flag through _emit/_format so in-place compactions still
+  announce. Real production-behavior fix, not a test patch.
+- Test corrections to fork contract: test_update_check call_count 4→5 (path now
+  does fork HEAD cache-key AND upstream --is-shallow); preflight_gate char-ratio
+  (fork estimator ~3.5 chars/tok, not 4); kanban model-override env-robust hermes
+  argv; context_compressor dropped orphaned tests for the fork-removed
+  should_defer_preflight_to_real_usage; compaction_announce rotation test pins
+  in_place=False to exercise the rotation form it asserts.

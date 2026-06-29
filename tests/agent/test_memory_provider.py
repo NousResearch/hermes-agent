@@ -1172,16 +1172,12 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("replace", "user", "updated pref")
         assert p.memory_writes == [("replace", "user", "updated pref")]
 
-    def test_on_memory_write_remove_not_bridged(self):
-        """The bridge intentionally skips 'remove' — only add/replace notify."""
-        # This tests the contract that run_agent.py checks:
-        #   function_args.get("action") in ("add", "replace")
+    def test_on_memory_write_remove_supported_by_manager(self):
+        """The manager forwards remove actions when a caller elects to bridge them."""
         mgr = MemoryManager()
         p = FakeMemoryProvider("ext")
         mgr.add_provider(p)
 
-        # Manager itself doesn't filter — run_agent.py does.
-        # But providers should handle remove gracefully.
         mgr.on_memory_write("remove", "memory", "old fact")
         assert p.memory_writes == [("remove", "memory", "old fact")]
 
@@ -1633,3 +1629,103 @@ class TestReindexHardening:
         assert prov is first
         mgr.initialize_all(session_id="a")
         assert mgr._tool_to_provider.get("shared_gated") is first
+
+
+class TestNormalizeToolSchema:
+    """Issue #47707: one malformed tool schema must not poison the request.
+
+    Context engines / memory providers expose schemas via get_tool_schemas().
+    The expected shape is a bare function schema; some providers return an
+    entry already in OpenAI tool form ({"type":"function","function":{...}}).
+    Wrapping that a second time yields a tool whose `function` has no
+    top-level `name`, which strict providers (DeepSeek) reject with HTTP 400
+    `tools[N].function: missing field name` — disabling the entire toolset.
+    """
+
+    def test_bare_schema_passthrough(self):
+        from agent.memory_manager import normalize_tool_schema
+        s = {"name": "x_grep", "description": "d", "parameters": {}}
+        assert normalize_tool_schema(s) == s
+
+    def test_already_wrapped_schema_is_unwrapped(self):
+        from agent.memory_manager import normalize_tool_schema
+        wrapped = {
+            "type": "function",
+            "function": {"name": "x_grep", "description": "d", "parameters": {}},
+        }
+        out = normalize_tool_schema(wrapped)
+        assert out is not None
+        assert out["name"] == "x_grep"
+        # Must be the inner function schema, not the wrapper.
+        assert "type" not in out or out.get("type") != "function"
+
+    def test_nameless_schema_rejected(self):
+        from agent.memory_manager import normalize_tool_schema
+        assert normalize_tool_schema({"description": "no name"}) is None
+
+    def test_double_wrapped_without_name_rejected(self):
+        from agent.memory_manager import normalize_tool_schema
+        # The exact poisoning shape from #47707.
+        assert normalize_tool_schema(
+            {"type": "function", "function": {"type": "function",
+             "function": {"name": "x"}}}
+        ) is None
+
+    def test_non_dict_rejected(self):
+        from agent.memory_manager import normalize_tool_schema
+        assert normalize_tool_schema("nope") is None
+        assert normalize_tool_schema(None) is None
+
+    def test_non_string_name_rejected(self):
+        from agent.memory_manager import normalize_tool_schema
+        assert normalize_tool_schema({"name": 123}) is None
+
+
+class TestMemoryInjectionRejectsMalformedSchema:
+    """The real inject_memory_provider_tools must skip nameless schemas.
+
+    Without the #47707 fix, an already-wrapped schema is appended as a
+    nameless tool ({"type":"function","function":{"type":"function",...}}),
+    poisoning the whole tool surface. With the fix it is skipped (or, for a
+    well-formed-but-wrapped schema, unwrapped to a valid tool).
+    """
+
+    def _agent_with(self, *schemas):
+        mgr = MemoryManager()
+        mgr.add_provider(FakeMemoryProvider("ext", tools=list(schemas)))
+        return SimpleNamespace(
+            _memory_manager=mgr,
+            enabled_toolsets=None,
+            tools=[],
+            valid_tool_names=set(),
+        )
+
+    def test_already_wrapped_schema_is_unwrapped_not_poisoned(self):
+        agent = self._agent_with(
+            {"type": "function",
+             "function": {"name": "x_grep", "description": "d", "parameters": {}}}
+        )
+        inject_memory_provider_tools(agent)
+        # Exactly one well-formed tool, with a top-level function name.
+        assert len(agent.tools) == 1
+        fn = agent.tools[0]["function"]
+        assert fn["name"] == "x_grep"
+        # No nested double-wrap leaked through.
+        assert fn.get("type") != "function"
+        assert "x_grep" in agent.valid_tool_names
+
+    def test_nameless_schema_is_skipped(self):
+        agent = self._agent_with({"description": "no name at all"})
+        inject_memory_provider_tools(agent)
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+
+    def test_good_schema_still_injected_alongside_bad(self):
+        agent = self._agent_with(
+            {"name": "good_tool", "description": "d", "parameters": {}},
+            {"description": "bad, no name"},
+        )
+        inject_memory_provider_tools(agent)
+        names = {t["function"]["name"] for t in agent.tools}
+        assert names == {"good_tool"}
+        assert agent.valid_tool_names == {"good_tool"}

@@ -80,12 +80,11 @@ def test_anthropic_request_byte_identical_tagged_vs_untagged():
     assert tagged == untagged, "tag must not perturb the serialized Anthropic request (cache safety)"
 
 
-# ── Gemini CloudCode (allowlist rebuild) ────────────────────────────────────
-
-def test_gemini_cloudcode_drops_lcm_summary():
-    from agent.gemini_cloudcode_adapter import _build_gemini_contents
-    contents, _system = _build_gemini_contents(_tagged_summary_messages())
-    _assert_no_lcm_summary_anywhere(contents)
+# ── Gemini CloudCode: provider REMOVED upstream (#50492, google-gemini-cli +
+#    google-antigravity OAuth providers deleted for account-ban risk). The
+#    agent.gemini_cloudcode_adapter module no longer exists, so its LCM-summary
+#    guard is retired here during the 2026-06-29 parity sync. The surviving
+#    Gemini *native* adapter is still covered below.
 
 
 # ── Gemini Native (allowlist rebuild) ───────────────────────────────────────

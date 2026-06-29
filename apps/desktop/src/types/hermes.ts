@@ -47,6 +47,9 @@ export interface OAuthProviderStatus {
 
 export interface OAuthProvider {
   cli_command: string
+  /** Shell command that clears an external provider's credentials, run in the
+   *  embedded terminal. Null when Hermes doesn't know how to remove it. */
+  disconnect_command?: null | string
   disconnect_hint?: null | string
   disconnectable?: boolean
   docs_url: string
@@ -95,6 +98,13 @@ export interface OAuthPollResponse {
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
 }
 
+export interface MemoryProviderOAuthStatus {
+  auth: 'apikey' | 'oauth' | null
+  connected: boolean
+  detail: string
+  state: 'connected' | 'error' | 'idle' | 'pending'
+}
+
 export interface EnvVarInfo {
   advanced: boolean
   category: string
@@ -105,9 +115,40 @@ export interface EnvVarInfo {
   description: string
   is_password: boolean
   is_set: boolean
+  // Backend-derived provider grouping hints (from the unified provider catalog
+  // in hermes_cli/provider_catalog.py). When present, the Keys tab groups by
+  // this provider identity — the SAME one `hermes model` uses — instead of
+  // desktop-only env-var prefix guesses. Empty for non-provider env vars.
+  provider?: string
+  provider_label?: string
   redacted_value: null | string
   tools: string[]
   url: null | string
+}
+
+export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
+
+export interface MemoryProviderFieldOption {
+  description: string
+  label: string
+  value: string
+}
+
+export interface MemoryProviderField {
+  description: string
+  is_set: boolean
+  key: string
+  kind: MemoryProviderFieldKind
+  label: string
+  options: MemoryProviderFieldOption[]
+  placeholder: string
+  value: string
+}
+
+export interface MemoryProviderConfig {
+  fields: MemoryProviderField[]
+  label: string
+  name: string
 }
 
 export interface MessagingEnvVarInfo {
@@ -282,6 +323,16 @@ export interface SessionCreateResponse {
 export interface SessionInfo {
   archived?: boolean
   cwd?: null | string
+  /** Git branch checked out in {@link cwd} when the session started/resumed.
+   *  The sidebar groups main-checkout sessions by this so feature-branch work
+   *  doesn't collapse under a single directory-named "main" row. Null for
+   *  non-git workspaces and sessions created before branch capture landed. */
+  git_branch?: null | string
+  /** Git repo root that owns {@link cwd} — the authoritative project key,
+   *  resolved server-side at cwd-set (and backfilled for history). The sidebar
+   *  groups by this instead of probing git in the GUI. Null for non-git
+   *  workspaces and not-yet-backfilled rows. */
+  git_repo_root?: null | string
   ended_at: null | number
   id: string
   /** Original root id of a compression chain, when this entry is a projected
@@ -294,6 +345,8 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
+  /** Parent conversation when this row is a /branch fork. */
+  parent_session_id?: null | string
   preview: null | string
   source: null | string
   started_at: number
@@ -373,6 +426,22 @@ export interface UsageStats {
   input: number
   output: number
   total: number
+}
+
+export interface ContextUsageCategory {
+  color: string
+  id: string
+  label: string
+  tokens: number
+}
+
+export interface ContextBreakdown {
+  categories: ContextUsageCategory[]
+  context_max: number
+  context_percent: number
+  context_used: number
+  estimated_total: number
+  model?: string
 }
 
 export interface AnalyticsDailyEntry {
@@ -492,6 +561,35 @@ export interface ProfileSetupCommand {
   command: string
 }
 
+// ── Projects ───────────────────────────────────────────────────────────────
+// A first-class, per-profile, human-named workspace spanning one or more
+// folders. Mirrors hermes_cli/projects_db.Project.to_dict().
+export interface ProjectFolder {
+  path: string
+  label: null | string
+  is_primary: boolean
+  added_at: number
+}
+
+export interface ProjectInfo {
+  id: string
+  slug: string
+  name: string
+  description: null | string
+  icon: null | string
+  color: null | string
+  board_slug: null | string
+  primary_path: null | string
+  archived: boolean
+  created_at: number
+  folders: ProjectFolder[]
+}
+
+export interface ProjectsPayload {
+  projects: ProjectInfo[]
+  active_id: null | string
+}
+
 export interface ProfileSoul {
   content: string
   exists: boolean
@@ -543,6 +641,51 @@ export interface ToolsetConfig {
   providers: ToolProvider[]
   /** Name of the currently active provider, or null if none is configured. */
   active_provider: string | null
+}
+
+/** Shape of `GET /api/tools/computer-use/status`.
+ *
+ *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware
+ *  readiness signal: on macOS both TCC grants (Accessibility + Screen
+ *  Recording, which attach to cua-driver's own `com.trycua.driver` identity,
+ *  not Hermes); elsewhere, driver health from `cua-driver doctor`. `null`
+ *  means unknown (binary missing / probe failed). */
+export interface ComputerUsePermissionSource {
+  attribution?: string
+  executable?: string
+  note?: string
+  pid?: number
+  responsible_ppid?: number
+}
+
+export interface ComputerUseCheck {
+  label: string
+  status: string
+  message: string
+}
+
+export interface ComputerUseStatus {
+  /** `sys.platform`: "darwin" | "win32" | "linux" | ... */
+  platform: string
+  /** cua-driver has a runtime backend for this platform. */
+  platform_supported: boolean
+  /** cua-driver binary resolved on PATH. */
+  installed: boolean
+  /** e.g. "cua-driver 0.5.1", or null when unknown. */
+  version: string | null
+  /** Unified readiness — both TCC grants (macOS) or driver health (else). */
+  ready: boolean | null
+  /** Whether a permission grant flow exists (macOS-only TCC). */
+  can_grant: boolean
+  /** Cross-platform `cua-driver doctor` probes. */
+  checks: ComputerUseCheck[]
+  /** macOS TCC detail — `null` off macOS or when unknown. */
+  accessibility: boolean | null
+  screen_recording: boolean | null
+  screen_recording_capturable: boolean | null
+  source: ComputerUsePermissionSource | null
+  /** Populated when the status probe itself failed. */
+  error: string | null
 }
 
 export interface SessionSearchResult {
@@ -637,6 +780,33 @@ export interface AuxiliaryTaskAssignment {
 export interface AuxiliaryModelsResponse {
   main: { model: string; provider: string }
   tasks: AuxiliaryTaskAssignment[]
+}
+
+export interface MoaModelSlot {
+  provider: string
+  model: string
+}
+
+export interface MoaConfigResponse {
+  default_preset: string
+  active_preset: string
+  presets: Record<
+    string,
+    {
+      aggregator: MoaModelSlot
+      aggregator_temperature: number
+      enabled: boolean
+      max_tokens: number
+      reference_models: MoaModelSlot[]
+      reference_temperature: number
+    }
+  >
+  aggregator: MoaModelSlot
+  aggregator_temperature: number
+  enabled: boolean
+  max_tokens: number
+  reference_models: MoaModelSlot[]
+  reference_temperature: number
 }
 
 export interface ModelAssignmentRequest {

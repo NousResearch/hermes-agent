@@ -432,12 +432,23 @@ def _find_auto_reset_notice_block() -> ast.If:
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
             continue
+        # The 2026-06-29 upstream merge refactored the guard from
+        # ``if getattr(session_entry, "was_auto_reset", False):`` (string const in
+        # the test) to a capture-then-check: ``_was_auto_reset = getattr(...)`` /
+        # ``if _was_auto_reset:`` (a bare Name in the test). Recognize EITHER shape:
+        # the test references the string "was_auto_reset" OR the captured name
+        # ``_was_auto_reset``/``was_auto_reset``.
         consts = {
             n.value
             for n in ast.walk(node.test)
             if isinstance(n, ast.Constant) and isinstance(n.value, str)
         }
-        if "was_auto_reset" in consts:
+        names = {
+            n.id
+            for n in ast.walk(node.test)
+            if isinstance(n, ast.Name)
+        }
+        if "was_auto_reset" in consts or names & {"_was_auto_reset", "was_auto_reset"}:
             calls = {
                 sub.func.attr
                 for sub in ast.walk(node)

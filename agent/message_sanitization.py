@@ -359,6 +359,38 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     return "{}"
 
 
+def close_interrupted_tool_sequence(messages: list, final_response: Any = None) -> bool:
+    """Append a synthetic assistant turn when an interrupted tail is a tool result.
+
+    A turn cut short by ``/stop`` can leave the transcript ending on a raw
+    ``tool`` message (a tool finished, or its execution was cancelled, but the
+    model never streamed a closing assistant turn). Persisting that tail means
+    the next user message lands as ``… tool → user`` — a role-alternation
+    violation that strict providers (Gemini, Claude) react to by hallucinating
+    a continuation of the user's message and ignoring prior context, which
+    reads to the user as "lost context" (#48879).
+
+    ``finalize_turn`` closes this on the happy interrupt path, but the
+    retry/backoff/error interrupt aborts in ``conversation_loop`` ``return``
+    early and never reach it — this shared helper closes the sequence on all of
+    them. ``final_response`` is usually empty on an interrupt, so an explicit
+    placeholder is used rather than an empty-content assistant turn.
+
+    Mutates ``messages`` in place. Returns True if a closing turn was appended.
+    """
+    if not messages:
+        return False
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "tool":
+        return False
+    text = final_response if isinstance(final_response, str) else ""
+    messages.append({
+        "role": "assistant",
+        "content": text.strip() or "Operation interrupted.",
+    })
+    return True
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -511,6 +543,7 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 
 __all__ = [
     "_SURROGATE_RE",
+    "close_interrupted_tool_sequence",
     "_sanitize_surrogates",
     "_SurrogateSplicer",
     "_splice_surrogates",

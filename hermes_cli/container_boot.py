@@ -199,28 +199,89 @@ def _maybe_migrate_legacy_gateway_run_state(
 
 
 def _read_container_argv() -> tuple[str, ...]:
-    """Best-effort read of the container PID 1 argv."""
+    """Best-effort read of the container's main program argv.
+
+    Under s6-overlay v2, PID 1 is ``/init`` and its argv contains the
+    ``main-wrapper.sh`` path.  Under s6-overlay v3, PID 1 is
+    ``s6-svscan`` and the actual command (``rc.init top main-wrapper.sh
+    ...``) lives on a different PID.  We try PID 1 first (fast path,
+    covers v2 and pre-s6 images), then fall back to scanning
+    ``/proc/*/cmdline`` for a process whose argv contains
+    ``main-wrapper.sh`` (the rc.init-launched PID in v3).
+    """
+    # Fast path: PID 1 is the command itself (s6-overlay v2 / tini).
     try:
         raw = Path("/proc/1/cmdline").read_bytes()
+        argv = tuple(
+            part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
+        )
+        if any("main-wrapper.sh" in part for part in argv):
+            return argv
     except OSError:
-        return ()
-    return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
+        pass
+
+    # Slow path: s6-overlay v3 — PID 1 is s6-svscan; find the
+    # rc.init-launched process whose argv contains main-wrapper.sh.
+    try:
+        proc_dir = Path("/proc")
+        for entry in proc_dir.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                raw = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            argv = tuple(
+                part.decode("utf-8", "replace")
+                for part in raw.split(b"\0")
+                if part
+            )
+            if any("main-wrapper.sh" in part for part in argv):
+                return argv
+    except OSError:
+        pass
+
+    return ()
 
 
 def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
-    """Strip the s6/wrapper prefix off PID 1 argv, leaving the hermes args.
+    """Strip the s6/wrapper prefix off the container argv, leaving the hermes args.
 
-    The container PID 1 argv looks like
-    ``/init /opt/hermes/docker/main-wrapper.sh <subcommand> [args...]`` and
-    the wrapper re-execs ``hermes <subcommand>``. Peel ``init`` →
-    ``main-wrapper.sh`` → ``hermes`` so callers can match on the bare
-    subcommand. Shared by the legacy-gateway and dashboard role detectors.
+    Two container-command argv shapes are handled:
+
+    * **s6-overlay v2 / tini:** PID 1 argv is
+      ``/init /opt/hermes/docker/main-wrapper.sh <subcommand> [args...]``.
+    * **s6-overlay v3:** PID 1 is ``s6-svscan`` and the command lives on the
+      rc.init-launched process as ``/bin/sh -e
+      /run/s6/basedir/scripts/rc.init top /opt/hermes/docker/main-wrapper.sh
+      <subcommand> [args...]`` (see :func:`_read_container_argv`).
+
+    Rather than peel each leading token positionally (which silently breaks
+    the moment s6 changes its launcher shape again — exactly what happened
+    in the v2→v3 bump), drop everything up to and including the
+    ``main-wrapper.sh`` token: that wrapper path is the stable boundary the
+    image owns, and the subcommand always follows it. Pre-s6 / direct
+    ``hermes`` invocations carry no wrapper, so fall back to peeling a bare
+    ``init`` prefix. The wrapper re-execs ``hermes <subcommand>``, so an
+    explicit leading ``hermes`` is peeled too. Shared by the legacy-gateway
+    and dashboard role detectors.
     """
     args = list(argv)
-    if args and Path(args[0]).name == "init":
+
+    # Preferred boundary: everything through main-wrapper.sh is launcher
+    # prefix. Covers s6-overlay v2 (`/init …main-wrapper.sh …`) and v3
+    # (`/bin/sh -e …rc.init top …main-wrapper.sh …`) with one rule.
+    wrapper_idx = next(
+        (i for i, a in enumerate(args) if a.endswith("main-wrapper.sh")),
+        None,
+    )
+    if wrapper_idx is not None:
+        args = args[wrapper_idx + 1 :]
+    elif args and Path(args[0]).name == "init":
+        # Defensive: an `init` prefix with no wrapper token in argv.
         args = args[1:]
-    if args and args[0].endswith("main-wrapper.sh"):
-        args = args[1:]
+
+    # The wrapper re-execs `hermes <subcommand>`; peel an explicit hermes.
     if args and Path(args[0]).name == "hermes":
         args = args[1:]
     return args
@@ -318,7 +379,16 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 
     validate_profile_name(profile)
     service_dir = scandir / f"gateway-{profile}"
-    tmp_dir = service_dir.with_name(service_dir.name + ".tmp")
+    # Dot-prefix the staging dir so s6-svscan skips it while half-built
+    # (s6-svscan ignores scandir entries whose name starts with ".").
+    # A non-dotted ``.tmp`` staging name is supervised AS ROOT by any
+    # concurrent ``s6-svscanctl -a`` rescan the moment it has a valid
+    # ``type``/``run``, creating a root-owned ``supervise/`` that makes
+    # ``_seed_supervise_skeleton`` EACCES — see the matching comment in
+    # ``S6ServiceManager.register_profile_gateway``. The atomic
+    # ``tmp_dir.replace(service_dir)`` below renames to the dotless live
+    # name, so the published slot is unchanged.
+    tmp_dir = service_dir.with_name("." + service_dir.name + ".tmp")
 
     # Wipe any leftover tmp from a previous interrupted run.
     if tmp_dir.exists():
@@ -336,6 +406,10 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
         run = tmp_dir / "run"
         run.write_text(S6ServiceManager._render_run_script(profile, extra_env={}))
         run.chmod(0o755)
+
+        finish = tmp_dir / "finish"
+        finish.write_text(S6ServiceManager._render_finish_script())
+        finish.chmod(0o755)
 
         # Persistent log rotation (OQ8-C).
         log_subdir = tmp_dir / "log"

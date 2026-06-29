@@ -610,20 +610,16 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         """Fast-fail obviously-broken redirect_uris before bouncing to the IDP.
 
         The IDP's own allowlist is authoritative; this just catches the common
-        operator-error case with a clear message. Mirrors the nous provider.
+        operator-error case with a clear message. We allow any ``http://`` host
+        (not just localhost) so self-hosted dashboards reached over plain HTTP —
+        LAN IPs, internal hostnames, reverse proxies that terminate TLS upstream
+        — are not rejected here; the IDP makes the final call on which
+        redirect_uris are permitted. Mirrors the nous provider.
         """
         parsed = urllib.parse.urlparse(redirect_uri)
         if parsed.scheme not in ("https", "http"):
             raise ProviderError(
                 f"redirect_uri must be http(s), got {redirect_uri!r}"
-            )
-        if parsed.scheme == "http" and parsed.hostname not in (
-            "localhost",
-            "127.0.0.1",
-        ):
-            raise ProviderError(
-                "redirect_uri may only use http:// for localhost/127.0.0.1, "
-                f"got {redirect_uri!r}"
             )
         if not parsed.path or not parsed.path.endswith("/auth/callback"):
             raise ProviderError(

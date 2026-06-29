@@ -61,6 +61,8 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 - `dialecticCadence` — how often the dialectic LLM fires (LLM call frequency)
 - `dialecticDepth` — how many `.chat()` passes per dialectic invocation (1–3, depth of reasoning)
 
+The auto-injected dialectic also scales its reasoning level by query length (longer query → deeper reasoning, capped at `reasoningLevelCap`); see [Query-Adaptive Reasoning Level](./honcho.md#query-adaptive-reasoning-level).
+
 **Setup Wizard:**
 ```bash
 hermes memory setup        # select "honcho" — runs the Honcho-specific post-setup
@@ -511,7 +513,7 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 | | |
 |---|---|
 | **Best for** | Semantic recall with user profiling and session-level graph building |
-| **Requires** | `pip install supermemory` + [API key](https://supermemory.ai) |
+| **Requires** | `pip install supermemory` + [API key](http://app.supermemory.ai/integrations?connect=hermes) |
 | **Data storage** | Supermemory Cloud |
 | **Cost** | Supermemory pricing |
 

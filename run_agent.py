@@ -206,6 +206,7 @@ from agent.tool_dispatch_helpers import (
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
     _extract_file_mutation_targets,
+    _extract_landed_file_mutation_paths,
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
@@ -289,6 +290,31 @@ def _qwen_portal_headers() -> dict:
         "X-DashScope-UserAgent": _ua,
         "X-DashScope-AuthType": "qwen-oauth",
     }
+
+
+def _safe_session_filename_component(session_id: str) -> str:
+    """Return a stable, path-safe filename component for a session ID.
+
+    Session IDs can originate from untrusted input (e.g. the
+    ``X-Hermes-Session-Id`` API header) and are otherwise interpolated raw
+    into on-disk artifact filenames under ``~/.hermes/sessions/``.  Without
+    sanitization, a traversal-shaped ID such as ``../../../../etc/pwned``
+    would let a caller write the session snapshot / request dump outside the
+    sessions directory.  This collapses every non ``[A-Za-z0-9_-]`` character
+    to ``_`` (so no path separators or ``.`` survive), caps the length, and —
+    when sanitization changed the string — appends a short content hash so two
+    distinct IDs that sanitize to the same component don't collide.  The
+    result is always a single, traversal-free path segment.
+    """
+    raw = str(session_id or "").strip()
+    sanitized = re.sub(r"[^\w-]", "_", raw).strip("._")
+    sanitized = sanitized[:96] or "session"
+    if raw and sanitized == raw:
+        return sanitized
+    digest = hashlib.sha256(
+        raw.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()[:12]
+    return f"{sanitized}_{digest}"
 
 
 class _StreamErrorEvent(Exception):
@@ -1137,6 +1163,19 @@ class AIAgent:
         if env_timeout is not None:
             return float(env_timeout), False
 
+        # Reasoning-model floor: auto-mitigation for known reasoning models
+        # (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x thinking,
+        # DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud
+        # gateways idle-kill before the model's thinking phase ends.
+        # uses_implicit_default is False here so the local-endpoint
+        # short-circuit in _compute_non_stream_stale_timeout does not
+        # disable stale detection for users running reasoning models on a
+        # local NIM endpoint.
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
+        if reasoning_floor is not None:
+            return reasoning_floor, False
+
         return 90.0, True
 
     def _compute_non_stream_stale_timeout(self, api_payload: Any) -> float:
@@ -1353,14 +1392,26 @@ class AIAgent:
         return False
 
     def _is_ollama_glm_backend(self) -> bool:
-        """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        """Detect Ollama-hosted GLM models affected by stop misreports.
+
+        Ollama can misreport truncated output as finish_reason='stop'.
+        Detection relies on explicit Ollama signatures:
+        - Port 11434 (Ollama default)
+        - "ollama" in the base URL (e.g. ollama.local, /ollama/ path)
+        - provider explicitly set to "ollama"
+
+        Crucially it does NOT match arbitrary local/private endpoints
+        (LiteLLM/sglang/vLLM/LM Studio proxies, Tailscale boxes), which
+        report finish_reason correctly and were the source of #13971's
+        false-positive truncation continuations.
+        """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
         if "glm" not in model_lower and provider_lower != "zai":
             return False
         if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
             return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        return provider_lower == "ollama"
 
     def _should_treat_stop_as_truncated(
         self,
@@ -1398,10 +1449,13 @@ class AIAgent:
         user_message: str,
         assistant_content: str,
         messages: List[Dict[str, Any]],
+        require_workspace: bool = True,
     ) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.looks_like_codex_intermediate_ack``."""
         from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
-        return looks_like_codex_intermediate_ack(self, user_message, assistant_content, messages)
+        return looks_like_codex_intermediate_ack(
+            self, user_message, assistant_content, messages, require_workspace
+        )
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
@@ -1924,6 +1978,29 @@ class AIAgent:
                 msg = AIAgent._coerce_api_error_detail(msg)
                 return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
 
+        # SDK may leave body empty while httpx still has the payload (#36109).
+        # Redact before returning: the raw provider/proxy error body is
+        # attacker-influenced and may echo Authorization / x-api-key / request
+        # JSON, which would otherwise leak into final_response + logs (this path
+        # widens exposure vs the old empty-body "HTTP 400" string).
+        response = getattr(error, "response", None)
+        if response is not None:
+            snippet = (getattr(response, "text", None) or "").strip()
+            if snippet:
+                status_code = getattr(error, "status_code", None)
+                prefix = f"HTTP {status_code}: " if status_code else ""
+                try:
+                    payload = json.loads(snippet)
+                except (json.JSONDecodeError, TypeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    err = payload.get("error")
+                    if isinstance(err, dict) and err.get("message"):
+                        return redact_sensitive_text(f"{prefix}{str(err['message'])[:300]}")
+                    if payload.get("message"):
+                        return redact_sensitive_text(f"{prefix}{str(payload['message'])[:300]}")
+                return redact_sensitive_text(f"{prefix}{snippet[:300]}")
+
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
@@ -2310,9 +2387,13 @@ class AIAgent:
 
         # Re-derive the target path each call so /branch and /compress
         # session-id changes land in the right file without any re-point
-        # bookkeeping at the call sites.
+        # bookkeeping at the call sites.  Sanitize the session ID into a
+        # single traversal-free path segment — session IDs can come from
+        # untrusted input (X-Hermes-Session-Id header) and must not escape
+        # the sessions directory.
         try:
-            log_file = self.logs_dir / f"session_{self.session_id}.json"
+            safe_sid = _safe_session_filename_component(self.session_id)
+            log_file = self.logs_dir / f"session_{safe_sid}.json"
         except Exception:
             return
 
@@ -2550,6 +2631,10 @@ class AIAgent:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
+        if landed:
+            changed = getattr(self, "_turn_file_mutation_paths", None)
+            if changed is not None:
+                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
@@ -3652,16 +3737,28 @@ class AIAgent:
             client = getattr(self, "client", None)
             if client is not None and not self._is_openai_client_closed(client):
                 return client
+            old_client = client
+            try:
+                new_client = self._create_openai_client(
+                    self._client_kwargs, reason=reason, shared=True
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to recreate closed OpenAI client (%s) %s error=%s",
+                    reason,
+                    self._client_log_context(),
+                    exc,
+                )
+                raise RuntimeError("Failed to recreate closed OpenAI client") from exc
+            self.client = new_client
 
         logger.warning(
-            "Detected closed shared OpenAI client; recreating before use (%s) %s",
+            "Detected closed shared OpenAI client; recreated before use (%s) %s",
             reason,
             self._client_log_context(),
         )
-        if not self._replace_primary_openai_client(reason=f"recreate_closed:{reason}"):
-            raise RuntimeError("Failed to recreate closed OpenAI client")
-        with self._openai_client_lock():
-            return self.client
+        self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
+        return new_client
 
     def _cleanup_dead_connections(self) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.cleanup_dead_connections``."""
@@ -3704,6 +3801,8 @@ class AIAgent:
         from unittest.mock import Mock
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
+        if self.provider == "moa":
+            return primary_client
         if isinstance(primary_client, Mock):
             return primary_client
         with self._openai_client_lock():
@@ -4359,9 +4458,19 @@ class AIAgent:
                 return True
         return False
 
+    # 20 MB base64 ≈ 15 MB decoded image — generous but prevents OOM from an
+    # oversized data: URL (a 100 MB+ payload creates ~275 MB of memory pressure,
+    # and gateway users sharing the same process can trivially OOM it).
+    _MAX_DATA_URL_BASE64_BYTES = 20 * 1024 * 1024
+
     @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
         header, _, data = str(image_url or "").partition(",")
+        if len(data) > AIAgent._MAX_DATA_URL_BASE64_BYTES:
+            logger.warning(
+                "data-URL payload too large (%d bytes), skipping", len(data)
+            )
+            return "", None
         mime = "image/jpeg"
         if header.startswith("data:"):
             mime_part = header[len("data:"):].split(";", 1)[0].strip()
@@ -5308,6 +5417,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
@@ -5319,7 +5429,8 @@ class AIAgent:
             task_id,
             stream_callback,
             persist_user_message,
-            persist_user_timestamp,
+            persist_user_timestamp=persist_user_timestamp,
+            moa_config=moa_config,
         )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

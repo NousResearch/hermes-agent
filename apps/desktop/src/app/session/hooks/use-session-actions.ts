@@ -12,7 +12,14 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profiles,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
+import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
   $currentCwd,
   $currentFastMode,
@@ -51,7 +58,13 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { reportBackendContract } from '@/store/updates'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
+import type {
+  SessionCreateResponse,
+  SessionInfo,
+  SessionResumeResponse,
+  SessionRuntimeInfo,
+  UsageStats
+} from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
@@ -175,20 +188,37 @@ function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: 
   })
 }
 
+interface BranchMessage {
+  content: string
+  role: ChatMessage['role']
+  source: ChatMessage
+}
+
+// The copyable spine of a branch: user/assistant turns that carry text.
+const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
+  messages
+    .map(message => ({ content: chatMessageText(message), role: message.role, source: message }))
+    .filter(({ content, role }) => content.trim() && (role === 'assistant' || role === 'user'))
+
 function upsertOptimisticSession(
   created: SessionCreateResponse,
   id: string,
   title: string | null = null,
-  preview: string | null = null
+  preview: string | null = null,
+  parentSessionId: string | null = null,
+  lastActive?: number
 ) {
-  const now = Date.now() / 1000
+  const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on (= the live gateway's
   // profile) so the scoped sidebar shows the new row immediately instead of
   // filtering it out as "default" until the aggregator re-fetches.
   const profileKey = normalizeProfileKey($activeGatewayProfile.get())
 
   const session: SessionInfo = {
-    cwd: created.info?.cwd ?? null,
+    // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
+    // lane immediately (the overlay groups by path); fall back to the workspace
+    // the session was just started in when the create response omits it.
+    cwd: created.info?.cwd ?? ($currentCwd.get().trim() || null),
     ended_at: null,
     id,
     input_tokens: 0,
@@ -198,6 +228,7 @@ function upsertOptimisticSession(
     message_count: created.message_count ?? created.messages?.length ?? 0,
     model: created.info?.model ?? null,
     output_tokens: 0,
+    parent_session_id: parentSessionId,
     preview,
     profile: profileKey,
     source: 'tui',
@@ -219,6 +250,10 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
 
 function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
   return session.id === storedSessionId || session._lineage_root_id === storedSessionId
+}
+
+function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
+  return (session?.message_count ?? 0) > 0
 }
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
@@ -284,15 +319,7 @@ async function resolveStoredSession(storedSessionId: string): Promise<SessionInf
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -372,6 +399,16 @@ function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } 
   setCurrentPersonality('')
 }
 
+// A "session genuinely doesn't exist" failure (deleted, or an id from a wiped /
+// rotated backend) — the REST transcript 404s with `Session not found`. Distinct
+// from a transient/wedged backend (ECONNREFUSED, timeout), which must still
+// retry rather than discard the id.
+function isSessionGoneError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '')
+
+  return message.includes('404') || /session not found/i.test(message)
+}
+
 export function useSessionActions({
   activeSessionId,
   activeSessionIdRef,
@@ -421,7 +458,10 @@ export function useSessionActions({
       // is cleared.
       setCurrentServiceTier('')
       setYoloActive(false)
-      setCurrentCwd(workspaceCwdForNewSession())
+      // In a project → the repo's default-branch (main worktree) checkout; not in
+      // a project → detached. So cmd-n "knows" the project instead of inheriting
+      // whatever linked worktree the last session drifted into.
+      setCurrentCwd(resolveNewSessionCwd())
       setCurrentBranch('')
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
@@ -591,9 +631,34 @@ export function useSessionActions({
       // chat view drops the error state and shows the loader again.
       setResumeExhaustedSessionId(current => (current === storedSessionId ? null : current))
 
-      const warmRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      // A warm cache entry is only trustworthy when it still BELONGS to the
+      // session being resumed. A pooled profile backend that gets idle-reaped
+      // and respawned (pruneSecondaryGateways) re-mints runtime ids, so a
+      // recycled id can resolve to a live-but-DIFFERENT session's cache entry.
+      // The session.usage 404 guard below only catches a fully-DEAD id — a
+      // recycled-live id 200s, so an unchecked hit paints the wrong transcript
+      // under the current route (the "open chat A, chat B loads" bug). On a
+      // mismatch the mapping is cross-wired: purge both sides and report a miss
+      // so the caller falls through to a full resume that rebinds a correct id.
+      const takeWarmCache = (): { runtimeId: string; state: ClientSessionState } | null => {
+        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
 
-      if (!warmRuntimeId || !sessionStateByRuntimeIdRef.current.get(warmRuntimeId)) {
+        if (!runtimeId || !state) {
+          return null
+        }
+
+        if (state.storedSessionId !== storedSessionId) {
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          sessionStateByRuntimeIdRef.current.delete(runtimeId)
+
+          return null
+        }
+
+        return { runtimeId, state }
+      }
+
+      if (!takeWarmCache()) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         setMessages([])
@@ -612,11 +677,15 @@ export function useSessionActions({
 
       await ensureGatewayProfile(sessionProfile)
 
-      const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-      const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
+      // Re-check after the profile-resolve / gateway-swap awaits above: the
+      // cache may have changed, and takeWarmCache re-validates belongs-to and
+      // purges a cross-wired mapping before we trust the fast-path.
+      const warmHit = takeWarmCache()
 
-      if (cachedRuntimeId && cachedState) {
-        const stored = $sessions.get().find(session => session.id === storedSessionId)
+      if (warmHit) {
+        const cachedRuntimeId = warmHit.runtimeId
+        const cachedState = warmHit.state
+        const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -630,41 +699,46 @@ export function useSessionActions({
           sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
         }
 
-        setFreshDraftReady(false)
-        clearNotifications()
-        setSelectedStoredSessionId(storedSessionId)
-        selectedStoredSessionIdRef.current = storedSessionId
-        setActiveSessionId(cachedRuntimeId)
-        activeSessionIdRef.current = cachedRuntimeId
-        syncSessionStateToView(cachedRuntimeId, cachedViewState)
-        setCurrentCwd(cachedViewState.cwd)
-        setCurrentBranch(cachedViewState.branch)
-        setSessionStartedAt(Date.now())
-
-        try {
-          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
-
-          if (!isCurrentResume()) {
-            return
-          }
-
-          if (usage) {
-            setCurrentUsage(current => ({ ...current, ...usage }))
-          }
-
-          return
-        } catch {
-          // The cached runtime id was minted by a prior backend instance. A
-          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
-          // and respawned across a profile swap mints fresh ids, so this mapping
-          // now 404s ("session not found"). Drop it and fall through to a full
-          // resume that rebinds a live runtime id.
-          if (!isCurrentResume()) {
-            return
-          }
-
+        if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+        } else {
+          setFreshDraftReady(false)
+          clearNotifications()
+          setSelectedStoredSessionId(storedSessionId)
+          selectedStoredSessionIdRef.current = storedSessionId
+          setActiveSessionId(cachedRuntimeId)
+          activeSessionIdRef.current = cachedRuntimeId
+          syncSessionStateToView(cachedRuntimeId, cachedViewState)
+          setCurrentCwd(cachedViewState.cwd)
+          setCurrentBranch(cachedViewState.branch)
+          setSessionStartedAt(Date.now())
+
+          try {
+            const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (usage) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+
+            return
+          } catch {
+            // The cached runtime id was minted by a prior backend instance. A
+            // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+            // and respawned across a profile swap mints fresh ids, so this mapping
+            // now 404s ("session not found"). Drop it and fall through to a full
+            // resume that rebinds a live runtime id.
+            if (!isCurrentResume()) {
+              return
+            }
+
+            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+            sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+          }
         }
       }
 
@@ -678,7 +752,7 @@ export function useSessionActions({
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
-      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
       applyStoredSessionPreviewRuntimeInfo(stored)
 
       if (stored) {
@@ -706,9 +780,15 @@ export function useSessionActions({
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
+          // Watch windows attach lazily (live mirror). Every other cold resume
+          // gets the gateway's default deferred build: the RPC returns the
+          // transcript immediately instead of blocking the switch on _make_agent
+          // (MCP discovery / prompt build), and the agent pre-warms in the
+          // background while the prefetch above paints the transcript.
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
@@ -754,7 +834,22 @@ export function useSessionActions({
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()
 
-        const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
+        // Prefetch-hit fast path: `preferredMessages` IS the live `$messages`
+        // array (already error-merged when `localSnapshot` was built), so reuse
+        // the ref instead of rebuilding a throwaway transcript+Map every switch.
+        const messagesForView =
+          preferredMessages === currentMessages
+            ? currentMessages
+            : preserveLocalAssistantErrors(preferredMessages, currentMessages)
+
+        if (sessionShouldHaveTranscript(stored) && messagesForView.length === 0) {
+          setActiveSessionId(null)
+          activeSessionIdRef.current = null
+          setResumeFailedSessionId(storedSessionId)
+          resumedRunning = false
+
+          return
+        }
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
@@ -788,6 +883,8 @@ export function useSessionActions({
         // empty transcript. That is the exact state the thread loader latches on
         // forever (messagesEmpty && !activeSessionId) with no recovery path —
         // the "open in new window stays stuck loading, even after a nap" bug.
+        let fallbackError: unknown = null
+
         try {
           const fallback = await getSessionMessages(storedSessionId, sessionProfile)
 
@@ -796,14 +893,31 @@ export function useSessionActions({
           }
 
           setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
-        } catch {
+        } catch (e) {
           // Fallback also failed: nothing to paint. Leave whatever messages are
           // already shown and fall through to arm the resume-failure latch so
           // use-route-resume re-attempts the resume on the next render / window
           // focus / gateway reconnect instead of stranding the loader.
+          fallbackError = e
         }
 
-        if (isCurrentResume() && $messages.get().length === 0) {
+        if (!isCurrentResume()) {
+          return
+        }
+
+        // The session is genuinely gone (deleted, or a stale id from a wiped /
+        // rotated backend): the resume RPC and the authoritative REST transcript
+        // both 404. There's nothing to recover — silently drop to a fresh draft
+        // instead of toasting an error and hot-looping the bounded retry on a
+        // permanently-dead id. (Booting straight into a no-longer-existent
+        // last-session id is the common trigger.)
+        if ($messages.get().length === 0 && isSessionGoneError(fallbackError)) {
+          startFreshSessionDraft(true)
+
+          return
+        }
+
+        if ($messages.get().length === 0) {
           // Arm the self-heal ONLY when the window is still empty: the gateway
           // resume rejected AND the REST fallback failed to paint a transcript.
           // That is the exact stranded state the loader latches on
@@ -832,82 +946,48 @@ export function useSessionActions({
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,
+      startFreshSessionDraft,
       syncSessionStateToView,
       updateSessionState
     ]
   )
 
-  const branchCurrentSession = useCallback(
-    async (messageId?: string): Promise<boolean> => {
-      const sourceSessionId = activeSessionIdRef.current
-
-      if (!sourceSessionId) {
-        notify({
-          kind: 'warning',
-          title: copy.nothingToBranch,
-          message: copy.branchNeedsChat
-        })
-
-        return false
-      }
-
-      if (busyRef.current) {
-        notify({
-          kind: 'warning',
-          title: copy.sessionBusy,
-          message: copy.branchStopCurrent
-        })
-
-        return false
-      }
-
+  // Shared fork: create a child session seeded with `branchMessages`, linked to
+  // `parentStoredId` so it nests under its parent, then make it the active chat.
+  const forkBranch = useCallback(
+    async (branchMessages: BranchMessage[], parentStoredId: null | string, cwd?: string): Promise<boolean> => {
       creatingSessionRef.current = true
 
       try {
-        const currentMessages = $messages.get()
-
-        const targetIndex = messageId
-          ? currentMessages.findIndex(message => message.id === messageId)
-          : currentMessages.findLastIndex(message => message.role === 'assistant' || message.role === 'user')
-
-        const branchStart = targetIndex >= 0 ? targetIndex : Math.max(currentMessages.length - 1, 0)
-        const branchEnd = targetIndex >= 0 ? targetIndex + 1 : currentMessages.length
-
-        const branchMessages = currentMessages
-          .slice(branchStart, branchEnd)
-          .map(message => ({
-            content: chatMessageText(message),
-            source: message,
-            role: message.role
-          }))
-          .filter(message => message.content.trim() && ['assistant', 'user'].includes(message.role))
-
-        if (!branchMessages.length) {
-          notify({
-            kind: 'warning',
-            title: copy.nothingToBranch,
-            message: copy.branchNoText
-          })
-
-          return false
-        }
-
-        clearNotifications()
-
-        const cwd = $currentCwd.get().trim()
-
+        // No title: the backend auto-names the branch from its parent's lineage.
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
-          title: copy.branchTitle
+          ...(parentStoredId && { parent_session_id: parentStoredId })
         })
 
         const routedSessionId = branched.stored_session_id ?? branched.session_id
         const preview = branchMessages.map(({ content }) => content).find(Boolean) ?? null
+        // Draft until submit: nest under the parent at the parent's recency so it
+        // doesn't bubble to the top until a real message lands (backend persists
+        // + auto-names it then). The selected row survives refreshes (sessionsToKeep).
+        const rows = $sessions.get()
+        const parent = parentStoredId ? rows.find(session => sessionMatchesStoredId(session, parentStoredId)) : null
+
+        const siblings = parentStoredId
+          ? rows.filter(session => session.parent_session_id?.trim() === parentStoredId).length
+          : 0
 
         setFreshDraftReady(false)
-        upsertOptimisticSession(branched, routedSessionId, copy.branchTitle, preview)
+        upsertOptimisticSession(
+          branched,
+          routedSessionId,
+          copy.branchTitle(siblings + 1).toLowerCase(),
+          preview,
+          parentStoredId,
+          parent ? parent.last_active || parent.started_at : undefined
+        )
         ensureSessionState(branched.session_id, routedSessionId)
         setActiveSessionId(branched.session_id)
         activeSessionIdRef.current = branched.session_id
@@ -926,7 +1006,6 @@ export function useSessionActions({
         navigate(sessionRoute(routedSessionId))
 
         const runtimeInfo = applyRuntimeInfo(branched.info)
-
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
         if (runtimeInfo) {
@@ -946,7 +1025,6 @@ export function useSessionActions({
     },
     [
       activeSessionIdRef,
-      busyRef,
       copy,
       creatingSessionRef,
       ensureSessionState,
@@ -955,6 +1033,75 @@ export function useSessionActions({
       selectedStoredSessionIdRef,
       updateSessionState
     ]
+  )
+
+  // Branch the open chat — optionally from a specific message — off its live transcript.
+  const branchCurrentSession = useCallback(
+    async (messageId?: string): Promise<boolean> => {
+      if (!activeSessionIdRef.current) {
+        notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNeedsChat })
+
+        return false
+      }
+
+      if (busyRef.current) {
+        notify({ kind: 'warning', title: copy.sessionBusy, message: copy.branchStopCurrent })
+
+        return false
+      }
+
+      const messages = $messages.get()
+
+      const at = messageId
+        ? messages.findIndex(message => message.id === messageId)
+        : messages.findLastIndex(message => message.role === 'assistant' || message.role === 'user')
+
+      const start = at >= 0 ? at : Math.max(messages.length - 1, 0)
+      const end = at >= 0 ? at + 1 : messages.length
+      const branchMessages = toBranchMessages(messages.slice(start, end))
+
+      if (!branchMessages.length) {
+        notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
+
+        return false
+      }
+
+      clearNotifications()
+
+      return forkBranch(branchMessages, selectedStoredSessionIdRef.current, $currentCwd.get().trim())
+    },
+    [activeSessionIdRef, busyRef, copy, forkBranch, selectedStoredSessionIdRef]
+  )
+
+  // Branch any listed session, not just the open one. Reads the target's stored
+  // transcript directly (no resume/active-session dependency), so it works on
+  // right-click and nests under its parent.
+  const branchStoredSession = useCallback(
+    async (storedSessionId: string, sessionProfile?: string | null): Promise<boolean> => {
+      clearNotifications()
+
+      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const profile = sessionProfile ?? stored?.profile
+
+      try {
+        await ensureGatewayProfile(profile)
+        const { messages } = await getSessionMessages(storedSessionId, profile)
+        const branchMessages = toBranchMessages(toChatMessages(messages))
+
+        if (!branchMessages.length) {
+          notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
+
+          return false
+        }
+
+        return await forkBranch(branchMessages, stored?.id ?? storedSessionId, stored?.cwd?.trim())
+      } catch (err) {
+        notifyError(err, copy.branchFailed)
+
+        return false
+      }
+    },
+    [copy, forkBranch]
   )
 
   const removeSession = useCallback(
@@ -971,6 +1118,10 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      // Evict from the project tree's optimistic layer too (the backend snapshot
+      // still lists it until its next refresh), so grouped + flat views drop the
+      // row in lockstep.
+      tombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
@@ -999,6 +1150,7 @@ export function useSessionActions({
           setSessionsTotal(prev => prev + 1)
         }
 
+        untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
         $pinnedSessionIds.set(previousPinned)
 
         if (wasSelected) {
@@ -1053,6 +1205,7 @@ export function useSessionActions({
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      tombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
       // Archived sessions are hidden by the listSessions(min_messages=1) query
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
@@ -1078,6 +1231,7 @@ export function useSessionActions({
           setSessionsTotal(prev => prev + 1)
         }
 
+        untombstoneSessions([storedSessionId, archived?.id, archived?._lineage_root_id])
         $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)
       }
@@ -1088,6 +1242,7 @@ export function useSessionActions({
   return {
     archiveSession,
     branchCurrentSession,
+    branchStoredSession,
     closeSettings,
     createBackendSessionForSend,
     openSettings,

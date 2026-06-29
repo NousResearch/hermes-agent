@@ -46,6 +46,39 @@ logger = logging.getLogger(__name__)
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 
 
+def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
+    """Return a function-tool dict with a resolvable top-level ``name``.
+
+    Context engines and memory providers expose tool schemas via
+    ``get_tool_schemas()``. The expected shape is a bare function schema
+    (``{"name": ..., "description": ..., "parameters": ...}``) which callers
+    wrap as ``{"type": "function", "function": schema}``.
+
+    Some providers instead return an entry that is *already* in OpenAI tool
+    form (``{"type": "function", "function": {"name": ...}}``). Wrapping that
+    a second time produces ``{"type": "function", "function": {"type":
+    "function", "function": {...}}}`` whose ``function`` has no top-level
+    ``name``. Strict providers (e.g. DeepSeek) reject the *entire* request
+    with ``tools[N].function: missing field name`` (HTTP 400), so one bad
+    schema disables the whole toolset and breaks every turn (#47707).
+
+    This helper normalizes both shapes to the bare function schema and
+    returns ``None`` for anything without a resolvable name, so callers can
+    skip-with-warning rather than appending a nameless tool.
+    """
+    if not isinstance(schema, dict):
+        return None
+    # Unwrap an already-wrapped OpenAI tool entry.
+    if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+        schema = schema["function"]
+        if not isinstance(schema, dict):
+            return None
+    name = schema.get("name", "")
+    if not name or not isinstance(name, str):
+        return None
+    return schema
+
+
 def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
     """Return whether external memory-provider tools should be exposed."""
     if enabled_toolsets is None:
@@ -92,11 +125,17 @@ def inject_memory_provider_tools(agent: Any) -> int:
         agent.valid_tool_names = valid_tool_names
 
     added = 0
-    for schema in get_schemas():
-        if not isinstance(schema, dict):
+    for raw_schema in get_schemas():
+        schema = normalize_tool_schema(raw_schema)
+        if schema is None:
+            logger.warning(
+                "Memory provider returned a tool schema with no resolvable "
+                "name; skipping to avoid poisoning the request (%r)",
+                raw_schema,
+            )
             continue
-        tool_name = schema.get("name", "")
-        if not tool_name or tool_name in existing_tool_names:
+        tool_name = schema["name"]
+        if tool_name in existing_tool_names:
             continue
         tools.append({"type": "function", "function": schema})
         valid_tool_names.add(tool_name)
@@ -370,8 +409,11 @@ class MemoryManager:
         _core_tool_names = set(_HERMES_CORE_TOOLS)
 
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
+        for raw_schema in provider.get_tool_schemas():
+            schema = normalize_tool_schema(raw_schema)
+            if schema is None:
+                continue
+            tool_name = schema["name"]
             if tool_name in _core_tool_names:
                 logger.warning(
                     "Memory provider '%s' tool '%s' shadows a reserved core "
@@ -658,11 +700,19 @@ class MemoryManager:
         seen = set()
         for provider in self._providers:
             try:
-                for schema in provider.get_tool_schemas():
-                    name = schema.get("name", "")
+                for raw_schema in provider.get_tool_schemas():
+                    schema = normalize_tool_schema(raw_schema)
+                    if schema is None:
+                        logger.warning(
+                            "Memory provider '%s' returned a tool schema with "
+                            "no resolvable name; skipping (%r)",
+                            provider.name, raw_schema,
+                        )
+                        continue
+                    name = schema["name"]
                     if name in _core_tool_names:
                         continue
-                    if name and name not in seen:
+                    if name not in seen:
                         schemas.append(schema)
                         seen.add(name)
             except Exception as e:

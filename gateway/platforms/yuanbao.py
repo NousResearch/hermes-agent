@@ -5114,7 +5114,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
         return True
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Yuanbao WS gateway and authenticate.
 
         Delegates to ConnectionManager.open().

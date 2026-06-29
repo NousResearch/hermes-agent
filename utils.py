@@ -177,6 +177,22 @@ def atomic_json_write(
         raise
 
 
+class IndentDumper(yaml.SafeDumper):
+    """PyYAML dumper that indents list items under mapping keys (2-space).
+
+    Default PyYAML emits "indentless" sequences — list items start at the
+    same column as their parent mapping key.  ``ruamel.yaml`` (used by
+    :func:`atomic_roundtrip_yaml_update`) emits 2-space-indented sequences.
+    Mixing both styles in the same ``config.yaml`` produces a file that
+    stricter parsers like ``js-yaml`` reject with ``bad indentation of a
+    mapping entry``.  Forcing ``indentless=False`` aligns the two
+    serializers so all write paths emit byte-identical layouts (#31999).
+    """
+
+    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
+        return super().increase_indent(flow, False)
+
+
 def atomic_yaml_write(
     path: Union[str, Path],
     data: Any,
@@ -211,7 +227,21 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
+            # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
+            # cursors) as real UTF-8 instead of fragile escape sequences. Without
+            # it, PyYAML emits astral-plane chars as `\UXXXXXXXX` (8-digit) escapes
+            # inside multi-line double-quoted strings wrapped with `\`
+            # continuations — a structure that stricter/non-PyYAML parsers and
+            # hand-edits routinely break into unclosed quotes, corrupting the whole
+            # config (GitHub #51356).
+            yaml.dump(
+                data,
+                f,
+                Dumper=IndentDumper,
+                default_flow_style=default_flow_style,
+                sort_keys=sort_keys,
+                allow_unicode=True,
+            )
             if extra_content:
                 f.write(extra_content)
             f.flush()
@@ -307,6 +337,34 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
         return json.loads(text)
     except (json.JSONDecodeError, TypeError, ValueError):
         return default
+
+
+# ── Fast YAML loading ────────────────────────────────────────────────────
+#
+# PyYAML's pure-Python SafeLoader is ~8x slower than the libyaml-backed
+# ``CSafeLoader`` C extension. Startup parses config.yaml and every plugin
+# manifest with the slow path, costing ~0.9s of cold-start time. The C loader
+# is a true drop-in for ``safe_load`` (same restricted tag set), so prefer it
+# and fall back to the pure-Python loader only when libyaml isn't compiled in.
+_fast_yaml_loader = None
+
+
+def _get_fast_yaml_loader():
+    global _fast_yaml_loader
+    if _fast_yaml_loader is None:
+        _fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
+    return _fast_yaml_loader
+
+
+def fast_safe_load(stream: Any) -> Any:
+    """``yaml.safe_load`` using the libyaml C loader when available.
+
+    Accepts the same inputs as ``yaml.safe_load`` (a ``str``/``bytes`` document
+    or a readable file object) and returns the same parsed structure. Falls
+    back to PyYAML's pure-Python ``SafeLoader`` when ``CSafeLoader`` isn't
+    available, so behavior is identical everywhere — only the speed differs.
+    """
+    return yaml.load(stream, Loader=_get_fast_yaml_loader())
 
 
 # ─── Environment Variable Helpers ─────────────────────────────────────────────

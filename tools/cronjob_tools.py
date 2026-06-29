@@ -115,10 +115,14 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
-_CRON_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+# Single source of truth, shared with the install-time scanner
+# (threat_patterns.INVISIBLE_CHARS / skills_guard). Keeping a separate, narrower
+# copy here let an obfuscated injection directive slip past this runtime cron
+# tripwire while being caught at install time (or vice versa): U+2062-U+2064
+# (invisible math operators) and U+2066-U+2069 (directional isolates) are real
+# attack tools and were missing from the cron-local set. Importing the canonical
+# set keeps the cron tripwire and the install scanner from drifting apart.
+from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
 
 # U+200D Zero-Width Joiner is also a legitimate, required part of many
 # Unicode emoji sequences (for example 👨‍👩‍👧, 🏳️‍🌈, ❤️‍🩹, 🧑‍💻).
@@ -294,8 +298,51 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
             "thread_id": thread_id,
+            # Captured so an opt-in delivery mirror (cron.mirror_delivery /
+            # attach_to_session) can resolve the exact participant's session in
+            # per-user-isolated group chats — parity with interactive
+            # send_message, which passes HERMES_SESSION_USER_ID to
+            # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
+            "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
     return None
+
+
+def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
+    """Return an informational notice when a created job won't deliver anywhere.
+
+    TUI/CLI sessions cannot be captured as a cron ``origin`` (no
+    ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` is set for them), so a
+    ``deliver="origin"`` request — or an omitted ``deliver`` that defaults to
+    origin-or-local — produces a job that runs and saves output to
+    ``last_output`` but is never delivered back into the session. This is by
+    design (there is no live-delivery channel for local sessions), but silently
+    dropping the user's "tell me when it runs" intent is the trap reported in
+    #51568. Surface it at create time so the agent can relay it instead of
+    promising a delivery that never happens.
+
+    Returns ``None`` when the user explicitly asked for ``local`` (no surprise),
+    or when the job resolves to a real delivery target.
+    """
+    # An explicit local request is exactly what the user asked for — no notice.
+    if (user_deliver or "").strip().lower() == "local":
+        return None
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+
+        if _resolve_delivery_targets(job):
+            return None  # Will actually deliver somewhere — nothing to flag.
+    except Exception:
+        # If resolution can't be evaluated, fall back to the origin signal.
+        if job.get("origin"):
+            return None
+    return (
+        "This is a local-only cron job: its output is saved (view it with "
+        "cronjob(action='list')) but will NOT be delivered back into this "
+        "session — CLI/TUI sessions have no live-delivery channel. To be "
+        "notified when it runs, recreate or update the job with deliver set to "
+        "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'."
+    )
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
@@ -539,7 +586,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
-    profile: Optional[str] = None,
+    attach_to_session: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -606,9 +653,13 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
-                profile=_normalize_optional_job_value(profile),
+                attach_to_session=attach_to_session,
             )
             _notify_provider_jobs_changed_safe()
+            _create_message = f"Cron job '{job['name']}' created."
+            _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
+            if _local_notice:
+                _create_message = f"{_create_message} {_local_notice}"
             return json.dumps(
                 {
                     "success": True,
@@ -621,7 +672,7 @@ def cronjob(
                     "deliver": job.get("deliver", "local"),
                     "next_run_at": job["next_run_at"],
                     "job": _format_job(job),
-                    "message": f"Cron job '{job['name']}' created.",
+                    "message": _create_message,
                 },
                 indent=2,
             )
@@ -755,6 +806,8 @@ def cronjob(
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
+            if attach_to_session is not None:
+                updates["attach_to_session"] = bool(attach_to_session)
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -912,6 +965,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+            },
+            "attach_to_session": {
+                "type": "boolean",
+                "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
         },
         "required": ["action"]

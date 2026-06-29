@@ -13,7 +13,7 @@ model:
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
   #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
-  #   "nous"         - Nous Portal OAuth (requires: hermes login)
+  #   "nous"         - Nous Portal OAuth (requires: hermes auth add nous)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
@@ -451,7 +451,7 @@ prompt_caching:
 # Provider options:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
-#   "nous"       - Force Nous Portal (requires: hermes login)
+#   "nous"       - Force Nous Portal (requires: hermes auth add nous)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
 #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
 #   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
@@ -626,10 +626,10 @@ agent:
   # gateway_timeout_warning: 900
 
   # Graceful drain timeout for gateway stop/restart (seconds).
-  # The gateway stops accepting new work, waits for in-flight agents to
-  # finish, then interrupts anything still running after this timeout.
-  # 0 = no drain, interrupt immediately.
-  # restart_drain_timeout: 60
+  # Default 0 = no drain: a restart interrupts in-flight agents immediately,
+  # cleans up, and exits. Set a positive value only if you want a grace
+  # window on /restart, and keep it well under systemd's TimeoutStopSec.
+  # restart_drain_timeout: 0
 
   # Max app-level retry attempts for API errors (connection drops, provider
   # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
@@ -637,7 +637,15 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
-  
+
+  # After the agent edits code without fresh passing verification, nudge it to
+  # verify before finishing. The default "auto" enables it on interactive
+  # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables
+  # it on conversational messaging surfaces (Telegram, Discord, etc.) where the
+  # verification summary would reach a human as chat noise. Set true or false to
+  # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
+  # verify_on_stop: auto
+
   # Enable verbose logging
   verbose: false
   
@@ -741,6 +749,18 @@ platform_toolsets:
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
+#       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
+#       command_menu:
+#         # Telegram allows up to 100 BotCommands; Hermes defaults to 60 so
+#         # all built-in commands plus common skill commands stay visible
+#         # while remaining under Telegram's payload-size limit. Clamped 1..100.
+#         max_commands: 60
+#         # prepend = user priority first, then Hermes defaults
+#         # append  = Hermes defaults first, then user priority
+#         # replace = only the list below defines priority
+#         priority_mode: prepend
+#         priority:
+#           - my_plugin_command
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
@@ -771,7 +791,6 @@ platform_toolsets:
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
-#   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
@@ -786,7 +805,7 @@ platform_toolsets:
 #
 # COMPOSITE:
 #   debugging    - terminal + web + file
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 #   all          - Everything available
 #
 #   web          - Web search and content extraction (web_search, web_extract)
@@ -797,7 +816,6 @@ platform_toolsets:
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
 #   skills       - Load skill documents (skills_list, skill_view)
-#   moa          - Mixture of Agents reasoning (mixture_of_agents)
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
@@ -806,7 +824,7 @@ platform_toolsets:
 #
 # Composite toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)
-#   safe         - web + vision + moa (no terminal access)
+#   safe         - web + vision (no terminal access)
 
 # NOTE: The top-level "toolsets" key is deprecated and ignored.
 # Tool configuration is managed per-platform via platform_toolsets above.

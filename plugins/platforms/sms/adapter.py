@@ -86,7 +86,7 @@ class SmsAdapter(BasePlatformAdapter):
     # Required abstract methods
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         import aiohttp
         from aiohttp import web
 

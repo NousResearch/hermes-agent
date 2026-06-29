@@ -108,6 +108,7 @@ def adapter(monkeypatch):
     for _var in (
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_FREE_RESPONSE_THREADS",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
@@ -463,6 +464,48 @@ async def test_discord_unknown_thread_still_requires_mention(adapter, monkeypatc
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_threads_allows_unknown_thread_start(adapter, monkeypatch):
+    """Configured free-response threads allow starting in any thread without @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_THREADS", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    thread = FakeThread(channel_id=789, name="some thread")
+    message = make_message(channel=thread, content="hello from unknown thread")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello from unknown thread"
+    assert event.source.chat_id == "789"
+    assert event.source.thread_id == "789"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_threads_config_extra(adapter, monkeypatch):
+    """discord.free_response_threads works from config.yaml without opening parent channels."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_THREADS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["free_response_threads"] = True
+
+    channel_message = make_message(channel=FakeTextChannel(channel_id=111), content="plain channel")
+    await adapter._handle_message(channel_message)
+    adapter.handle_message.assert_not_awaited()
+
+    thread = FakeThread(channel_id=789, name="some thread")
+    thread_message = make_message(channel=thread, content="plain thread")
+    await adapter._handle_message(thread_message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "plain thread"
+    assert event.source.chat_type == "thread"
 
 
 @pytest.mark.asyncio

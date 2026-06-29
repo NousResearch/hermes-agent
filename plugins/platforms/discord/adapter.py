@@ -4377,6 +4377,21 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _discord_free_response_threads(self) -> bool:
+        """Return whether all Discord threads can start without @mention.
+
+        ``thread_require_mention`` controls follow-ups in threads where the bot
+        has already participated. This setting is broader: when enabled, any
+        Discord thread is treated as free-response for the first message too,
+        while ordinary server channels can still keep ``require_mention``.
+        """
+        configured = self.config.extra.get("free_response_threads")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_FREE_RESPONSE_THREADS", "false").lower() in {"true", "1", "yes", "on"}
+
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
         configured = self.config.extra.get("history_backfill")
@@ -5379,6 +5394,7 @@ class DiscordAdapter(BasePlatformAdapter):
             is_free_channel = (
                 "*" in free_channels
                 or bool(channel_ids & free_channels)
+                or (is_thread and self._discord_free_response_threads())
                 or is_voice_linked_channel
             )
 

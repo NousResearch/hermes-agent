@@ -313,6 +313,92 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     )
 
 
+def test_background_review_emits_structured_changed_lifecycle(monkeypatch):
+    import json
+
+    captured_events: list = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_bg",
+                    "content": json.dumps(
+                        {"success": True, "message": "Entry added", "target": "memory"}
+                    ),
+                }
+            ]
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.background_review_event_callback = lambda event: captured_events.append(event)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert [event["phase"] for event in captured_events] == ["started", "completed"]
+    started, completed = captured_events
+    assert started["review_id"] == completed["review_id"]
+    assert started["event_id"] != completed["event_id"]
+    assert started["review_memory"] is True
+    assert started["scopes"] == ["memory"]
+    assert completed["status"] == "changed"
+    assert completed["actions"] == ["Memory updated"]
+    assert completed["summary"] == "Memory updated"
+
+
+def test_background_review_emits_structured_unchanged_lifecycle(monkeypatch):
+    captured_events: list = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.background_review_event_callback = lambda event: captured_events.append(event)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_skills=True,
+    )
+
+    assert [event["phase"] for event in captured_events] == ["started", "completed"]
+    started, completed = captured_events
+    assert started["review_id"] == completed["review_id"]
+    assert started["scopes"] == ["skills"]
+    assert completed["status"] == "unchanged"
+    assert completed["actions"] == []
+    assert completed["summary"] == "No memory or skill changes."
+
+
 def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
     """The background review fork must NOT touch external memory plugins.
 

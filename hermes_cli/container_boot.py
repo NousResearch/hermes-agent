@@ -379,7 +379,16 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 
     validate_profile_name(profile)
     service_dir = scandir / f"gateway-{profile}"
-    tmp_dir = service_dir.with_name(service_dir.name + ".tmp")
+    # Dot-prefix the staging dir so s6-svscan skips it while half-built
+    # (s6-svscan ignores scandir entries whose name starts with ".").
+    # A non-dotted ``.tmp`` staging name is supervised AS ROOT by any
+    # concurrent ``s6-svscanctl -a`` rescan the moment it has a valid
+    # ``type``/``run``, creating a root-owned ``supervise/`` that makes
+    # ``_seed_supervise_skeleton`` EACCES — see the matching comment in
+    # ``S6ServiceManager.register_profile_gateway``. The atomic
+    # ``tmp_dir.replace(service_dir)`` below renames to the dotless live
+    # name, so the published slot is unchanged.
+    tmp_dir = service_dir.with_name("." + service_dir.name + ".tmp")
 
     # Wipe any leftover tmp from a previous interrupted run.
     if tmp_dir.exists():

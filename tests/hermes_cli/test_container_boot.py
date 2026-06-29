@@ -489,19 +489,26 @@ def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
         hermes_home=tmp_path, scandir=scandir, dry_run=False,
     )
 
-    # Slot still exists, no .tmp remnants.
+    # Slot still exists, no .tmp remnants (staging dir is dot-prefixed,
+    # so match it explicitly — a leading-`*` glob won't catch dotfiles).
     assert (scandir / "gateway-coder" / "run").read_text() == first_run
     assert list(scandir.glob("*.tmp")) == []
+    assert list(scandir.glob(".*.tmp")) == []
     # Down marker now present (state went from running → stopped).
     assert (scandir / "gateway-coder" / "down").exists()
 
 
 def test_register_service_cleans_up_stale_tmp_dir(tmp_path: Path) -> None:
-    """If a previous interrupted run left a .tmp sibling directory,
-    a fresh reconcile must clean it up rather than failing on mkdir."""
+    """If a previous interrupted run left a staging sibling directory,
+    a fresh reconcile must clean it up rather than failing on mkdir.
+
+    The staging dir is dot-prefixed (``.gateway-<profile>.tmp``) so a
+    concurrent s6-svscan rescan can't supervise it half-built; the
+    cleanup must target that same dot-prefixed name.
+    """
     scandir = tmp_path / "run-service"; scandir.mkdir()
-    # Simulate a leftover from an interrupted run.
-    stale_tmp = scandir / "gateway-coder.tmp"
+    # Simulate a leftover from an interrupted run (current staging name).
+    stale_tmp = scandir / ".gateway-coder.tmp"
     stale_tmp.mkdir()
     (stale_tmp / "stale-file").write_text("garbage")
 

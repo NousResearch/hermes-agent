@@ -1699,6 +1699,10 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        # Show the full model name in the status bar instead of truncating to
+        # ~26 chars. Useful for long Bedrock inference-profile ids like
+        # "us.anthropic.claude-opus-4-8" that would otherwise be clipped.
+        "full_model_name": False,
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent

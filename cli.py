@@ -4307,13 +4307,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
-        # Set HERMES_SHOW_FULL_MODEL_NAME=1 to disable status-bar truncation
-        # (useful for long Bedrock inference-profile ids like
-        # "us.anthropic.claude-opus-4-8" that would otherwise be clipped).
-        if (
-            os.environ.get("HERMES_SHOW_FULL_MODEL_NAME") != "1"
-            and len(model_short) > 26
-        ):
+        # display.full_model_name (config.yaml): when true, skip the status-bar
+        # truncation so long Bedrock inference-profile ids like
+        # "us.anthropic.claude-opus-4-8" render in full instead of being clipped.
+        try:
+            _show_full_model = bool(
+                (self.config or {}).get("display", {}).get("full_model_name", False)
+            )
+        except Exception:
+            _show_full_model = False
+        if not _show_full_model and len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())

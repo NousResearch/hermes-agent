@@ -2935,6 +2935,16 @@ class TestTitleUniqueness:
         assert result is not None
         assert result["id"] == "s2"
 
+    def test_get_session_by_title_scoped_user_allows_legacy_null_user(self, db):
+        db.create_session("legacy", "telegram")
+        db.set_session_title("legacy", "old project")
+
+        result = db.get_session_by_title(
+            "old project", source="telegram", user_id="user-a"
+        )
+        assert result is not None
+        assert result["id"] == "legacy"
+
     def test_get_session_by_title_not_found(self, db):
         assert db.get_session_by_title("nonexistent") is None
 
@@ -2988,6 +2998,17 @@ class TestTitleLineage:
                 "my project", source="telegram", user_id="user-b"
             )
             == "s2"
+        )
+
+    def test_resolve_lineage_scoped_user_allows_legacy_null_user(self, db):
+        db.create_session("s1", "telegram")
+        db.set_session_title("s1", "my project")
+
+        assert (
+            db.resolve_session_by_title(
+                "my project", source="telegram", user_id="user-a"
+            )
+            == "s1"
         )
 
     def test_resolve_exact_numbered(self, db):

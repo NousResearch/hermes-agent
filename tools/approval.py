@@ -1898,6 +1898,35 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+_EXEC_CODE_ENV_READ_RE = re.compile(
+    r"\b(?:os\.)?(?:environ|getenv)\b|"
+    r"\b(?:dotenv_values|load_dotenv)\s*\(|"
+    r"(?:^|[\"'/\\])\.env(?:[\"'/\\.]|$)|"
+    r"\b[A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|DSN|WEBHOOK|PRIVATE[_-]?KEY)[A-Z0-9_]*\b",
+    re.IGNORECASE,
+)
+
+_EXEC_CODE_NETWORK_EGRESS_RE = re.compile(
+    r"\brequests\.(?:request|get|post|put|patch|delete|head|options)\s*\(|"
+    r"\bhttpx\.(?:request|get|post|put|patch|delete|stream)\s*\(|"
+    r"\burllib\.request\.urlopen\s*\(|"
+    r"\burlopen\s*\(|"
+    r"\baiohttp\.ClientSession\s*\(|"
+    r"\bsocket\.(?:socket|create_connection)\s*\(|"
+    r"\b(?:subprocess|os)\.(?:run|Popen|call|system)\s*\([^)]*\b(?:curl|wget|nc|ncat|ssh|scp|rsync)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _execute_code_out_of_band_exfil_reasons(code: str) -> list[str]:
+    reasons: list[str] = []
+    if _EXEC_CODE_ENV_READ_RE.search(code):
+        reasons.append("local secret/environment read")
+    if _EXEC_CODE_NETWORK_EGRESS_RE.search(code):
+        reasons.append("direct network egress")
+    return reasons if len(reasons) >= 2 else []
+
+
 def check_execute_code_guard(code: str, env_type: str,
                              has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.

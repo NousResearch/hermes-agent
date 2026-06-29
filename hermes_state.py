@@ -2309,13 +2309,22 @@ class SessionDB:
         """Look up a session by exact title. Returns session dict or None."""
         where_clauses = ["title = ?"]
         params = [title]
+        order_clause = ""
         if source:
             where_clauses.append("source = ?")
             params.append(source)
         if user_id is not None:
-            where_clauses.append("user_id = ?")
+            where_clauses.append("(user_id = ? OR user_id IS NULL)")
             params.append(user_id)
-        query = f"SELECT * FROM sessions WHERE {' AND '.join(where_clauses)}"
+            order_clause = (
+                " ORDER BY CASE WHEN user_id = ? THEN 0 ELSE 1 END, "
+                "started_at DESC"
+            )
+            params.append(user_id)
+        query = (
+            f"SELECT * FROM sessions WHERE {' AND '.join(where_clauses)}"
+            f"{order_clause} LIMIT 1"
+        )
         with self._lock:
             cursor = self._conn.execute(query, params)
             row = cursor.fetchone()
@@ -2342,16 +2351,19 @@ class SessionDB:
         escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         where_clauses = ["title LIKE ? ESCAPE '\\'"]
         params = [f"{escaped} #%"]
+        order_prefix = ""
         if source:
             where_clauses.append("source = ?")
             params.append(source)
         if user_id is not None:
-            where_clauses.append("user_id = ?")
+            where_clauses.append("(user_id = ? OR user_id IS NULL)")
+            params.append(user_id)
+            order_prefix = "CASE WHEN user_id = ? THEN 0 ELSE 1 END, "
             params.append(user_id)
         query = (
             "SELECT id, title, started_at FROM sessions "
             f"WHERE {' AND '.join(where_clauses)} "
-            "ORDER BY started_at DESC"
+            f"ORDER BY {order_prefix}started_at DESC"
         )
         with self._lock:
             cursor = self._conn.execute(query, params)

@@ -1308,7 +1308,7 @@ class GatewaySlashCommandsMixin:
                                 _sess_entry = _self.session_store.get_or_create_session(
                                     event.source
                                 )
-                                _sess_db.update_session_model(
+                                await _sess_db.update_session_model(
                                     _sess_entry.session_id, result.new_model
                                 )
                             except Exception as exc:
@@ -1539,7 +1539,7 @@ class GatewaySlashCommandsMixin:
                     # override just stored below (Closes #48031).
                     if getattr(_sess_entry, "was_auto_reset", False):
                         _sess_entry.was_auto_reset = False
-                    _sess_db.update_session_model(
+                    await _sess_db.update_session_model(
                         _sess_entry.session_id, result.new_model
                     )
                 except Exception as exc:

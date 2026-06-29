@@ -12,6 +12,7 @@ exercised with synthetic ``Request`` objects.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -391,10 +392,22 @@ def _sign(secret: str, body: bytes) -> str:
     return f"sha256={digest}"
 
 
+class _FakeRequestContent:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    async def readexactly(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        if len(self.body) < size:
+            raise asyncio.IncompleteReadError(self.body, size)
+        return self.body[:size]
+
+
 def _post_request(body: bytes, headers: dict | None = None):
     """Build a minimal aiohttp.web.Request stub for POST tests."""
     request = MagicMock()
-    request.read = AsyncMock(return_value=body)
+    request.content = _FakeRequestContent(body)
     request.headers = headers or {}
     return request
 
@@ -525,20 +538,23 @@ class TestWebhookSignature:
     @pytest.mark.asyncio
     async def test_oversize_body_rejected_before_signature(self):
         """3MB cap per Meta — refuse without computing HMAC over giant junk."""
+        from gateway.platforms.whatsapp_cloud import WEBHOOK_MAX_BODY_BYTES
+
         adapter = _make_adapter(app_secret="key")
         adapter._dispatch_payload = AsyncMock()
-        body = b"x" * (4 * 1024 * 1024)
+        body = b"x" * (WEBHOOK_MAX_BODY_BYTES + 2)
         request = _post_request(body, {"X-Hub-Signature-256": "sha256=ignored"})
 
         response = await adapter._handle_webhook(request)
         assert response.status == 413
+        assert request.content.read_sizes == [WEBHOOK_MAX_BODY_BYTES + 1]
         adapter._dispatch_payload.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unreadable_body_rejected(self):
         adapter = _make_adapter(app_secret="key")
         request = MagicMock()
-        request.read = AsyncMock(side_effect=RuntimeError("read failed"))
+        request.content.readexactly = AsyncMock(side_effect=RuntimeError("read failed"))
         request.headers = {}
 
         response = await adapter._handle_webhook(request)
@@ -2422,4 +2438,3 @@ class TestReplyContextResolution:
             rich_sent_store.lookup("15551234567", "wamid.OUT")
             == "here is your answer"
         )
-

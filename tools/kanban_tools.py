@@ -793,6 +793,7 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    inject_notification = bool(args.get("inject_notification", False))
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -855,7 +856,7 @@ def _handle_create(args: dict, **kw) -> str:
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
-            subscribed = _maybe_auto_subscribe(conn, new_tid)
+            subscribed = _maybe_auto_subscribe(conn, new_tid, inject_notification=inject_notification)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
@@ -870,7 +871,7 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(f"kanban_create: {e}")
 
 
-def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
+def _maybe_auto_subscribe(conn: Any, task_id: str, inject_notification: bool = False) -> bool:
     """Auto-subscribe the calling session to task completion / block events.
 
     Returns True if a subscription row was written, False otherwise (no
@@ -956,6 +957,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             platform=platform, chat_id=chat_id,
             thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            inject_as_turn=inject_notification,
         )
         return True
     except Exception as _exc:
@@ -1420,6 +1422,16 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "inject_notification": {
+                "type": "boolean",
+                "description": (
+                    "If true, notification pushes to subscribed chats are "
+                    "injected as a synthetic inbound message (triggers an "
+                    "agent turn) instead of a silent push. Useful when the "
+                    "originating worker wants the orchestrator to discuss "
+                    "the result or delegate follow-ups."
                 ),
             },
             "skills": {

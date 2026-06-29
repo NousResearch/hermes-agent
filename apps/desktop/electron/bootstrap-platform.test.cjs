@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const { builtinModules } = require('node:module')
 const path = require('node:path')
 const test = require('node:test')
 
@@ -89,6 +90,7 @@ test('detectRemoteDisplay honors the HERMES_DESKTOP_DISABLE_GPU override both wa
 test('packaged electron entrypoints do not require unpackaged npm modules', () => {
   const electronDir = __dirname
   const entrypoints = ['main.cjs', 'preload.cjs', 'bootstrap-platform.cjs']
+  const nodeBuiltinRequires = new Set(builtinModules.concat(builtinModules.map(name => `node:${name}`)))
   // - electron: provided by the electron runtime, always resolvable in packaged builds.
   // - node-pty: hoisted by workspace dedup AND shipped via extraResources to
   //   resources/native-deps/node-pty (see scripts/stage-native-deps.cjs). main.cjs
@@ -102,6 +104,7 @@ test('packaged electron entrypoints do not require unpackaged npm modules', () =
     const source = fs.readFileSync(path.join(electronDir, entrypoint), 'utf8')
     const bareRequires = Array.from(source.matchAll(requirePattern))
       .map(match => match[1])
+      .filter(specifier => !nodeBuiltinRequires.has(specifier))
       .filter(specifier => !specifier.startsWith('node:'))
       .filter(specifier => !specifier.startsWith('.'))
       .filter(specifier => !allowedBareRequires.has(specifier))

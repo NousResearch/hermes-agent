@@ -2,6 +2,7 @@
 
 import json
 import sys
+import asyncio
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -605,6 +606,18 @@ class TestTeamsSummaryWriter:
 # Tests: Message Handling
 # ---------------------------------------------------------------------------
 
+async def _drain_bg(adapter):
+    """Drain the fire-and-forget background handle_message task(s).
+
+    `_on_message` acknowledges the inbound webhook immediately and runs the
+    (potentially long) agent turn in a tracked background task so the Bot
+    Framework ack window isn't blocked. In tests we await those tasks so the
+    handler's effect is observable deterministically.
+    """
+    for task in list(getattr(adapter, "_bg_tasks", set())):
+        await task
+
+
 class TestTeamsMessageHandling:
     def _make_activity(
         self,
@@ -650,6 +663,7 @@ class TestTeamsMessageHandling:
 
         activity = self._make_activity(conversation_type="personal")
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.call_args[0][0]
@@ -666,6 +680,7 @@ class TestTeamsMessageHandling:
 
         activity = self._make_activity(conversation_type="groupChat")
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
@@ -681,6 +696,7 @@ class TestTeamsMessageHandling:
 
         activity = self._make_activity(conversation_type="channel")
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "channel"
@@ -696,6 +712,7 @@ class TestTeamsMessageHandling:
 
         activity = self._make_activity(from_aad_id="aad-stable-id", from_id="teams-id")
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.user_id == "aad-stable-id"
@@ -711,6 +728,7 @@ class TestTeamsMessageHandling:
 
         activity = self._make_activity(from_id="bot-id")
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         adapter.handle_message.assert_not_awaited()
 
@@ -728,6 +746,7 @@ class TestTeamsMessageHandling:
             from_id="user-id",
         )
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.text == "what is the weather?"
@@ -746,6 +765,7 @@ class TestTeamsMessageHandling:
 
         await adapter._on_message(ctx)
         await adapter._on_message(ctx)
+        await _drain_bg(adapter)
 
         assert adapter.handle_message.await_count == 1
 
@@ -820,6 +840,7 @@ class TestTeamsAttachmentClassification:
 
         activity = self._make_activity([self._file_download_attachment()])
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT, (
@@ -846,6 +867,7 @@ class TestTeamsAttachmentClassification:
                 self._file_download_attachment(),
             ])
             await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
@@ -858,6 +880,7 @@ class TestTeamsAttachmentClassification:
         adapter = self._make_adapter()
         activity = self._make_activity([self._html_body_attachment()])
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.TEXT
@@ -876,6 +899,7 @@ class TestTeamsAttachmentClassification:
             mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
             activity = self._make_activity([self._image_attachment()])
             await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.PHOTO
@@ -890,6 +914,7 @@ class TestTeamsAttachmentClassification:
 
         activity = self._make_activity([self._file_download_attachment()])
         await adapter._on_message(self._make_ctx(activity))
+        await _drain_bg(adapter)
 
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.TEXT

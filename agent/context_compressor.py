@@ -1856,6 +1856,16 @@ class ContextCompressor(ContextEngine):
         self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
 
+    def snapshot_preflight_display_tokens(self) -> int:
+        """Capture the display token count before a speculative preflight seed."""
+        return self.last_prompt_tokens
+
+    def rollback_interrupted_preflight_display_tokens(self, snapshot: int) -> None:
+        """Restore a speculative display seed without touching compaction state."""
+        if self.awaiting_real_usage_after_compression and self.last_prompt_tokens == -1:
+            return
+        self.last_prompt_tokens = snapshot
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
 

@@ -15,6 +15,12 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('zh_HK')).toBe('zh-hant')
     expect(normalizeLocale('ja')).toBe('ja')
     expect(normalizeLocale('ja-JP')).toBe('ja')
+    expect(normalizeLocale('es')).toBe('es')
+    expect(normalizeLocale('es-ES')).toBe('es')
+    expect(normalizeLocale('es-MX')).toBe('es')
+    expect(normalizeLocale('es_AR')).toBe('es')
+    expect(normalizeLocale('es-419')).toBe('es')  // código UN M.49 para LatAm
+    expect(isLocale('es')).toBe(true)
   })
 
   it('falls back to English for empty or unsupported values', () => {

@@ -1064,6 +1064,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
             space = msg_payload_wrapper.get("space") or msg.get("space") or {}
             return msg, space, "workspace_addons"
 
+        # Format 1b: Workspace Add-ons app commands. Native Chat slash
+        # commands arrive as ``chat.appCommandPayload`` instead of
+        # ``chat.messagePayload``. The payload still contains a normal Chat
+        # ``message`` with ``text`` (e.g. "/status"), annotations, and a
+        # ``slashCommand.commandId``. Treat it as a message so the existing
+        # gateway slash-command dispatcher handles it.
+        app_command_payload = chat_block.get("appCommandPayload") if chat_block else None
+        if app_command_payload:
+            msg = app_command_payload.get("message") or {}
+            space = app_command_payload.get("space") or msg.get("space") or {}
+            return msg, space, "workspace_addons_app_command"
+
         # Format 2: Native Chat API Pub/Sub. Detected by a top-level
         # ``message`` object plus a ``type`` field; only MESSAGE events
         # flow through here.
@@ -1552,10 +1564,26 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Slash command: emit MessageType.COMMAND with normalized text.
         slash = msg.get("slashCommand") or {}
         is_slash = bool(slash)
-        if is_slash:
-            command_id = str(slash.get("commandId") or "")
-            if command_id and not text.startswith("/"):
-                text = f"/cmd_{command_id} {text}".strip()
+        if is_slash and not text.startswith("/"):
+            # Native Google Chat app commands sometimes put only the
+            # argument text in ``message.text`` (e.g. "2" for
+            # ``/commands 2``). The actual command name lives in the
+            # SLASH_COMMAND annotation, so prefer that over the opaque
+            # commandId fallback when present.
+            command_name = ""
+            for ann in msg.get("annotations") or []:
+                slash_ann = ann.get("slashCommand") or {}
+                command_name = str(slash_ann.get("commandName") or "").strip()
+                if command_name:
+                    break
+            if command_name:
+                if not command_name.startswith("/"):
+                    command_name = f"/{command_name}"
+                text = f"{command_name} {text}".strip()
+            else:
+                command_id = str(slash.get("commandId") or "")
+                if command_id:
+                    text = f"/cmd_{command_id} {text}".strip()
 
         # Attachments: download and cache.
         media_urls: List[str] = []

@@ -604,6 +604,46 @@ class TestExtractMessagePayload:
         assert space.get("name") == "spaces/S"
         assert space.get("spaceType") == "DIRECT_MESSAGE"
 
+    def test_workspace_addons_app_command_payload_extracts_message(self):
+        """Format 1b: native Chat app commands use appCommandPayload.
+
+        Commands configured from the Google Chat API Console can arrive as
+        ``chat.appCommandPayload`` instead of ``chat.messagePayload``. The
+        embedded message still carries the literal slash text (e.g.
+        ``/status``), so routing it through the normal message path lets the
+        gateway slash-command dispatcher handle it.
+        """
+        envelope = {
+            "chat": {
+                "appCommandPayload": {
+                    "appCommandMetadata": {
+                        "appCommandId": 1,
+                        "appCommandType": "SLASH_COMMAND",
+                    },
+                    "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                    "message": {
+                        "name": "spaces/S/messages/M.M",
+                        "sender": {
+                            "name": "users/12345",
+                            "email": "alice@example.com",
+                            "displayName": "Alice",
+                            "type": "HUMAN",
+                        },
+                        "text": "/status",
+                        "slashCommand": {"commandId": "1"},
+                        "thread": {"name": "spaces/S/threads/T"},
+                    },
+                }
+            }
+        }
+        result = GoogleChatAdapter._extract_message_payload(envelope, ce_type="")
+        assert result is not None
+        msg, space, fmt = result
+        assert fmt == "workspace_addons_app_command"
+        assert msg.get("text") == "/status"
+        assert msg.get("slashCommand", {}).get("commandId") == "1"
+        assert space.get("name") == "spaces/S"
+
     def test_native_chat_api_format_drops_non_message_events(self):
         """Format 2 with ``type != MESSAGE`` returns None — caller acks."""
         envelope = {
@@ -731,6 +771,37 @@ class TestExtractMessagePayload:
 
 
 class TestBuildMessageEvent:
+    @pytest.mark.asyncio
+    async def test_native_slash_command_uses_annotation_name_with_arguments(self, adapter):
+        """Native Chat commands can put args in text and command name in annotation.
+
+        Google Chat sent `/commands 2` as text `2` plus slashCommand.commandId,
+        with the real `/commands` name only in the SLASH_COMMAND annotation.
+        The adapter must rebuild `/commands 2`, not fall back to `/cmd_<id> 2`.
+        """
+        env = _make_chat_envelope(text="2", thread_name="spaces/S/threads/T1")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["slashCommand"] = {"commandId": "4"}
+        msg["annotations"] = [
+            {
+                "type": "SLASH_COMMAND",
+                "startIndex": 0,
+                "length": 9,
+                "slashCommand": {
+                    "type": "INVOKE",
+                    "commandName": "/commands",
+                    "commandId": "4",
+                },
+            }
+        ]
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert event.message_type == MessageType.COMMAND
+        assert event.text == "/commands 2"
+        assert event.get_command() == "commands"
+        assert event.get_command_args() == "2"
+
     @pytest.mark.asyncio
     async def test_dm_first_message_in_thread_is_main_flow(self, adapter):
         """Google Chat DMs spawn a fresh thread per top-level user

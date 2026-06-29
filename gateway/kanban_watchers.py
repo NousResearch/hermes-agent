@@ -394,7 +394,7 @@ class GatewayKanbanWatchersMixin:
                                 source = SessionSource(
                                     platform=plat,
                                     chat_id=sub["chat_id"],
-                                    chat_type="direct",
+                                    chat_type="dm",
                                     user_id=sub.get("user_id") or None,
                                     thread_id=str(sub.get("thread_id") or "").strip() or None,
                                 )

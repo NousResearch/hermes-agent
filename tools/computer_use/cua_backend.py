@@ -1403,6 +1403,7 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
+        self._ensure_session_alive()
         out = self._session.call_tool("list_apps", {"session": self._session_id})
         data = out["data"]
         if isinstance(data, list):
@@ -1418,6 +1419,37 @@ class CuaDriverBackend(ComputerUseBackend):
                     apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
             return apps
         return []
+
+    def _ensure_session_alive(self) -> None:
+        """Re-establish the MCP session when the lifecycle coroutine has died.
+
+        The _lifecycle_coro.finally block sets self._started = False when the
+        MCP stdio channel closes (daemon restart, transient EOF, etc.). On
+        the next tool call, call_tool() raises RuntimeError instead of
+        hanging — but list_apps/capture never see this state because their
+        callers treat the empty result as "no apps / no windows".
+
+        This method re-runs start() (idempotent + self-loop guarded) so the
+        next operation gets a fresh session without the caller needing to
+        know the session ever died. Only attempts to reconnect when the
+        session explicitly reports not-started; never tears down a healthy
+        session.
+        """
+        if self._session._started:
+            return
+        try:
+            self._session.start()
+            # Re-declare the run's session identity after reconnect.
+            try:
+                self._session.call_tool(
+                    "start_session", {"session": self._session_id}
+                )
+            except Exception as e:
+                logger.debug(
+                    "cua-driver start_session after reconnect failed: %s", e
+                )
+        except Exception as e:
+            logger.warning("cua-driver session reconnect failed: %s", e)
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Target an app for subsequent actions without stealing system focus.

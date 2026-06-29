@@ -980,7 +980,7 @@ class GitHubSource(SkillSource):
             stat = cache_file.stat()
             if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
                 return None
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -3217,7 +3217,7 @@ class HubLockFile:
         if not self.path.exists():
             return {"version": 1, "installed": {}}
         try:
-            return json.loads(self.path.read_text())
+            return json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"version": 1, "installed": {}}
 
@@ -3598,7 +3598,7 @@ def _load_hermes_index() -> Optional[dict]:
         try:
             age = time.time() - HERMES_INDEX_CACHE_FILE.stat().st_mtime
             if age < HERMES_INDEX_TTL:
-                return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+                return json.loads(HERMES_INDEX_CACHE_FILE.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
 

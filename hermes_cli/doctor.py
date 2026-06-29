@@ -2176,7 +2176,7 @@ def run_doctor(args):
         if lock_file.exists():
             try:
                 import json
-                lock_data = json.loads(lock_file.read_text())
+                lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
                 count = len(lock_data.get("installed", {}))
                 check_ok(f"Lock file OK ({count} hub-installed skill(s))")
             except Exception:
@@ -2342,7 +2342,7 @@ def run_doctor(args):
                     if not wrapper.is_file():
                         continue
                     try:
-                        content = wrapper.read_text()
+                        content = wrapper.read_text(encoding="utf-8")
                         if "hermes -p" in content:
                             _m = _re.search(r"hermes -p (\S+)", content)
                             if _m and not profile_exists(_m.group(1)):

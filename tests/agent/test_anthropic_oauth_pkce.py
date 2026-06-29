@@ -71,8 +71,10 @@ def _patch_oauth_flow(
         def __exit__(self, *_exc):
             return False
 
-        def read(self):
-            return self._body
+        def read(self, size: int = -1):
+            if size is None or size < 0:
+                return self._body
+            return self._body[:size]
 
     def fake_urlopen(req, *_a, **_kw):
         if capture_token_request is not None:
@@ -215,8 +217,10 @@ def test_login_token_exchange_falls_back_to_console_host(monkeypatch, tmp_path):
         def __exit__(self, *_exc):
             return False
 
-        def read(self):
-            return self._body
+        def read(self, size: int = -1):
+            if size is None or size < 0:
+                return self._body
+            return self._body[:size]
 
     def fake_urlopen(req, *_a, **_kw):
         attempts.append(req.full_url)

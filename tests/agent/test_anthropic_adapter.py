@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+import agent.anthropic_adapter as anthropic_adapter
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
     _is_azure_anthropic_endpoint,
@@ -27,6 +28,24 @@ from agent.anthropic_adapter import (
     run_oauth_setup_token,
 )
 from agent.transports import get_transport
+
+
+class _FakeOAuthResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    def __enter__(self) -> "_FakeOAuthResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        if size is None or size < 0:
+            return self.body
+        return self.body[:size]
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +529,54 @@ class TestRefreshOauthToken:
     def test_returns_none_without_refresh_token(self):
         creds = {"accessToken": "expired", "refreshToken": "", "expiresAt": 0}
         assert _refresh_oauth_token(creds) is None
+
+    def test_pure_refresh_bounds_response_read(self, monkeypatch):
+        response = _FakeOAuthResponse(
+            json.dumps(
+                {
+                    "access_token": "new-token-abc",
+                    "refresh_token": "new-refresh-456",
+                    "expires_in": 7200,
+                }
+            ).encode()
+        )
+        captured = []
+
+        def _urlopen(req, timeout):
+            captured.append((req, timeout))
+            return response
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+        result = anthropic_adapter.refresh_anthropic_oauth_pure(
+            "refresh-123",
+            use_json=True,
+        )
+
+        assert result["access_token"] == "new-token-abc"
+        assert result["refresh_token"] == "new-refresh-456"
+        assert response.read_sizes == [
+            anthropic_adapter._OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES + 1
+        ]
+        assert captured[0][0].full_url == "https://platform.claude.com/v1/oauth/token"
+        assert captured[0][1] == 10
+
+    def test_pure_refresh_rejects_oversized_response(self, monkeypatch):
+        response = _FakeOAuthResponse(
+            b"x" * (anthropic_adapter._OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES + 1)
+        )
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda *args, **kwargs: response,
+        )
+
+        with pytest.raises(ValueError, match="Anthropic OAuth response exceeded"):
+            anthropic_adapter.refresh_anthropic_oauth_pure("refresh-123")
+
+        assert response.read_sizes == [
+            anthropic_adapter._OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES + 1,
+            anthropic_adapter._OAUTH_TOKEN_RESPONSE_BODY_MAX_BYTES + 1,
+        ]
 
     def test_successful_refresh(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)

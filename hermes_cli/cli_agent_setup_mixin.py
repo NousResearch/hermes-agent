@@ -236,7 +236,27 @@ class CLIAgentSetupMixin:
 
         from hermes_cli.mcp_startup import wait_for_mcp_discovery
 
-        wait_for_mcp_discovery()
+        # Kanban workers run a single quiet (`-q`) turn and snapshot the tool
+        # registry ONCE at turn start. The default wait (mcp_discovery_timeout,
+        # ~1.5s) is far too short for a large MCP like admin-gateway (~1750
+        # tools, ~20s to connect): the worker would snapshot an empty MCP
+        # surface and never see those tools for its whole run. Interactive
+        # sessions don't hit this (later turns re-snapshot after the background
+        # discovery finishes), but a one-shot worker has no "later turn". So for
+        # dispatcher-spawned workers (HERMES_KANBAN_TASK set) wait with a
+        # generous bound so the M365/Exchange tools are actually present.
+        import os as _os
+
+        if _os.environ.get("HERMES_KANBAN_TASK"):
+            try:
+                _worker_wait = float(
+                    _os.environ.get("HERMES_KANBAN_MCP_WAIT", "90")
+                )
+            except (TypeError, ValueError):
+                _worker_wait = 90.0
+            wait_for_mcp_discovery(timeout=_worker_wait)
+        else:
+            wait_for_mcp_discovery()
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:

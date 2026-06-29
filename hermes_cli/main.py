@@ -2102,6 +2102,35 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
+    # Hand the active profile's resolved skin to the TUI so it paints the
+    # correct skin on the FIRST frame instead of flashing the default theme
+    # until the async gateway.ready skin event arrives. HERMES_HOME is already
+    # set to the active profile here, so this resolves that profile's skin.
+    env.pop("HERMES_TUI_SKIN_JSON", None)
+    try:
+        import json as _json
+        from hermes_cli.config import load_config as _load_config
+        from hermes_cli.skin_engine import (
+            get_active_skin as _get_active_skin,
+            init_skin_from_config as _init_skin_from_config,
+        )
+
+        _init_skin_from_config(_load_config())
+        _sk = _get_active_skin()
+        env["HERMES_TUI_SKIN_JSON"] = _json.dumps(
+            {
+                "name": _sk.name,
+                "colors": _sk.colors,
+                "branding": _sk.branding,
+                "banner_logo": _sk.banner_logo,
+                "banner_hero": _sk.banner_hero,
+                "tool_prefix": _sk.tool_prefix,
+                "help_header": (_sk.branding or {}).get("help_header", ""),
+            }
+        )
+    except Exception:
+        pass
+
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     code: Optional[int] = None
     try:

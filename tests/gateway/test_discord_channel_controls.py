@@ -545,6 +545,154 @@ async def test_dms_unaffected_by_ignored_channels(adapter, monkeypatch):
     adapter.handle_message.assert_awaited_once()
 
 
+
+
+# ── council replay regressions ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_replay_existing_workbench_thread_membership_trap_reuses_thread(adapter, monkeypatch):
+    """Replay: @Crew inside #agent-workbench should reuse the current thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workbench_channel_id": "700",
+        "workers": [{"name": "Tinker", "id": "333"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_channel=lambda channel_id: None,
+        fetch_channel=AsyncMock(),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+    parent = FakeTextChannel(channel_id=700, name="agent-workbench")
+    existing = FakeThread(channel_id=8000, name="existing-huddle", parent=parent)
+
+    await adapter._handle_message(
+        make_message(channel=existing, content="crew: test multiplayer here", mentions=[])
+    )
+
+    assert parent.created_threads == []
+    assert len(existing.added_users) == 1
+    assert "<@333>" in existing.sent_messages[0]
+    assert "bounded crew huddle" in existing.sent_messages[1]
+
+
+@pytest.mark.asyncio
+async def test_replay_crew_role_mention_opens_pixoid_council_route(adapter, monkeypatch):
+    """Replay: @Crew role mention should become Pixoid-led council, not bare yes."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    crew_role = SimpleNamespace(id=2468, managed=False)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[crew_role])
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+
+    await adapter._handle_message(
+        make_message(
+            channel=channel,
+            content=f"<@&{crew_role.id}> can we test the multiplayer experience? just reply yes",
+            role_mentions=[crew_role],
+            mentions=[],
+        )
+    )
+
+    assert len(channel.created_threads) == 1
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+    assert "bounded crew huddle" in channel.sent_messages[0]
+
+    for _ in range(10):
+        if adapter.handle_message.await_count:
+            break
+        await asyncio.sleep(0)
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].internal is True
+
+
+@pytest.mark.asyncio
+async def test_replay_crew_no_tools_skips_huddle_with_explanation(adapter, monkeypatch):
+    """Replay: user's original no-tools smoke test should not create a huddle."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111"}],
+    }
+    channel = FakeTextChannel(channel_id=700)
+
+    await adapter._handle_message(
+        make_message(
+            channel=channel,
+            content="crew: can we test the multiplayer experience here? just reply yes if you hear it from me...dont run any tools yet",
+            mentions=[],
+        )
+    )
+
+    assert channel.created_threads == []
+    assert "asked me not to run tools" in channel.sent_messages[0]
+    assert "@Boba" in channel.sent_messages[0]
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_replay_crew_without_no_tools_reports_unavailable_instead_of_bare_yes(adapter, monkeypatch):
+    """Replay: tools-allowed smoke test must open council or explain why not."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {"enabled": True, "workers": []}
+    channel = FakeTextChannel(channel_id=700)
+
+    await adapter._handle_message(
+        make_message(
+            channel=channel,
+            content="crew: can we test out the multiplayer experience here? just reply yes if you hear it from me...",
+            mentions=[],
+        )
+    )
+
+    assert channel.created_threads == []
+    assert "no council workers are configured" in channel.sent_messages[0]
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_replay_worker_close_marker_ack_lol_thanks_stay_silent(adapter, monkeypatch):
+    """Replay: workers do not loop on close markers or casual acknowledgements."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=FakeTextChannel(channel_id=700))
+    adapter._threads.mark(str(thread.id))
+    adapter._council_huddle_threads[str(thread.id)] = "closed"
+
+    for content in (
+        "Huddle closed. I have enough for this round.",
+        "ok",
+        "lol thanks",
+    ):
+        adapter.handle_message.reset_mock()
+        await adapter._handle_message(make_message(channel=thread, content=content, mentions=[]))
+        adapter.handle_message.assert_not_awaited()
+
+
+def test_replay_duplicate_discord_event_id_is_idempotent(adapter):
+    """Replay: duplicate Discord message IDs are suppressed by the dedup cache."""
+    assert adapter._dedup.is_duplicate("1521209357902024715") is False
+    assert adapter._dedup.is_duplicate("1521209357902024715") is True
+
 # ── no_thread_channels ───────────────────────────────────────────────
 
 

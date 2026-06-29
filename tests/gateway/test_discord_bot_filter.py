@@ -96,6 +96,14 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, mentions=[])
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
+    def test_allow_bots_mentions_rejects_bot_message_to_other_agent(self):
+        """Worker bot chatter mentioning another agent must not wake this bot."""
+        our_user = _make_author(is_self=True)
+        other_agent = _make_author(bot=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, mentions=[other_agent])
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+
     def test_allow_bots_mentions_accepts_with_mention(self):
         """With allow_bots=mentions, bot messages with @mention are accepted."""
         our_user = _make_author(is_self=True)

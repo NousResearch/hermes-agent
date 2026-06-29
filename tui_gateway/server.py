@@ -9721,8 +9721,6 @@ def _coerce_clarify_response_from_payload(payload: dict, answer: str) -> tuple[b
     multi-select input.
     """
     text = str(answer or "").strip()
-    if not text:
-        return True, "", ""
 
     choices = payload.get("choices")
     if not isinstance(choices, list):
@@ -9742,6 +9740,11 @@ def _coerce_clarify_response_from_payload(payload: dict, answer: str) -> tuple[b
         max_selections = int(max_raw) if max_raw is not None else None
     except (TypeError, ValueError):
         max_selections = None
+
+    if not text:
+        if multi_select and min_selections > 0:
+            return False, "", f"Select at least {min_selections} choices."
+        return True, "", ""
 
     if multi_select:
         try:

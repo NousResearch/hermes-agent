@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS proactive_events (
     sent_at REAL,
     attached_at REAL,
     context_ready_at REAL,
+    introduced_at REAL,
+    last_injected_at REAL,
+    injection_count INTEGER NOT NULL DEFAULT 0,
     resolved_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_proactive_events_conversation
@@ -74,6 +77,10 @@ class ProactiveEvent:
     transport_id: str | None
     resolution_status: str
     created_at: float
+    payload: dict[str, Any]
+    introduced_at: float | None
+    last_injected_at: float | None
+    injection_count: int
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "ProactiveEvent":
@@ -95,6 +102,10 @@ class ProactiveEvent:
             transport_id=row["transport_id"],
             resolution_status=row["resolution_status"],
             created_at=float(row["created_at"]),
+            payload=json.loads(row["payload_json"] or "{}"),
+            introduced_at=float(row["introduced_at"]) if row["introduced_at"] is not None else None,
+            last_injected_at=float(row["last_injected_at"]) if row["last_injected_at"] is not None else None,
+            injection_count=int(row["injection_count"] or 0),
         )
 
 
@@ -112,6 +123,18 @@ class ProactiveEventStore:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(proactive_events)")}
+        migrations = {
+            "introduced_at": "ALTER TABLE proactive_events ADD COLUMN introduced_at REAL",
+            "last_injected_at": "ALTER TABLE proactive_events ADD COLUMN last_injected_at REAL",
+            "injection_count": "ALTER TABLE proactive_events ADD COLUMN injection_count INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                conn.execute(statement)
 
     def create_or_get_event(
         self,
@@ -178,6 +201,24 @@ class ProactiveEventStore:
     def mark_context_ready(self, event_id: str) -> None:
         self._mark(event_id, "context_ready", context_ready_at=time.time())
 
+    def mark_introduced(self, event_ids: Iterable[str]) -> None:
+        ids = list(event_ids)
+        if not ids:
+            return
+        now = time.time()
+        placeholders = ", ".join("?" for _ in ids)
+        with self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE proactive_events
+                SET introduced_at = COALESCE(introduced_at, ?),
+                    last_injected_at = ?,
+                    injection_count = injection_count + 1
+                WHERE event_id IN ({placeholders})
+                """,
+                [now, now, *ids],
+            )
+
     def mark_failed(self, event_id: str, status: str, error: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -224,13 +265,46 @@ class ProactiveEventStore:
             ).fetchall()
         return [ProactiveEvent.from_row(row) for row in rows]
 
+    def list_unintroduced(self, conversation_id: str, *, limit: int = 5) -> list[ProactiveEvent]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM proactive_events
+                WHERE conversation_id = ?
+                  AND resolution_status = 'unresolved'
+                  AND status IN ('attached', 'context_ready', 'confirmed')
+                  AND introduced_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (conversation_id, limit),
+            ).fetchall()
+        return [ProactiveEvent.from_row(row) for row in rows]
+
+    def get_event(self, event_id: str) -> ProactiveEvent | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM proactive_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        return ProactiveEvent.from_row(row) if row is not None else None
+
     def count_events(self) -> int:
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM proactive_events").fetchone()[0])
 
 
+_CONTEXT_PAYLOAD_KEYS = (
+    "account_label",
+    "sender",
+    "subject",
+    "urgency",
+    "suggested_action",
+)
+
+
 def _context_event_dict(event: ProactiveEvent) -> dict[str, Any]:
-    return {
+    data: dict[str, Any] = {
         "event_id": event.event_id,
         "type": event.event_type,
         "alert_id": event.alert_id,
@@ -239,7 +313,13 @@ def _context_event_dict(event: ProactiveEvent) -> dict[str, Any]:
         "status": event.status,
         "resolution_status": event.resolution_status,
         "created_at": event.created_at,
+        "introduced": event.introduced_at is not None,
     }
+    for key in _CONTEXT_PAYLOAD_KEYS:
+        value = event.payload.get(key)
+        if value not in (None, ""):
+            data[key] = value
+    return data
 
 
 def build_proactive_context_prompt(
@@ -248,10 +328,11 @@ def build_proactive_context_prompt(
     *,
     limit: int = 5,
 ) -> str:
-    events = store.list_unresolved(conversation_id, limit=limit)
+    events = store.list_unintroduced(conversation_id, limit=limit)
     if not events:
         return ""
     payload = [_context_event_dict(event) for event in events]
+    store.mark_introduced(event.event_id for event in events)
     return _CONTEXT_HEADER + "\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 

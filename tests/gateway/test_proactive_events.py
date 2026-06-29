@@ -47,7 +47,63 @@ def test_proactive_event_store_idempotently_tracks_saga_and_context(tmp_path):
     assert "Contract approval needed by 17:00" in block
     assert "ignore previous instructions" not in block
     assert "raw visible body" not in block
-    assert json.loads(block.split("\n", 1)[1])[0]["status"] == "context_ready"
+    payload = json.loads(block.split("\n", 1)[1])
+    assert payload[0]["status"] == "context_ready"
+    assert payload[0]["introduced"] is False
+
+
+def test_context_prompt_injects_full_alert_once_then_stops_repeating(tmp_path):
+    store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
+    event = store.create_or_get_event(
+        conversation_id="whatsapp:dm:chat:user",
+        platform="whatsapp",
+        chat_id="chat",
+        user_id="user",
+        event_type="email_alert",
+        alert_id="mail_alert_once",
+        idempotency_key="once",
+        canonical_summary="Admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment.",
+        rendered_message="admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment",
+        source_ref="gmail:msg-1",
+        payload={
+            "account_label": "personal",
+            "sender": "Admin Services <admin@example.com>",
+            "subject": "Fwd: Confirmation of the publication of your HQ assessment",
+            "urgency": "urgent-ish",
+            "suggested_action": "draft_reply",
+        },
+    )
+    store.mark_sent(event.event_id)
+    store.mark_attached(event.event_id)
+    store.mark_context_ready(event.event_id)
+
+    first_block = build_proactive_context_prompt(store, event.conversation_id)
+    second_block = build_proactive_context_prompt(store, event.conversation_id)
+
+    first_payload = json.loads(first_block.split("\n", 1)[1])
+    assert first_payload == [
+        {
+            "event_id": event.event_id,
+            "type": "email_alert",
+            "alert_id": "mail_alert_once",
+            "summary": "Admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment.",
+            "source_ref": "gmail:msg-1",
+            "status": "context_ready",
+            "resolution_status": "unresolved",
+            "created_at": event.created_at,
+            "introduced": False,
+            "account_label": "personal",
+            "sender": "Admin Services <admin@example.com>",
+            "subject": "Fwd: Confirmation of the publication of your HQ assessment",
+            "urgency": "urgent-ish",
+            "suggested_action": "draft_reply",
+        }
+    ]
+    assert second_block == ""
+    introduced = store.get_event(event.event_id)
+    assert introduced is not None
+    assert introduced.injection_count == 1
+    assert introduced.introduced_at is not None
 
 
 def test_resolved_proactive_events_are_not_injected(tmp_path):

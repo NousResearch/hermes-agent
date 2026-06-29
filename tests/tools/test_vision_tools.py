@@ -1085,28 +1085,29 @@ class TestDownloadRetryClassification:
 
 
 # ---------------------------------------------------------------------------
-# Fan-out concurrency cap — a single turn (or several concurrent sessions in
-# one process) can launch dozens of vision_analyze calls at once. The
-# process-global semaphore must bound how many run simultaneously so a video-
-# frame storm can't pin a worker thread and starve the dashboard event loop.
+# CPU-burst concurrency cap — a single turn (or several concurrent sessions in
+# one process) can launch dozens of vision_analyze calls at once. Only the
+# CPU-bound encode/resize is bounded (to host cores), so a video-frame storm
+# can't saturate every core and starve the dashboard event loop — while the
+# network-bound LLM calls stay fully concurrent for legitimate multi-image work.
 # ---------------------------------------------------------------------------
 
 
-class TestVisionFanoutConcurrencyCap:
-    """The process-global semaphore bounds concurrent vision analyses."""
+class TestVisionCpuBurstCap:
+    """The bounded CPU executor caps concurrent encode/resize, not LLM calls."""
 
-    def test_resolver_defaults_to_min_cpus_and_ceiling(self):
+    def test_resolver_defaults_to_host_cpus_no_ceiling(self):
         from tools import vision_tools as vt
 
         with (
             patch.dict(os.environ, {}, clear=False),
             patch("tools.vision_tools._detect_host_cpus", return_value=64),
+            patch("hermes_cli.config.load_config", side_effect=Exception),
         ):
             os.environ.pop("HERMES_VISION_MAX_CONCURRENCY", None)
-            # No config override available in the test env → falls to default,
-            # which is clamped to the ceiling even on a 64-core host.
-            with patch("hermes_cli.config.load_config", side_effect=Exception):
-                assert vt._resolve_vision_max_concurrency() == vt._VISION_DEFAULT_CONCURRENCY_CEILING
+            # No fixed ceiling: a 64-core host gets 64 encode workers. The cap
+            # tracks the actual resource (cores), not a magic number.
+            assert vt._resolve_vision_cpu_workers() == 64
 
     def test_resolver_respects_low_host_cpu_count(self):
         from tools import vision_tools as vt
@@ -1117,14 +1118,15 @@ class TestVisionFanoutConcurrencyCap:
             patch("hermes_cli.config.load_config", side_effect=Exception),
         ):
             os.environ.pop("HERMES_VISION_MAX_CONCURRENCY", None)
-            # 2-core host → cap is 2 (host limit, below the ceiling of 4).
-            assert vt._resolve_vision_max_concurrency() == 2
+            assert vt._resolve_vision_cpu_workers() == 2
 
     def test_resolver_env_override(self):
         from tools import vision_tools as vt
 
-        with patch.dict(os.environ, {"HERMES_VISION_MAX_CONCURRENCY": "1"}):
-            assert vt._resolve_vision_max_concurrency() == 1
+        with patch.dict(os.environ, {"HERMES_VISION_MAX_CONCURRENCY": "16"}):
+            # Explicit override is honored verbatim — including ABOVE core count,
+            # so operators can raise it for heavy multi-image workloads.
+            assert vt._resolve_vision_cpu_workers() == 16
 
     def test_resolver_rejects_sub_one_override(self):
         from tools import vision_tools as vt
@@ -1134,55 +1136,95 @@ class TestVisionFanoutConcurrencyCap:
             patch("tools.vision_tools._detect_host_cpus", return_value=2),
             patch("hermes_cli.config.load_config", side_effect=Exception),
         ):
-            # 0 is ignored (cap can never be disabled) → falls back to default.
-            assert vt._resolve_vision_max_concurrency() == 2
+            # 0 is ignored (cap can never be disabled) → falls back to host cores.
+            assert vt._resolve_vision_cpu_workers() == 2
+
+    def test_cpu_executor_is_dedicated_and_sized_to_workers(self):
+        """The encode executor must be dedicated, not the shared default pool."""
+        import importlib
+        from concurrent.futures import ThreadPoolExecutor
+
+        vt = importlib.import_module("tools.vision_tools")
+        assert isinstance(vt._vision_cpu_executor, ThreadPoolExecutor)
+        assert vt._vision_cpu_executor._max_workers == vt._VISION_CPU_WORKERS
 
     @pytest.mark.asyncio
-    async def test_fanout_is_bounded_by_semaphore(self):
-        """Firing many concurrent vision calls must never exceed the cap in flight.
+    async def test_encode_runs_on_dedicated_cpu_executor(self):
+        """Encode/resize must execute on a ``vision-encode`` thread, off the loop.
 
-        This is the regression guard for the prod incident: an unbounded
-        fan-out pinned the event loop. With the cap, peak concurrency is
-        clamped to the semaphore value regardless of how many calls launch.
+        Regression guard: the CPU burst is what saturated cores and starved the
+        loop. It must run on the bounded vision executor, not the caller's loop
+        thread nor the shared default pool.
+        """
+        import importlib
+        import threading
+
+        vt = importlib.import_module("tools.vision_tools")
+
+        seen_threads = []
+
+        def fake_encode(path, mime_type=None):
+            seen_threads.append(threading.current_thread().name)
+            return "data:image/jpeg;base64,AAAA"
+
+        result = await vt._run_encode_on_cpu_executor(fake_encode, "p", mime_type="image/jpeg")
+        assert result == "data:image/jpeg;base64,AAAA"
+        assert len(seen_threads) == 1
+        assert seen_threads[0].startswith("vision-encode"), seen_threads
+
+    @pytest.mark.asyncio
+    async def test_encode_bursts_bounded_but_llm_stays_concurrent(self):
+        """Encode concurrency is clamped to the cap; the LLM call is not.
+
+        Drives many native-path calls whose encode step is the only thing on
+        the CPU executor. With the executor sized to CAP, no more than CAP
+        encodes ever run at once — even though all N calls are in flight
+        simultaneously (proving the analyses themselves are NOT serialized).
         """
         import asyncio
         import importlib
-        import threading
-        # Resolve the module fresh and drive BOTH the handler and the patch
-        # targets through that SAME module object. Sibling suites
-        # (test_vision_routing_31179) delete tools.vision_tools from
-        # sys.modules, so the top-level ``_handle_vision_analyze`` import can
-        # be bound to a stale module while ``patch`` hits the current one —
-        # patching the wrong object lets the real function run (peak stays 0).
+        from concurrent.futures import ThreadPoolExecutor
+
         vt = importlib.import_module("tools.vision_tools")
 
         CAP = 3
-        in_flight = 0
-        peak = 0
-        lock = asyncio.Lock()
+        N = 12
+        enc_inflight = 0
+        enc_peak = 0
+        calls_inflight = 0
+        calls_peak = 0
+        import threading as _t
+        enc_lock = _t.Lock()
+
+        def slow_encode(path, mime_type=None):
+            nonlocal enc_inflight, enc_peak
+            with enc_lock:
+                enc_inflight += 1
+                enc_peak = max(enc_peak, enc_inflight)
+            try:
+                _t.Event().wait(0.04)  # simulate CPU burst
+            finally:
+                with enc_lock:
+                    enc_inflight -= 1
+            return "data:image/jpeg;base64,AAAA"
 
         async def fake_native(image_url, question):
-            nonlocal in_flight, peak
-            async with lock:
-                in_flight += 1
-                peak = max(peak, in_flight)
+            nonlocal calls_inflight, calls_peak
+            calls_inflight += 1
+            calls_peak = max(calls_peak, calls_inflight)
             try:
-                # Hold the slot long enough that, without a cap, all callers
-                # would overlap and drive peak up to N.
-                await asyncio.sleep(0.05)
+                # The encode is the capped CPU step.
+                await vt._run_encode_on_cpu_executor(slow_encode, "p", mime_type="image/jpeg")
+                # The "LLM call" is NOT capped — overlaps freely.
+                await asyncio.sleep(0.02)
             finally:
-                async with lock:
-                    in_flight -= 1
+                calls_inflight -= 1
             return json.dumps({"ok": True})
 
-        N = 12
-        # Install a fresh semaphore at the test cap so the assertion is
-        # deterministic regardless of the host's core count.
         with (
-            patch.object(vt, "_vision_concurrency_semaphore",
-                         threading.BoundedSemaphore(CAP)),
-            patch.object(vt, "_should_use_native_vision_fast_path",
-                         return_value=True),
+            patch.object(vt, "_vision_cpu_executor",
+                         ThreadPoolExecutor(max_workers=CAP, thread_name_prefix="vision-encode")),
+            patch.object(vt, "_should_use_native_vision_fast_path", return_value=True),
             patch.object(vt, "_vision_analyze_native", side_effect=fake_native),
         ):
             await asyncio.gather(*[
@@ -1193,58 +1235,12 @@ class TestVisionFanoutConcurrencyCap:
                 for i in range(N)
             ])
 
-        assert peak <= CAP, f"peak concurrency {peak} exceeded cap {CAP}"
-        # Sanity: with N > CAP and a real wait, we should have actually
-        # saturated the cap (otherwise the test proves nothing).
-        assert peak == CAP, f"expected to saturate cap {CAP}, only reached {peak}"
-
-    @pytest.mark.asyncio
-    async def test_unbounded_fanout_would_exceed_cap_without_semaphore(self):
-        """Control: with a no-op (effectively unbounded) semaphore, peak blows past CAP.
-
-        Proves the guard above would fail if the semaphore weren't enforcing
-        the limit — i.e. the test is actually exercising the cap.
-        """
-        import asyncio
-        import importlib
-        import threading
-        vt = importlib.import_module("tools.vision_tools")
-
-        CAP = 3
-        in_flight = 0
-        peak = 0
-        lock = asyncio.Lock()
-
-        async def fake_native(image_url, question):
-            nonlocal in_flight, peak
-            async with lock:
-                in_flight += 1
-                peak = max(peak, in_flight)
-            try:
-                await asyncio.sleep(0.05)
-            finally:
-                async with lock:
-                    in_flight -= 1
-            return json.dumps({"ok": True})
-
-        N = 12
-        # A semaphore sized to N imposes no real limit for this workload.
-        with (
-            patch.object(vt, "_vision_concurrency_semaphore",
-                         threading.BoundedSemaphore(N)),
-            patch.object(vt, "_should_use_native_vision_fast_path",
-                         return_value=True),
-            patch.object(vt, "_vision_analyze_native", side_effect=fake_native),
-        ):
-            await asyncio.gather(*[
-                vt._handle_vision_analyze(
-                    {"image_url": f"https://example.com/frame_{i}.png",
-                     "question": "what is this"}
-                )
-                for i in range(N)
-            ])
-
-        assert peak > CAP, (
-            "control failed: peak did not exceed CAP even without a real cap "
-            f"(peak={peak})"
+        assert enc_peak <= CAP, f"encode peak {enc_peak} exceeded cap {CAP}"
+        assert enc_peak == CAP, f"expected to saturate encode cap {CAP}, got {enc_peak}"
+        # The analyses themselves were NOT serialized to the cap — all N ran
+        # concurrently, which is the whole point (multi-image workflows keep
+        # their concurrency; only the CPU burst is bounded).
+        assert calls_peak > CAP, (
+            f"analyses were serialized to the cap (peak={calls_peak}); only the "
+            "encode burst should be bounded, not the whole call"
         )

@@ -34,6 +34,9 @@ from .utils import get_api_headers
 
 logger = logging.getLogger(__name__)
 
+_ONBOARD_RESPONSE_BODY_LIMIT_BYTES = 1 * 1024 * 1024
+_ONBOARD_RESPONSE_CHUNK_BYTES = 64 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Bind status
@@ -76,6 +79,66 @@ def _render_qr(url: str) -> bool:
         return False
 
 
+def _read_onboard_response_with_limit(
+    response,
+    *,
+    body_limit: Optional[int] = None,
+):
+    """Return a fully-read response without buffering unbounded portal bodies."""
+    import httpx
+
+    limit = (
+        _ONBOARD_RESPONSE_BODY_LIMIT_BYTES
+        if body_limit is None
+        else body_limit
+    )
+    declared = response.headers.get("content-length")
+    if declared:
+        try:
+            declared_size = int(declared)
+        except ValueError:
+            pass
+        else:
+            if declared_size > limit:
+                response.close()
+                raise RuntimeError(
+                    f"QQBot onboard response exceeds {limit} bytes"
+                )
+
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in response.iter_bytes(chunk_size=_ONBOARD_RESPONSE_CHUNK_BYTES):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > limit:
+                raise RuntimeError(
+                    f"QQBot onboard response exceeds {limit} bytes"
+                )
+            chunks.append(chunk)
+    except Exception:
+        response.close()
+        raise
+
+    return httpx.Response(
+        status_code=response.status_code,
+        headers=response.headers,
+        content=b"".join(chunks),
+        request=response.request,
+    )
+
+
+def _post_onboard_json(client, url: str, payload: dict):
+    with client.stream(
+        "POST",
+        url,
+        json=payload,
+        headers=get_api_headers(),
+    ) as response:
+        return _read_onboard_response_with_limit(response)
+
+
 # ---------------------------------------------------------------------------
 # Synchronous HTTP helpers (mirrors Feishu _post_registration pattern)
 # ---------------------------------------------------------------------------
@@ -93,7 +156,7 @@ def _create_bind_task(timeout: float = ONBOARD_API_TIMEOUT) -> Tuple[str, str]:
     key = generate_bind_key()
 
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        resp = client.post(url, json={"key": key}, headers=get_api_headers())
+        resp = _post_onboard_json(client, url, {"key": key})
         resp.raise_for_status()
         data = resp.json()
 
@@ -125,7 +188,7 @@ def _poll_bind_result(
     url = f"https://{PORTAL_HOST}{ONBOARD_POLL_PATH}"
 
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        resp = client.post(url, json={"task_id": task_id}, headers=get_api_headers())
+        resp = _post_onboard_json(client, url, {"task_id": task_id})
         resp.raise_for_status()
         data = resp.json()
 

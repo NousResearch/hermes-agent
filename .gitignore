@@ -143,3 +143,11 @@ apps/desktop/demo/
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
+
+# User-installed skills (sourced from ~/.hermes/skills/ or skills.sh, not upstream)
+skills/autonomous-ai-agents/hermes-cron-jobs/
+skills/autonomous-ai-agents/hermes-dojo/
+skills/autonomous-ai-agents/hermes-plugins/
+skills/devops/
+skills/memory/
+skills/omh/

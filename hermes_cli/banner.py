@@ -114,8 +114,17 @@ def get_available_skills() -> Dict[str, List[str]]:
 # Update check
 # =========================================================================
 
-# Cache update check results for 6 hours to avoid repeated git fetches
-_UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
+# Cache update check results. Two layers of invalidation:
+#   1. Time-bounded: this TTL bounds the worst-case staleness for cases
+#      that don't go through the git head-hash check below (PyPI/nix).
+#   2. Content-bounded: for git checkouts, a successful cache hit also
+#      requires local HEAD and origin/main to match the values we cached
+#      last time. That probe catches real upstream updates within seconds
+#      of `git fetch` landing new commits, regardless of this TTL.
+# Keep this short so a user who lets their machine sleep for a day and
+# comes back gets a real answer on the first run after wake, not a
+# 6-hour-stale one. Network cost is one `git fetch` per hour per user.
+_UPDATE_CHECK_CACHE_SECONDS = 60 * 60
 
 # Sentinel returned when we know an update exists but can't count commits
 # (e.g. nix-built hermes — no local git history to count against).
@@ -328,12 +337,19 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check. The version guard matters for pip installs:
-    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
-    # changes VERSION but leaves rev unchanged (both None), and without this
-    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    # Read cache — invalidate when ANY of these change:
+    #   - embedded rev (nix)
+    #   - installed VERSION (pip upgrades)
+    #   - upstream HEAD hash at the active git checkout (git installs)
+    #   - local HEAD hash (a fresh `git pull` or branch switch)
+    # The upstream/local-head guards are the load-bearing ones for git
+    # checkouts: without them the cache returns a stale "behind: 0" for up
+    # to 6h after upstream gains new commits, while VERSION stays pinned.
+    # We pay one extra `git rev-parse` per cached hit (sub-millisecond) to
+    # keep the "Up to date" line honest.
     now = time.time()
+    cached_upstream_head = None
+    cached_local_head = None
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
@@ -342,7 +358,28 @@ def check_for_updates() -> Optional[int]:
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
             ):
-                return cached.get("behind")
+                # For git checkouts, refuse to trust the cache if either
+                # side of the comparison moved. Cheap probe — skips network.
+                if not embedded_rev:
+                    repo_dir = _resolve_repo_dir()
+                    live_local = (
+                        _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+                        if repo_dir else None
+                    ) or None
+                    live_upstream = (
+                        _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir)
+                        if repo_dir else None
+                    ) or None
+                    cached_upstream_head = cached.get("upstream_head")
+                    cached_local_head = cached.get("local_head")
+                    if (
+                        cached_upstream_head == live_upstream
+                        and cached_local_head == live_local
+                    ):
+                        return cached.get("behind")
+                    # Mismatch — fall through and re-check upstream.
+                else:
+                    return cached.get("behind")
     except Exception:
         pass
 
@@ -360,9 +397,44 @@ def check_for_updates() -> Optional[int]:
         else:
             behind = _check_via_local_git(repo_dir)
 
+    # Persist the upstream/local heads we just observed. Three cases:
+    #   1. Cache miss (no cache file, or rev/ver mismatch): probe never ran,
+    #      cached_*_head is None → do a fresh `git rev-parse`.
+    #   2. Cache hit with head mismatch: probe DID read live values, but
+    #      cached_*_head still holds the OLD cached values (line 373).
+    #      We need to re-read live values, not persist the stale ones.
+    #   3. Cache hit with no head movement: probe's live values match cache,
+    #      we can re-persist the (now-verified) live values to keep the
+    #      cache file's mtime fresh without re-running git.
+    # The fix unifies 1+2 by always using live values when the probe ran
+    # (i.e. on a cache hit of any kind), and only doing a fresh read on a
+    # true cache miss.
     try:
+        if embedded_rev:
+            persisted_upstream = None
+            persisted_local = None
+        else:
+            repo_dir = _resolve_repo_dir()
+            if repo_dir is None:
+                persisted_upstream = persisted_local = None
+            else:
+                # Live values are what we want to persist. cached_*_head
+                # is only valid on a true cache miss (None). On a hit of
+                # either kind the probe populated live_local/live_upstream
+                # already — re-read to be safe (sub-ms, no network).
+                persisted_local = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) or None
+                persisted_upstream = _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir) or None
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "rev": embedded_rev,
+                    "ver": VERSION,
+                    "upstream_head": persisted_upstream,
+                    "local_head": persisted_local,
+                }
+            )
         )
     except Exception:
         pass

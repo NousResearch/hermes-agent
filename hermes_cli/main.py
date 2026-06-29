@@ -4360,18 +4360,32 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
-        from hermes_cli.banner import check_for_updates
+        from hermes_cli.banner import check_for_updates, UPDATE_AVAILABLE_NO_COUNT
         from hermes_cli.config import recommended_update_command
 
         behind = check_for_updates()
-        if behind and behind > 0:
-            commits_word = "commit" if behind == 1 else "commits"
-            print(
-                f"Update available: {behind} {commits_word} behind — "
-                f"run '{recommended_update_command()}'"
-            )
+        if behind is None:
+            # Check didn't run (offline, no remote, docker image, etc.)
+            pass
         elif behind == 0:
             print("Up to date")
+        elif behind == UPDATE_AVAILABLE_NO_COUNT or behind > 0:
+            # -1 = "behind but shallow clone can't count exact number" — still
+            # an update, just no precise figure. Surface it as "an update is
+            # available" rather than silently swallowing the case (the prior
+            # `if behind and behind > 0` check dropped -1, hiding the very
+            # signal the user is asking for).
+            if behind > 0:
+                commits_word = "commit" if behind == 1 else "commits"
+                print(
+                    f"Update available: {behind} {commits_word} behind — "
+                    f"run '{recommended_update_command()}'"
+                )
+            else:
+                print(
+                    f"Update available — run '{recommended_update_command()}' "
+                    f"(shallow checkout, exact count unavailable)"
+                )
     except Exception:
         pass
 

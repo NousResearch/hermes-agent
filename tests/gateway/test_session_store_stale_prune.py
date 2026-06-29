@@ -179,3 +179,37 @@ class TestEnsureLoadedCallsPrune:
         store._ensure_loaded()
 
         assert "active_key" in store._entries
+
+
+def test_session_store_remove():
+    """SessionStore.remove() should remove a key from the routing index.
+
+    Regression test for #54878: after idle-TTL eviction, sessions.json
+    held stale entries that routed messages into ended sessions.
+    """
+    import tempfile
+    from pathlib import Path
+    from gateway.session import SessionStore, SessionSource
+    from gateway.config import GatewayConfig, Platform
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sessions_dir = Path(tmp) / "sessions"
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir, config)
+
+        # Create a session entry via get_or_create
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            user_id="user1",
+        )
+        entry = store.get_or_create_session(source)
+        assert entry is not None
+
+        # Remove the key
+        removed = store.remove(entry.session_key)
+        assert removed is True
+
+        # Removing again should return False
+        removed2 = store.remove(entry.session_key)
+        assert removed2 is False

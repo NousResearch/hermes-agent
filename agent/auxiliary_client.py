@@ -4769,7 +4769,7 @@ def resolve_vision_provider_client(
     # while the OpenAI wire handles it correctly.
     if requested == "zai" and not resolved_base_url:
         zai_openai_urls = [
-            "https://api.z.ai/api/coding/paas/v4",   # coding-plan quota
+            "https://api.z.ai/api/coding/paas/v4",  # coding-plan quota
         "https://open.bigmodel.cn/api/paas/v4",  # metered fallthrough
             "https://api.z.ai/api/paas/v4",
         ]

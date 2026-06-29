@@ -4335,7 +4335,8 @@ class BasePlatformAdapter(ABC):
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and
         # downstream delivery all agree on the same lane.
-        self._apply_topic_recovery(event)
+        # Offloaded: the sync hook must not block the loop.
+        await asyncio.to_thread(self._apply_topic_recovery, event)
 
         session_key = build_session_key(
             event.source,

@@ -3584,11 +3584,16 @@ class GatewaySlashCommandsMixin:
 
             user_source = source.platform.value if source.platform else None
             current_entry = self.session_store.get_or_create_session(source)
+            # Matrix /resume lists the current room's named session; excluding
+            # the live session would make the room look empty.
+            current_session_id = (
+                None if source.platform == Platform.MATRIX else current_entry.session_id
+            )
             return await asyncio.to_thread(
                 query_session_listing,
                 getattr(self._session_db, "_db", self._session_db),
                 source=user_source,
-                current_session_id=current_entry.session_id,
+                current_session_id=current_session_id,
                 limit=10,
             )
 

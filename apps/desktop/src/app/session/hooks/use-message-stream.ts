@@ -2,8 +2,8 @@ import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
-import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
+import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
@@ -56,7 +56,7 @@ import {
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
-import { setSessionTodos } from '@/store/todos'
+import { clearActiveSessionTodos, setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
@@ -939,6 +939,7 @@ export function useMessageStream({
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
         clearClarifyRequest(undefined, sessionId)
+        clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
@@ -1219,6 +1220,7 @@ export function useMessageStream({
         if (sessionId) {
           clearAllPrompts(sessionId)
           clearClarifyRequest(undefined, sessionId)
+          clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)
         }

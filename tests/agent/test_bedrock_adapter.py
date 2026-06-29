@@ -1165,13 +1165,28 @@ class TestBedrockErrorClassification:
 class TestBedrockContextLength:
     """Test Bedrock model context length lookup."""
 
+    def test_claude_opus_4_8(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # opus 4.8 exposes the 1M window on Bedrock (matches native Anthropic).
+        assert get_bedrock_context_length("anthropic.claude-opus-4-8-20250514-v1:0") == 1_000_000
+
     def test_claude_opus_4_6(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 200_000
+        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 1_000_000
 
     def test_claude_sonnet_versioned(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 200_000
+        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 1_000_000
+
+    def test_claude_haiku_4_5_stays_200k(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Haiku 4.5 has no 1M window — must stay at the 200K Bedrock limit and
+        # not get swept up by the opus/sonnet 4.x bump.
+        assert get_bedrock_context_length("anthropic.claude-haiku-4-5-20250514-v1:0") == 200_000
+
+    def test_claude_sonnet_4_5_stays_200k(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("anthropic.claude-sonnet-4-5-20250514-v1:0") == 200_000
 
     def test_nova_pro(self):
         from agent.bedrock_adapter import get_bedrock_context_length

@@ -1233,41 +1233,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 opened_thread_id = new_thread_id
 
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            # Telegram three-mode topic routing (#22773): a private chat
-            # (positive chat_id) with a NUMERIC topic id is a Bot API Direct
-            # Messages topic and must be addressed via ``direct_messages_topic_id``
-            # — a bare ``message_thread_id`` is rejected/mis-routed by Bot API
-            # 10.0 and lands in General.  Forum/supergroup targets (negative
-            # chat_id) and named DM-topic lanes keep the default thread_id
-            # handling.  Compute the routed metadata ONCE so both the text send
-            # (via DeliveryRouter) and the media send use the same routing.
-            from gateway.delivery import (
-                DeliveryRouter,
-                DeliveryTarget,
-                _looks_like_int,
-                _looks_like_telegram_private_chat_id,
-            )
-
-            is_private_dm_topic = (
-                platform == Platform.TELEGRAM
-                and thread_id is not None
-                and _looks_like_telegram_private_chat_id(str(chat_id))
-                and _looks_like_int(str(thread_id))
-            )
-            if is_private_dm_topic:
-                # Routed via direct_messages_topic_id (mode 2), no bare thread_id.
-                route_thread_id = None
-                route_metadata = {
-                    "direct_messages_topic_id": str(thread_id),
-                    "job_id": job["id"],
-                }
-                # Media metadata mirrors the text routing so attachments land in
-                # the same DM topic instead of the General lane (#22773).
-                media_metadata = {"direct_messages_topic_id": str(thread_id)}
-            else:
-                route_thread_id = str(thread_id) if thread_id is not None else None
-                route_metadata = {"job_id": job["id"]}
-                media_metadata = {"thread_id": thread_id} if thread_id else None
+            # Telegram private-chat topic routing.
+            #
+            # There are two distinct private-chat topic topologies that Bot API
+            # treats differently:
+            #
+            #   1. Forum topics in a private chat (created via createForumTopic):
+            #      ``message_thread_id`` works, ``direct_messages_topic_id`` is
+            #      silently ignored (ok: true, but message lands in General).
+            #   2. Native "Direct Messages" topics (Bot API 10.0 mode):
+            #      ``message_thread_id`` may be rejected with 400, requires
+            #      ``direct_messages_topic_id``.
+            #
+            # The original #22773 fix blanket-switched ALL private-chat numeric
+            # thread_ids to ``direct_messages_topic_id``.  This silently broke
+            # topology 1 (the more common case), because the message is accepted
+            # with ok: true but rendered in General — no error, no retry.
+            #
+            # Fix: route via ``message_thread_id`` (which works for topology 1
+            # and was restored server-side for topology 2 on May 9, 2026).  The
+            # adapter's thread-not-found fallback already retries with
+            # ``direct_messages_topic_id`` for topology 2 if needed (#22773).
+            route_thread_id = str(thread_id) if thread_id is not None else None
+            route_metadata = {"job_id": job["id"]}
+            media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
@@ -1282,6 +1271,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 timed_out = False
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
+                    from gateway.delivery import (
+                        DeliveryRouter,
+                        DeliveryTarget,
+                    )
 
                     router = DeliveryRouter(config, adapters)
                     route_target = DeliveryTarget(

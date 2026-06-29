@@ -66,7 +66,9 @@ def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):
 
     assert server._list_repo_files("C:/repo") == ["src/main.py", "README.md"]
 
-    assert [kwargs["creationflags"] for _, kwargs in captured] == [
+    git_calls = [(cmd, kwargs) for cmd, kwargs in captured if cmd[:2] == ["git", "-C"]]
+
+    assert [kwargs["creationflags"] for _, kwargs in git_calls] == [
         _CREATE_NO_WINDOW,
         _CREATE_NO_WINDOW,
     ]

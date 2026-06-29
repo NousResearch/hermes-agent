@@ -1194,6 +1194,137 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+class TestPerTaskRouting(unittest.TestCase):
+    """Tests for opt-in per-task heterogeneous routing (delegation.per_task_routing).
+
+    Covers the fail-closed default, the flag gate, per-task credential
+    resolution in isolation, the API-key safety invariant, and fail-loud
+    behaviour on an unresolvable per-task provider.
+    """
+
+    def setUp(self):
+        from tools.delegate_tool import (
+            _per_task_routing_enabled,
+            _task_routing_overrides,
+            _resolve_task_credentials,
+        )
+        self._enabled = _per_task_routing_enabled
+        self._overrides = _task_routing_overrides
+        self._resolve = _resolve_task_credentials
+        # A representative batch-wide creds bundle (the "default" lane).
+        self._base_creds = {
+            "model": "gemma-4-12B-it-Q4_K_M.gguf",
+            "provider": "custom",
+            "base_url": "http://10.90.20.17:8761/v1",
+            "api_key": None,
+            "api_mode": "chat_completions",
+        }
+
+    # --- flag gate -----------------------------------------------------------
+
+    def test_routing_disabled_by_default(self):
+        self.assertFalse(self._enabled({}))
+
+    def test_routing_flag_truthy_enables(self):
+        self.assertTrue(self._enabled({"per_task_routing": True}))
+        self.assertTrue(self._enabled({"per_task_routing": "true"}))
+
+    def test_routing_flag_falsey_disables(self):
+        self.assertFalse(self._enabled({"per_task_routing": False}))
+        self.assertFalse(self._enabled({"per_task_routing": "no"}))
+
+    def test_routing_env_override(self):
+        with patch.dict(os.environ, {"DELEGATION_PER_TASK_ROUTING": "1"}, clear=False):
+            self.assertTrue(self._enabled({}))
+
+    # --- override extraction -------------------------------------------------
+
+    def test_overrides_extracts_recognised_keys_only(self):
+        task = {
+            "goal": "x",
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "context": "ignored",
+            "role": "leaf",
+        }
+        self.assertEqual(
+            self._overrides(task),
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        )
+
+    def test_overrides_drops_blank_strings(self):
+        task = {"goal": "x", "provider": "  ", "model": "m"}
+        self.assertEqual(self._overrides(task), {"model": "m"})
+
+    def test_overrides_ignores_non_string(self):
+        task = {"goal": "x", "model": 123, "provider": None}
+        self.assertEqual(self._overrides(task), {})
+
+    # --- resolution: fail-closed --------------------------------------------
+
+    def test_disabled_flag_returns_base_creds_unchanged(self):
+        parent = _make_mock_parent(depth=0)
+        task = {"goal": "x", "provider": "openrouter", "model": "m"}
+        out = self._resolve(task, self._base_creds, {}, parent)
+        self.assertIs(out, self._base_creds)
+
+    def test_enabled_but_no_routing_keys_returns_base_creds(self):
+        parent = _make_mock_parent(depth=0)
+        task = {"goal": "x"}
+        out = self._resolve(task, self._base_creds, {"per_task_routing": True}, parent)
+        self.assertIs(out, self._base_creds)
+
+    # --- resolution: active --------------------------------------------------
+
+    def test_model_only_keeps_provider_inherited(self):
+        # A task that sets only `model` → model set, provider/base_url/api_key
+        # None (inherit batch/parent): homogeneous-provider, heterogeneous-model.
+        parent = _make_mock_parent(depth=0)
+        task = {"goal": "x", "model": "google/gemini-3-flash-preview"}
+        out = self._resolve(task, self._base_creds, {"per_task_routing": True}, parent)
+        self.assertEqual(out["model"], "google/gemini-3-flash-preview")
+        self.assertIsNone(out["provider"])
+        self.assertIsNone(out["base_url"])
+        self.assertIsNone(out["api_key"])
+
+    def test_per_task_base_url_resolved_in_isolation(self):
+        # Per-task base_url must NOT inherit the batch-wide endpoint/key.
+        parent = _make_mock_parent(depth=0)
+        task = {
+            "goal": "x",
+            "model": "qwen2.5-coder",
+            "base_url": "http://localhost:1234/v1",
+        }
+        out = self._resolve(task, self._base_creds, {"per_task_routing": True}, parent)
+        self.assertEqual(out["base_url"], "http://localhost:1234/v1")
+        self.assertEqual(out["provider"], "custom")
+        self.assertEqual(out["api_mode"], "chat_completions")
+        # Crucially NOT the batch-wide 10.90.20.17 endpoint.
+        self.assertNotEqual(out["base_url"], self._base_creds["base_url"])
+
+    def test_api_key_never_taken_from_task_dict(self):
+        # Even if a model stuffs api_key into the task, it is not a recognised
+        # routing key and must be ignored — keys come from config only.
+        parent = _make_mock_parent(depth=0)
+        task = {
+            "goal": "x",
+            "model": "qwen2.5-coder",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "ATTACKER-SUPPLIED-KEY",
+        }
+        self.assertNotIn("api_key", self._overrides(task))
+        out = self._resolve(task, self._base_creds, {"per_task_routing": True}, parent)
+        self.assertIsNone(out["api_key"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_per_task_provider_resolution_failure_raises(self, mock_resolve):
+        mock_resolve.side_effect = RuntimeError("OPENROUTER_API_KEY not set")
+        parent = _make_mock_parent(depth=0)
+        task = {"goal": "x", "provider": "openrouter", "model": "m"}
+        with self.assertRaises(ValueError):
+            self._resolve(task, self._base_creds, {"per_task_routing": True}, parent)
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 

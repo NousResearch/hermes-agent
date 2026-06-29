@@ -2273,26 +2273,40 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task heterogeneous routing (opt-in via delegation.per_task_routing).
+            # When enabled and the task carries {provider|model|base_url|api_mode},
+            # resolve that task's credentials independently; otherwise fall back to
+            # the batch-wide `creds`. Fail-loud: a bad per-task provider aborts the
+            # batch with a message naming the offending task (parity with the
+            # batch-wide resolution failure handled above).
+            try:
+                task_creds = _resolve_task_credentials(t, creds, cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(
+                    f"Task {i} per-task routing failed: {exc} "
+                    f"(delegation.per_task_routing is enabled). Fix the task's "
+                    f"provider/model/base_url or remove the routing keys."
+                )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2858,6 +2872,94 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-task heterogeneous routing (opt-in via delegation.per_task_routing)
+# ---------------------------------------------------------------------------
+# By default every child in a `tasks=[...]` batch shares ONE provider:model
+# pair, resolved once from delegation.* (homogeneous fan-out). When the
+# operator sets ``delegation.per_task_routing: true``, each task may carry its
+# own {provider | model | base_url | api_mode} and is resolved INDEPENDENTLY
+# through the same ``_resolve_delegation_credentials()`` path used batch-wide.
+# This lets a single delegate_task call fan out across heterogeneous backends
+# (e.g. a local Gemma worker + an OpenRouter Claude worker + an OpenAI model)
+# chosen per task by model strength, hardware, or token budget.
+#
+# SECURITY / DESIGN INVARIANTS:
+#   * Fail-closed: default is OFF. When disabled, per-task routing keys are
+#     ignored and the batch-wide creds apply unchanged — identical behaviour
+#     to before this feature existed.
+#   * API keys are NEVER accepted from the model-supplied task dict. Per-task
+#     creds resolve keys exactly like the batch-wide path: from the runtime
+#     provider system (env / `hermes auth`) for named providers, or inherited
+#     from the parent for direct base_url endpoints. The model selects WHICH
+#     backend, never injects a credential.
+#   * Self-contained resolution: a task's routing keys are resolved on their
+#     own, NOT layered over the batch-wide endpoint, so a batch-wide base_url
+#     or key can't bleed into a differently-routed task.
+#   * Fail-loud: an unresolvable per-task provider raises ValueError, surfaced
+#     as a tool_error for that specific task, rather than silently falling back
+#     to the wrong model.
+
+_PER_TASK_ROUTING_KEYS = ("provider", "model", "base_url", "api_mode")
+
+
+def _per_task_routing_enabled(cfg: dict) -> bool:
+    """True when delegation.per_task_routing is explicitly enabled.
+
+    Default False (fail-closed): batches stay homogeneous unless the operator
+    opts in. Mirrors the config>env>default precedence of the concurrency
+    knobs (``DELEGATION_PER_TASK_ROUTING`` env override for parity).
+    """
+    val = cfg.get("per_task_routing")
+    if val is not None:
+        return is_truthy_value(val)
+    return is_truthy_value(os.getenv("DELEGATION_PER_TASK_ROUTING"), default=False)
+
+
+def _task_routing_overrides(task: dict) -> dict:
+    """Return the recognised, non-empty per-task routing keys from *task*.
+
+    Only string values are accepted; blanks are dropped so an empty field in
+    a model-emitted task dict is treated as "unset" rather than forcing a
+    resolution with an empty provider/model.
+    """
+    out: Dict[str, str] = {}
+    if not isinstance(task, dict):
+        return out
+    for k in _PER_TASK_ROUTING_KEYS:
+        v = task.get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    return out
+
+
+def _resolve_task_credentials(task: dict, base_creds: dict, cfg: dict, parent_agent) -> dict:
+    """Resolve credentials for a single task, honouring per-task routing.
+
+    When ``delegation.per_task_routing`` is enabled AND the task carries any of
+    ``{provider, model, base_url, api_mode}``, those keys are resolved on their
+    own through ``_resolve_delegation_credentials()`` (same transport-detection
+    + runtime-provider path as the batch-wide config). Otherwise the batch-wide
+    *base_creds* are returned unchanged.
+
+    Resolving the task's keys in isolation (rather than merging them over the
+    batch-wide config) is deliberate: it prevents a batch-wide endpoint or API
+    key from bleeding into a task routed to a different backend. A task that
+    sets only ``model`` (no provider/base_url) yields model-set + provider/
+    base_url/api_key=None, i.e. "same provider as the batch/parent, different
+    model" — the natural homogeneous-provider/heterogeneous-model case.
+
+    Raises ValueError (propagated to a per-task tool_error by the caller) when
+    a task's provider cannot be resolved.
+    """
+    if not _per_task_routing_enabled(cfg):
+        return base_creds
+    overrides = _task_routing_overrides(task)
+    if not overrides:
+        return base_creds
+    return _resolve_delegation_credentials(overrides, parent_agent)
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -2997,12 +3099,29 @@ def _build_tasks_param_description() -> str:
         max_children = _get_max_concurrent_children()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
-    return (
+    base = (
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
         f"user, set via delegation.max_concurrent_children). Each gets "
         "its own subagent with isolated context and terminal session. "
         "When provided, top-level goal/context/toolsets are ignored."
     )
+    # Only advertise per-task heterogeneous routing when the operator has
+    # enabled it — otherwise the routing keys are silently ignored and
+    # mentioning them would mislead the model.
+    try:
+        routing_on = _per_task_routing_enabled(_load_config())
+    except Exception:
+        routing_on = False
+    if routing_on:
+        base += (
+            " HETEROGENEOUS ROUTING IS ENABLED: each task may set its own "
+            "'provider'+'model' (or 'base_url') to run on a different backend, "
+            "so you can match model strength to task type in ONE batch (e.g. a "
+            "cheap local model for scanning + a strong model for synthesis). "
+            "Tasks without routing keys use the batch-wide delegation default. "
+            "API keys are resolved from config — never put a key in a task."
+        )
+    return base
 
 
 def _build_role_param_description() -> str:
@@ -3142,6 +3261,50 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model routing (heterogeneous batches). "
+                                "ONLY honoured when delegation.per_task_routing=true; "
+                                "ignored otherwise. Names a configured provider (e.g. "
+                                "'openrouter', 'nous', 'minimax') to run THIS task on, "
+                                "independent of sibling tasks. The API key is resolved "
+                                "from the runtime provider system (env / `hermes auth`) — "
+                                "never supplied here. Pair with 'model'."
+                            ),
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model id (heterogeneous batches). ONLY honoured "
+                                "when delegation.per_task_routing=true. Set with 'provider' "
+                                "(or 'base_url') to route this task to a specific model, or "
+                                "set alone to keep the batch/parent provider but switch the "
+                                "model. Lets you match model strength to task type within one "
+                                "delegate_task call."
+                            ),
+                        },
+                        "base_url": {
+                            "type": "string",
+                            "description": (
+                                "Per-task direct OpenAI-compatible endpoint (heterogeneous "
+                                "batches). ONLY honoured when delegation.per_task_routing=true. "
+                                "Use instead of 'provider' for a self-hosted/local endpoint; "
+                                "the transport (chat_completions vs anthropic_messages) is "
+                                "auto-detected from the URL. The key is inherited from the "
+                                "parent unless the endpoint needs none."
+                            ),
+                        },
+                        "api_mode": {
+                            "type": "string",
+                            "enum": ["chat_completions", "codex_responses", "anthropic_messages"],
+                            "description": (
+                                "Per-task transport override (heterogeneous batches). ONLY "
+                                "honoured when delegation.per_task_routing=true. Forces the "
+                                "API surface for 'base_url' endpoints the URL heuristic can't "
+                                "classify. Usually unnecessary."
+                            ),
                         },
                     },
                     "required": ["goal"],

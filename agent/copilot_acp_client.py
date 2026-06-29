@@ -48,6 +48,7 @@ _DEPRECATION_MARKERS = (
     "has been deprecated",
     "no commands will be executed",
 )
+_REMOTE_TRANSPORT_COMMANDS = {"ssh", "ssh.exe", "mosh", "mosh-client"}
 
 
 def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
@@ -74,6 +75,31 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _command_tokens(command: str | None, args: list[str] | None) -> list[str]:
+    tokens: list[str] = []
+    if command:
+        try:
+            tokens.extend(shlex.split(command))
+        except ValueError:
+            tokens.append(str(command))
+    tokens.extend(str(arg) for arg in (args or []))
+    return tokens
+
+
+def _uses_remote_transport(
+    command: str | None,
+    args: list[str] | None,
+    base_url: str | None,
+) -> bool:
+    if str(base_url or "").startswith("acp+tcp://"):
+        return True
+    for token in _command_tokens(command, args):
+        name = Path(token).name.lower()
+        if name in _REMOTE_TRANSPORT_COMMANDS:
+            return True
+    return False
+
+
 def _resolve_local_cwd(value: str | None) -> str | None:
     if not value:
         return None
@@ -83,25 +109,39 @@ def _resolve_local_cwd(value: str | None) -> str | None:
     return None
 
 
-def _resolve_process_cwd(process_cwd: str | None = None, acp_cwd: str | None = None) -> str:
+def _resolve_process_cwd(
+    process_cwd: str | None = None,
+    acp_cwd: str | None = None,
+    *,
+    local_session: bool = True,
+) -> str:
     if process_cwd:
         return str(Path(process_cwd).resolve())
-    local_acp_cwd = _resolve_local_cwd(acp_cwd)
-    if local_acp_cwd:
-        return local_acp_cwd
+    if local_session:
+        local_acp_cwd = _resolve_local_cwd(acp_cwd)
+        if local_acp_cwd:
+            return local_acp_cwd
     return str(Path(os.getcwd()).resolve())
 
 
-def _resolve_session_cwd(acp_cwd: str | None, process_cwd: str) -> str:
+def _resolve_session_cwd(
+    acp_cwd: str | None,
+    process_cwd: str,
+    *,
+    local_session: bool = True,
+) -> str:
     if acp_cwd is None or not str(acp_cwd).strip():
         return process_cwd
-    local_acp_cwd = _resolve_local_cwd(acp_cwd)
-    if local_acp_cwd:
-        return local_acp_cwd
+    if local_session:
+        local_acp_cwd = _resolve_local_cwd(acp_cwd)
+        if local_acp_cwd:
+            return local_acp_cwd
     return str(acp_cwd)
 
 
-def _session_uses_local_fs(acp_cwd: str | None) -> bool:
+def _session_uses_local_fs(acp_cwd: str | None, *, local_session: bool = True) -> bool:
+    if not local_session:
+        return False
     if acp_cwd is None or not str(acp_cwd).strip():
         return True
     return _resolve_local_cwd(acp_cwd) is not None
@@ -448,9 +488,25 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
-        self._process_cwd = _resolve_process_cwd(process_cwd, acp_cwd)
-        self._acp_cwd = _resolve_session_cwd(acp_cwd, self._process_cwd)
-        self._acp_fs_enabled = _session_uses_local_fs(acp_cwd)
+        self._remote_transport = _uses_remote_transport(
+            self._acp_command,
+            self._acp_args,
+            self.base_url,
+        )
+        self._process_cwd = _resolve_process_cwd(
+            process_cwd,
+            acp_cwd,
+            local_session=not self._remote_transport,
+        )
+        self._acp_cwd = _resolve_session_cwd(
+            acp_cwd,
+            self._process_cwd,
+            local_session=not self._remote_transport,
+        )
+        self._acp_fs_enabled = _session_uses_local_fs(
+            acp_cwd,
+            local_session=not self._remote_transport,
+        )
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None

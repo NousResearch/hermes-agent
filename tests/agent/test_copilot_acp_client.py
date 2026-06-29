@@ -354,6 +354,41 @@ def test_run_prompt_uses_local_process_cwd_but_sends_remote_acp_cwd(tmp_path):
     assert session_new["params"]["cwd"] == remote_cwd
 
 
+def test_ssh_acp_cwd_preserves_existing_local_path_as_remote(tmp_path):
+    process_cwd = tmp_path / "local-spawn"
+    process_cwd.mkdir()
+    captured = {}
+    proc = _FakeACPProcess()
+
+    def _fake(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return proc
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="ssh",
+        acp_args=["remote", "copilot", "--acp", "--stdio"],
+        acp_cwd="/tmp",
+        process_cwd=str(process_cwd),
+    )
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake):
+        client._run_prompt("hello", timeout_seconds=1)
+
+    assert captured["kwargs"]["cwd"] == str(process_cwd.resolve())
+    sent = [
+        json.loads(line)
+        for line in proc.stdin.getvalue().splitlines()
+        if line.strip()
+    ]
+    initialize = next(payload for payload in sent if payload["method"] == "initialize")
+    assert "fs" not in initialize["params"]["clientCapabilities"]
+    session_new = next(payload for payload in sent if payload["method"] == "session/new")
+    assert session_new["params"]["cwd"] == "/tmp"
+
+
 def test_remote_acp_cwd_rejects_local_fs_callbacks(tmp_path):
     client = CopilotACPClient(
         api_key="copilot-acp",

@@ -1017,6 +1017,18 @@ def init_agent(
                 }
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
+                if agent.provider == "copilot-acp":
+                    client_kwargs["command"] = (
+                        agent.acp_command
+                        or getattr(_routed_client, "_acp_command", None)
+                    )
+                    client_kwargs["args"] = list(
+                        agent.acp_args
+                        or getattr(_routed_client, "_acp_args", None)
+                        or []
+                    )
+                    if agent.acp_cwd:
+                        client_kwargs["acp_cwd"] = agent.acp_cwd
                 # Preserve provider-specific headers the router set.  The
                 # OpenAI SDK stores caller-provided default_headers in
                 # _custom_headers; older/mocked clients may expose

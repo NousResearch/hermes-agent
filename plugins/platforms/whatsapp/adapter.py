@@ -389,6 +389,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        # Honor `whatsapp.mode` from config.yaml. The bridge launcher
+        # (``--mode`` below) and the behavior mixin (`_effective_reply_prefix`)
+        # both read the mode from the WHATSAPP_MODE environment variable, so a
+        # ``mode:`` set only in config.yaml was silently ignored — the user had
+        # to also export WHATSAPP_MODE. Bridge it to the env so every reader
+        # agrees; an explicit env var still wins, matching how the setup wizard
+        # persists WHATSAPP_MODE.
+        _cfg_mode = config.extra.get("mode")
+        if _cfg_mode and not os.getenv("WHATSAPP_MODE"):
+            os.environ["WHATSAPP_MODE"] = str(_cfg_mode).strip().lower()
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()

@@ -55,6 +55,8 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.stream_dispatch import GatewayEventDispatcher
+from gateway.stream_events import ToolCallChunk, ToolCallFinished
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -15471,10 +15473,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
 
+        # ── Typed stream-event dispatcher (#54453) ─────────────────────────
+        # The GatewayEventDispatcher (gateway/stream_dispatch.py) + typed event
+        # vocabulary (gateway/stream_events.py) were introduced in #37250 but
+        # never wired into the live gateway: production tool-progress still
+        # flowed through the legacy ``progress_callback`` fan below.  This
+        # constructs one dispatcher per run and bridges ``progress_callback`` to
+        # emit typed ToolCallChunk / ToolCallFinished events through it, so
+        # adapters that override ``render_tool_event`` (e.g. Slack native
+        # plan/task cards, #29483) get the events on the live path.
+        #
+        # Regression guard: ``enqueue_tool_line`` is intentionally None.  The
+        # dispatcher's ``_dispatch`` short-circuits a ToolCallChunk when no
+        # enqueue hook is wired (stream_dispatch.py: ToolCallChunk branch), so
+        # routing events through the dispatcher does NOT reproduce the legacy
+        # text chrome here.  The legacy string-building below already produces
+        # today's progress lines byte-for-byte, and adapters without a
+        # ``render_tool_event`` override (BasePlatformAdapter default is a
+        # no-op) see the typed event but render nothing — leaving flag-off
+        # output identical to the pre-PR code path.  This is the invariant the
+        # test_slack_plan_cards.py flag-off regression suite checks.
+        try:
+            _progress_adapter_for_dispatch = self.adapters.get(source.platform)
+        except Exception:
+            _progress_adapter_for_dispatch = None
+        _tool_event_index = [0]  # monotonic per-turn counter for ToolCallChunk.index
+        _event_dispatcher: Optional[GatewayEventDispatcher] = None
+        if _progress_adapter_for_dispatch is not None:
+            _event_dispatcher = GatewayEventDispatcher(
+                _progress_adapter_for_dispatch,
+                sink=None,  # message events still flow through the stream consumer
+                enqueue_tool_line=None,  # see regression-guard comment above
+                tool_mode=progress_mode,
+            )
+
+        async def _render_tool_event_async(event, *, chat_id, metadata=None):
+            """Adapter hook for native tool-event rendering (Slack plan/task
+            cards).  Hops from the agent's sync worker thread onto the gateway
+            loop via ``safe_schedule_threadsafe`` (see the bridge below).  The
+            base-class default is a no-op, so adapters that do not override
+            ``render_tool_event`` pay nothing."""
+            adapter = _progress_adapter_for_dispatch
+            if adapter is None:
+                return
+            try:
+                await adapter.render_tool_event(event, chat_id=chat_id, metadata=metadata)
+            except Exception:  # presentation must never break the agent loop
+                logger.debug("render_tool_event failed", exc_info=True)
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
                 return
+
+            # ── Typed stream-event bridge (#54453 / #29483) ─────────────────
+            # Mirror tool.started / tool.completed into the typed event
+            # vocabulary and route them through the per-run
+            # GatewayEventDispatcher + the adapter's async render_tool_event
+            # hook.  This is the live-path wiring that was missing in #37250:
+            # adapters that override render_tool_event (Slack native plan/task
+            # cards) now receive ToolCallChunk / ToolCallFinished on the real
+            # production callback path.  Flag-off adapters hit the BasePlatform
+            # no-op default and the legacy string-push below is unchanged, so
+            # output is byte-identical to the pre-PR path (regression guard).
+            if _event_dispatcher is not None and event_type in ("tool.started", "tool.completed"):
+                try:
+                    if event_type == "tool.started":
+                        _idx = _tool_event_index[0]
+                        _tool_event_index[0] += 1
+                        _ev = ToolCallChunk(
+                            tool_name=tool_name or "",
+                            preview=preview,
+                            args=args,
+                            index=_idx,
+                        )
+                    else:
+                        _ev = ToolCallFinished(
+                            tool_name=tool_name or "",
+                            duration=float(kwargs.get("duration") or 0.0),
+                            ok=not bool(kwargs.get("is_error", False)),
+                            index=(_tool_event_index[0] - 1),
+                        )
+                    # Route through the dispatcher (its ToolCallChunk branch is
+                    # a no-op with enqueue_tool_line=None, so this never
+                    # duplicates the legacy chrome; the call exists so the
+                    # dispatcher genuinely receives the typed event and so a
+                    # future MessageChunk/Commentary path can flow through it).
+                    _event_dispatcher.dispatch(_ev)
+                    # Async hop onto the gateway loop for the adapter hook.
+                    # _loop_for_step is assigned later in this function but the
+                    # closure resolves it at call time (the agent fires the
+                    # callback well after setup completes), so the forward
+                    # reference is safe.
+                    safe_schedule_threadsafe(
+                        _render_tool_event_async(
+                            _ev, chat_id=source.chat_id, metadata=_progress_metadata,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="render_tool_event scheduling error",
+                    )
+                except Exception:
+                    logger.debug("typed stream-event bridge failed", exc_info=True)
 
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -17880,6 +17980,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 progress_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
+
+            # ── Plan-card stream cleanup (#29483) ──────────────────────────
+            # Finalize any native Slack plan/task-card stream for this chat so
+            # the card UI closes (chat_stopStream) instead of hanging open.
+            # Adapters without _close_plan_card_stream (everything except the
+            # Slack adapter with native_task_cards on) are a no-op.  The
+            # returned task is awaited briefly so the stopStream call lands
+            # before the run tears down; stop() is idempotent and swallows
+            # errors, so a timeout here never blocks the gateway.
+            try:
+                _adapter_for_cleanup = self.adapters.get(source.platform)
+            except Exception:
+                _adapter_for_cleanup = None
+            _close_plan_card = getattr(_adapter_for_cleanup, "_close_plan_card_stream", None) if _adapter_for_cleanup else None
+            if callable(_close_plan_card):
+                try:
+                    _stop_task = _close_plan_card(source.chat_id)  # type: ignore[func-returns-value]
+                    if _stop_task is not None:
+                        try:
+                            await asyncio.wait_for(_stop_task, timeout=2.0)  # type: ignore[arg-type]
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            _stop_task.cancel()  # type: ignore[union-attr]
+                        except Exception:
+                            logger.debug("plan-card stream stop failed", exc_info=True)
+                except Exception:
+                    logger.debug("plan-card stream cleanup failed", exc_info=True)
 
             # Wait for stream consumer to finish its final edit
             if stream_task:

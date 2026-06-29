@@ -2481,6 +2481,19 @@ class BasePlatformAdapter(ABC):
             return f"{emoji} {event.tool_name}: \"{preview}\""
         return f"{emoji} {event.tool_name}..."
 
+    async def render_tool_event(self, event, *, chat_id, metadata=None):
+        """No-op default for native tool-event rendering.
+
+        Adapters that want platform-native tool-progress presentation (e.g.
+        Slack plan/task cards) override this to consume a typed ToolCallChunk /
+        ToolCallFinished (see gateway/stream_events.py) directly.  The default
+        returns ``None`` synchronously so the gateway's
+        GatewayEventDispatcher can call it unconditionally: when an adapter
+        does not override, the dispatcher's ``format_tool_event`` path produces
+        today's text chrome byte-for-byte and this no-op never affects output.
+        """
+        return None
+
     @property
     def has_fatal_error(self) -> bool:
         return self._fatal_error_message is not None

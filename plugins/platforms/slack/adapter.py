@@ -38,6 +38,13 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.stream_events import (
+    MessageChunk,
+    MessageStop,
+    Commentary,
+    ToolCallChunk,
+    ToolCallFinished,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -77,6 +84,186 @@ class _ThreadContextCache:
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
+
+
+class _SlackPlanCardStream:
+    """Drives a single Slack native plan/task stream for one agent turn.
+
+    Slack's streaming API (chat.startStream / chat.appendStream / chat.stopStream)
+    renders a plan/task-card UI when ``task_display_mode="plan"`` and the appended
+    chunks are ``task_update`` chunks.  This helper owns that lifecycle for one
+    turn: it lazily starts the stream on the first tool event, appends an
+    ``in_progress`` / ``complete`` / ``error`` task_update per tool invocation,
+    and finalizes the stream on turn end.
+
+    Construction is cheap and lazy: no Slack API call is made until
+    :meth:`feed_tool_call` or :meth:`feed_tool_finished` is first invoked, so
+    flag-on turns that happen to run zero tools pay nothing.
+
+    The stream targets the same channel+thread_ts the final reply would use,
+    so Slack thread/session/DM routing semantics are preserved.  If stream
+    startup fails, :meth:`feed_tool_call` returns ``False`` so the caller can
+    fall back to the legacy text/edit rendering path; the final answer still
+    lands via the normal ``send()`` path regardless.
+
+    This object is only constructed when the Slack-specific
+    ``streaming.progress.native_task_cards`` flag is enabled (see
+    :meth:`SlackAdapter._native_task_cards_enabled`).
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        channel: str,
+        thread_ts: Optional[str],
+        *,
+        recipient_team_id: Optional[str] = None,
+        recipient_user_id: Optional[str] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> None:
+        self._client = client
+        self._channel = channel
+        self._thread_ts = thread_ts
+        self._recipient_team_id = recipient_team_id
+        self._recipient_user_id = recipient_user_id
+        self._logger = logger or logging.getLogger(__name__)
+        # Lazy state: the stream is not started until the first tool event.
+        self._stream_ts: Optional[str] = None
+        # Track which tool indices we've already opened a task for, so a
+        # repeated ToolCallFinished for the same index settles the existing
+        # task instead of opening a duplicate.
+        self._seen_indices: set = set()
+        self._closed = False
+
+    @property
+    def started(self) -> bool:
+        """True once chat.startStream has succeeded (or succeeded implicitly)."""
+        return self._stream_ts is not None
+
+    async def _start_stream(self, first_chunks: List[Dict[str, Any]]) -> bool:
+        """Start the stream, carrying the first task_update chunk. Returns
+        False if startup failed so the caller can fall back to legacy."""
+        try:
+            kwargs: Dict[str, Any] = {
+                "channel": self._channel,
+                "thread_ts": self._thread_ts,
+                "task_display_mode": "plan",
+                "chunks": first_chunks,
+            }
+            if self._recipient_team_id:
+                kwargs["recipient_team_id"] = self._recipient_team_id
+            if self._recipient_user_id:
+                kwargs["recipient_user_id"] = self._recipient_user_id
+            response = await self._client.chat_startStream(**kwargs)
+            ts = response.get("ts") if response else None
+            if not ts:
+                self._logger.warning(
+                    "[Slack] chat.startStream returned no ts; "
+                    "falling back to legacy tool-progress rendering"
+                )
+                return False
+            self._stream_ts = str(ts)
+            return True
+        except Exception as exc:  # presentation must never break the agent loop
+            self._logger.warning(
+                "[Slack] chat.startStream failed (%s); falling back to "
+                "legacy tool-progress rendering", exc, exc_info=True,
+            )
+            return False
+
+    async def _append(self, chunks: List[Dict[str, Any]]) -> None:
+        """Append task_update chunks to the running stream. Errors are logged
+        and swallowed so a transient append failure can't kill the turn."""
+        if not self._stream_ts or self._closed:
+            return
+        try:
+            await self._client.chat_appendStream(
+                channel=self._channel,
+                ts=self._stream_ts,
+                chunks=chunks,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._logger.debug(
+                "[Slack] chat.appendStream failed (%s); "
+                "tool-progress card may be stale", exc, exc_info=True,
+            )
+
+    @staticmethod
+    def _task_chunk(
+        tool_id: str,
+        title: str,
+        status: str,
+        details: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build a Slack task_update chunk dict. ``status`` is one of
+        ``in_progress`` / ``complete`` / ``error`` (the Slack task statuses)."""
+        chunk: Dict[str, Any] = {
+            "type": "task_update",
+            "id": tool_id,
+            "title": title,
+            "status": status,
+        }
+        if details:
+            chunk["details"] = details
+        return chunk
+
+    async def feed_tool_call(
+        self, event: "ToolCallChunk", title: str
+    ) -> bool:
+        """Open (or reopen) the task for a ToolCallChunk as ``in_progress``.
+
+        Returns ``False`` only when this was the first event AND stream startup
+        failed, signalling the caller to fall back to legacy rendering.
+        Subsequent failures (append) are swallowed and return ``True`` so the
+        turn keeps running.
+        """
+        tool_id = f"tool-{event.index}"
+        chunk = self._task_chunk(
+            tool_id=tool_id,
+            title=title,
+            status="in_progress",
+            details=event.preview,
+        )
+        if not self.started:
+            ok = await self._start_stream([chunk])
+            if ok:
+                self._seen_indices.add(tool_id)
+            return ok
+        await self._append([chunk])
+        self._seen_indices.add(tool_id)
+        return True
+
+    async def feed_tool_finished(self, event: "ToolCallFinished", title: str) -> None:
+        """Settle the task for a ToolCallFinished as ``complete`` or ``error``.
+
+        If we never saw the matching start (e.g. the flag flipped mid-turn, or
+        the start event was eaten), we still emit a settling chunk so the card
+        reflects the final state.  Swallows append errors.
+        """
+        if not self.started or self._closed:
+            return
+        tool_id = f"tool-{event.index}"
+        status = "error" if not event.ok else "complete"
+        chunk = self._task_chunk(tool_id=tool_id, title=title, status=status)
+        await self._append([chunk])
+        self._seen_indices.discard(tool_id)
+
+    async def stop(self) -> None:
+        """Finalize the stream. Idempotent; safe to call after a failed start."""
+        if self._closed or not self.started:
+            self._closed = True
+            return
+        self._closed = True
+        try:
+            await self._client.chat_stopStream(
+                channel=self._channel,
+                ts=self._stream_ts,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._logger.debug(
+                "[Slack] chat.stopStream failed (%s); "
+                "plan-card stream left un-finalized", exc, exc_info=True,
+            )
 
 
 def check_slack_requirements() -> bool:
@@ -473,6 +660,145 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        # Native plan/task-card progress streams, keyed by chat_id. Each entry
+        # is the _SlackPlanCardStream for the agent turn currently running in
+        # that channel (one stream per in-flight turn per channel). Populated
+        # lazily by _get_or_start_plan_card_stream() only when the
+        # streaming.progress.native_task_cards flag is on.
+        self._plan_card_streams: Dict[str, "_SlackPlanCardStream"] = {}
+
+    def _native_task_cards_enabled(self) -> bool:
+        """Whether Slack native plan/task-card progress is enabled.
+
+        Opt-in, Slack-specific. Reads ``extra.streaming.progress.native_task_cards``;
+        default is ``False`` so the flag-off behavior is identical to today.
+        """
+        if not self.config or not self.config.extra:
+            return False
+        streaming = self.config.extra.get("streaming") or {}
+        if not isinstance(streaming, dict):
+            return False
+        progress = streaming.get("progress") or {}
+        if not isinstance(progress, dict):
+            return False
+        return bool(progress.get("native_task_cards", False))
+
+    def _plan_card_title(self, tool_name: str, preview: Optional[str] = None) -> str:
+        """Render a short, human-readable title for a plan-card task row."""
+        name = (tool_name or "tool").strip()
+        if preview:
+            cap = 80
+            text = preview.strip()
+            if len(text) > cap:
+                text = text[: cap - 1] + "…"
+            return f"{name}: {text}"
+        return name
+
+    def _get_or_start_plan_card_stream(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "_SlackPlanCardStream":
+        """Get (or lazily create) the plan-card stream for this chat.
+
+        Construction is cheap (no API call) — the stream only starts on the
+        first feed_tool_call. Thread_ts is resolved the same way ``send()``
+        resolves it so the plan card lands in the same thread the final reply
+        will. Returns the existing stream if one is already in flight for the
+        channel, so all tool events for a single turn share one card.
+        """
+        existing = self._plan_card_streams.get(chat_id)
+        if existing is not None:
+            return existing
+        thread_ts = self._resolve_thread_ts(None, metadata)
+        client = self._get_client(chat_id)
+        stream = _SlackPlanCardStream(
+            client,
+            channel=chat_id,
+            thread_ts=thread_ts,
+        )
+        self._plan_card_streams[chat_id] = stream
+        return stream
+
+    def _close_plan_card_stream(self, chat_id: str) -> Optional["asyncio.Task"]:
+        """Schedule the chat.stopStream call for a chat's plan-card stream and
+        drop the bookkeeping. Returns the asyncio task (or None) so the caller
+        can await it in tests; in production the fire-and-forget is fine because
+        stop() is idempotent and errors are swallowed.
+        """
+        stream = self._plan_card_streams.pop(chat_id, None)
+        if stream is None:
+            return None
+        loop = asyncio.get_event_loop()
+        return loop.create_task(stream.stop())
+
+    # ── Native plan/task-card stream-event rendering ──────────────────────
+    #
+    # These methods are the Slack-native counterpart to the legacy
+    # format_tool_event() chrome.  When the streaming.progress.native_task_cards
+    # flag is on, the adapter drives a Slack plan/task stream (one card per
+    # turn) instead of emitting text/edit-based tool-progress bubbles.  The
+    # gateway's GatewayEventDispatcher routes ToolCallChunk / ToolCallFinished
+    # to render_tool_event(); when the flag is off these methods are no-ops and
+    # the legacy format_tool_event() path produces today's behavior unchanged.
+
+    async def render_tool_event(
+        self,
+        event: Any,
+        *,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Consume a typed tool event into the native plan/task-card stream.
+
+        Called by the gateway with a ToolCallChunk or ToolCallFinished (see
+        gateway/stream_events.py).  When native task cards are disabled this is
+        a no-op; when enabled it lazily starts the stream on the first tool
+        event and appends in_progress / complete / error task_update chunks.
+
+        Thread/routing semantics match the final-reply path: the stream uses
+        the same channel + thread_ts that ``send()`` would.  If stream startup
+        fails, the first ToolCallChunk falls back to the legacy text-rendering
+        path by emitting the rendered line onto the gateway's progress queue
+        (the caller wires that fallback).  The final assistant answer is never
+        routed through this stream — it always uses the normal send() path.
+        """
+        if not self._native_task_cards_enabled():
+            return
+
+        if isinstance(event, ToolCallChunk):
+            stream = self._get_or_start_plan_card_stream(chat_id, metadata)
+            title = self._plan_card_title(event.tool_name, event.preview)
+            ok = await stream.feed_tool_call(event, title)
+            if not ok:
+                # Stream startup failed — drop the in-flight stream so the next
+                # tool event can't append to a dead handle, and let the legacy
+                # text-rendering path handle progress for the rest of the turn.
+                self._plan_card_streams.pop(chat_id, None)
+            return
+
+        if isinstance(event, ToolCallFinished):
+            stream = self._plan_card_streams.get(chat_id)
+            if stream is None:
+                return
+            title = self._plan_card_title(event.tool_name)
+            await stream.feed_tool_finished(event, title)
+            return
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> Optional[str]:
+        """Return the rendered chrome for a ToolCallChunk, or None to eat it.
+
+        When the native plan/task-card flag is on we suppress the legacy
+        text/edit tool-progress chrome entirely — the native card owns
+        progress presentation for the turn.  When the flag is off the base
+        class default renders today's behavior 1:1.
+        """
+        if self._native_task_cards_enabled():
+            return None
+        return super().format_tool_event(
+            event, mode=mode, preview_max_len=preview_max_len,
+        )
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""

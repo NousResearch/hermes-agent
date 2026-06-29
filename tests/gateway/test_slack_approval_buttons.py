@@ -663,6 +663,31 @@ class TestSessionKeyFix:
         )
         assert result is False
 
+    def test_stale_session_returns_false(self):
+        adapter = _make_adapter()
+
+        class Store:
+            config = MagicMock()
+            config.group_sessions_per_user = False
+            config.thread_sessions_per_user = False
+            _entries = {
+                "agent:main:slack:group:C1:1000.0": MagicMock()
+            }
+
+            def _ensure_loaded(self):
+                return None
+
+            def _should_reset(self, entry, source):
+                return "idle"
+
+        adapter._session_store = Store()
+
+        result = adapter._has_active_session_for_thread(
+            channel_id="C1", thread_ts="1000.0", user_id="U123"
+        )
+
+        assert result is False
+
 
 # ===========================================================================
 # Thread engagement — bot-started threads & mentioned threads

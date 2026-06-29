@@ -3806,7 +3806,15 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
             session_store._ensure_loaded()
-            return session_key in session_store._entries
+            entry = session_store._entries.get(session_key)
+            if entry is None:
+                return False
+
+            should_reset = getattr(type(session_store), "_should_reset", None)
+            if callable(should_reset) and should_reset(session_store, entry, source):
+                return False
+
+            return True
         except Exception:
             return False
 

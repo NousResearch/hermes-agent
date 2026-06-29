@@ -201,7 +201,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
           .then(raw => {
             const r = asRpcResult<SessionSteerResponse>(raw)
 
-            if (r?.status !== 'queued') {
+            if (r?.status === 'queued') {
+              sys(`steer queued — arrives after next tool call: "${full.slice(0, 50)}${full.length > 50 ? '…' : ''}"`)
+            } else {
               fallback('steer rejected — message queued for next turn')
             }
           })

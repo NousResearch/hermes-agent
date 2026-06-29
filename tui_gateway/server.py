@@ -12162,24 +12162,60 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"type": "send", "message": content})
 
     if name == "steer":
-        if not arg:
+        text = (arg or "").strip()
+        if not text:
             return _err(rid, 4004, "usage: /steer <prompt>")
-        agent = session.get("agent") if session else None
-        if agent and hasattr(agent, "steer"):
-            try:
-                accepted = agent.steer(arg)
-                if accepted:
+        preview = text if len(text) <= 80 else text[:80] + "..."
+        if session:
+            # Keep the running check and fallback enqueue atomic with turn
+            # teardown. Otherwise the turn could finish and drain its queue
+            # between those operations, stranding this message until some
+            # later turn happens to complete.
+            with session["history_lock"]:
+                if session.get("running"):
+                    agent = session.get("agent")
+                    fallback = "agent is still starting"
+                    if agent and hasattr(agent, "steer"):
+                        try:
+                            accepted = agent.steer(text)
+                        except Exception as exc:
+                            accepted = False
+                            fallback = f"steer failed ({exc})"
+                        else:
+                            fallback = "steer rejected"
+                        if accepted:
+                            return _ok(
+                                rid,
+                                {
+                                    "type": "exec",
+                                    "output": f"⏩ Steer queued — arrives after the next tool call: {preview}",
+                                },
+                            )
+                    elif agent is not None:
+                        fallback = "agent does not support steer"
+
+                    # A running session can briefly have no agent while the
+                    # deferred build is in flight. Desktop refuses `send`
+                    # directives while busy, so keep the text on the server's
+                    # normal next-turn queue instead of handing it back to a
+                    # client that must drop it.
+                    _enqueue_prompt(
+                        session,
+                        text,
+                        current_transport() or session.get("transport"),
+                    )
+                    session["last_active"] = time.time()
                     return _ok(
                         rid,
                         {
                             "type": "exec",
-                            "output": f"⏩ Steer queued — arrives after the next tool call: {arg[:80]}{'...' if len(arg) > 80 else ''}",
+                            "output": f"{fallback} — message queued for next turn: {preview}",
                         },
                     )
-            except Exception:
-                pass
-        # Fallback: no active run, treat as next-turn message
-        return _ok(rid, {"type": "send", "message": arg})
+
+        # With no running turn this is a genuine next-turn message. Returning
+        # `send` is safe because the client is idle and can submit it normally.
+        return _ok(rid, {"type": "send", "message": text})
 
     if name == "goal":
         if not session:

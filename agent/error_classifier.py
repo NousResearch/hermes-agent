@@ -1201,6 +1201,13 @@ def _classify_by_error_code(
             should_fallback=False,
         )
 
+    if code_lower in {"upstream_error", "server_error", "internal_error"}:
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_fallback=True,
+        )
+
     return None
 
 

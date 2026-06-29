@@ -1717,3 +1717,38 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+class TestUpstreamErrorClassification:
+    """Verify that upstream_error classifies as server_error with fallback."""
+
+    def test_upstream_error_classifies_as_server_error(self):
+        """Regression test for #55096."""
+        e = MockAPIError(
+            "Upstream request failed",
+            body={"error": {"message": "Upstream request failed", "type": "upstream_error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_fallback is True
+        assert result.retryable is True
+
+    def test_server_error_code_classifies(self):
+        """server_error type should also classify as server_error."""
+        e = MockAPIError(
+            "Internal server error",
+            body={"error": {"message": "Internal server error", "type": "server_error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_fallback is True
+
+    def test_internal_error_code_classifies(self):
+        """internal_error type should also classify as server_error."""
+        e = MockAPIError(
+            "Internal error",
+            body={"error": {"message": "Internal error", "type": "internal_error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_fallback is True

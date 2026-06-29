@@ -164,6 +164,15 @@ gateway:
     subscribed_suffix:     "(subscribed — you'll be notified when {task_id} completes or blocks)"
     truncated_suffix:      "… (truncated; use `hermes kanban …` in your terminal for full output)"
     no_output:             "(no output)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "No personalities configured in `{path}/config.yaml`"

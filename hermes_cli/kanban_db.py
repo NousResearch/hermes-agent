@@ -7749,6 +7749,13 @@ def _default_spawn(
     )
     if foreground_timeout is not None:
         env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
+    # Cap worker iterations below the main agent's max_turns. Workers
+    # inherit agent.max_turns (90) from config.yaml, but kanban tasks are
+    # smaller-scoped than orchestrator pushes. 45 is enough for successful
+    # cards (typically 15–40 tool calls) and fails faster when stuck on
+    # environment issues, so the blocked-card watchdog can intervene
+    # sooner instead of after 90 wasted iterations.
+    env["HERMES_MAX_ITERATIONS"] = "45"
     # Pin the shared board + workspaces root the dispatcher resolved, so
     # that even when the worker activates a profile (`hermes -p <name>`
     # rewrites HERMES_HOME), its kanban paths still match the

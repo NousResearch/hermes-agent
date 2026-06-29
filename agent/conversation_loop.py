@@ -4563,6 +4563,67 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                # ── Stuck-loop detector ───────────────────────────────
+                # Track consecutive iterations where ALL tool results were
+                # errors containing the same error signature.  If the count
+                # hits the threshold (5), inject a system message telling the
+                # model to stop retrying and surface the blocker instead of
+                # burning the remaining iteration budget on the same failure.
+                # This only fires for kanban workers (HERMES_KANBAN_TASK set)
+                # so interactive sessions are unaffected.
+                if os.getenv("HERMES_KANBAN_TASK"):
+                    try:
+                        from agent.display import _detect_tool_failure
+                        _stuck_errors: list[str] = []
+                        for tc in (assistant_message.tool_calls or []):
+                            _tcid = tc.id
+                            for _m in reversed(messages):
+                                if _m.get("role") == "tool" and _m.get("tool_call_id") == _tcid:
+                                    _is_err, _suffix = _detect_tool_failure(
+                                        tc.function.name, _m.get("content"),
+                                    )
+                                    if _is_err:
+                                        _sig = _suffix or _m.get("content", "")[:120]
+                                        _stuck_errors.append(f"{tc.function.name}:{_sig}")
+                                    break
+                        if _stuck_errors and len(_stuck_errors) == len(assistant_message.tool_calls):
+                            _sig_set = frozenset(_stuck_errors)
+                            _prev = getattr(agent, "_stuck_loop_prev_sig", None)
+                            if _prev == _sig_set:
+                                agent._stuck_loop_count = getattr(agent, "_stuck_loop_count", 0) + 1
+                            else:
+                                agent._stuck_loop_count = 1
+                                agent._stuck_loop_prev_sig = _sig_set
+                            _STUCK_THRESHOLD = 5
+                            if agent._stuck_loop_count >= _STUCK_THRESHOLD:
+                                _stuck_summary = "; ".join(sorted(_sig_set))
+                                if not agent.quiet_mode:
+                                    agent._safe_print(
+                                        f"\n⚠️  Stuck loop detected: same error(s) for "
+                                        f"{agent._stuck_loop_count} consecutive iterations "
+                                        f"({_stuck_summary}). Breaking loop."
+                                    )
+                                logger.warning(
+                                    "stuck_loop_detected: %s consecutive same-sig failures: %s",
+                                    agent._stuck_loop_count, _stuck_summary,
+                                )
+                                final_response = (
+                                    f"⚠️ Stuck loop detected — the same tool error(s) "
+                                    f"have recurred for {agent._stuck_loop_count} consecutive "
+                                    f"iterations: {_stuck_summary}. "
+                                    f"Stopping to avoid wasting the remaining iteration budget. "
+                                    f"This task should be blocked for the orchestrator to investigate."
+                                )
+                                messages.append({"role": "assistant", "content": final_response})
+                                _turn_exit_reason = "stuck_loop_detected"
+                                failed = True
+                                break
+                        else:
+                            agent._stuck_loop_count = 0
+                            agent._stuck_loop_prev_sig = None
+                    except Exception:
+                        pass
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

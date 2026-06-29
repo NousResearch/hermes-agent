@@ -123,7 +123,10 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
       <ContextMenuTrigger asChild>
         <li className="relative flex w-full justify-center [-webkit-app-region:no-drag]">
           {active && (
-            <span aria-hidden="true" className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)" />
+            <span
+              aria-hidden="true"
+              className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
+            />
           )}
           <Tip label={hintLabel(label, toggleHint)} side="left">
             <button
@@ -152,7 +155,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
             >
               <Codicon
                 className={cn(term.kind === 'agent' && !active && 'text-primary')}
-                name={term.kind === 'agent' ? 'sparkle' : 'terminal'}
+                name={term.kind === 'agent' ? 'agent' : 'terminal'}
                 size="0.875rem"
               />
             </button>

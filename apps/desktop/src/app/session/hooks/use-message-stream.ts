@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
+import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { translateNow } from '@/i18n'
 import {
@@ -1169,6 +1170,10 @@ export function useMessageStream({
       } else if (event.type === 'agent.terminal.output') {
         // Live chunk from a background process → its read-only agent terminal tab.
         writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')
+      } else if (event.type === 'terminal.close') {
+        // Agent closed its own read-only tab via process(action="close_terminal").
+        // The process is untouched — this only drops the view.
+        closeAgentTerminalByProc(payload?.process_id ?? '')
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)

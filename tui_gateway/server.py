@@ -8312,19 +8312,44 @@ def _notification_poller_loop(
 
 
 def _wire_agent_terminal_output() -> None:
-    """Idempotently route background-process output chunks to the desktop as
-    `agent.terminal.output` events (keyed by process id). Read-only agent
-    terminal tabs stream these live instead of polling the output tail.
-    `_emit`/`write_json` is `_stdout_lock`-guarded, so calling it from the
-    registry's reader threads is safe."""
+    """Idempotently route background-process output (and tab-close requests) to
+    the desktop, keyed by process id. Read-only agent terminal tabs stream
+    `agent.terminal.output` chunks live instead of polling the output tail, and
+    `process_registry.request_close_terminal` emits `terminal.close` so the agent
+    can drop a tab without killing the process. Events are routed to the window
+    that owns the process (its gateway session); `_emit`/`write_json` is
+    `_stdout_lock`-guarded, so calling it from the registry's reader threads is
+    safe."""
     from tools.process_registry import process_registry
 
     if getattr(process_registry, "on_output", None) is not None:
         return
 
-    process_registry.on_output = lambda session, chunk: _emit(
-        "agent.terminal.output", "", {"process_id": session.id, "chunk": chunk}
-    )
+    def _owner_sid_for_process(session) -> str:
+        session_key = str(getattr(session, "session_key", "") or "")
+        if not session_key:
+            return ""
+        with _sessions_lock:
+            for sid, tui_session in _sessions.items():
+                if str(tui_session.get("session_key") or "") == session_key:
+                    return sid
+        return ""
+
+    def _emit_agent_terminal_output(session, chunk):
+        _emit(
+            "agent.terminal.output",
+            _owner_sid_for_process(session),
+            {"process_id": session.id, "chunk": chunk},
+        )
+
+    def _emit_agent_terminal_close(session, process_id):
+        # session may be None (process already finished/pruned) — the tab can
+        # still linger and be closed; route to the owning window when we can.
+        sid = _owner_sid_for_process(session) if session is not None else ""
+        _emit("terminal.close", sid, {"process_id": process_id})
+
+    process_registry.on_output = _emit_agent_terminal_output
+    process_registry.on_close = _emit_agent_terminal_close
 
 
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:

@@ -141,6 +141,118 @@ class TestGetAndPoll:
         assert result["exit_code"] == 0
 
 
+def test_request_close_terminal_without_sink_is_desktop_only_error(registry):
+    """No UI close sink wired (CLI/messaging) → clear desktop-only error, no raise."""
+    s = _make_session(sid="proc_close_nosink")
+    registry._running[s.id] = s
+
+    result = registry.request_close_terminal(s.id)
+
+    assert result["status"] == "error"
+    assert "desktop" in result["error"].lower()
+
+
+def test_request_close_terminal_invokes_sink_without_killing(registry):
+    """With a sink wired, close routes (session, process_id) to the UI and leaves
+    the process running — close is a view drop, not a kill."""
+    s = _make_session(sid="proc_close_live")
+    registry._running[s.id] = s
+    calls = []
+    registry.on_close = lambda session, pid: calls.append((session, pid))
+
+    result = registry.request_close_terminal(s.id)
+
+    assert result["status"] == "ok"
+    assert result["closed"] == "proc_close_live"
+    assert calls == [(s, "proc_close_live")]
+    # Still tracked as running — closing the tab must not reap the process.
+    assert s.id in registry._running
+
+
+def test_close_terminal_tool_requires_process_id():
+    """The desktop-gated close_terminal tool rejects a missing process_id."""
+    from tools.close_terminal_tool import close_terminal_tool
+
+    assert json.loads(close_terminal_tool(""))["error"]
+
+
+def test_close_terminal_tool_routes_to_registry(monkeypatch):
+    """close_terminal delegates to process_registry.request_close_terminal."""
+    import tools.close_terminal_tool as ct
+
+    seen = {}
+
+    def _fake_close(sid):
+        seen["sid"] = sid
+
+        return {"status": "ok", "closed": sid}
+
+    monkeypatch.setattr(ct.process_registry, "request_close_terminal", _fake_close)
+
+    out = ct.close_terminal_tool("proc_abc")
+
+    assert json.loads(out)["closed"] == "proc_abc"
+    assert seen["sid"] == "proc_abc"
+
+
+def test_close_terminal_tool_gated_on_desktop(monkeypatch):
+    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal gating)."""
+    from tools.close_terminal_tool import check_close_terminal_requirements
+
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    assert check_close_terminal_requirements() is False
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    assert check_close_terminal_requirements() is True
+
+
+def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch):
+    """Local reader must emit live chunks, not one EOF burst.
+
+    Regression for desktop agent terminals: ``stdout.read(4096)`` can buffer
+    until process exit for small periodic output. ``buffer.read1(4096)`` should
+    surface each chunk as it arrives.
+    """
+
+    class _FakeBuffer:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read1(self, _n):
+            if self._chunks:
+                return self._chunks.pop(0)
+            return b""
+
+    class _FakeStdout:
+        def __init__(self, chunks):
+            self.buffer = _FakeBuffer(chunks)
+
+    class _FakeProcess:
+        def __init__(self, chunks):
+            self.stdout = _FakeStdout(chunks)
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    session = _make_session(sid="proc_reader_live")
+    session.process = _FakeProcess([b"tick 1\n", b"tick 2\n", b"tick 3\n", b""])
+    emitted = []
+    moved = []
+
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, chunk: emitted.append(chunk))
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._reader_loop(session)
+
+    assert emitted == ["tick 1\n", "tick 2\n", "tick 3\n"]
+    assert session.output_buffer == "tick 1\ntick 2\ntick 3\n"
+    assert session.exited is True
+    assert session.exit_code == 0
+    assert moved == ["proc_reader_live"]
+
+
 # =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================

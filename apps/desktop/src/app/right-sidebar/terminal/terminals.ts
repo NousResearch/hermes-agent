@@ -87,10 +87,11 @@ export function openAgentTerminal(procId: string, title: string): void {
   setTerminalTakeover(true)
 }
 
-/** Guarantee at least one user shell exists (called when the pane opens) — agent
- *  mirror tabs don't count, so opening the pane always yields a real shell. */
+/** Guarantee at least one tab exists when the pane opens.
+ *  If a status-stack click already opened an agent tab, don't create a
+ *  second, unrelated user shell just because the pane became visible. */
 export function ensureTerminal(): void {
-  if (!$terminals.get().some(term => term.kind === 'user')) {
+  if ($terminals.get().length === 0) {
     createTerminal()
   }
 }
@@ -134,6 +135,23 @@ export function closeTerminal(id: string): void {
   if (!next.length) {
     setTerminalTakeover(false)
   }
+}
+
+/** Close the read-only agent tab mirroring a background process. The agent
+ *  drives this via `process(action="close_terminal")` → `terminal.close`. The
+ *  process is NOT killed — only the view is dropped; `surfacedProcs` keeps it
+ *  from auto-resurfacing, and the status-stack row can reopen it on demand.
+ *  No-op when no such tab exists. */
+export function closeAgentTerminalByProc(procId: string): boolean {
+  const term = $terminals.get().find(t => t.kind === 'agent' && t.procId === procId)
+
+  if (!term) {
+    return false
+  }
+
+  closeTerminal(term.id)
+
+  return true
 }
 
 export function closeActiveTerminal(): void {

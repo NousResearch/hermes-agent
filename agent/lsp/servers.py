@@ -399,6 +399,52 @@ def _spawn_lua_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     )
 
 
+def _spawn_csharp_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    bin_path = _resolve_override(ctx, "csharp-ls") or _which("csharp-ls")
+    if bin_path is None:
+        from agent.lsp.install import try_install
+        bin_path = try_install("csharp-ls", ctx.install_strategy)
+        if bin_path is None:
+            return None
+    return SpawnSpec(
+        command=[bin_path],
+        workspace_root=root,
+        cwd=root,
+        env=ctx.env_overrides.get("csharp-ls", {}),
+        initialization_options=ctx.init_overrides.get("csharp-ls", {}),
+        # Roslyn does initial workspace analysis asynchronously; asking
+        # for diagnostics on the first push gives us a useful first
+        # signal even before the user edits further.
+        seed_diagnostics_on_first_push=True,
+    )
+
+
+def _spawn_fsautocomplete(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    bin_path = _resolve_override(ctx, "fsautocomplete") or _which("fsautocomplete")
+    if bin_path is None:
+        from agent.lsp.install import try_install
+        bin_path = try_install("fsautocomplete", ctx.install_strategy)
+        if bin_path is None:
+            return None
+    # NOTE on F# diagnostic flow:
+    #   fsautocomplete (both legacy and --adaptive engines) does NOT
+    #   advertise `textDocument/publishDiagnostics` in its server
+    #   capabilities — it follows the LSP 3.17 pull model via
+    #   `textDocument/diagnostic` / `workspace/diagnostic` requests
+    #   instead.  Hermes's LSPService is currently push-only, so F#
+    #   diagnostics won't surface through get_diagnostics_sync until
+    #   the client adds pull-diagnostic support.  Other LSP features
+    #   (completion, hover, definition, codeLens, etc.) work fine
+    #   through the in-process client.
+    return SpawnSpec(
+        command=[bin_path],
+        workspace_root=root,
+        cwd=root,
+        env=ctx.env_overrides.get("fsautocomplete", {}),
+        initialization_options=ctx.init_overrides.get("fsautocomplete", {}),
+    )
+
+
 def _spawn_intelephense(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "intelephense") or _which("intelephense")
     if bin_path is None:
@@ -774,6 +820,45 @@ def _root_dart(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(file_path, workspace, ["pubspec.yaml", "analysis_options.yaml"])
 
 
+def _root_dotnet(file_path: str, workspace: str) -> Optional[str]:
+    """Find the .NET project root for a C# or F# source file.
+
+    Walks up looking for a ``.sln``, ``.csproj``, ``.fsproj``, or one of
+    the standard MSBuild anchor files.  The markers are glob patterns
+    (per-project solution/project names differ), so we roll our own
+    upward walk using :mod:`fnmatch` rather than ``nearest_root``
+    (which only matches exact filenames).
+
+    csharp-ls and FsAutoComplete both want cwd at the project (or
+    solution) root for correct project/solution discovery.
+    """
+    import fnmatch
+
+    start = os.path.dirname(file_path) if os.path.isfile(file_path) else file_path
+    ceiling = os.path.dirname(workspace) if workspace else None
+    patterns = ("*.sln", "*.csproj", "*.fsproj", "global.json",
+                "Directory.Build.props", "Directory.Packages.props")
+    cur = os.path.realpath(start)
+    ceiling_real = os.path.realpath(ceiling) if ceiling else None
+    for _ in range(64):
+        try:
+            entries = os.listdir(cur)
+        except OSError:
+            pass
+        else:
+            for entry in entries:
+                for pat in patterns:
+                    if fnmatch.fnmatch(entry, pat):
+                        return cur
+        if ceiling_real and cur == ceiling_real:
+            return workspace or cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return workspace
+
+
 def _root_haskell(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(file_path, workspace, ["stack.yaml", "cabal.project", "hie.yaml"])
 
@@ -1011,6 +1096,21 @@ SERVERS: List[ServerDef] = [
         resolve_root=_root_java,
         build_spawn=_spawn_jdtls,
         description="Java — Eclipse JDT Language Server",
+    ),
+    ServerDef(
+        server_id="csharp-ls",
+        extensions=(".cs", ".csx"),
+        resolve_root=_root_dotnet,
+        build_spawn=_spawn_csharp_ls,
+        seed_first_push=True,
+        description="C# — csharp-ls (Roslyn)",
+    ),
+    ServerDef(
+        server_id="fsautocomplete",
+        extensions=(".fs", ".fsi", ".fsx"),
+        resolve_root=_root_dotnet,
+        build_spawn=_spawn_fsautocomplete,
+        description="F# — FsAutoComplete (FCS)",
     ),
 ]
 

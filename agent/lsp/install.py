@@ -102,6 +102,11 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
     # Lua — manual (LuaLS is platform-specific binaries from GitHub
     # releases; complex enough that we punt to the user)
     "lua-language-server": {"strategy": "manual", "pkg": "", "bin": "lua-language-server"},
+    # .NET — installed as global dotnet tools into ~/.dotnet/tools
+    # (the default location `dotnet tool install -g` uses).  We
+    # symlink into the staging dir so a single PATH probe finds it.
+    "csharp-ls": {"strategy": "dotnet", "pkg": "csharp-ls", "bin": "csharp-ls"},
+    "fsautocomplete": {"strategy": "dotnet", "pkg": "fsautocomplete", "bin": "fsautocomplete"},
 }
 
 
@@ -223,6 +228,8 @@ def _do_install(pkg: str) -> Optional[str]:
         return _install_go(recipe.get("pkg", pkg), bin_name)
     if strategy == "pip":
         return _install_pip(recipe.get("pkg", pkg), bin_name)
+    if strategy == "dotnet":
+        return _install_dotnet(recipe.get("pkg", pkg), bin_name)
 
     logger.warning("[install] unknown strategy %r for %s", strategy, pkg)
     return None
@@ -378,6 +385,80 @@ def _install_pip(pkg: str, bin_name: str) -> Optional[str]:
                             return str(bin_path)
                 return str(link if link.exists() else bin_path)
     return None
+
+
+def _install_dotnet(pkg: str, bin_name: str) -> Optional[str]:
+    """Install a .NET global tool and link it into the staging dir.
+
+    Uses ``dotnet tool install -g <pkg>`` which puts the binary in
+    ``$DOTNET_CLI_HOME/.dotnet/tools/<bin>`` (or
+    ``$HOME/.dotnet/tools/<bin>`` when the env var is unset).  We
+    symlink that binary into ``<staging>/bin`` so a single
+    ``_existing_binary`` probe finds it consistently with npm/pip
+    installs.  The symlink — not a copy — means ``dotnet tool
+    update -g`` upgrades the binary in place for us.
+    """
+    dotnet = shutil.which("dotnet")
+    if dotnet is None:
+        logger.info("[install] cannot install %s: dotnet CLI not on PATH", pkg)
+        return None
+    # If the user already has the tool installed globally (very common
+    # for csharp-ls / fsautocomplete), `_existing_binary` would have
+    # found it on PATH and we'd never get here.  But still — guard
+    # against a re-install returning non-zero (e.g. already installed).
+    try:
+        logger.info("[install] dotnet tool install -g %s", pkg)
+        proc = subprocess.run(
+            [dotnet, "tool", "install", "-g", pkg],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if proc.returncode != 0:
+            # "is already installed" — that's fine, we still try to
+            # symlink the existing binary below.  Anything else is a
+            # real error.
+            stderr = (proc.stderr or "").strip()
+            if "is already installed" not in stderr:
+                logger.warning(
+                    "[install] dotnet tool install failed for %s: %s",
+                    pkg, stderr[:500],
+                )
+                # Don't bail out — the binary may still exist from a
+                # previous successful install; we'll link it below.
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("[install] dotnet tool install errored for %s: %s", pkg, e)
+        # Fall through to try linking whatever's there.
+    # Locate the installed binary.  `dotnet tool install -g` uses
+    # $DOTNET_CLI_HOME if set (custom install root), else
+    # $HOME/.dotnet/tools.
+    dotnet_cli_home = os.environ.get("DOTNET_CLI_HOME")
+    tools_root = (
+        Path(dotnet_cli_home) / ".dotnet" / "tools"
+        if dotnet_cli_home
+        else Path.home() / ".dotnet" / "tools"
+    )
+    bin_path: Optional[Path] = None
+    for cand in _native_binary_candidates(tools_root / bin_name):
+        if cand.exists() and os.access(cand, os.X_OK):
+            bin_path = cand
+            break
+    if bin_path is None:
+        logger.warning("[install] %s installed but binary %s not found at %s", pkg, bin_name, tools_root)
+        return None
+    link = hermes_lsp_bin_dir() / bin_path.name
+    if not link.exists():
+        try:
+            link.symlink_to(bin_path)
+        except (OSError, NotImplementedError):
+            try:
+                shutil.copy2(bin_path, link)
+            except OSError:
+                # We can still return the source path — _existing_binary
+                # checks it next time.
+                return str(bin_path)
+    return str(link if link.exists() else bin_path)
 
 
 def detect_status(pkg: str) -> str:

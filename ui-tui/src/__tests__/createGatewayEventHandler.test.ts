@@ -410,6 +410,55 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('renders moa.reference as a labelled thinking-style segment', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { count: 2, index: 1, label: 'openrouter:openai/gpt-5.5', text: 'Paris.' },
+      type: 'moa.reference'
+    } as any)
+    onEvent({
+      payload: { count: 2, index: 2, label: 'openrouter:anthropic/claude-opus-4.8', text: 'Paris.' },
+      type: 'moa.reference'
+    } as any)
+
+    const segments = getTurnState().streamSegments
+    const refBlocks = segments.filter(m => typeof m.thinking === 'string' && m.thinking.includes('Reference'))
+    expect(refBlocks).toHaveLength(2)
+    expect(refBlocks[0]?.thinking).toContain('Reference 1/2 — openrouter:openai/gpt-5.5')
+    expect(refBlocks[0]?.thinking).toContain('Paris.')
+    expect(refBlocks[1]?.thinking).toContain('Reference 2/2 — openrouter:anthropic/claude-opus-4.8')
+  })
+
+  it('renders moa.reference even when showReasoning is off (it is the MoA process, not reasoning)', () => {
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { label: 'openrouter:openai/gpt-5.5', text: 'Four.' },
+      type: 'moa.reference'
+    } as any)
+
+    const segments = getTurnState().streamSegments
+    const refBlocks = segments.filter(m => typeof m.thinking === 'string' && m.thinking.includes('Reference'))
+    expect(refBlocks).toHaveLength(1)
+    expect(refBlocks[0]?.thinking).toContain('openrouter:openai/gpt-5.5')
+  })
+
+  it('moa.aggregating does not append a transcript segment', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    const before = getTurnState().streamSegments.length
+    onEvent({ payload: { aggregator: 'openrouter:anthropic/claude-opus-4.8' }, type: 'moa.aggregating' } as any)
+    expect(getTurnState().streamSegments.length).toBe(before)
+  })
+
   it('uses message.complete reasoning when no streamed reasoning ref', () => {
     const appended: Msg[] = []
     const fromServer = 'recovered from last_reasoning'

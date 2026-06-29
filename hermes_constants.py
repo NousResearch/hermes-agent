@@ -6,6 +6,7 @@ without risk of circular imports.
 
 import os
 import shutil
+import stat
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -229,16 +230,25 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     Existing installs that already have the old path (e.g. ``image_cache``)
     keep using it — no migration required.
 
+    A bare empty ``<old_name>/`` directory does **not** count as "the
+    legacy install is in use" — install scaffolds, manual ``mkdir`` work,
+    and cleared-then-abandoned locations all create empty stubs that
+    would otherwise silently shadow real data populated at
+    ``<new_subpath>/``. See #27602 for the pairing-store regression where
+    a dormant empty ``pairing/`` orphaned approved-user data in
+    ``platforms/pairing/``.
+
     Args:
         new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
         old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
 
     Returns:
-        Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
+        Absolute ``Path`` — legacy location if it exists with content,
+        otherwise the new location.
     """
     home = get_hermes_home()
     old_path = home / old_name
-    if old_path.exists():
+    if _legacy_path_has_content(old_path):
         return old_path
     return home / new_subpath
 
@@ -307,11 +317,14 @@ def node_tool_runnable(path: str | None) -> bool:
     import subprocess
 
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
@@ -552,15 +565,67 @@ def agent_browser_runnable(path: str | None) -> bool:
     import subprocess
 
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         result = subprocess.run(
             [path, "--version"],
             capture_output=True,
             timeout=10,
             env=with_hermes_node_path(),
+            creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
     return result.returncode == 0
+
+
+def _legacy_path_has_content(path: Path) -> bool:
+    """Return ``True`` iff ``path`` exists and has content worth honouring.
+
+    A populated *directory* (any entry inside) counts. A non-directory
+    file at ``path`` also counts — the consumer presumably wrote it.
+    An empty directory does **not** count, so a stale empty
+    legacy stub falls through to the new layout. If the path cannot be
+    inspected (``PermissionError`` on ``stat``/``iterdir``, or any other
+    ``OSError`` short of "not found"), assume occupied so we don't
+    accidentally orphan legacy data. Only a genuine
+    ``FileNotFoundError`` counts as absent.
+
+    Symlinks are resolved before judging content: a symlink pointing at a
+    populated directory (or any existing non-directory target) counts, but
+    a **dangling** symlink (broken target) does **not** — it must not be
+    allowed to shadow populated new-layout data, matching the old
+    ``exists()`` gate's behaviour for broken links.
+    """
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # PermissionError on a parent, or any other inspection failure:
+        # treat as occupied rather than silently orphaning legacy data.
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        # Resolve the link's target. A dangling symlink has no content and
+        # must not shadow the new layout; a valid one is judged on its target.
+        try:
+            target_st = path.stat()  # follows the link
+        except FileNotFoundError:
+            return False  # dangling symlink → fall through to new layout
+        except OSError:
+            return True  # can't resolve → assume occupied, don't orphan data
+        if not stat.S_ISDIR(target_st.st_mode):
+            return True
+        # target is a directory — fall through to the iterdir() emptiness check
+    elif not stat.S_ISDIR(st.st_mode):
+        return True
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def display_hermes_home() -> str:

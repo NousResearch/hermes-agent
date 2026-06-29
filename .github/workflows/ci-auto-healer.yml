@@ -4,10 +4,10 @@ on:
   workflow_run:
     workflows:
       - 'Tests'
-      - 'Lint'
+      - 'Lint (ruff + ty)'
       - 'Nix'
       - 'Supply Chain Audit'
-      - 'Docker Publish'
+      - 'Docker Build and Publish'
     types:
       - completed
   schedule:
@@ -42,7 +42,9 @@ jobs:
           fi
 
           echo "Found failed runs: $FAILED_RUNS"
-          echo "failed_runs=$FAILED_RUNS" >> $GITHUB_OUTPUT
+          echo "failed_runs<<EOF" >> $GITHUB_OUTPUT
+          echo "$FAILED_RUNS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -79,7 +81,7 @@ jobs:
             fi
 
             echo "Rerunning failed job for run $RUN_ID..."
-            if gh run rerun $RUN_ID --repo $REPO 2>/dev/null; then
+            if gh run rerun $RUN_ID --repo $REPO --failed 2>/dev/null; then
               echo "  ✓ Successfully triggered rerun for $RUN_ID"
               RERUN_COUNT=$((RERUN_COUNT + 1))
             else

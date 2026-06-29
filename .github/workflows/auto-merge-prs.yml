@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
-      contents: read
+      contents: write
     steps:
       - name: Enable auto-merge for pull request(s)
         run: |

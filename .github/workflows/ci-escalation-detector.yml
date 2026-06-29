@@ -4,10 +4,10 @@ on:
   workflow_run:
     workflows:
       - 'Tests'
-      - 'Lint'
+      - 'Lint (ruff + ty)'
       - 'Nix'
       - 'Supply Chain Audit'
-      - 'Docker Publish'
+      - 'Docker Build and Publish'
     types:
       - completed
   workflow_dispatch:
@@ -92,7 +92,7 @@ jobs:
     name: Trigger Claude Code Investigation
     runs-on: ubuntu-latest
     needs: detect-persistent-failures
-    if: needs.detect-persistent-failures.outputs.escalation_needed == 'true' || github.event_name == 'workflow_dispatch'
+    if: always() && (needs.detect-persistent-failures.outputs.escalation_needed == 'true' || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
     steps:

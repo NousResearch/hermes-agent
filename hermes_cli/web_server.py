@@ -3429,7 +3429,7 @@ async def get_sessions(
 
 
 @app.get("/api/profiles/sessions")
-async def get_profiles_sessions(
+def get_profiles_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -10565,7 +10565,9 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        loop = asyncio.get_running_loop()
+        profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}

@@ -194,7 +194,7 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 ### Run tests
 
 ```bash
-# Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
+# Preferred — matches CI (hermetic env, per-file isolation); see AGENTS.md
 scripts/run_tests.sh
 
 # Alternative (activate the venv first). The wrapper is still recommended

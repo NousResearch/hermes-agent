@@ -1217,8 +1217,11 @@ class SessionStore:
                     # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation
-                    reset_had_activity = entry.total_tokens > 0
+                    # Track whether the expired session had any real conversation.
+                    # total_tokens is never written (token counts migrated to
+                    # agent-direct persistence) so it is always 0 — use
+                    # last_prompt_tokens, which is updated on every turn.
+                    reset_had_activity = entry.last_prompt_tokens > 0
                     db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False

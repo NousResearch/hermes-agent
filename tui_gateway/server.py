@@ -8074,8 +8074,10 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
+            if not user_indices:
+                return _err(rid, 4018, "no user messages in session history")
             if ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
+                ordinal = len(user_indices) - 1
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1

@@ -956,6 +956,16 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.model_not_found
 
+    def test_error_type_upstream_error_is_server_error(self):
+        e = MockAPIError(
+            "Upstream request failed",
+            body={"error": {"message": "Upstream request failed", "type": "upstream_error"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_fallback is True
+
     def test_error_code_context_length_exceeded(self):
         e = MockAPIError(
             "Context too large",

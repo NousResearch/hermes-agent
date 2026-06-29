@@ -1187,6 +1187,13 @@ def _classify_by_error_code(
             should_fallback=True,
         )
 
+    if code_lower == "upstream_error":
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_fallback=True,
+        )
+
     if code_lower in {"context_length_exceeded", "max_tokens_exceeded"}:
         return result_fn(
             FailoverReason.context_overflow,

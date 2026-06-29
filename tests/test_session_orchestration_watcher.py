@@ -45,6 +45,7 @@ from session_orchestration.registry import SessionOrchestrationRegistry
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 from session_orchestration.watcher import (
     SessionWatcher,
+    _on_hang,
     _parse_marker_ts,
     _pane_hash,
     run_tick,
@@ -1008,4 +1009,156 @@ class TestHandoffMarkers:
         )
         assert resume_idx < release_idx, (
             "adapter.resume() must precede release_lock — lock-contract violation"
+        )
+
+
+class TestHangEscalation:
+    """T010: hang ladder final rungs — DM user and mark ERROR on escalation."""
+
+    # --- shared fake registry ---
+
+    class _FakeRegistryForHang:
+        """Records upsert calls; increment_counter is a no-op."""
+
+        def __init__(self) -> None:
+            self.upsert_calls: List[tuple] = []  # (task_id, kwargs)
+
+        def upsert(self, task_id: str, **kwargs) -> None:
+            self.upsert_calls.append((task_id, kwargs))
+
+        def increment_counter(self, task_id: str, counter: str, *, by: int = 1) -> None:
+            pass  # no-op; nudge_count increment is not the focus here
+
+    def _make_hang_row(
+        self,
+        task_id: str,
+        *,
+        nudge_count: int = 1,
+        discord_user_id: str | None = None,
+        idle_ticks: int = 5,
+        elapsed_seconds: float = 400.0,
+    ) -> dict:
+        """Build a minimal row dict that passes _on_hang's idle+stale thresholds."""
+        row: dict = {
+            "task_id": task_id,
+            "agent": "fake",
+            "run_id": "run-test",
+            "repo": "repo-test",
+            "source": "spawn",
+            "nudge_count": nudge_count,
+            "idle_ticks": idle_ticks,
+            "last_output_ts": time.time() - elapsed_seconds,
+        }
+        if discord_user_id is not None:
+            row["discord_user_id"] = discord_user_id
+        return row
+
+    def test_hang_escalation_sends_dm_and_marks_error(self, monkeypatch):
+        """nudge_count=1, discord_user_id set -> send_dm called + state ERROR."""
+        task_id = "t-hang-esc-dm-001"
+        row = self._make_hang_row(task_id, nudge_count=1, discord_user_id="user-esc-001")
+
+        fake_reg = self._FakeRegistryForHang()
+        dm_calls: List = []
+
+        monkeypatch.setattr(
+            "tools.discord_tool._get_bot_token",
+            lambda: "fake-token",
+        )
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda user_id, message, token, **kw: dm_calls.append(
+                (user_id, message, token)
+            ),
+        )
+        # Suppress push_hang_notification network call
+        monkeypatch.setattr(
+            "session_orchestration.feed.push_hang_notification",
+            lambda *a, **kw: None,
+        )
+
+        _on_hang(task_id, row, registry=fake_reg)
+
+        assert len(dm_calls) == 1, "send_dm must be called exactly once on escalation"
+        user_id_sent, message, token = dm_calls[0]
+        assert user_id_sent == "user-esc-001"
+        assert task_id in message, "DM message must include the task_id"
+        assert token == "fake-token"
+
+        error_upserts = [
+            (tid, kw)
+            for tid, kw in fake_reg.upsert_calls
+            if kw.get("state") == "ERROR"
+        ]
+        assert len(error_upserts) == 1, "registry.upsert must set state=ERROR"
+        assert error_upserts[0][0] == task_id
+
+    def test_hang_escalation_marks_error_even_when_no_user_id(self, monkeypatch):
+        """nudge_count=1, no discord_user_id -> no DM but state still ERROR."""
+        task_id = "t-hang-esc-nouid-001"
+        row = self._make_hang_row(task_id, nudge_count=1, discord_user_id=None)
+
+        fake_reg = self._FakeRegistryForHang()
+        dm_calls: List = []
+
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda *a, **kw: dm_calls.append(a),
+        )
+        monkeypatch.setattr(
+            "session_orchestration.feed.push_hang_notification",
+            lambda *a, **kw: None,
+        )
+
+        _on_hang(task_id, row, registry=fake_reg)
+
+        assert dm_calls == [], "send_dm must NOT be called when discord_user_id is absent"
+
+        error_upserts = [
+            (tid, kw)
+            for tid, kw in fake_reg.upsert_calls
+            if kw.get("state") == "ERROR"
+        ]
+        assert len(error_upserts) == 1, (
+            "registry.upsert must still mark ERROR even without a discord_user_id"
+        )
+        assert error_upserts[0][0] == task_id
+
+    def test_hang_first_rung_no_dm_no_error(self, monkeypatch):
+        """nudge_count=0 -> first rung: no DM and state NOT marked ERROR."""
+        task_id = "t-hang-first-rung-001"
+        row = self._make_hang_row(task_id, nudge_count=0, discord_user_id="user-first")
+
+        fake_reg = self._FakeRegistryForHang()
+        dm_calls: List = []
+
+        monkeypatch.setattr(
+            "tools.discord_tool._get_bot_token",
+            lambda: "fake-token",
+        )
+        monkeypatch.setattr(
+            "session_orchestration.dm_transport.send_dm",
+            lambda *a, **kw: dm_calls.append(a),
+        )
+        monkeypatch.setattr(
+            "session_orchestration.feed.push_hang_notification",
+            lambda *a, **kw: None,
+        )
+        # Suppress _send_auto_nudge's relay import so it fails non-fatally
+        monkeypatch.setattr(
+            "session_orchestration.watcher._send_auto_nudge",
+            lambda *a, **kw: None,
+        )
+
+        _on_hang(task_id, row, registry=fake_reg)
+
+        assert dm_calls == [], "send_dm must NOT be called on the first hang rung"
+
+        error_upserts = [
+            (tid, kw)
+            for tid, kw in fake_reg.upsert_calls
+            if kw.get("state") == "ERROR"
+        ]
+        assert error_upserts == [], (
+            "state must NOT be set to ERROR on the first hang rung (nudge_count=0)"
         )

@@ -484,11 +484,36 @@ def _on_hang(
                 exc,
             )
     else:
-        # nudge_count >= 1: already nudged — escalate, do not re-nudge
-        logger.info(
-            "watcher._on_hang: ESCALATING (nudge already sent) for task_id=%s",
-            task_id,
-        )
+        # nudge_count >= 1: escalate notice already pushed above; now DM + mark ERROR
+        logger.info("watcher._on_hang: ESCALATING -> DM + ERROR task_id=%s", task_id)
+        user_id = row.get("discord_user_id")
+        if user_id:
+            try:
+                from tools.discord_tool import _get_bot_token  # type: ignore[import]
+                from session_orchestration.dm_transport import send_dm
+
+                token = _get_bot_token()
+                if token:
+                    agent = row.get("agent", "unknown")
+                    msg = (
+                        f"Session {task_id} ({agent}) has been hung after auto-nudge "
+                        "and is now marked ERROR. Manual intervention may be needed."
+                    )
+                    send_dm(user_id, msg, token)
+            except Exception as exc:
+                logger.error("watcher._on_hang: escalation DM failed: %s", exc)
+        try:
+            reg = registry or SessionOrchestrationRegistry()
+            reg.upsert(
+                task_id,
+                agent=row.get("agent", "unknown"),
+                run_id=row.get("run_id"),
+                repo=row.get("repo"),
+                source=row.get("source", "spawn"),
+                state=SessionLifecycle.ERROR.value,
+            )
+        except Exception as exc:
+            logger.error("watcher._on_hang: failed to mark ERROR: %s", exc)
 
 
 def _send_auto_nudge(

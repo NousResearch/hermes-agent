@@ -9,9 +9,9 @@ in an isolated git worktree (``.../.worktrees/<task>``). Inspection-only roles
 role-scoped.
 
 Protected:
-  * exactly ``/Users/rwest/work/crypto-bot-platform-service`` (the root path
-    itself — but NOT its descendants, so the sanctioned
-    ``<root>/.worktrees/<task>`` worktree stays allowed), and
+  * ``/Users/rwest/work/crypto-bot-platform-service`` and its live-checkout
+    descendants, except sanctioned isolated ``<root>/.worktrees/<task>``
+    worktrees, and
   * anything at or under ``/Users/rwest/service-checkouts/crypto-bot-platform-service``.
 """
 
@@ -59,10 +59,28 @@ def test_exact_work_root_is_protected():
 
 
 def test_work_root_isolated_worktree_is_allowed():
-    # Only the work-root path itself is protected, NOT its descendants — so the
-    # sanctioned per-task worktree under it stays allowed.
+    # The sanctioned per-task worktree under the protected live checkout stays
+    # allowed even though other descendants are protected.
     assert not kb.workspace_is_protected(
         "/Users/rwest/work/crypto-bot-platform-service/.worktrees/task-123"
+    )
+
+
+def test_work_root_live_checkout_descendant_is_protected():
+    assert kb.workspace_is_protected(
+        "/Users/rwest/work/crypto-bot-platform-service/src/app"
+    )
+
+
+def test_work_root_sibling_descendant_is_not_protected():
+    assert not kb.workspace_is_protected(
+        "/Users/rwest/work/crypto-bot-platform-service-staging/src/app"
+    )
+
+
+def test_work_root_worktrees_prefix_sibling_is_protected():
+    assert kb.workspace_is_protected(
+        "/Users/rwest/work/crypto-bot-platform-service/.worktrees-evil/task-123"
     )
 
 
@@ -128,6 +146,18 @@ def test_coder_in_protected_dir_is_refused_with_clear_message():
     # The message must instruct the operator to use an isolated worktree.
     assert ".worktrees/t1" in msg
     assert "isolated" in msg.lower()
+    assert "worktree" in msg.lower()
+
+
+def test_coder_in_work_root_live_checkout_descendant_is_refused():
+    msg = kb.check_protected_workspace(
+        task_id="t1src",
+        assignee="coder",
+        workspace="/Users/rwest/work/crypto-bot-platform-service/src",
+        lane="ready",
+    )
+    assert msg is not None
+    assert ".worktrees/t1src" in msg
     assert "worktree" in msg.lower()
 
 
@@ -247,6 +277,40 @@ def test_dispatch_blocks_coder_dir_workspace_at_protected_root(kanban_home, tmp_
     assert task is not None and task.status == "blocked"
     # The guard previews without materializing — the protected dir stays absent.
     assert not protected_root.exists()
+
+
+def test_dispatch_blocks_coder_dir_workspace_inside_live_checkout(kanban_home, tmp_path, monkeypatch):
+    """A coder ``dir`` task resolving to a protected live-checkout descendant
+    is refused unless it is under the sanctioned ``.worktrees`` escape hatch."""
+    import hermes_cli.profiles as profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda _name: True)
+
+    protected_root = tmp_path / "fake-work" / "crypto-bot-platform-service"
+    workspace = protected_root / "src"
+    _patch_protected_root(monkeypatch, exact=[protected_root])
+
+    spawns: list[tuple[str, str]] = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append((task.id, workspace))
+        return 4243
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="mutate a subdirectory of the live checkout",
+            assignee="coder",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+
+    assert spawns == [], "guarded coder must NOT spawn into the live checkout subtree"
+    assert not any(s[0] == tid for s in result.spawned)
+    assert any(t[0] == tid for t in result.skipped_protected_workspace)
+    assert task is not None and task.status == "blocked"
+    assert not workspace.exists()
 
 
 def test_dispatch_allows_coder_isolated_worktree_under_protected_root(kanban_home, tmp_path, monkeypatch):

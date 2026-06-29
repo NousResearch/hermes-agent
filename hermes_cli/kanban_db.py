@@ -5523,16 +5523,22 @@ def _resolve_worktree_workspace(
 # These are module-level so tests can monkeypatch them onto fake paths without
 # touching the real checkouts.
 
-# Paths that are protected *exactly* — the path itself, but NOT its
-# descendants. This is deliberate: the sanctioned ``<root>/.worktrees/<task>``
-# worktree lives under the work root and must stay allowed.
+# Live work-root checkouts: protected at the root AND every descendant, with a
+# single sanctioned exception — the isolated ``<root>/.worktrees/<task>``
+# worktrees. A mutating coder/reviewer must run in such a worktree, never in the
+# live checkout or any of its other subdirectories (``src/`` etc.).
 PROTECTED_WORKSPACE_EXACT: tuple[str, ...] = (
     "/Users/rwest/work/crypto-bot-platform-service",
 )
-# Subtrees that are protected at the root AND everything under it.
+# Subtrees that are protected at the root AND everything under it, with NO
+# escape hatch: even a ``.worktrees`` directory under a service-checkouts tree
+# is protected. The sanctioned isolated-worktree path lives under the work root.
 PROTECTED_WORKSPACE_TREES: tuple[str, ...] = (
     "/Users/rwest/service-checkouts/crypto-bot-platform-service",
 )
+# Directory name (directly under a work-root checkout) holding sanctioned
+# per-task isolated worktrees. Paths at/under ``<root>/.worktrees`` stay allowed.
+WORKTREE_ESCAPE_DIRNAME: str = ".worktrees"
 # Roles permitted to run against a protected checkout without an isolated
 # worktree (read-only inspection). Matched token-wise against the assignee, so
 # ``crypto-research`` / ``platform-architect`` still classify correctly.
@@ -5566,13 +5572,27 @@ def _normalize_workspace_path(path: Path | str) -> str:
 def workspace_is_protected(path: Path | str) -> bool:
     """True when ``path`` is a protected crypto-bot-platform-service checkout.
 
-    Protected means: exactly one of :data:`PROTECTED_WORKSPACE_EXACT` (the
-    path itself, descendants excluded), or at/under one of
-    :data:`PROTECTED_WORKSPACE_TREES`.
+    Protected means either:
+
+    * at/under one of :data:`PROTECTED_WORKSPACE_EXACT` (a live work-root
+      checkout), EXCEPT the sanctioned ``<root>/.worktrees`` isolated-worktree
+      escape hatch, which stays allowed; or
+    * at/under one of :data:`PROTECTED_WORKSPACE_TREES` (a service-checkouts
+      subtree), with no escape hatch.
     """
     candidate = _normalize_workspace_path(path)
     for exact in PROTECTED_WORKSPACE_EXACT:
-        if candidate == _normalize_workspace_path(exact):
+        root = _normalize_workspace_path(exact)
+        if candidate == root:
+            return True
+        # ``root + os.sep`` prevents a sibling sharing the string prefix
+        # (``...-service-staging``) from being treated as "under" the root.
+        if candidate.startswith(root + os.sep):
+            # Descendants of the live checkout are protected, except the
+            # sanctioned ``<root>/.worktrees/<task>`` isolated worktrees.
+            escape = root + os.sep + WORKTREE_ESCAPE_DIRNAME
+            if candidate == escape or candidate.startswith(escape + os.sep):
+                continue
             return True
     for tree in PROTECTED_WORKSPACE_TREES:
         root = _normalize_workspace_path(tree)
@@ -5626,8 +5646,8 @@ def check_protected_workspace(
 
     Inspection-only roles (architect / research) are allowed through. Isolated
     worktrees under the protected work root (``<root>/.worktrees/<task>``) are
-    allowed because only the work-root path itself is protected, not its
-    descendants.
+    allowed as the only escape hatch; other descendants of the live checkout are
+    protected.
     """
     if not role_requires_isolated_workspace(assignee, lane=lane):
         return None

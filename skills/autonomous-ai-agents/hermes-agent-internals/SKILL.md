@@ -1,14 +1,14 @@
 ---
 name: hermes-agent-internals
-description: "Use when onboarding or pairing on the agent heartbeat — explain one user message through run_conversation (prologue, finish_reason loop, epilogue) with line anchors in a local clone."
+description: "One Hermes turn: run_conversation prologue, tool loop, epilogue."
 version: 1.0.0
-author: Hermes Agent
+author: Nietzsche-Ubermensch, Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [hermes, run_agent, conversation_loop, architecture, onboarding]
-    related_skills: [hermes-agent, git-worktrees-hermes]
+    related_skills: [hermes-agent]
 ---
 
 # Hermes agent core (internals tour)
@@ -70,7 +70,7 @@ Tools: `run_agent.py` `_execute_tool_calls` (~5258) → `agent/tool_executor.py`
 
 ## Common Pitfalls
 
-1. **Citing stale line numbers** — grep symbols before docs/PRs.
+1. **Citing stale line numbers** — re-run `search_files` on symbols before docs/PRs.
 2. **Patching bundled `hermes-agent` SKILL.md** — extend this skill or `references/` instead (protected skill).
 3. **Assuming epilogue is inline** — post-loop logic is `turn_finalizer.py` (handoff from `conversation_loop.py` ~4877+).
 4. **Confusing `api_messages` with `messages`** — only `messages` is the trajectory SQLite replays.
@@ -80,7 +80,7 @@ Tools: `run_agent.py` `_execute_tool_calls` (~5258) → `agent/tool_executor.py`
 - [ ] Clone path confirmed; `agent/conversation_loop.py` exists
 - [ ] Prologue, loop branch, and epilogue each tied to a file/function
 - [ ] `tool_calls` vs `stop` behavior stated correctly for product builders
-- [ ] Line anchors re-grepped if the user will open the editor
+- [ ] Line anchors re-checked with `search_files` if the user will open the editor
 
 ## Reference
 

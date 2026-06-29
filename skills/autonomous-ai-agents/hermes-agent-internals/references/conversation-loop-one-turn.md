@@ -1,6 +1,6 @@
 # conversation_loop.py — one turn line anchors
 
-Repo-relative paths. Re-verify with ripgrep after pulling `main`.
+Repo-relative paths. Re-verify with `search_files` after pulling `main`.
 
 ## Entry
 

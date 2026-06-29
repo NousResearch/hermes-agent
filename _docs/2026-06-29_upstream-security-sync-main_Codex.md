@@ -70,6 +70,24 @@ GitHub Actions:
 `HERMES_DASHBOARD_READY` の最新ポートと `/api/status` を再確認する。
 ユーザー指定に従い、`llama-server` / `llama.cpp` 系プロセスは起動しない。
 
+## 追記: 追加upstream追随
+
+SOPログ初回コミット後、公式 `upstream/main` がさらに進んだため、以下も追加で
+取り込んだ。
+
+- `1289f1281 fix(memory): lazy-install supermemory + mem0 SDKs like honcho/hindsight`
+- `0434a9a5e chore: regenerate uv.lock for supermemory + mem0 extras`
+
+衝突は `tests/test_project_metadata.py` と `uv.lock`。前者はlazy-install対象extraの
+契約リストを統合し、後者は公式lockfileを土台に現在の `pyproject.toml` から
+`uv lock` で再生成した。
+
+追加検証:
+
+- `uv lock --check`: passed
+- `uv run --extra dev python -m pytest tests/test_project_metadata.py tests/plugins/memory/test_memory_lazy_install.py tests/plugins/memory/test_supermemory_provider.py -q`: `65 passed, 1 skipped`
+- `uv run --extra dev python -m ruff check tests/test_project_metadata.py tests/plugins/memory/test_memory_lazy_install.py tests/plugins/memory/test_supermemory_provider.py`: passed
+
 ## 残したもの
 
 - 正本ルートの未追跡ローカル成果物（`.specstory/`, `_tmp/`, 音声/動画一時ファイル等）は既存作業物として触らない。

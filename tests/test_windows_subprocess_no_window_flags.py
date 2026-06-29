@@ -168,7 +168,21 @@ def test_gateway_pid_scan_hides_wmic_and_powershell_windows(monkeypatch):
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway._scan_gateway_pids(set()) == [123]
-    assert [kwargs["creationflags"] for _, kwargs in captured] == [
+    # The wmic probe and the PowerShell fallback are the two console spawns
+    # this scan makes on Windows; both must hide the window via
+    # ``creationflags``. Filter to those two commands (rather than indexing a
+    # positional list) so the contract — "every Windows pid-scan spawn is
+    # windowless" — is asserted directly and can't be tripped by an unrelated
+    # captured call leaking in from prior module-state churn in the same
+    # process. ``.get`` keeps a stray non-windowed call from masking the real
+    # assertion behind a bare KeyError.
+    scan_spawns = [
+        kwargs
+        for cmd, kwargs in captured
+        if cmd and cmd[0] in {"wmic", "powershell", "pwsh"}
+    ]
+    assert len(scan_spawns) == 2, captured
+    assert [kwargs.get("creationflags") for kwargs in scan_spawns] == [
         _CREATE_NO_WINDOW,
         _CREATE_NO_WINDOW,
     ]

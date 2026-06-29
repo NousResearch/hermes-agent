@@ -162,6 +162,55 @@ def test_repair_leaves_valid_conversation_unchanged():
     assert messages == original
 
 
+def test_repair_preserves_parallel_tool_results():
+    """One assistant turn may legitimately produce multiple consecutive tool results."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "inspect both"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [
+             {"id": "t1", "type": "function",
+              "function": {"name": "read_file", "arguments": '{"path":"a"}'}},
+             {"id": "t2", "type": "function",
+              "function": {"name": "read_file", "arguments": '{"path":"b"}'}},
+         ]},
+        {"role": "tool", "tool_call_id": "t1", "content": "A"},
+        {"role": "tool", "tool_call_id": "t2", "content": "B"},
+        {"role": "assistant", "content": "A and B"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original
+
+
+def test_repair_drops_duplicate_tool_result_for_same_call_id():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "inspect"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "read_file", "arguments": '{"path":"a"}'}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "A"},
+        {"role": "tool", "tool_call_id": "t1", "content": "A retry duplicate"},
+        {"role": "assistant", "content": "A"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert messages == [
+        {"role": "user", "content": "inspect"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "read_file", "arguments": '{"path":"a"}'}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "A"},
+        {"role": "assistant", "content": "A"},
+    ]
+
+
 def test_repair_preserves_multimodal_user_content():
     """Multimodal (list) content must NOT be merged — risks mangling attachments."""
     agent = _bare_agent()

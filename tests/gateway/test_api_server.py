@@ -2951,6 +2951,48 @@ class TestTruncation:
         call_kwargs = mock_run.call_args.kwargs
         # History should be truncated to 100
         assert len(call_kwargs["conversation_history"]) <= 100
+        assert call_kwargs["conversation_history"][0]["content"] == "msg 50"
+
+    @pytest.mark.asyncio
+    async def test_truncation_auto_preserves_leading_compaction_summary(self, adapter):
+        """truncation=auto must not discard the compacted-history handoff."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+
+        summary = {
+            "role": "user",
+            "content": "[CONTEXT COMPACTION — REFERENCE ONLY]\nEarlier work.",
+            "_compressed_summary": True,
+        }
+        long_history = [summary] + [
+            {"role": "user", "content": f"msg {i}"}
+            for i in range(149)
+        ]
+        adapter._response_store.put("resp_summary", {
+            "response": {"id": "resp_summary", "object": "response"},
+            "conversation_history": long_history,
+            "instructions": None,
+        })
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_summary",
+                        "truncation": "auto",
+                    },
+                )
+
+        assert resp.status == 200
+        history = mock_run.call_args.kwargs["conversation_history"]
+        assert len(history) == 100
+        assert history[0] == summary
+        assert history[1]["content"] == "msg 50"
+        assert history[-1]["content"] == "msg 148"
 
     @pytest.mark.asyncio
     async def test_no_truncation_keeps_full_history(self, adapter):

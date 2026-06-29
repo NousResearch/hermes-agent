@@ -93,6 +93,8 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
+_COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -130,6 +132,62 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return default
+
+
+def _message_text_prefix(content: Any) -> str:
+    if isinstance(content, str):
+        return content[:128]
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for item in content[:4]:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        if sum(len(part) for part in parts) >= 128:
+            break
+    return "\n".join(parts)[:128]
+
+
+def _is_compressed_summary_message(message: Any) -> bool:
+    if not isinstance(message, dict):
+        return False
+    if message.get(_COMPRESSED_SUMMARY_METADATA_KEY):
+        return True
+    prefix = _message_text_prefix(message.get("content"))
+    return prefix.startswith("[CONTEXT COMPACTION") or prefix.startswith("[CONTEXT SUMMARY]:")
+
+
+def _auto_truncate_response_history(
+    conversation_history: List[Dict[str, Any]],
+    *,
+    limit: int = RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT,
+) -> List[Dict[str, Any]]:
+    """Keep recent Responses history without dropping the compaction handoff."""
+    if limit <= 0 or len(conversation_history) <= limit:
+        return conversation_history
+
+    leading_summaries: List[Dict[str, Any]] = []
+    first_conversation_index = 0
+    for message in conversation_history:
+        if not _is_compressed_summary_message(message):
+            break
+        leading_summaries.append(message)
+        first_conversation_index += 1
+
+    if not leading_summaries:
+        return conversation_history[-limit:]
+
+    preserved = leading_summaries[:limit]
+    remaining = limit - len(preserved)
+    if remaining <= 0:
+        return preserved
+
+    recent_tail = conversation_history[first_conversation_index:][-remaining:]
+    return preserved + recent_tail
 
 
 def _normalize_chat_content(
@@ -3051,8 +3109,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         # Truncation support
-        if body.get("truncation") == "auto" and len(conversation_history) > 100:
-            conversation_history = conversation_history[-100:]
+        if body.get("truncation") == "auto":
+            conversation_history = _auto_truncate_response_history(conversation_history)
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.

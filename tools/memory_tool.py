@@ -372,7 +372,12 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                return {
+                    "success": False,
+                    "error": f"No entry matched '{old_text}'.",
+                    "current_entries": entries,
+                    "usage": f"{self._char_count(target):,}/{self._char_limit(target):,}",
+                }
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one

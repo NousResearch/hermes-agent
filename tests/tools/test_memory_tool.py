@@ -786,3 +786,28 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+def test_replace_zero_match_includes_current_entries():
+    """When replace() finds no match, the response must include current_entries.
+
+    Regression test for #42405: the zero-match branch returned only an error
+    string with no corrective feedback, causing the agent to retry blindly
+    until the turn budget was exhausted (silent hang).
+    """
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+
+    # Add an entry first
+    store.add("user", "User prefers concise responses")
+
+    # Try to replace with a non-matching substring
+    result = store.replace("user", "User likes brief answers", "User prefers short replies")
+
+    assert result["success"] is False
+    assert "No entry matched" in result["error"]
+    # The key fix: current_entries must be present so the agent can self-correct
+    assert "current_entries" in result
+    assert len(result["current_entries"]) > 0
+    assert "usage" in result

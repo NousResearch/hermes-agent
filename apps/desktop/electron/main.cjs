@@ -2235,26 +2235,28 @@ async function applyUpdates(opts = {}) {
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawn(updater, updaterArgs, {
-      cwd: HERMES_HOME,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        PATH: pathWithHermesManagedNode(venvBin)
-      },
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: false
-    })
+    const child = spawn(
+      updater,
+      updaterArgs,
+      hiddenWindowsChildOptions({
+        cwd: HERMES_HOME,
+        env: {
+          ...process.env,
+          HERMES_HOME,
+          PATH: pathWithHermesManagedNode(venvBin)
+        },
+        detached: true,
+        stdio: 'ignore'
+      })
+    )
     child.unref()
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
 
     // Linger on the "updating — don't reopen" overlay long enough for the user
-    // to actually read it (and to bridge the gap until the updater's own window
-    // appears), THEN quit to release the venv shim. The updater rebuilds and
-    // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
-    // and lured users into the #50238 relaunch loop.)
+    // to actually read it, THEN quit to release the venv shim. The updater
+    // rebuilds and relaunches us when it's done. (#50419 — a 600ms quit looked
+    // like a crash and lured users into the #50238 relaunch loop.)
     isQuittingForHandoff = true
     setTimeout(() => {
       app.quit()
@@ -2294,25 +2296,28 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   await releaseBackendLockForUpdate(updateRoot)
 
-  const child = spawn(updater, updaterArgs, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      PATH: pathWithHermesManagedNode(venvBin)
-    },
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false
-  })
+  const child = spawn(
+    updater,
+    updaterArgs,
+    hiddenWindowsChildOptions({
+      cwd: HERMES_HOME,
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        PATH: pathWithHermesManagedNode(venvBin)
+      },
+      detached: true,
+      stdio: 'ignore'
+    })
+  )
   child.unref()
 
   rememberLog(
     `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
   )
-  // Same dwell as the in-app update hand-off (#50419): give the updater's
-  // window time to appear before we vanish, so the recovery doesn't look like
-  // a crash and provoke a mid-recovery relaunch.
+  // Same dwell as the in-app update hand-off (#50419): give the renderer time
+  // to show the hand-off state before we vanish, so the recovery doesn't look
+  // like a crash and provoke a mid-recovery relaunch.
   isQuittingForHandoff = true
   setTimeout(() => {
     app.quit()

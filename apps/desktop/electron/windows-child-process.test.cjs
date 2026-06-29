@@ -23,6 +23,20 @@ function requireHiddenChildOptions(source, needle) {
   )
 }
 
+function requireHiddenChildOptionsAtAll(source, needle, expectedCount) {
+  const matches = [...source.matchAll(needle)]
+  assert.equal(matches.length, expectedCount, `expected ${expectedCount} call sites for ${needle}`)
+
+  for (const match of matches) {
+    const snippet = source.slice(match.index, match.index + 700)
+    assert.match(
+      snippet,
+      /hiddenWindowsChildOptions\(/,
+      `expected ${needle} to wrap child-process options with hiddenWindowsChildOptions`
+    )
+  }
+}
+
 test('desktop background child processes opt into hidden Windows consoles', () => {
   const source = readElectronFile('main.cjs')
 
@@ -37,6 +51,7 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   requireHiddenChildOptions(source, /spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /hermesProcess = spawn\(\s*backend\.command,\s*backend\.args/)
   requireHiddenChildOptions(source, /spawn\(\s*py,\s*\['-m', 'hermes_cli\.main', 'uninstall', '--gui-summary'\]/)
+  requireHiddenChildOptionsAtAll(source, /spawn\(\s*updater,\s*updaterArgs/g, 2)
 
   assert.match(source, /function unwrapWindowsVenvHermesCommand\(command, dashboardArgs\)/)
   assert.match(source, /existing Hermes no-console Python at/)
@@ -72,8 +87,6 @@ test('getNoConsoleVenvPython prefers base pythonw over the uv re-exec shim', () 
 test('intentional or interactive desktop child processes stay documented', () => {
   const source = readElectronFile('main.cjs')
 
-  assert.match(source, /windowsHide: false/)
-  assert.match(source, /handOffWindowsBootstrapRecovery/)
   assert.match(source, /'--repair', '--branch'/)
   assert.match(source, /'--update', '--branch'/)
   assert.match(source, /nodePty\.spawn\(command, args/)
@@ -84,5 +97,5 @@ test('bootstrap PowerShell runner hides Windows console children', () => {
   const source = readElectronFile('bootstrap-runner.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
-  requireHiddenChildOptions(source, 'spawn(ps, fullArgs')
+  requireHiddenChildOptions(source, /spawn\(\s*ps,\s*fullArgs/)
 })

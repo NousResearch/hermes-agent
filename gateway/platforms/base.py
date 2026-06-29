@@ -5316,7 +5316,11 @@ class BasePlatformAdapter(ABC):
                         split_at = safe_split
 
             chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
+            # Strip only the boundary newline(s), not leading whitespace.
+            # Using bare .lstrip() would also remove the indentation of the
+            # next line, which breaks whitespace-sensitive content like
+            # Python code blocks.  See #54579.
+            remaining = remaining[split_at:].lstrip("\n")
 
             full_chunk = prefix + chunk_body
 

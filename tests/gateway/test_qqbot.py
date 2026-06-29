@@ -2220,3 +2220,35 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+class TestConnectAcceptsIsReconnect:
+    """Regression for #54679: the gateway's _connect_adapter_with_timeout
+    forwards ``is_reconnect`` to ``adapter.connect(is_reconnect=...)`` on a
+    watcher-driven reconnect. QQAdapter.connect() previously had the bare
+    signature ``async def connect(self)`` and raised
+    ``TypeError: connect() got an unexpected keyword argument 'is_reconnect'``,
+    so QQ never recovered after a disconnect. The signature must accept the
+    keyword to honor the PlatformAdapter.connect contract."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_connect_signature_accepts_is_reconnect_keyword(self):
+        import inspect
+        from gateway.platforms.qqbot import QQAdapter
+        sig = inspect.signature(QQAdapter.connect)
+        assert "is_reconnect" in sig.parameters
+        param = sig.parameters["is_reconnect"]
+        # Matches the base contract: keyword-only with a False default.
+        assert param.kind == inspect.Parameter.KEYWORD_ONLY
+        assert param.default is False
+
+    def test_connect_does_not_raise_typeerror_on_is_reconnect(self):
+        # Missing deps short-circuit connect() to a graceful False return
+        # before any network I/O — but only if the kwarg is accepted at all.
+        adapter = self._make_adapter()
+        with mock.patch("gateway.platforms.qqbot.adapter.AIOHTTP_AVAILABLE", False):
+            result = asyncio.run(adapter.connect(is_reconnect=True))
+        assert result is False

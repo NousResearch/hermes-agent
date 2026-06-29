@@ -278,8 +278,16 @@ class QQAdapter(BasePlatformAdapter):
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
-        """Authenticate, obtain gateway URL, and open the WebSocket."""
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Authenticate, obtain gateway URL, and open the WebSocket.
+
+        ``is_reconnect`` matches the :meth:`PlatformAdapter.connect` contract so
+        the gateway can forward it on watcher-driven reconnects (#54679). QQ
+        manages its own session resume/replay inside the listen loop via op 6
+        Resume, so the flag is accepted for signature compatibility and does not
+        alter the cold-boot handshake here.
+        """
+        del is_reconnect  # accepted for PlatformAdapter.connect compatibility
         if not AIOHTTP_AVAILABLE:
             message = "QQ startup failed: aiohttp not installed"
             self._set_fatal_error("qq_missing_dependency", message, retryable=True)

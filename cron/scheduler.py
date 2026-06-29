@@ -2085,6 +2085,38 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # at module top keeps no_agent ticks from paying for AIAgent / SessionDB
     # construction costs.
     # ---------------------------------------------------------------
+
+    # Profile scoping: if the job has a `profile` field, override
+    # HERMES_HOME so the agent loads that profile's SOUL.md, skills,
+    # and memories.  Use the ContextVar override (not os.environ) so
+    # parallel jobs don't leak into each other.
+    _profile_token = None
+    job_profile = (job.get("profile") or "").strip()
+    if job_profile:
+        from hermes_constants import set_hermes_home_override
+        _root = _get_hermes_home()
+        # If we're already inside a profile, _get_hermes_home() returns
+        # <root>/profiles/<current>.  We need the *root* to resolve the
+        # target profile.  Fall back to the platform default.
+        if "profiles" in _root.parts:
+            # Go up to the root: .../profiles/<name> -> .../profiles -> root
+            _idx = _root.parts.index("profiles")
+            _root = Path(*_root.parts[:_idx]) if _idx > 0 else Path("/")
+        profile_home = _root / "profiles" / job_profile
+        if profile_home.is_dir():
+            _profile_token = set_hermes_home_override(profile_home)
+            os.environ["HERMES_PROFILE"] = job_profile
+            logger.info(
+                "Job '%s': scoped to profile '%s' (%s)",
+                job_id, job_profile, profile_home,
+            )
+        else:
+            logger.warning(
+                "Job '%s': profile '%s' directory not found at %s — "
+                "running with default identity",
+                job_id, job_profile, profile_home,
+            )
+
     from run_agent import AIAgent
 
     # Initialize SQLite session store so cron job messages are persisted
@@ -2709,6 +2741,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        # Reset profile scoping if we overrode it for this job.
+        if _profile_token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(_profile_token)
+            os.environ.pop("HERMES_PROFILE", None)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

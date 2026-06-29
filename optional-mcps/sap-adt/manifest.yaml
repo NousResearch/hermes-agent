@@ -1,0 +1,89 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sap-adt
+description: Read ABAP source code, CDS views, and repository objects from SAP systems via ADT.
+source: https://github.com/I076453/adt-mcp
+
+# adt-mcp is a TypeScript/Node.js MCP server that communicates with SAP systems
+# over the ADT REST API (the same protocol used by ABAP Development Tools in
+# Eclipse and VS Code). It is installed locally via git clone + npm install and
+# launched as a stdio subprocess by Hermes.
+#
+# SAFETY: This entry enables SAP_READ_ONLY mode by default. Hermes can read and
+# analyse ABAP objects but cannot create, modify, or delete anything on the SAP
+# system. This is the recommended setting for analysis and migration workflows
+# (e.g. ABAP report-to-RAP conversion). Users who need write access must
+# explicitly opt in by editing SAP_READ_ONLY to "false" in ~/.hermes/.env.
+transport:
+  type: stdio
+  command: "node"
+  args:
+    - "${INSTALL_DIR}/dist/index.js"
+
+install:
+  type: git
+  url: https://github.com/I076453/adt-mcp.git
+  ref: main
+  bootstrap:
+    - "npm install"
+    - "npm run build"
+
+auth:
+  type: api_key
+  env:
+    - name: SAP_SYSTEMS
+      prompt: "SAP system config as JSON (see README for format)"
+      required: true
+      secret: false
+    - name: SAP_READ_ONLY
+      prompt: "Restrict to read-only operations? (true/false)"
+      default: "true"
+      required: false
+      secret: false
+    - name: SAP_ALLOWED_PACKAGES
+      prompt: "Comma-separated package allowlist, e.g. Z_MY_PKG,/MY/PKG (leave blank for no restriction)"
+      required: false
+      secret: false
+
+# Tool selection at install time:
+# Read tools are enabled by default. All write/mutating tools (CreateObject,
+# EditSource, etc.) are excluded from the default set — SAP_READ_ONLY enforces
+# this at the server level too, but explicit default_enabled gives a clear
+# read-only surface in the Hermes tool checklist.
+tools:
+  default_enabled:
+    - GetObjectSource
+    - ListPackageContents
+    - SearchObjects
+    - GetObjectProperties
+    - GetIncludes
+    - GetCDSSource
+    - GetContext
+    - RunATC
+    - RunUnitTests
+    - GetDataPreview
+
+post_install: |
+  adt-mcp connects to SAP systems over the ADT REST API (port 8080 by default).
+  You need network access to the target SAP system from this machine.
+
+  SAP_SYSTEMS must be a JSON array describing your system(s), for example:
+
+    [{"name":"QJ6","baseUrl":"https://your-host:8080","username":"your-user","password":"your-pass"}]
+
+  Store that value in ~/.hermes/.env as SAP_SYSTEMS='[...]'.
+
+  READ-ONLY MODE is ON by default (SAP_READ_ONLY=true). In this mode the server
+  will reject any tool calls that modify objects on the SAP system. To allow
+  writes, set SAP_READ_ONLY=false — only do this for a dedicated development
+  system, never for production.
+
+  If you only want Hermes to access specific packages, set SAP_ALLOWED_PACKAGES
+  to a comma-separated list (wildcards supported, e.g. "ZRF_*,/EPD/*").
+
+  Start a new Hermes session after installation to load the SAP ADT tools.
+
+  Re-run the tool checklist any time with:
+    hermes mcp configure sap-adt

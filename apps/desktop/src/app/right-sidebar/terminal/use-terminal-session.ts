@@ -12,7 +12,7 @@ import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
 
-import { makeTerminalReader, setActiveTerminalReader } from './buffer'
+import { makeTerminalReader, registerTerminalReader } from './buffer'
 import {
   isAddSelectionShortcut,
   resolveSurfaceColor,
@@ -20,6 +20,7 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
+import { closeTerminal } from './terminals'
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
 
@@ -63,6 +64,14 @@ function readEscapeSequence(data: string, index: number) {
         return data.slice(index, i + 2)
       }
     }
+  }
+
+  // Character-set and other short ESC forms are three bytes (e.g. ESC ( B).
+  // Treating only ESC+( as a sequence leaves the final selector ("B") as
+  // printable text, which disarms the initial prompt-gap stripper before it can
+  // eat the shell's leading newline.
+  if (['(', ')', '*', '+', '-', '.', '/'].includes(kind) && index + 2 < data.length) {
+    return data.slice(index, index + 3)
   }
 
   return data.slice(index, Math.min(index + 2, data.length))
@@ -132,8 +141,14 @@ function stripInitialPromptGap(data: string) {
 }
 
 interface UseTerminalSessionOptions {
+  /** Renderer-side terminal id (the tab handle), used to key the agent reader. */
+  id: string
   cwd: string
+  /** Only the active tab is visible, owns the agent reader, and runs injections. */
+  active: boolean
   onAddSelectionToChat: (text: string, label?: string) => void
+  /** Reports the resolved shell name once the PTY is live (for the tab label). */
+  onShell?: (shell: string) => void
 }
 
 // Bind the palette to the live skin surface so the terminal blends with the app
@@ -232,7 +247,7 @@ function quotePathForShell(path: string, shellName: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`
 }
 
-export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSessionOptions) {
+export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onShell }: UseTerminalSessionOptions) {
   // Key off renderedMode (the painted surface type), not resolvedMode (the
   // clicked switch) — a skin can keep a light surface in "dark" mode, and we
   // must match the surface or the ANSI palette inverts against it. themeName
@@ -253,6 +268,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
   const onAddSelectionToChatRef = useRef(onAddSelectionToChat)
+  const onShellRef = useRef(onShell)
+  // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
+  // last fit is stale by the time it's shown again.
+  const fitRef = useRef<(() => void) | null>(null)
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -260,7 +279,8 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
-  }, [onAddSelectionToChat])
+    onShellRef.current = onShell
+  }, [onAddSelectionToChat, onShell])
 
   // Live selection at call time. A redraw-heavy TUI (spinners, clocks) outruns
   // onSelectionChange, so trust xterm directly — fall back to the native
@@ -368,10 +388,6 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     term.loadAddon(new WebLinksAddon())
     term.unicode.activeVersion = '11'
 
-    // Let the GUI chat agent read this pane via the `read_terminal` tool: the
-    // gateway's terminal.read.request handler serializes the buffer through this.
-    setActiveTerminalReader(makeTerminalReader(term))
-
     const onDragOver = (e: DragEvent) => {
       if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
         return
@@ -411,18 +427,9 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       host.removeEventListener('drop', onDrop)
     })
 
-    // A fresh prompt should sit at the top. Every resize SIGWINCHes the shell,
-    // which reprints its prompt and can leave stale blank rows above it. While
-    // the session is pristine (nothing run yet) we ask the shell to clear +
-    // redraw via Ctrl-L (\f) after the resize settles. Ctrl-L preserves
-    // multi-line prompts (term.clear() would drop all but the cursor row) and we
-    // stop the moment real output exists, so command scrollback is never wiped.
-    let promptPristine = true
-    let gapCleanupTimer = 0
-
-    // While armed, strip leading blank rows so the prompt lands at the very top
-    // (no starship `add_newline` gap). Re-armed before each Ctrl-L redraw so the
-    // resize cleanup doesn't reintroduce the blank line.
+    // While armed, strip leading blank rows so the first prompt lands at the
+    // very top (no starship `add_newline` gap). Do this only on renderer output:
+    // never inject Ctrl-L or other cleanup keystrokes into the user's shell.
     let stripLeading = true
 
     const armedWrite = (data: string) => {
@@ -451,35 +458,6 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       term.write(next)
     }
 
-    const scheduleGapCleanup = () => {
-      if (!promptPristine) {
-        return
-      }
-
-      if (gapCleanupTimer) {
-        window.clearTimeout(gapCleanupTimer)
-      }
-
-      gapCleanupTimer = window.setTimeout(() => {
-        gapCleanupTimer = 0
-        const id = sessionIdRef.current
-
-        if (disposed || !id || !promptPristine) {
-          return
-        }
-
-        stripLeading = true
-        void terminalApi.write(id, '\f')
-        term.clearSelection()
-      }, 120)
-    }
-
-    cleanup.push(() => {
-      if (gapCleanupTimer) {
-        window.clearTimeout(gapCleanupTimer)
-      }
-    })
-
     const fitAndResize = () => {
       if (disposed || !host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
         return
@@ -496,9 +474,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       if (id && (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)) {
         lastSentSize = { cols: term.cols, rows: term.rows }
         void terminalApi.resize(id, { cols: term.cols, rows: term.rows })
-        scheduleGapCleanup()
       }
     }
+
+    fitRef.current = fitAndResize
 
     // Coalesce ResizeObserver bursts through rAF — running fit.fit()
     // synchronously while sibling panes are mid-transition (e.g. file browser
@@ -533,12 +512,6 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       const id = sessionIdRef.current
 
       if (id) {
-        // Once the user submits a line, real output may follow — stop the
-        // pristine-prompt gap cleanup so we never clear command scrollback.
-        if (promptPristine && data.includes('\r')) {
-          promptPristine = false
-        }
-
         void terminalApi.write(id, data)
       }
     })
@@ -569,6 +542,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
           lastSentSize = { cols: term.cols, rows: term.rows }
           shellNameRef.current = session.shell || 'shell'
           setShellName(session.shell || 'shell')
+          onShellRef.current?.(session.shell || 'shell')
 
           const initial = term.hasSelection() ? term.getSelection() : ''
           selectionRef.current = initial
@@ -578,9 +552,13 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
           cleanup.push(
             terminalApi.onData(session.id, armedWrite),
-            terminalApi.onExit(session.id, ({ code, signal }) => {
-              setStatus('closed')
-              term.write(`\r\n[terminal exited${signal ? `: ${signal}` : code !== null ? `: ${code}` : ''}]\r\n`)
+            terminalApi.onExit(session.id, () => {
+              // Shell exited (`exit` / Ctrl-D / crash) — drop the tab like a real
+              // terminal. closeTerminal hides the pane when it's the last one;
+              // skip if we're already tearing down (cleanup disposes the PTY).
+              if (!disposed) {
+                closeTerminal(id)
+              }
             })
           )
 
@@ -638,7 +616,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     return () => {
       disposed = true
       cleanup.forEach(run => run())
-      setActiveTerminalReader(null)
+      fitRef.current = null
 
       const id = sessionIdRef.current
       sessionIdRef.current = null
@@ -654,7 +632,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       selectionRef.current = ''
       selectionLabelRef.current = ''
     }
-  }, [addSelectionToChat, cwd])
+    // `id` is stable for the instance's life (keyed by tab id), so listing it
+    // doesn't re-create the shell — it just satisfies the deps check for the
+    // closeTerminal(id) call in onExit.
+  }, [addSelectionToChat, cwd, id])
 
   useEffect(() => {
     const term = termRef.current
@@ -677,27 +658,61 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     return () => cancelAnimationFrame(raf)
   }, [activeTheme, themeName])
 
-  // Flush a queued command (e.g. a provider-disconnect) into the live session.
-  // Only active while open; the subscribe fires immediately, so a command set
-  // before this pane mounted runs as soon as the session is ready. Clearing the
-  // atom after writing stops a later remount from replaying a stale command.
+  // Expose this terminal's buffer to the agent's `read_terminal` tool, keyed by
+  // id. The tab selection (setActiveTerminalId) decides which one it reads, so
+  // every live terminal stays registered regardless of visibility.
   useEffect(() => {
     if (status !== 'open') {
       return
     }
 
-    return $terminalInjection.subscribe(command => {
-      const id = sessionIdRef.current
+    const term = termRef.current
 
-      if (!command || !id) {
+    return term ? registerTerminalReader(id, makeTerminalReader(term)) : undefined
+  }, [id, status])
+
+  // On (re)activation: a WebGL terminal doesn't paint while visibility:hidden, so
+  // it reveals a stale/garbled frame. Refit, rebuild the glyph atlas, and force a
+  // full redraw against the live buffer, then focus.
+  useEffect(() => {
+    if (!active || status !== 'open') {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const term = termRef.current
+
+      fitRef.current?.()
+      webglRef.current?.clearTextureAtlas()
+      term?.refresh(0, term.rows - 1)
+      term?.focus()
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [active, status])
+
+  // Flush a queued command (e.g. a provider-disconnect) into the live session.
+  // Only the active tab runs it (so a broadcast doesn't fan out to every shell);
+  // the subscribe fires immediately, so a command set before this pane mounted
+  // runs as soon as the session is ready. Cleared after writing so a later
+  // remount can't replay a stale command.
+  useEffect(() => {
+    if (!active || status !== 'open') {
+      return
+    }
+
+    return $terminalInjection.subscribe(command => {
+      const sessionId = sessionIdRef.current
+
+      if (!command || !sessionId) {
         return
       }
 
-      void window.hermesDesktop?.terminal?.write(id, `${command}\r`)
+      void window.hermesDesktop?.terminal?.write(sessionId, `${command}\r`)
       $terminalInjection.set(null)
       termRef.current?.focus()
     })
-  }, [status])
+  }, [active, status])
 
   return {
     addSelectionToChat,

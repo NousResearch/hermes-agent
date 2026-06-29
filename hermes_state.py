@@ -764,6 +764,17 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS session_stack (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    side_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    title TEXT,
+    pushed_at REAL NOT NULL,
+    popped_at REAL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -781,6 +792,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_session_stack_active ON session_stack(source, status, id DESC);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 """
 
@@ -1329,6 +1341,54 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _reconcile_session_stack_fk(self, cursor: sqlite3.Cursor) -> None:
+        """Rebuild session_stack if its FKs to sessions lack ON DELETE CASCADE.
+
+        session_stack originally referenced sessions(id) without ON DELETE
+        CASCADE. SQLite cannot ALTER a foreign key, so legacy tables are rebuilt
+        once while preserving valid stack rows.
+        """
+        try:
+            exists = cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_stack'"
+            ).fetchone()
+            if not exists:
+                return
+            fk_rows = cursor.execute("PRAGMA foreign_key_list('session_stack')").fetchall()
+            session_fks = [row for row in fk_rows if row[2] == "sessions"]
+            if not session_fks:
+                return
+            if all((str(row[6]) or "").upper() == "CASCADE" for row in session_fks):
+                return
+            cursor.executescript(
+                """
+                DROP TABLE IF EXISTS session_stack_new;
+                CREATE TABLE session_stack_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    side_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    title TEXT,
+                    pushed_at REAL NOT NULL,
+                    popped_at REAL,
+                    status TEXT NOT NULL DEFAULT 'active'
+                );
+                INSERT INTO session_stack_new
+                    SELECT id, source, parent_session_id, side_session_id, title,
+                           pushed_at, popped_at, status
+                    FROM session_stack
+                    WHERE parent_session_id IN (SELECT id FROM sessions)
+                      AND side_session_id IN (SELECT id FROM sessions);
+                DROP TABLE session_stack;
+                ALTER TABLE session_stack_new RENAME TO session_stack;
+                CREATE INDEX IF NOT EXISTS idx_session_stack_active
+                    ON session_stack(source, status, id DESC);
+                """
+            )
+            logger.info("session_stack rebuilt with ON DELETE CASCADE foreign keys")
+        except sqlite3.OperationalError as exc:
+            logger.debug("session_stack FK reconcile skipped: %s", exc)
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -1352,6 +1412,10 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # Rebuild session_stack on legacy DBs whose FKs to sessions lack
+        # ON DELETE CASCADE (column reconciliation cannot fix a foreign key).
+        self._reconcile_session_stack_fk(cursor)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -1636,6 +1700,74 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def push_side_session(
+        self,
+        source: str,
+        parent_session_id: str,
+        side_session_id: str,
+        title: Optional[str] = None,
+    ) -> int:
+        """Record an active topic-parking side session for *source*."""
+        now = time.time()
+
+        def _do(conn):
+            cur = conn.execute(
+                """INSERT INTO session_stack
+                   (source, parent_session_id, side_session_id, title, pushed_at, status)
+                   VALUES (?, ?, ?, ?, ?, 'active')""",
+                (source, parent_session_id, side_session_id, title, now),
+            )
+            return int(cur.lastrowid)
+
+        return self._execute_write(_do)
+
+    def get_active_side_session(self, source: str = "cli") -> Optional[Dict[str, Any]]:
+        """Return the newest active side-session stack entry for *source*."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM session_stack
+                   WHERE source = ? AND status = 'active'
+                   ORDER BY id DESC LIMIT 1""",
+                (source,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def pop_side_session(
+        self, source: str = "cli", side_session_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Mark and return the newest active side-session stack entry.
+
+        When *side_session_id* is given, only an entry parked from that exact
+        side session is popped. This prevents one client in a shared process
+        from popping another client's parked session.
+        """
+        now = time.time()
+
+        def _do(conn):
+            if side_session_id is not None:
+                row = conn.execute(
+                    """SELECT * FROM session_stack
+                       WHERE source = ? AND side_session_id = ? AND status = 'active'
+                       ORDER BY id DESC LIMIT 1""",
+                    (source, side_session_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """SELECT * FROM session_stack
+                       WHERE source = ? AND status = 'active'
+                       ORDER BY id DESC LIMIT 1""",
+                    (source,),
+                ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE session_stack SET status = 'popped', popped_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            return dict(row)
+
+        return self._execute_write(_do)
 
     def record_gateway_session_peer(
         self,

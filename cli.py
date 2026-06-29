@@ -7084,6 +7084,185 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+    def _sync_agent_after_session_switch(
+        self,
+        target_session_id: str,
+        target_start: datetime,
+        history_len: int,
+        parent_session_id: str,
+        reset: bool,
+        reason: str,
+    ) -> None:
+        """Keep the live agent aligned after slash-command session rotation."""
+        if not self.agent:
+            return
+        self.agent.session_id = target_session_id
+        self.agent.session_start = target_start
+        if hasattr(self.agent, "session_log_file") and hasattr(self.agent, "logs_dir"):
+            self.agent.session_log_file = (
+                self.agent.logs_dir / f"session_{target_session_id}.json"
+            )
+        self.agent.reset_session_state()
+        if hasattr(self.agent, "_last_flushed_db_idx"):
+            self.agent._last_flushed_db_idx = history_len
+        if hasattr(self.agent, "_todo_store"):
+            try:
+                from tools.todo_tool import TodoStore
+                self.agent._todo_store = TodoStore()
+            except Exception:
+                pass
+        if hasattr(self.agent, "_invalidate_system_prompt"):
+            self.agent._invalidate_system_prompt()
+        try:
+            _mm = getattr(self.agent, "_memory_manager", None)
+            if _mm is not None:
+                _mm.on_session_switch(
+                    target_session_id,
+                    parent_session_id=parent_session_id or "",
+                    reset=reset,
+                    reason=reason,
+                )
+        except Exception:
+            pass
+
+    def _handle_side_command(self, cmd_original: str) -> None:
+        """Handle /side [name] — park current session and start a clean side topic."""
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
+            return
+
+        parts = cmd_original.split(None, 1)
+        raw_title = parts[1].strip() if len(parts) > 1 else ""
+        title = None
+        if raw_title:
+            try:
+                from hermes_state import SessionDB
+                title = SessionDB.sanitize_title(raw_title)
+            except ValueError as e:
+                _cprint(f"  Title rejected: {e}")
+                return
+
+        parent_session_id = self.session_id
+        now = datetime.now()
+        new_session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        source = os.environ.get("HERMES_SESSION_SOURCE", "cli")
+
+        if self.agent and self.conversation_history:
+            try:
+                self.agent.commit_memory_session(self.conversation_history)
+            except Exception:
+                pass
+            self._notify_session_boundary("on_session_finalize")
+        elif self.agent:
+            self._notify_session_boundary("on_session_finalize")
+
+        try:
+            if not self._session_db.get_session(parent_session_id):
+                self._session_db.create_session(
+                    session_id=parent_session_id,
+                    source=source,
+                    model=self.model,
+                )
+            self._session_db.end_session(parent_session_id, "side_session")
+            self._session_db.create_session(
+                session_id=new_session_id,
+                source=source,
+                model=self.model,
+                model_config={
+                    "max_iterations": self.max_turns,
+                    "reasoning_config": self.reasoning_config,
+                },
+                parent_session_id=parent_session_id,
+            )
+            if title:
+                self._session_db.set_session_title(new_session_id, title)
+            self._session_db.push_side_session(
+                source=source,
+                parent_session_id=parent_session_id,
+                side_session_id=new_session_id,
+                title=title,
+            )
+        except Exception as e:
+            _cprint(f"  Failed to start side session: {e}")
+            return
+
+        self.session_id = new_session_id
+        self.session_start = now
+        self.conversation_history = []
+        self._pending_title = None
+        self._resumed = True
+
+        self._sync_agent_after_session_switch(
+            new_session_id,
+            now,
+            history_len=0,
+            parent_session_id=parent_session_id,
+            reset=True,
+            reason="side",
+        )
+        if self.agent:
+            self._notify_session_boundary("on_session_reset")
+
+        display_title = title or "auto-title pending"
+        _cprint(f"  ↱ Side session started: {display_title}")
+        _cprint(f"  Parked session: {parent_session_id}")
+        _cprint("  Return with: /back")
+
+    def _handle_back_command(self, cmd_original: str) -> None:
+        """Handle /back — return from the active side topic to its parent."""
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
+            return
+
+        source = os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        try:
+            entry = self._session_db.pop_side_session(
+                source=source, side_session_id=self.session_id
+            )
+        except Exception as e:
+            _cprint(f"  Failed to read side-session stack: {e}")
+            return
+        if not entry:
+            _cprint("  No active side session to return from.")
+            return
+
+        parent_session_id = entry["parent_session_id"]
+        side_session_id = entry["side_session_id"]
+        try:
+            self._session_db.end_session(side_session_id, "side_session_returned")
+            self._session_db.reopen_session(parent_session_id)
+            restored = self._session_db.get_messages_as_conversation(parent_session_id)
+            restored = [
+                {k: v for k, v in m.items() if k != "timestamp"}
+                for m in (restored or [])
+                if m.get("role") != "session_meta"
+            ]
+        except Exception as e:
+            _cprint(f"  Failed to return to parked session: {e}")
+            return
+
+        now = datetime.now()
+        self.session_id = parent_session_id
+        self.session_start = now
+        self.conversation_history = restored
+        self._pending_title = None
+        self._resumed = True
+
+        self._sync_agent_after_session_switch(
+            parent_session_id,
+            now,
+            history_len=len(restored),
+            parent_session_id=side_session_id,
+            reset=True,
+            reason="back",
+        )
+        if self.agent:
+            self._notify_session_boundary("on_session_reset")
+
+        _cprint(f"  ↰ Returned to parked session: {parent_session_id}")
+
     def save_conversation(self):
         """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
@@ -8561,6 +8740,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.undo_last(_undo_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
+        elif canonical == "side":
+            self._handle_side_command(cmd_original)
+        elif canonical == "back":
+            self._handle_back_command(cmd_original)
         elif canonical == "save":
             self.save_conversation()
         elif canonical == "cron":

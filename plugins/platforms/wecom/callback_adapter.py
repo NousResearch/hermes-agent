@@ -67,6 +67,17 @@ def check_wecom_callback_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE and DEFUSEDXML_AVAILABLE
 
 
+async def _read_limited_request_body(request: web.Request, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from an aiohttp request body."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload too large")
+    return body
+
+
 class WecomCallbackAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
@@ -282,9 +293,10 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         nonce = request.query.get("nonce", "")
         # Explicit guard in addition to client_max_size: rejects oversized
         # payloads before any XML parse / signature check (DoS, zip bombs).
-        body_bytes = await request.read()
-        if len(body_bytes) > _MAX_BODY:
-            logger.warning("[WecomCallback] Payload too large (%d bytes) — rejected", len(body_bytes))
+        try:
+            body_bytes = await _read_limited_request_body(request, _MAX_BODY)
+        except ValueError:
+            logger.warning("[WecomCallback] Payload too large - rejected")
             return web.Response(status=413, text="payload too large")
         body = body_bytes.decode("utf-8", errors="replace")
 

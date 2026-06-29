@@ -359,6 +359,80 @@ async def test_council_mode_opens_huddle_invites_workers_closes_and_synthesizes(
 
 
 @pytest.mark.asyncio
+async def test_council_mode_role_trigger_only_for_council_role(adapter, monkeypatch):
+    """Mentioning @Pixoid should not open an @Crew huddle just because Pixoid owns that role."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111", "role": "reality check"}],
+    }
+
+    pixoid_role = SimpleNamespace(id=2468, name="Pixoid", managed=False)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[pixoid_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{pixoid_role.id}> can you check what processes are running?",
+        role_mentions=[pixoid_role],
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    assert channel.created_threads == []
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "can you check what processes are running?"
+
+
+@pytest.mark.asyncio
+async def test_council_mode_role_trigger_accepts_crew_role_name(adapter, monkeypatch):
+    """A real @Crew role mention still opens the bounded council huddle."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111", "role": "reality check"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+
+    crew_role = SimpleNamespace(id=2468, name="Crew", managed=False)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[crew_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{crew_role.id}> decide the multiplayer flow",
+        role_mentions=[crew_role],
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    assert len(channel.created_threads) == 1
+    huddle = channel.created_threads[0]
+    assert "<@111>" in huddle.sent_messages[0]
+    assert "decide the multiplayer flow" in huddle.sent_messages[0]
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+
+    for _ in range(10):
+        if adapter.handle_message.await_count:
+            break
+        await asyncio.sleep(0)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_council_route_records_do_not_collide_between_huddles(adapter, monkeypatch):
     """Separate @Crew requests get distinct route records and huddle IDs."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
@@ -481,6 +555,27 @@ async def test_council_huddle_suppresses_ambient_worker_chatter(adapter, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_council_huddle_suppresses_bot_reply_ping_after_close(adapter, monkeypatch):
+    """Closed huddles drop implicit reply pings before model invocation."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._council_huddle_threads[str(thread.id)] = "closed"
+    worker_author = SimpleNamespace(id=111, display_name="Boba", name="Boba", bot=True)
+    message = make_message(
+        channel=thread,
+        content="Silence.",
+        mentions=[adapter._client.user],  # implicit Discord reply ping, not textual <@id>
+    )
+    message.author = worker_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_thread_require_mention_worker_ignores_close_markers_and_acks(adapter, monkeypatch):
     """Worker-style profiles stay quiet on huddle close markers and casual acks."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
@@ -499,6 +594,55 @@ async def test_thread_require_mention_worker_ignores_close_markers_and_acks(adap
         message = make_message(channel=thread, content=content, mentions=[])
         await adapter._handle_message(message)
         adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_worker_ignores_bot_reply_ping_without_textual_tag(adapter, monkeypatch):
+    """Discord reply pings from Pixoid do not count as direct worker summons."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._threads.mark(str(thread.id))
+
+    bot_user = adapter._client.user
+    pixoid_author = SimpleNamespace(id=1510114832991522906, display_name="Pixoid", name="Pixoid", bot=True)
+    message = make_message(
+        channel=thread,
+        content="Verified: huddle closed; no further worker action needed.",
+        mentions=[bot_user],  # implicit Discord reply mention, not textual <@id>
+    )
+    message.author = pixoid_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_worker_accepts_bot_textual_tag(adapter, monkeypatch):
+    """Explicit bot-authored <@id> text still counts as a direct worker summon."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+
+    bot_user = adapter._client.user
+    pixoid_author = SimpleNamespace(id=1510114832991522906, display_name="Pixoid", name="Pixoid", bot=True)
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> direct follow-up requested",
+        mentions=[bot_user],
+    )
+    message.author = pixoid_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -810,7 +954,7 @@ async def test_replay_crew_role_mention_opens_pixoid_council_route(adapter, monk
     """Replay: @Crew role mention should become Pixoid-led council, not bare yes."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
-    crew_role = SimpleNamespace(id=2468, managed=False)
+    crew_role = SimpleNamespace(id=2468, name="Crew", managed=False)
     channel = FakeTextChannel(channel_id=700)
     channel.guild.me = SimpleNamespace(roles=[crew_role])
     adapter.config.extra["council_mode"] = {

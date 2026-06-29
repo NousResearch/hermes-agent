@@ -1130,15 +1130,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 _role_authorized = False
                 _self_role_mentions = adapter_self._message_mentions_own_role(message)
+                _explicit_self_mention = adapter_self._message_explicitly_mentions_self(message, _self_role_mentions)
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or (
-                            self._client.user not in message.mentions
-                            and not _self_role_mentions
-                        ):
+                        if not _explicit_self_mention:
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -4496,6 +4494,25 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             return []
 
+    def _message_explicitly_mentions_self(self, message: Any, bot_role_mentions: Optional[list[Any]] = None) -> bool:
+        """Return True only for textual @mentions / own-role mentions.
+
+        Discord replies may include the replied-to user in ``message.mentions``
+        even when the message body has no ``<@id>`` text. In council huddles,
+        Pixoid progress/final messages can reply to a worker's one-round answer;
+        those implicit reply mentions must not wake the worker again.
+        """
+        user = getattr(self._client, "user", None) if self._client else None
+        user_id = str(getattr(user, "id", "") or "")
+        if not user_id:
+            return False
+        content = str(getattr(message, "content", "") or "")
+        if f"<@{user_id}>" in content or f"<@!{user_id}>" in content:
+            return True
+        if bot_role_mentions is None:
+            bot_role_mentions = self._message_mentions_own_role(message)
+        return bool(bot_role_mentions)
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4519,6 +4536,46 @@ class DiscordAdapter(BasePlatformAdapter):
         """Return phrases that intentionally wake every participating crew bot."""
         raw = os.getenv("DISCORD_CREW_ALIASES", "")
         return {alias.strip().lower() for alias in raw.split(",") if alias.strip()}
+
+    def _discord_council_role_ids(self) -> set[str]:
+        """Return role IDs that explicitly trigger council-mode huddles.
+
+        A bot can have multiple Discord roles (for example @Pixoid and @Crew).
+        Mentioning any owned role should still wake the bot when mention-gating
+        is enabled, but council mode must only start for the shared council role,
+        not every role mention that happens to belong to the bot.
+        """
+        cfg = self._discord_council_config()
+        raw = cfg.get("role_ids") or cfg.get("roles") or cfg.get("role_id") or os.getenv("DISCORD_COUNCIL_ROLE_IDS", "")
+        if isinstance(raw, (list, tuple, set)):
+            return {str(item).strip().lstrip("<@&").rstrip(">") for item in raw if str(item).strip()}
+        return {part.strip().lstrip("<@&").rstrip(">") for part in str(raw or "").split(",") if part.strip()}
+
+    def _discord_council_role_names(self) -> set[str]:
+        """Return role names that explicitly trigger council-mode huddles."""
+        cfg = self._discord_council_config()
+        raw = cfg.get("role_names") or cfg.get("role_name") or os.getenv("DISCORD_COUNCIL_ROLE_NAMES", "")
+        if isinstance(raw, (list, tuple, set)):
+            names = {str(item).strip().lower() for item in raw if str(item).strip()}
+        else:
+            names = {part.strip().lower() for part in str(raw or "").split(",") if part.strip()}
+        if names:
+            return names
+        # Backwards-compatible default for the common setup while avoiding the
+        # previous over-broad behavior where *any* owned role opened a huddle.
+        return {"crew", "council"}
+
+    def _filter_council_role_mentions(self, bot_role_mentions: list[Any]) -> list[Any]:
+        """Return the subset of owned role mentions that should start council mode."""
+        role_ids = self._discord_council_role_ids()
+        role_names = self._discord_council_role_names()
+        result: list[Any] = []
+        for role in bot_role_mentions or []:
+            rid = str(getattr(role, "id", "") or "")
+            name = str(getattr(role, "name", "") or "").strip().lower()
+            if (role_ids and rid in role_ids) or (not role_ids and name in role_names):
+                result.append(role)
+        return result
 
     def _matches_crew_call_alias(self, content: str) -> bool:
         """Return True when a message explicitly calls the configured crew."""
@@ -4929,7 +4986,8 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> bool:
         if not self._discord_council_enabled():
             return False
-        if not (bot_role_mentions or crew_call_prefix):
+        council_role_mentions = self._filter_council_role_mentions(bot_role_mentions)
+        if not (council_role_mentions or crew_call_prefix):
             return False
         if self._discord_council_no_tools_requested(normalized_content):
             with suppress(Exception):
@@ -4965,7 +5023,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         route_id = self._council_route_id_for_message(message)
         request_text = normalized_content
-        for role in bot_role_mentions:
+        for role in council_role_mentions:
             request_text = request_text.replace(f"<@&{getattr(role, 'id')}>", "").strip()
         thread_name = self._derive_council_thread_name(request_text)
         huddle = await self._resolve_council_huddle_thread(message, thread_name)
@@ -6020,13 +6078,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
         bot_role_mentions = self._message_mentions_own_role(message)
+        explicit_self_mention = self._message_explicitly_mentions_self(message, bot_role_mentions)
         crew_call_prefix = self._matches_crew_call_alias(normalized_content)
 
         if self._client.user and self._client.user in message.mentions:
-            mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
-            message.content = normalized_content
+            if getattr(message.author, "bot", False) and not explicit_self_mention:
+                # Bot-authored Discord replies can implicitly mention the
+                # replied-to worker without a textual <@id>. Do not treat that
+                # reply ping as a direct worker summon in council huddles.
+                pass
+            else:
+                mention_prefix = True
+                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+                message.content = normalized_content
         elif bot_role_mentions:
             mention_prefix = True
             for role in bot_role_mentions:
@@ -6039,11 +6104,12 @@ class DiscordAdapter(BasePlatformAdapter):
             is_thread
             and thread_id in self._council_huddle_threads
             and not mention_prefix
-            and (not self._client.user or self._client.user not in message.mentions)
         ):
             # Council huddles are deliberately bounded. Once Pixoid has opened
-            # or closed one, worker replies and casual acks in that thread must
-            # not wake the coordinator ambiently via thread participation.
+            # or closed one, worker replies, casual acks, and implicit Discord
+            # reply pings in that thread must not wake any bot ambiently. Only
+            # an explicit textual @mention / own-role mention / crew alias sets
+            # mention_prefix and can reopen work.
             return
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -6094,7 +6160,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if not mention_prefix:
                     return
 
             if await self._maybe_start_council_huddle(

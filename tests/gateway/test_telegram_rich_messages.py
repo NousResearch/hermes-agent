@@ -297,6 +297,21 @@ async def test_plain_markdown_stays_on_legacy_path():
 
 
 @pytest.mark.asyncio
+async def test_rich_all_markdown_routes_plain_markdown_to_rich():
+    """Local/operator opt-in: render ordinary markdown through Bot API rich too."""
+    adapter = _make_adapter(extra={"rich_all_markdown": True})
+
+    result = await adapter.send("12345", "## Heading\n\nHello **there**")
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+    assert _rich_api_kwargs(adapter)["rich_message"]["markdown"] == "## Heading\n\nHello **there**"
+
+
+@pytest.mark.asyncio
 async def test_expect_edits_metadata_keeps_preview_on_legacy_path():
     adapter = _make_adapter()
 

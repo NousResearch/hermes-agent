@@ -12074,8 +12074,12 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
     try:
-        from hermes_cli.config import apply_terminal_config_to_env
+        from hermes_cli.config import (
+            apply_interactive_terminal_color_env,
+            apply_terminal_config_to_env,
+        )
         apply_terminal_config_to_env(env=env)
+        apply_interactive_terminal_color_env(env=env)
     except Exception:
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     env.setdefault("NODE_ENV", "production")

@@ -5,6 +5,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
+import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
 import {
   addComposerAttachment,
   type ComposerAttachment,
@@ -226,9 +227,10 @@ const attachToMain = (attachment: ComposerAttachment) => {
 export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
-  }, [copy.imagePreviewFailed])
+  }, [])
 
   const addTerminalSelectionAttachment = useCallback((text: string, label = 'selection') => {
     const trimmed = text.trim()
@@ -261,7 +263,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
-      const paths = await window.hermesDesktop?.selectPaths({
+      const paths = await selectDesktopPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
         directories: kind === 'folder'
@@ -329,35 +331,38 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [currentCwd]
   )
 
-  const attachImagePath = useCallback(async (filePath: string) => {
-    if (!filePath) {
-      return false
-    }
-
-    const baseAttachment: ComposerAttachment = {
-      id: attachmentId('image', filePath),
-      kind: 'image',
-      label: pathLabel(filePath),
-      detail: filePath,
-      path: filePath
-    }
-
-    attachToMain(baseAttachment)
-
-    try {
-      const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
-
-      if (previewUrl) {
-        addComposerAttachment({ ...baseAttachment, previewUrl })
+  const attachImagePath = useCallback(
+    async (filePath: string) => {
+      if (!filePath) {
+        return false
       }
 
-      return true
-    } catch (err) {
-      notifyError(err, copy.imagePreviewFailed)
+      const baseAttachment: ComposerAttachment = {
+        id: attachmentId('image', filePath),
+        kind: 'image',
+        label: pathLabel(filePath),
+        detail: filePath,
+        path: filePath
+      }
 
-      return true
-    }
-  }, [])
+      attachToMain(baseAttachment)
+
+      try {
+        const previewUrl = await readDesktopFileDataUrl(filePath)
+
+        if (previewUrl) {
+          addComposerAttachment({ ...baseAttachment, previewUrl })
+        }
+
+        return true
+      } catch (err) {
+        notifyError(err, copy.imagePreviewFailed)
+
+        return true
+      }
+    },
+    [copy.imagePreviewFailed]
+  )
 
   const attachImageBlob = useCallback(
     async (blob: Blob) => {
@@ -391,7 +396,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   )
 
   const pickImages = useCallback(async () => {
-    const paths = await window.hermesDesktop?.selectPaths({
+    const paths = await selectDesktopPaths({
       title: copy.attachImages,
       defaultPath: currentCwd || undefined,
       filters: [
@@ -411,25 +416,36 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     }
   }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
 
-  const pasteClipboardImage = useCallback(async () => {
-    try {
-      const path = await window.hermesDesktop?.saveClipboardImage()
+  const pasteClipboardImage = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      try {
+        const path = await window.hermesDesktop?.saveClipboardImage()
 
-      if (!path) {
-        notify({
-          kind: 'warning',
-          title: copy.clipboard,
-          message: copy.noClipboardImage
-        })
+        if (!path) {
+          if (!silent) {
+            notify({
+              kind: 'warning',
+              title: copy.clipboard,
+              message: copy.noClipboardImage
+            })
+          }
 
-        return
+          return false
+        }
+
+        await attachImagePath(path)
+
+        return true
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, copy.clipboardPasteFailed)
+        }
+
+        return false
       }
-
-      await attachImagePath(path)
-    } catch (err) {
-      notifyError(err, copy.clipboardPasteFailed)
-    }
-  }, [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage])
+    },
+    [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage]
+  )
 
   const attachContextFolderPath = useCallback(
     (folderPath: string) => {

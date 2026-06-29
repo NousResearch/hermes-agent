@@ -25,7 +25,7 @@ _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"(?i)"
     r"(hermes\s+gateway\s+(restart|stop|start))"
     r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
-    r"|(systemctl\s+(restart|stop|start)\s+.*hermes)"
+    r"|(systemctl\s+(-\S+\s+)*(restart|stop|start)\s+.*hermes)"
     r"|(p?kill\s+.*hermes.*gateway)"
 )
 
@@ -55,6 +55,54 @@ def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
+
+
+def _active_cron_provider_name() -> str:
+    """Name of the resolved cron scheduler provider ('builtin', 'chronos', …).
+
+    Best-effort + offline (``resolve_cron_scheduler`` reads config and the
+    provider's ``is_available()`` contract forbids network). Returns 'builtin'
+    on any failure so callers fall back to the historical ticker-based checks.
+    """
+    try:
+        from cron.scheduler_provider import resolve_cron_scheduler
+
+        return resolve_cron_scheduler().name or "builtin"
+    except Exception:
+        return "builtin"
+
+
+def _warn_if_gateway_not_running() -> None:
+    """Warn that scheduled jobs won't fire unless the gateway is running.
+
+    The cron ticker only runs inside the gateway (``_start_cron_ticker`` in
+    gateway/run.py); there is no standalone cron daemon. Without a running
+    gateway, ``next_run_at`` passes but jobs never fire and ``last_run_at``
+    stays null — the most common cron support report (#51038). Surfacing this
+    at create/list time, when the user is right there, prevents it.
+
+    An external provider (e.g. Chronos) fires jobs via a NAS-mediated webhook,
+    NOT the in-process ticker, so a momentarily-absent gateway process does not
+    mean jobs won't fire — the warning would be a false alarm. Stay quiet for
+    any non-builtin provider; the gateway-process heuristic only speaks to the
+    built-in ticker's trigger.
+    """
+    try:
+        if _active_cron_provider_name() != "builtin":
+            return
+
+        from hermes_cli.gateway import find_gateway_pids
+
+        if find_gateway_pids():
+            return
+    except Exception:
+        # If we can't determine gateway state, stay quiet rather than nag.
+        return
+
+    print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
+    print(color("     Start it with: hermes gateway install", Colors.DIM))
+    print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
+    print(color("     Check status:  hermes cron status", Colors.DIM))
 
 
 def cron_list(show_all: bool = False):
@@ -137,12 +185,7 @@ def cron_list(show_all: bool = False):
 
         print()
 
-    from hermes_cli.gateway import find_gateway_pids
-    if not find_gateway_pids():
-        print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-        print(color("     Start it with: hermes gateway install", Colors.DIM))
-        print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
-        print()
+    _warn_if_gateway_not_running()
 
 
 def cron_tick():
@@ -158,10 +201,74 @@ def cron_status():
 
     print()
 
+    provider = _active_cron_provider_name()
+    if provider != "builtin":
+        # An external provider (e.g. Chronos) does NOT run the in-process 60s
+        # ticker — it arms one external one-shot per job and is fired by a
+        # NAS-mediated webhook, so between fires there is intentionally NO
+        # ticker thread and NO heartbeat file. Reporting the ticker-heartbeat
+        # staleness here would always say "stalled / not firing" on a perfectly
+        # healthy Chronos instance. Report the provider instead and skip the
+        # ticker-liveness heuristics entirely.
+        print(color(
+            f"✓ Cron provider: {provider} — jobs fire via the managed scheduler, "
+            "not the in-process ticker.",
+            Colors.GREEN,
+        ))
+        print(color(
+            "  (No ticker heartbeat is expected for an external provider; "
+            "due jobs are delivered by an authenticated webhook.)",
+            Colors.DIM,
+        ))
+        print()
+        _print_active_jobs_summary(list_jobs(include_disabled=False))
+        print()
+        return
+
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-        print(f"  PID: {', '.join(map(str, pids))}")
+        # The gateway PROCESS is alive — but the cron ticker THREAD inside it
+        # can die silently, or stay alive while every tick fails. Check both
+        # the liveness heartbeat and the last-successful-tick marker so we
+        # don't report "will fire" when the ticker is dead or failing
+        # (#32612, #32895).
+        from cron.jobs import (
+            get_ticker_heartbeat_age,
+            get_ticker_success_age,
+            TICKER_INTERVAL_SECONDS,
+        )
+
+        # Allow ~3 missed ticker iterations (+ a little slack) before declaring
+        # trouble. Derived from the shared interval constant so this threshold
+        # tracks the ticker cadence instead of assuming a hardcoded 60s.
+        STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # = 200s at the 60s default
+        hb_age = get_ticker_heartbeat_age()
+        ok_age = get_ticker_success_age()
+
+        if hb_age is not None and hb_age > STALE_AFTER:
+            # No heartbeat at all → the ticker thread is gone.
+            print(color(
+                "⚠ Gateway is running but the cron ticker looks STALLED — "
+                f"no heartbeat for {int(hb_age)}s (expected every ~60s).",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
+        elif hb_age is not None and ok_age is not None and ok_age > STALE_AFTER:
+            # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
+            # long time → ticks are failing every iteration.
+            print(color(
+                "⚠ Gateway and cron ticker are running, but no tick has "
+                f"succeeded in {int(ok_age)}s — ticks may be failing.",
+                Colors.YELLOW,
+            ))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            print("  Check the gateway log for 'Cron tick error'.")
+        else:
+            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            if hb_age is not None:
+                print(f"  Ticker heartbeat: {int(hb_age)}s ago")
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()
@@ -172,7 +279,14 @@ def cron_status():
 
     print()
 
-    jobs = list_jobs(include_disabled=False)
+    _print_active_jobs_summary(list_jobs(include_disabled=False))
+
+    print()
+
+
+def _print_active_jobs_summary(jobs) -> None:
+    """Print the '<N> active job(s)' + next-run line shared by every status
+    path (built-in ticker AND external provider)."""
     if jobs:
         next_runs = [j.get("next_run_at") for j in jobs if j.get("next_run_at")]
         print(f"  {len(jobs)} active job(s)")
@@ -180,8 +294,6 @@ def cron_status():
             print(f"  Next run: {min(next_runs)}")
     else:
         print("  No active jobs")
-
-    print()
 
 
 def cron_create(args):
@@ -236,6 +348,7 @@ def cron_create(args):
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
     print(f"  Next run: {result['next_run_at']}")
+    _warn_if_gateway_not_running()
     return 0
 
 
@@ -313,7 +426,14 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     if action in {"resume", "run"} and result.get("job", {}).get("next_run_at"):
         print(f"  Next run: {result['job']['next_run_at']}")
     if action == "run":
-        print("  It will run on the next scheduler tick.")
+        job = result.get("job", {})
+        if job.get("executed"):
+            outcome = "succeeded" if job.get("execution_success") else "failed"
+            print(f"  Ran now: {outcome}.")
+        elif job.get("execution_skipped"):
+            print(f"  {job['execution_skipped']}")
+        else:
+            print("  It will run on the next scheduler tick.")
     return 0
 
 

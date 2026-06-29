@@ -50,6 +50,20 @@ class _NoFtsExistingTableConnection(sqlite3.Connection):
         return super().cursor(factory or _NoFtsExistingTableCursor)
 
 
+class _NoTrigramCursor(sqlite3.Cursor):
+    """Simulate a SQLite build with FTS5 but without the trigram tokenizer."""
+
+    def executescript(self, sql_script):
+        if "tokenize='trigram'" in sql_script:
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().executescript(sql_script)
+
+
+class _NoTrigramConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoTrigramCursor)
+
+
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
@@ -81,6 +95,97 @@ class TestSessionLifecycle:
 
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
+
+    def test_create_session_enriches_null_metadata_on_conflict(self, db):
+        """Gateway creates a bare row first; the agent's later create_session
+        must backfill model/model_config/system_prompt without clobbering the
+        gateway's source/user_id/chat_id. Regression for NULL gateway metadata
+        (sessions with NULL billing_provider/model)."""
+        # Gateway bare row (source + user_id only), before the agent exists.
+        db.create_session("s1", source="telegram", user_id="u1", chat_id="c1")
+        bare = db.get_session("s1")
+        assert bare["model"] is None
+        # Agent enriches — passes source="cli" but real metadata.
+        db.create_session(
+            "s1", source="cli", model="claude-opus-4-6",
+            model_config={"max_iterations": 90}, system_prompt="SYS",
+        )
+        enriched = db.get_session("s1")
+        assert enriched["model"] == "claude-opus-4-6"
+        assert enriched["system_prompt"] == "SYS"
+        # Gateway-owned fields preserved (NOT clobbered by source="cli").
+        assert enriched["source"] == "telegram"
+        assert enriched["user_id"] == "u1"
+        assert enriched["chat_id"] == "c1"
+
+    def test_create_session_does_not_overwrite_existing_metadata(self, db):
+        """A later bare write (source='unknown', model=...) must not overwrite
+        a model/source an earlier writer already set."""
+        db.create_session("s1", source="cli", model="real-model")
+        db.create_session("s1", source="unknown", model="should-not-win")
+        session = db.get_session("s1")
+        assert session["model"] == "real-model"
+        assert session["source"] == "cli"
+
+    def test_update_session_cwd_persists_git_branch(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo", git_branch="pets-feature")
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/repo"
+        assert session["git_branch"] == "pets-feature"
+
+    def test_update_session_cwd_empty_branch_does_not_clobber(self, db):
+        """A failed branch probe (empty string) must not wipe a branch we
+        already captured — only the cwd updates."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo", git_branch="main")
+        db.update_session_cwd("s1", "/work/repo", git_branch="")
+
+        session = db.get_session("s1")
+        assert session["git_branch"] == "main"
+
+    def test_update_session_cwd_without_branch_arg(self, db):
+        """Back-compat: callers that pass only (id, cwd) still work."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo")
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/repo"
+        assert session["git_branch"] is None
+
+    def test_update_session_cwd_persists_git_repo_root(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo/src", git_repo_root="/work/repo")
+
+        assert db.get_session("s1")["git_repo_root"] == "/work/repo"
+
+    def test_update_session_cwd_empty_repo_root_does_not_clobber(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd("s1", "/work/repo", git_repo_root="/work/repo")
+        db.update_session_cwd("s1", "/work/repo", git_repo_root="")
+
+        assert db.get_session("s1")["git_repo_root"] == "/work/repo"
+
+    def test_distinct_session_cwds_aggregates_history(self, db):
+        db.create_session("s1", "cli", cwd="/repo")
+        db.create_session("s2", "cli", cwd="/repo")
+        db.create_session("s3", "cli", cwd="/other")
+        db.create_session("s4", "cli")  # no cwd — excluded
+
+        rows = {r["cwd"]: r["sessions"] for r in db.distinct_session_cwds()}
+        assert rows == {"/repo": 2, "/other": 1}
+
+    def test_backfill_repo_roots_fills_only_empty(self, db):
+        db.create_session("s1", "cli", cwd="/repo/a")
+        db.create_session("s2", "cli", cwd="/repo/b")
+        db.update_session_cwd("s2", "/repo/b", git_repo_root="/already")
+
+        db.backfill_repo_roots({"/repo/a": "/repo", "/repo/b": "/repo"})
+
+        assert db.get_session("s1")["git_repo_root"] == "/repo"
+        # Pre-existing root is preserved, not clobbered.
+        assert db.get_session("s2")["git_repo_root"] == "/already"
 
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -195,6 +300,54 @@ class TestSessionLifecycle:
         db.update_token_counts("s1", input_tokens=10, output_tokens=5,
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
+
+    def test_update_session_billing_route_overwrites_after_switch(self, db):
+        """A mid-session provider switch must overwrite the billing route.
+
+        update_token_counts writes billing fields with
+        COALESCE(billing_provider, ?) (first-writer-wins), so after a
+        provider switch the dashboard kept attributing cost to the original
+        provider (#48248). update_session_billing_route sets them
+        unconditionally and nulls system_prompt so the next turn rebuilds
+        the Model:/Provider: header (#48173).
+        """
+        db.create_session(session_id="s1", source="telegram")
+        # First token update seeds the billing route.
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               billing_provider="openrouter",
+                               billing_base_url="https://openrouter.ai/api/v1",
+                               billing_mode="api_key")
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "openrouter"
+        # A later token update never changes it (COALESCE first-writer-wins).
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               billing_provider="ollama",
+                               billing_base_url="http://localhost:11434/v1",
+                               billing_mode="local")
+        assert db.get_session("s1")["billing_provider"] == "openrouter"
+
+        # Seed a stale prompt snapshot, then switch the billing route.
+        db.update_system_prompt("s1", "Model: x/old\nProvider: openrouter")
+        assert db.get_session("s1")["system_prompt"] is not None
+        db.update_session_billing_route(
+            "s1", provider="ollama",
+            base_url="http://localhost:11434/v1", billing_mode="local",
+        )
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "ollama"
+        assert sess["billing_base_url"] == "http://localhost:11434/v1"
+        assert sess["billing_mode"] == "local"
+        assert sess["system_prompt"] is None, \
+            "system_prompt must be nulled so the next turn rebuilds Model:/Provider:"
+
+        # billing_mode defaults to COALESCE — omitting it preserves the value.
+        db.update_session_billing_route(
+            "s1", provider="openai",
+            base_url="https://api.openai.com/v1",
+        )
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "openai"
+        assert sess["billing_mode"] == "local"  # preserved (COALESCE on None)
 
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
@@ -329,6 +482,167 @@ class TestSessionLifecycle:
             assert len(restored.search_messages("indexed")) == 2
         finally:
             restored.close()
+
+    def test_base_fts_rebuilds_after_trigger_repair_without_trigram(
+        self, tmp_path, monkeypatch
+    ):
+        """Trigger repair must rebuild base FTS even when trigram is unavailable."""
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="already indexed")
+            for trigger in (
+                "messages_fts_insert",
+                "messages_fts_delete",
+                "messages_fts_update",
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                seeded._conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            seeded._conn.commit()
+            seeded.append_message("s1", role="assistant", content="repair only base needle")
+        finally:
+            seeded.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+        restored = SessionDB(db_path=db_path)
+        try:
+            assert restored._fts_enabled is True
+            assert restored._trigram_available is False
+            assert restored._fts_table_exists("messages_fts") is True
+            assert len(restored.search_messages("needle")) == 1
+        finally:
+            restored.close()
+
+    def test_is_fts5_unavailable_error_catches_trigram_tokenizer(self):
+        """Unit test: _is_fts5_unavailable_error matches 'no such tokenizer: trigram'."""
+        fts5_err = sqlite3.OperationalError("no such module: fts5")
+        trigram_err = sqlite3.OperationalError("no such tokenizer: trigram")
+        generic_tokenizer_err = sqlite3.OperationalError("no such tokenizer: foo")
+        unrelated_err = sqlite3.OperationalError("no such table: foo")
+
+        assert SessionDB._is_fts5_unavailable_error(fts5_err) is True
+        assert SessionDB._is_fts5_unavailable_error(trigram_err) is True
+        # Generic tokenizer errors should NOT match — only trigram.
+        assert SessionDB._is_fts5_unavailable_error(generic_tokenizer_err) is False
+        assert SessionDB._is_fts5_unavailable_error(unrelated_err) is False
+
+    def test_is_trigram_unavailable_error(self):
+        """Unit test: _is_trigram_unavailable_error is scoped to trigram."""
+        trigram_err = sqlite3.OperationalError("no such tokenizer: trigram")
+        generic_err = sqlite3.OperationalError("no such tokenizer: foo")
+        fts5_err = sqlite3.OperationalError("no such module: fts5")
+
+        assert SessionDB._is_trigram_unavailable_error(trigram_err) is True
+        assert SessionDB._is_trigram_unavailable_error(generic_err) is False
+        assert SessionDB._is_trigram_unavailable_error(fts5_err) is False
+
+    def test_db_initializes_without_trigram_tokenizer(self, tmp_path, monkeypatch):
+        """SessionDB must not crash when FTS5 exists but trigram tokenizer is missing."""
+        real_connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            # Base FTS5 should still work (trigram is optional).
+            assert db._fts_enabled is True
+            assert db._fts_table_exists("messages_fts") is True
+            # Trigram table should NOT have been created.
+            assert db._fts_table_exists("messages_fts_trigram") is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="hello without trigram")
+
+            messages = db.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "hello without trigram"
+
+            # FTS5 keyword search should still work.
+            assert len(db.search_messages("hello")) == 1
+        finally:
+            db.close()
+
+    def test_v11_migration_backfills_base_fts_when_trigram_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: v11 migration must backfill base FTS even when trigram is unavailable."""
+        real_connect = sqlite3.connect
+        db_path = tmp_path / "state.db"
+
+        # Phase 1: create a DB at schema v10 with messages.
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="legacy message alpha")
+        db.append_message("s1", role="assistant", content="legacy reply beta")
+        # Force schema version to v10 so migration runs on next open.
+        db._conn.execute(
+            "UPDATE schema_version SET version = 10"
+        )
+        db._conn.commit()
+        db.close()
+
+        # Phase 2: reopen with trigram disabled — migration should still
+        # backfill base FTS and make existing messages searchable.
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+        migrated_db = SessionDB(db_path=db_path)
+        try:
+            assert migrated_db._fts_enabled is True
+            assert migrated_db._trigram_available is False
+            assert migrated_db._fts_table_exists("messages_fts") is True
+            assert migrated_db._fts_table_exists("messages_fts_trigram") is False
+
+            # Existing messages must be searchable via base FTS.
+            results = migrated_db.search_messages("legacy message")
+            assert len(results) == 1
+            # snippet has FTS5 highlight markers (>>>...<<<); check raw content via get_messages
+            msgs = migrated_db.get_messages("s1")
+            assert any("legacy message" in m["content"] for m in msgs)
+        finally:
+            migrated_db.close()
+
+    def test_cjk_search_falls_back_to_like_when_trigram_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: long CJK queries must fall back to LIKE when trigram is missing."""
+        real_connect = sqlite3.connect
+        db_path = tmp_path / "state.db"
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="大别山项目计划书")
+            db.append_message("s1", role="user", content="长江大桥设计方案")
+
+            # 3+ CJK chars would normally use trigram, but it's unavailable.
+            # Must fall back to LIKE and still return results.
+            results = db.search_messages("大别山")
+            assert len(results) == 1
+            # Note: search_messages strips 'content' from results; use 'snippet'.
+            assert "大别山" in results[0]["snippet"]
+        finally:
+            db.close()
 
 
 # =========================================================================
@@ -1351,6 +1665,13 @@ class TestCounts:
         assert db.session_count(source="cli") == 2
         assert db.session_count(source="telegram") == 1
 
+    def test_session_count_by_cwd_prefix(self, db):
+        db.create_session("s1", "cli", cwd="/repo")
+        db.create_session("s2", "cli", cwd="/repo-wt-feature")
+        db.create_session("s3", "cli", cwd="/repo/subdir")
+
+        assert db.session_count(cwd_prefix="/repo") == 2
+
     def test_message_count_total(self, db):
         assert db.message_count() == 0
         db.create_session(session_id="s1", source="cli")
@@ -1890,6 +2211,89 @@ class TestSessionTitle:
         assert session["ended_at"] is not None
 
 
+class TestSessionTitleLineage:
+    """Renaming a compression continuation back to its base title must succeed
+    by transferring the title off the ended, hidden predecessor.
+
+    After a context compaction the original session is ended and projected
+    behind its live tip in the session list (list_sessions_rich), so the user
+    cannot see or free it. Without lineage-aware handling, renaming the visible
+    tip back to the base name dead-ends with "already in use by <session they
+    can't find>".
+    """
+
+    def _make_compression_chain(self, db, t0, *, root="root", tip="tip"):
+        db.create_session(root, "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, root))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, root),
+        )
+        db.create_session(tip, "cli", parent_session_id=root)
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 200, tip))
+        db._conn.commit()
+
+    def test_rename_continuation_back_to_base_transfers_title(self, db):
+        import time as _time
+        self._make_compression_chain(db, _time.time() - 3600)
+        db.set_session_title("root", "fingerprint-scanner")
+        db.set_session_title("tip", "fingerprint-scanner #2")
+
+        # User renames the visible tip back to the base name — must succeed.
+        assert db.set_session_title("tip", "fingerprint-scanner") is True
+        assert db.get_session("tip")["title"] == "fingerprint-scanner"
+        # Title transferred off the hidden ancestor — no duplicate titles.
+        assert db.get_session("root")["title"] is None
+
+    def test_transfer_walks_multi_level_chain(self, db):
+        import time as _time
+        t0 = _time.time() - 7200
+        # root (compression) -> mid (compression) -> tip
+        self._make_compression_chain(db, t0, root="root", tip="mid")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 300, "mid"),
+        )
+        db.create_session("tip", "cli", parent_session_id="mid")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 400, "tip"))
+        db._conn.commit()
+
+        db.set_session_title("root", "deep-dive")
+        assert db.set_session_title("tip", "deep-dive") is True
+        assert db.get_session("tip")["title"] == "deep-dive"
+        assert db.get_session("root")["title"] is None
+
+    def test_unrelated_session_still_conflicts(self, db):
+        db.create_session("a", "cli")
+        db.create_session("b", "cli")
+        db.set_session_title("a", "shared")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("b", "shared")
+        # The unrelated holder keeps its title.
+        assert db.get_session("a")["title"] == "shared"
+
+    def test_non_compression_child_still_conflicts(self, db):
+        """A child whose parent did NOT end via compression (delegate/branch
+        spawned while the parent was live) is not a continuation, so renaming it
+        to the parent's title must still raise."""
+        import time as _time
+        t0 = _time.time() - 3600
+        db.create_session("parent", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "parent"))
+        db.create_session("child", "cli", parent_session_id="parent")
+        # Child started BEFORE parent ended, and parent ended for a non-
+        # compression reason — not a continuation edge.
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "child"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='user_exit' WHERE id=?",
+            (t0 + 100, "parent"),
+        )
+        db._conn.commit()
+        db.set_session_title("parent", "shared")
+        with pytest.raises(ValueError, match="already in use"):
+            db.set_session_title("child", "shared")
+
+
 class TestSanitizeTitle:
     """Tests for SessionDB.sanitize_title() validation and cleaning."""
 
@@ -2072,7 +2476,7 @@ class TestSchemaInit:
         db = SessionDB(db_path=old_db)
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
-        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        assert {"telegram_dm_topic_mode", "telegram_topic_thread_id"}.isdisjoint(columns)
         db.close()
 
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
@@ -2798,6 +3202,14 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich(source="cli")
         assert len(sessions) == 1
         assert sessions[0]["id"] == "s1"
+
+    def test_rich_list_cwd_prefix_filter(self, db):
+        db.create_session("s1", "cli", cwd="/repo")
+        db.create_session("s2", "cli", cwd="/repo/subdir")
+        db.create_session("s3", "cli", cwd="/repo-wt-feature")
+
+        sessions = db.list_sessions_rich(cwd_prefix="/repo")
+        assert [session["id"] for session in sessions] == ["s2", "s1"]
 
     def test_preview_newlines_collapsed(self, db):
         db.create_session("s1", "cli")
@@ -3810,6 +4222,96 @@ class TestApplyWalProbe:
             "set-pragma must fire on a fresh (non-WAL) connection"
         )
 
+    def test_macos_checkpoint_fullsync_barrier_applied(self, tmp_path, monkeypatch):
+        """On Darwin, apply_wal_with_fallback sets checkpoint_fullfsync=1 (issue #30636)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        db_path = tmp_path / "macos_fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("checkpoint_fullfsync=1" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync barrier must be applied on macOS"
+        )
+
+    def test_macos_barrier_applied_when_already_wal(self, tmp_path, monkeypatch):
+        """The Darwin barrier fires on the already-WAL early-return path too."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "macos_wal.db"
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("checkpoint_fullfsync=1" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync barrier must fire on the already-WAL path"
+        )
+
+    def test_checkpoint_fullsync_barrier_skipped_off_darwin(self, tmp_path, monkeypatch):
+        """Non-macOS platforms must NOT issue the macOS-only PRAGMA."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "linux")
+
+        db_path = tmp_path / "linux_fresh.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert not any("checkpoint_fullfsync" in sql for sql in conn.executed), (
+            "checkpoint_fullfsync must not be issued off macOS"
+        )
+
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
         """20 threads calling connect() on the same DB must not see disk I/O error."""
         import sys
@@ -4158,3 +4660,68 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+def test_gateway_session_peer_round_trip_and_recovery(db):
+    db.create_session(
+        "gw-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+        thread_id=None,
+    )
+    db.append_message("gw-session", "user", "hello")
+
+    row = db.get_session("gw-session")
+    assert row["session_key"] == "agent:main:telegram:dm:chat-1"
+    assert row["chat_id"] == "chat-1"
+    assert row["chat_type"] == "dm"
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "gw-session"
+
+
+def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
+    db.create_session(
+        "closed-gw-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("closed-gw-session", "user", "hello")
+    db.end_session("closed-gw-session", "agent_close")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "closed-gw-session"
+
+    db.end_session("closed-gw-session", "session_reset")
+    # First end reason wins, so force explicit reset state for this branch.
+    db._conn.execute(
+        "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+        (time.time(), "session_reset", "closed-gw-session"),
+    )
+    db._conn.commit()
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    ) is None

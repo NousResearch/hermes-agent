@@ -79,6 +79,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     generic implementation that does not convert markdown to WhatsApp
     syntax). The Baileys adapter does the same.
     """
+
+    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP_CLOUD)
@@ -345,7 +348,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return super()._is_dm_allowed(sender_id)
 
     # ------------------------------------------------------------------ lifecycle
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
             self._set_fatal_error(
                 "whatsapp_cloud_deps_missing",
@@ -486,6 +489,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     last_message_id = ids[0].get("id")
             except Exception:
                 pass
+
+        # Remember (chat_id, wamid) -> text so that when the user replies to
+        # one of our messages, _build_message_event_from_cloud can resolve the
+        # quoted text. Meta's inbound webhook ``context`` object carries only
+        # the quoted message's id, never its text, so without this index the
+        # agent would never learn what the user was replying to. Best-effort;
+        # rich_sent_store swallows all errors.
+        if last_message_id:
+            rich_sent_store.record(chat_id, last_message_id, formatted)
 
         return SendResult(success=True, message_id=last_message_id)
 
@@ -1921,9 +1933,26 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             doc_path,
                         )
 
-        # context.id is set when the user replied to one of our messages.
+        # context.id is set when the user replied to a prior message. Meta's
+        # webhook only gives us the quoted message's id (and its author in
+        # context.from) — never the quoted text. We resolve the text from
+        # rich_sent_store, which we populate on every inbound message (below)
+        # and every outbound send. Without this the agent receives a bare
+        # reply_to_message_id and run.py can't inject the "[Replying to: ...]"
+        # disambiguation prefix (it gates on reply_to_text being present).
         context = raw_message.get("context") or {}
         reply_to_id = str(context.get("id") or "").strip() or None
+        reply_to_text: Optional[str] = None
+        reply_to_is_own = False
+        if reply_to_id:
+            reply_to_text = rich_sent_store.lookup(chat_id, reply_to_id)
+            # context.from is the wa_id of the quoted message's author. When it
+            # matches our business number the user replied to the bot's own
+            # message; otherwise they replied to one of their own messages.
+            quoted_from = str(context.get("from") or "").strip()
+            our_number = str(metadata.get("display_phone_number") or "").strip()
+            if quoted_from and our_number:
+                reply_to_is_own = quoted_from == our_number
 
         source = self.build_source(
             chat_id=chat_id,
@@ -1943,6 +1972,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # gating) so filtered messages don't leak typing on
             # unwanted inbound traffic.
             self._bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid)
+            # Index this message's text by wamid so a later reply to it can
+            # resolve the quoted text (Meta's webhook context carries only
+            # the id). Mirrors the outbound record in send(). Best-effort.
+            if body:
+                rich_sent_store.record(chat_id, wamid, body)
 
         return MessageEvent(
             text=body,
@@ -1951,6 +1985,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raw_message=raw_message,
             message_id=wamid,
             reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls,
             media_types=media_types,
         )

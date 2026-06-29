@@ -43,6 +43,47 @@ class TestWhitespaceDifference:
         assert count == 1
         assert "bar" in new
 
+    def test_boundary_space_preserved_after_match(self):
+        """Regression: whitespace_normalized match ending with a non-space
+        character must NOT consume the word-boundary space that follows.
+        https://github.com/NousResearch/hermes-agent/issues/52491"""
+        # Case 1 — simple word boundary
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "foo   bar baz", "foo bar", "XY",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "XY baz", f"Boundary space deleted: {new!r}"
+
+    def test_boundary_space_preserved_in_code_edit(self):
+        """Regression: real-world code-edit scenario where the space before
+        the next operator must survive a whitespace-normalized match."""
+        content = "result = compute(a,  b) + tail"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "compute(a, b)", "compute(a, b, c)",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "result = compute(a, b, c) + tail", f"Boundary space deleted: {new!r}"
+
+    def test_trailing_ws_still_consumed_when_match_ends_with_space(self):
+        """When the normalized match itself ends with whitespace (pattern has
+        trailing space), the expansion must still consume the full whitespace
+        run in the original."""
+        # Use a pattern with trailing space where the boundary is clear:
+        # content has "foo   " then "bar", pattern is "foo " — the match
+        # should cover all 3 original spaces (the trailing ws run).
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "a = foo   + bar", "foo +", "XY",
+        )
+        assert err is None
+        assert count == 1
+        # "foo   +" normalized to "foo +" matches; trailing spaces consumed
+        # Result: "a = XY bar"
+        assert "XY" in new and "bar" in new
+
 
 class TestIndentDifference:
     def test_different_indentation(self):

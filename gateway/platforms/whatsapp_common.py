@@ -147,12 +147,51 @@ class WhatsAppBehaviorMixin:
         return False
 
     # ------------------------------------------------------------------ gating
+    @staticmethod
+    def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
+        """Match a WhatsApp identifier against an allowlist across phone/LID forms.
+
+        WhatsApp delivers inbound senders in LID form (``<id>@lid``) while
+        operators usually configure allowlists with phone numbers, and vice
+        versa. A raw set-membership check therefore never matches a known
+        contact. Resolve both the candidate and each allowlist entry through
+        the bridge's ``lid-mapping-*.json`` files (the shared
+        ``gateway.whatsapp_identity`` helper that the gateway authz and
+        session-key paths already use) so either configured form resolves to
+        the inbound form.
+        """
+        if not allow_from:
+            return False
+        # Fast path: exact match against the raw configured value (e.g. a full
+        # ``@g.us`` group JID or an entry that already matches verbatim).
+        if candidate in allow_from:
+            return True
+
+        from gateway.whatsapp_identity import (
+            expand_whatsapp_aliases,
+            normalize_whatsapp_identifier,
+        )
+
+        candidate_aliases = expand_whatsapp_aliases(candidate)
+        if not candidate_aliases:
+            return False
+        for entry in allow_from:
+            if entry == "*":
+                return True
+            if normalize_whatsapp_identifier(entry) in candidate_aliases:
+                return True
+            # Entry may itself be an unmapped form; expand it too so a phone
+            # allowlist entry resolves when the inbound sender arrived as a LID.
+            if expand_whatsapp_aliases(entry) & candidate_aliases:
+                return True
+        return False
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            return self._matches_whatsapp_allowlist(sender_id, self._allow_from)
         # "open" — all DMs allowed
         return True
 
@@ -161,7 +200,7 @@ class WhatsAppBehaviorMixin:
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
-            return chat_id in self._group_allow_from
+            return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
         # "open" — all groups allowed
         return True
 
@@ -365,3 +404,56 @@ class WhatsAppBehaviorMixin:
             result = result.replace(f"{_CODE_PH}{i}\x00", code)
 
         return result
+
+
+# ---------------------------------------------------------------------------
+# Shared bridge directory resolution for CLI and adapter
+# ---------------------------------------------------------------------------
+
+def resolve_whatsapp_bridge_dir() -> Path:
+    """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.
+
+    When the install tree is read-only (e.g., Docker /opt/hermes), this function
+    mirrors the bridge source to a writable HERMES_HOME location and returns that
+    path. This ensures npm install works in Docker environments.
+
+    Returns the resolved bridge directory path.
+    """
+    import shutil
+    from pathlib import Path as _Path
+
+    # Default location in install tree (may be read-only)
+    from hermes_constants import get_hermes_home
+    install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+
+    # Try HERMES_HOME location first
+    hermes_home = get_hermes_home()
+    hermes_home_bridge = hermes_home / "scripts" / "whatsapp-bridge"
+
+    # Check if install dir is writable
+    try:
+        test_file = install_bridge / ".write_test"
+        test_file.touch()
+        test_file.unlink()
+        install_writable = True
+    except (OSError, PermissionError):
+        install_writable = False
+
+    if install_writable:
+        return install_bridge
+
+    # Install dir is read-only, mirror to HERMES_HOME if needed
+    if hermes_home_bridge.exists():
+        return hermes_home_bridge
+
+    # Mirror the bridge source to HERMES_HOME
+    try:
+        hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            install_bridge,
+            hermes_home_bridge,
+            dirs_exist_ok=False,
+        )
+        return hermes_home_bridge
+    except Exception:
+        return install_bridge

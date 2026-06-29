@@ -235,6 +235,150 @@ def _pinned_guard(name: str) -> Optional[str]:
     return None
 
 
+def _background_review_write_guard(
+    name: str,
+    skill_dir: Path,
+    action: str,
+) -> Optional[Dict[str, Any]]:
+    """Refuse autonomous curator writes to externally owned skills.
+
+    Foreground agents may still perform user-directed edits to external,
+    bundled, or hub-installed skills. The background review fork is different:
+    it is autonomous lifecycle maintenance, so its write surface is restricted
+    to local curator-owned sediment.
+    """
+    try:
+        from tools.skill_provenance import is_background_review
+        if not is_background_review():
+            return None
+    except Exception:
+        return None
+
+    # Pin must be respected by autonomous maintenance. The curator already
+    # skips pinned skills from every auto-transition; the background review
+    # fork is the same kind of autonomous, no-user-present actor, so it must
+    # not write to a pinned skill either (issue #25839). This is stricter than
+    # the foreground ``_pinned_guard`` (which only blocks deletion) precisely
+    # because there is no user in the loop to consent to an edit here.
+    try:
+        from tools import skill_usage
+        if skill_usage.get_record(name).get("pinned"):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for pinned skill "
+                    f"'{name}': pinned skills are off-limits to autonomous "
+                    "maintenance. Ask the user to run "
+                    f"`hermes curator unpin {name}` if they want it changed."
+                ),
+            }
+    except Exception:
+        logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
+
+    try:
+        from agent.skill_utils import is_external_skill_path
+        if is_external_skill_path(skill_dir):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for skill '{name}': "
+                    "the skill lives in skills.external_dirs, which are "
+                    "externally owned and read-only to autonomous curation."
+                ),
+            }
+    except Exception:
+        logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
+
+    try:
+        from tools import skill_usage
+        if skill_usage.is_protected_builtin(name):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for protected "
+                    f"built-in skill '{name}'."
+                ),
+            }
+        if skill_usage.is_hub_installed(name):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for hub-installed "
+                    f"skill '{name}'."
+                ),
+            }
+        if skill_usage.is_bundled(name):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for bundled "
+                    f"skill '{name}'."
+                ),
+            }
+    except Exception:
+        logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
+def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, Any]]:
+    if action not in {"edit", "patch", "delete", "write_file", "remove_file"}:
+        return None
+    existing = _find_skill(name)
+    if not existing:
+        return None
+    return _background_review_write_guard(name, existing["path"], action)
+
+
+def _curator_consolidation_delete_guard(
+    name: str, absorbed_into: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Fail closed on unverified deletes during the curator consolidation pass.
+
+    The curator's forked review agent (``is_background_review()``) runs the
+    LLM umbrella-building pass. Its only legitimate ``skill_manage(delete)`` is
+    a *verified consolidation*: the skill's content was absorbed into an
+    umbrella, declared via ``absorbed_into=<umbrella>`` where the umbrella
+    exists on disk (validated separately in ``_delete_skill``).
+
+    A delete with no forwarding target — ``absorbed_into`` omitted (``None``)
+    or empty (``""``) — is the fail-open behavior reported in #29912: the
+    consolidation pass archived whole clusters of active skills with zero
+    verified consolidations (``consolidated_this_run == 0``), leaving active
+    automations pointing at names that no longer resolve. The deterministic
+    inactivity prune is the only legitimate prune path, and it archives via
+    ``skill_usage.archive_skill()`` directly without ever calling
+    ``skill_manage`` — so a bare prune reaching here can only be the LLM pass
+    pruning without consolidation evidence. Refuse it; keep the skill active.
+
+    Returns an error dict to abort the delete, or ``None`` when the delete is
+    allowed to proceed (not the curator pass, or a declared consolidation).
+    """
+    try:
+        from tools.skill_provenance import is_background_review
+        if not is_background_review():
+            return None
+    except Exception:
+        return None
+
+    declared = isinstance(absorbed_into, str) and absorbed_into.strip()
+    if declared:
+        return None
+
+    return {
+        "success": False,
+        "error": (
+            f"Refusing background curator delete of skill '{name}': the "
+            "consolidation pass may only archive a skill it has absorbed into "
+            "an umbrella. Pass absorbed_into=<umbrella> (the umbrella must "
+            "already exist) to record a verified consolidation. Pruning a "
+            "skill with no forwarding target is not permitted here — the "
+            "deterministic inactivity prune handles staleness archival "
+            "separately. Keeping '{name}' active.".format(name=name)
+        ),
+        "_fail_closed": True,
+    }
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -637,6 +781,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+    guard = _background_review_write_guard(name, existing["path"], "edit")
+    if guard:
+        return guard
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
@@ -690,6 +837,9 @@ def _patch_skill(
         return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
+    guard = _background_review_write_guard(name, skill_dir, "patch")
+    if guard:
+        return guard
 
     if file_path:
         # Patching a supporting file
@@ -783,14 +933,30 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+    guard = _background_review_write_guard(name, existing["path"], "delete")
+    if guard:
+        return guard
+
+    # Fail closed on unverified deletes during the curator consolidation pass.
+    # A bare prune (no absorbed_into) from the LLM umbrella pass is the
+    # fail-open behavior reported in #29912 — refuse it; keep the skill active.
+    fail_closed = _curator_consolidation_delete_guard(name, absorbed_into)
+    if fail_closed:
+        return fail_closed
 
     pinned_err = _pinned_guard(name)
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
     # Validate absorbed_into target when declared non-empty
-    if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
-        target_name = absorbed_into.strip()
+    absorbed_target = (
+        absorbed_into.strip()
+        if absorbed_into is not None and isinstance(absorbed_into, str)
+        else ""
+    )
+    is_consolidation = bool(absorbed_target)
+    if is_consolidation:
+        target_name = absorbed_target
         if target_name == name:
             return {
                 "success": False,
@@ -814,6 +980,32 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if unsafe:
         return {"success": False, "error": unsafe}
 
+    # During the curator consolidation pass, a verified consolidation must be
+    # RECOVERABLE: archival into ~/.hermes/skills/.archive/ is documented as
+    # the maximum destructive action the curator may take, and
+    # `hermes curator restore` promises the skill can be brought back. Route
+    # through the recoverable archive primitive instead of permanent rmtree so
+    # a misjudged consolidation can be undone (#29912). Foreground,
+    # user-directed deletes keep their existing hard-delete semantics.
+    try:
+        from tools.skill_provenance import is_background_review
+        curator_pass = is_background_review()
+    except Exception:
+        curator_pass = False
+
+    if curator_pass:
+        try:
+            from tools.skill_usage import archive_skill
+            ok, archive_msg = archive_skill(name)
+        except Exception as e:
+            return {"success": False, "error": f"failed to archive '{name}': {e}"}
+        if not ok:
+            return {"success": False, "error": archive_msg}
+        message = f"Skill '{name}' archived ({archive_msg})."
+        if is_consolidation:
+            message += f" Content absorbed into '{absorbed_target}'."
+        return {"success": True, "message": message, "_archived": True}
+
     shutil.rmtree(skill_dir)
 
     # Clean up empty category directories (don't remove the skills root itself)
@@ -822,8 +1014,8 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         parent.rmdir()
 
     message = f"Skill '{name}' deleted."
-    if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
-        message += f" Content absorbed into '{absorbed_into.strip()}'."
+    if is_consolidation:
+        message += f" Content absorbed into '{absorbed_target}'."
 
     return {
         "success": True,
@@ -858,6 +1050,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
+    guard = _background_review_write_guard(name, existing["path"], "write_file")
+    if guard:
+        return guard
 
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
@@ -894,6 +1089,9 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
+    guard = _background_review_write_guard(name, skill_dir, "remove_file")
+    if guard:
+        return guard
 
     target, err = _resolve_skill_target(skill_dir, file_path)
     if err:
@@ -1016,6 +1214,10 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    preflight = _background_review_preflight(action, name)
+    if preflight is not None:
+        return json.dumps(preflight, ensure_ascii=False)
+
     # Approval gate: when on, stages the write for review (skills are too large
     # to review inline, so they always stage regardless of origin); when off
     # (default) passes straight through. The gate is bypassed when this call is
@@ -1085,7 +1287,11 @@ def skill_manage(
             elif action in {"patch", "edit", "write_file", "remove_file"}:
                 bump_patch(name)
             elif action == "delete":
-                forget(name)
+                # A recoverable curator archive (routed through archive_skill)
+                # keeps its usage record as STATE_ARCHIVED so `hermes curator
+                # status`/`restore` still see it. Only a hard delete forgets.
+                if not result.get("_archived"):
+                    forget(name)
         except Exception:
             pass
 

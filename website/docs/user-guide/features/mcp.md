@@ -20,12 +20,7 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 
 ## Quick start
 
-1. Install MCP support (already included if you used the standard install script):
-
-```bash
-cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
-```
+1. MCP support ships with the standard install — no extra step needed.
 
 2. Add an MCP server to `~/.hermes/config.yaml`:
 
@@ -132,7 +127,12 @@ the hermes-agent repo, so Nous has reviewed each entry before it shipped —
 Manifests live at
 [`optional-mcps/<name>/manifest.yaml`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps)
 on GitHub. The picker also prints the manifest's `source:` URL at install
-time so you can quickly verify the upstream repo.
+time so you can quickly verify the upstream repo. The web dashboard's MCP
+page surfaces the same detail per catalog entry — transport, auth type, the
+endpoint URL (HTTP) or command + args (stdio), the git install source/ref and
+bootstrap commands, and setup notes — with the `source:` rendered as a
+clickable link, so you can inspect exactly what an entry connects to or runs
+before clicking Install.
 
 ### Manifest version compatibility
 
@@ -765,7 +765,7 @@ hermes mcp serve --verbose    # Debug logging on stderr
 
 ### How it works
 
-The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same `send_message` infrastructure as the Hermes agent itself.
+The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
 
 The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
 

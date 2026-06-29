@@ -361,6 +361,7 @@ def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
 
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # #9210: group custom_providers by (base_url, api_key) in /model picker
 # ─────────────────────────────────────────────────────────────────────────────
@@ -815,3 +816,52 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
     assert gateway_prov is not None
     assert calls == [], "string 'false' must disable live discovery"
     assert gateway_prov["models"] == ["only-model"]
+
+
+def test_resolve_custom_provider_passes_key_env():
+    """resolve_custom_provider should propagate key_env into api_key_env_vars.
+
+    Regression: previously api_key_env_vars was always (), silently dropping
+    the configured env var and causing 401s on every request.
+    """
+    from hermes_cli.providers import resolve_custom_provider
+
+    resolved = resolve_custom_provider(
+        "custom:token-plan",
+        custom_providers=[
+            {
+                "name": "token-plan",
+                "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "key_env": "XIAOMI_MIMO_API_KEY",
+                "model": "mimo-v2-pro",
+            }
+        ],
+    )
+
+    assert resolved is not None
+    assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)
+    assert resolved.base_url == "https://token-plan-sgp.xiaomimimo.com/v1"
+
+
+def test_resolve_custom_provider_bare_custom_self_heal_passes_key_env():
+    """The bare-'custom' self-heal path must also propagate key_env.
+
+    A corrupt stored provider of the bare string 'custom' falls back to the
+    first valid entry; that fallback previously hardcoded api_key_env_vars=(),
+    dropping the env var just like the named-match path did.
+    """
+    from hermes_cli.providers import resolve_custom_provider
+
+    resolved = resolve_custom_provider(
+        "custom",
+        custom_providers=[
+            {
+                "name": "token-plan",
+                "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                "key_env": "XIAOMI_MIMO_API_KEY",
+            }
+        ],
+    )
+
+    assert resolved is not None
+    assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)

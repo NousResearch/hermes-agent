@@ -3051,7 +3051,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 31,
+    "_config_version": 32,
 }
 
 # =============================================================================
@@ -3666,6 +3666,15 @@ OPTIONAL_ENV_VARS = {
         "tools": ["browser_navigate", "browser_click"],
         "password": False,
         "category": "tool",
+    },
+    "CAMOFOX_API_KEY": {
+        "description": "Optional bearer token sent as Authorization header to a remote/authenticated Camofox server",
+        "prompt": "Camofox API key",
+        "url": "https://github.com/jo-inc/camofox-browser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": True,
+        "category": "tool",
+        "advanced": True,
     },
     "FAL_KEY": {
         "description": "FAL API key for image and video generation",
@@ -5569,6 +5578,34 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "  ✓ Turned off verify-on-stop (agent.verify_on_stop: false). "
                     "Set it to true to re-enable, or \"auto\" for the legacy "
                     "surface-aware behavior."
+                )
+
+    # ── Version 31 → 32: flip the BAKED-IN literal true to OFF (one-time) ──
+    # The v30→v31 flip above only caught missing/"auto" values. But the very
+    # first ship of verify-on-stop (config v30, commit 2f1a47b90) defaulted
+    # DEFAULT_CONFIG["agent"]["verify_on_stop"] to a literal True, and
+    # migrate_config persists defaults with strip_defaults=False — so every
+    # install that updated through v30 got `verify_on_stop: true` written into
+    # config.yaml as a literal. v31's guard deliberately preserves an explicit
+    # bool, so it skipped that whole population and left them ON. That literal
+    # true was never a user choice: the feature had no off-switch worth setting
+    # it against until v31 introduced one, so a true persisted before v32 is
+    # always the old machine default. Flip it off once here. A true the user
+    # sets AFTER v32 (config already at version 32) is never touched.
+    if current_ver < 32:
+        config = read_raw_config()
+        raw_agent = config.get("agent")
+        if isinstance(raw_agent, dict) and raw_agent.get("verify_on_stop") is True:
+            raw_agent["verify_on_stop"] = False
+            config["agent"] = raw_agent
+            save_config(config, strip_defaults=False)
+            results["config_added"].append("agent.verify_on_stop=false")
+            if not quiet:
+                print(
+                    "  ✓ Turned off verify-on-stop (agent.verify_on_stop: false) — "
+                    "the old default was written into your config as a literal "
+                    "true. Set it to true again to re-enable, or \"auto\" for the "
+                    "legacy surface-aware behavior."
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──

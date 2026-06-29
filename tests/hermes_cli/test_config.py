@@ -1371,9 +1371,38 @@ class TestVerifyOnStopMigration:
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is False
 
-    def test_explicit_true_preserved(self, tmp_path):
+    def test_pre_v32_literal_true_flipped_to_false(self, tmp_path):
+        # The first ship of verify-on-stop baked a literal `true` into configs
+        # as the silent default (config v30). It was never a user choice, so the
+        # v31→v32 migration flips it off. v31's block preserved it (the bug this
+        # fixes); v32 catches the whole stranded population.
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._write(tmp_path, "_config_version: 30\nagent:\n  verify_on_stop: true\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is False
+
+    def test_v31_literal_true_flipped_to_false(self, tmp_path):
+        # Teknium's case: a v30 install that already ran the v31 migration kept
+        # its baked-in literal `true` (v31 preserved explicit bools). v32 flips
+        # it off.
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 31\nagent:\n  verify_on_stop: true\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["agent"]["verify_on_stop"] is False
+
+    def test_post_v32_explicit_true_preserved(self, tmp_path):
+        # A `true` the user sets AFTER v32 (config already at current version) is
+        # a deliberate opt-in and must never be flipped.
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                f"_config_version: {DEFAULT_CONFIG['_config_version']}\n"
+                "agent:\n  verify_on_stop: true\n",
+            )
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is True

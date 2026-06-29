@@ -471,6 +471,37 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     return None
 
 
+def _mark_session_created_skill_user_specific(content: str) -> str:
+    """Tag skills created by Hermes in-session as user/profile-specific."""
+    end_match = re.search(r'\n---\s*\n', content[3:])
+    if not end_match:
+        return content
+
+    yaml_content = content[3:end_match.start() + 3]
+    body = content[end_match.end() + 3:]
+    parsed = yaml.safe_load(yaml_content) or {}
+    if not isinstance(parsed, dict):
+        return content
+
+    metadata = parsed.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    hermes_metadata = metadata.get("hermes")
+    if not isinstance(hermes_metadata, dict):
+        hermes_metadata = {}
+    hermes_metadata["user_specific"] = True
+    metadata["hermes"] = hermes_metadata
+    parsed["metadata"] = metadata
+
+    new_frontmatter = yaml.safe_dump(
+        parsed,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    ).strip()
+    return f"---\n{new_frontmatter}\n---\n{body}"
+
+
 def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
     """Check that content doesn't exceed the character limit for agent writes.
 
@@ -715,6 +746,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
+
+    # Skills created by Hermes in a session are local user/profile skills.
+    # Mark them explicitly instead of making `--personal` guess later.
+    content = _mark_session_created_skill_user_specific(content)
 
     err = _validate_content_size(content)
     if err:

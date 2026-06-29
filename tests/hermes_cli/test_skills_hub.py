@@ -45,6 +45,21 @@ _ALL_THREE_SKILLS = [
     {"name": "local-skill", "category": "x", "description": "local"},
 ]
 
+_PERSONAL_SKILLS = _ALL_THREE_SKILLS + [
+    {
+        "name": "personal-meta-skill",
+        "category": "x",
+        "description": "user-specific",
+        "metadata": {"hermes": {"user_specific": True}},
+    },
+    {
+        "name": "legacy-agent-skill",
+        "category": "x",
+        "description": "agent-created legacy",
+        "author": "Hermes Agent",
+    },
+]
+
 _BUILTIN_MANIFEST = {"builtin-skill": "abc123"}
 
 
@@ -62,11 +77,11 @@ def three_source_env(monkeypatch, hub_env):
     return hub_env
 
 
-def _capture(source_filter: str = "all") -> str:
+def _capture(source_filter: str = "all", personal_only: bool = False) -> str:
     """Run do_list into a string buffer and return the output."""
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None)
-    do_list(source_filter=source_filter, console=console)
+    do_list(source_filter=source_filter, personal_only=personal_only, console=console)
     return sink.getvalue()
 
 
@@ -152,6 +167,44 @@ def test_do_list_filter_builtin(three_source_env):
     assert "builtin-skill" in output
     assert "hub-skill" not in output
     assert "local-skill" not in output
+
+
+def test_do_list_personal_filters_to_user_specific_local_skills(
+    monkeypatch, hub_env
+):
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(_PERSONAL_SKILLS))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
+
+    output = _capture(personal_only=True)
+
+    assert "personal-meta-skill" in output
+    assert "legacy-agent-skill" not in output
+    assert "local-skill" not in output
+    assert "builtin-skill" not in output
+    assert "hub-skill" not in output
+    assert "personal filter applied" in output
+
+
+def test_do_list_personal_does_not_include_author_without_metadata_marker(
+    monkeypatch, hub_env
+):
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    skills = [
+        {"name": "builtin-skill", "category": "x", "description": "builtin", "author": "Hermes Agent"},
+        {"name": "local-skill", "category": "x", "description": "local", "author": "Hermes Agent"},
+    ]
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: skills)
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
+
+    output = _capture(personal_only=True)
+
+    assert "local-skill" not in output
+    assert "builtin-skill" not in output
 
 
 def test_do_list_renders_status_column(three_source_env, monkeypatch):

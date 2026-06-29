@@ -667,6 +667,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    # Keep provenance-adjacent frontmatter available to CLI
+                    # listing commands without requiring a second filesystem
+                    # scan.  The public ``skills_list`` tool still projects
+                    # this down to name/description, so the model-facing tool
+                    # stays compact.
+                    "path": str(skill_md),
+                    "author": frontmatter.get("author", ""),
+                    "metadata": frontmatter.get("metadata", {}) or {},
+                    "owner": frontmatter.get("owner", ""),
+                    "user_specific": frontmatter.get("user_specific", False),
+                    "owner_specific": frontmatter.get("owner_specific", False),
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -739,12 +750,21 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             {s.get("category") for s in all_skills if s.get("category")}
         )
 
+        public_skills = [
+            {
+                "name": skill.get("name", ""),
+                "description": skill.get("description", ""),
+                "category": skill.get("category", ""),
+            }
+            for skill in all_skills
+        ]
+
         return json.dumps(
             {
                 "success": True,
-                "skills": all_skills,
+                "skills": public_skills,
                 "categories": categories,
-                "count": len(all_skills),
+                "count": len(public_skills),
                 "hint": "Use skill_view(name) to see full content, tags, and linked files",
             },
             ensure_ascii=False,

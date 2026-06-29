@@ -210,6 +210,40 @@ class TestCreateSkill:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    def test_create_skill_tags_user_specific_metadata(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is True
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+        assert "metadata:" in content
+        assert "hermes:" in content
+        assert "user_specific: true" in content
+
+    def test_create_skill_preserves_existing_hermes_metadata(self, tmp_path):
+        content = """\
+---
+name: test-skill
+description: A test skill for unit testing.
+metadata:
+  hermes:
+    tags:
+    - testing
+---
+
+# Test Skill
+
+Step 1: Do the thing.
+"""
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+
+        assert result["success"] is True
+        written = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+        assert "tags:" in written
+        assert "- testing" in written
+        assert "user_specific: true" in written
+
     def test_create_with_category(self, tmp_path):
         with _skill_dir(tmp_path):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")

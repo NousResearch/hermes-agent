@@ -158,11 +158,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _soul_loaded = True
 
     if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        # Fallback to identity with configurable attribution
+        from agent.prompt_builder import build_agent_identity
+        attribution = getattr(agent, "_attribution", "Nous Research")
+        stable_parts.append(build_agent_identity(attribution))
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    # Skip when attribution is empty (user wants clean identity without attribution).
+    from agent.prompt_builder import build_help_guidance
+    attribution = getattr(agent, "_attribution", "Nous Research")
+    help_guidance = build_help_guidance(attribution)
+    if help_guidance:
+        stable_parts.append(help_guidance)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

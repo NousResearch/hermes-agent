@@ -120,26 +120,52 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # Constants
 # =========================================================================
 
-DEFAULT_AGENT_IDENTITY = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
-    "You are helpful, knowledgeable, and direct. You assist users with a wide "
-    "range of tasks including answering questions, writing and editing code, "
-    "analyzing information, creative work, and executing actions via your tools. "
-    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below. "
-    "Be targeted and efficient in your exploration and investigations."
-)
+DEFAULT_ATTRIBUTION = "Nous Research"
 
-HERMES_AGENT_HELP_GUIDANCE = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
-    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
-    "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://hermes-agent.nousresearch.com/docs is your "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
-    "of truth when the two differ."
-)
+
+def build_agent_identity(attribution: str = DEFAULT_ATTRIBUTION) -> str:
+    """Build the agent identity string with configurable attribution."""
+    if attribution:
+        return (
+            f"You are Hermes Agent, an intelligent AI assistant created by {attribution}. "
+            "You are helpful, knowledgeable, and direct. You assist users with a wide "
+            "range of tasks including answering questions, writing and editing code, "
+            "analyzing information, creative work, and executing actions via your tools. "
+            "You communicate clearly, admit uncertainty when appropriate, and prioritize "
+            "being genuinely useful over being verbose unless otherwise directed below. "
+            "Be targeted and efficient in your exploration and investigations."
+        )
+    else:
+        return (
+            "You are Hermes Agent, an intelligent AI assistant. "
+            "You are helpful, knowledgeable, and direct. You assist users with a wide "
+            "range of tasks including answering questions, writing and editing code, "
+            "analyzing information, creative work, and executing actions via your tools. "
+            "You communicate clearly, admit uncertainty when appropriate, and prioritize "
+            "being genuinely useful over being verbose unless otherwise directed below. "
+            "Be targeted and efficient in your exploration and investigations."
+        )
+
+
+def build_help_guidance(attribution: str = DEFAULT_ATTRIBUTION) -> str:
+    """Build the help guidance string with configurable attribution."""
+    if not attribution:
+        return ""  # Omit attribution block entirely when empty
+    return (
+        f"You run on Hermes Agent (by {attribution}). When the user needs help with "
+        "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
+        "it — or when you need to understand your own features, tools, or capabilities, "
+        "the documentation at https://hermes-agent.nousresearch.com/docs is your "
+        "authoritative reference and always holds the latest, most up-to-date "
+        "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+        "for additional guidance and proven workflows, but treat the docs as the source "
+        "of truth when the two differ."
+    )
+
+
+# Legacy constants for backward compatibility
+DEFAULT_AGENT_IDENTITY = build_agent_identity(DEFAULT_ATTRIBUTION)
+HERMES_AGENT_HELP_GUIDANCE = build_help_guidance(DEFAULT_ATTRIBUTION)
 
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import gc
 import glob
+import itertools
 import logging
 import os
 import pickle
@@ -80,6 +81,13 @@ _heap_dump_top_n: int = 50
 _heap_dump_max_files: int = 5
 _heap_dump_in_flight: bool = False  # guard against re-entrance if dump is slow
 _peak_rss_mb: int = 0  # running peak across the lifetime of this process
+
+# Monotonic counter for sub-second uniqueness in dump filenames.  Two dumps
+# in the same wall-clock second get distinct filenames so rotation can see
+# each one.  itertools.count is process-local and never reused — combined
+# with the timestamp, two dumps will never collide on name within a
+# process's lifetime.
+_dump_seq = itertools.count(1)
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +310,8 @@ def _take_heap_dump(top_n: int) -> Optional[Path]:
             ],
         }
         ts_label = time.strftime("%Y%m%d-%H%M%S")
-        out_path = _heap_dump_dir / f"heap-{ts_label}-{os.getpid()}.pkl"
+        seq = next(_dump_seq)
+        out_path = _heap_dump_dir / f"heap-{ts_label}-{os.getpid()}-{seq}.pkl"
         with open(out_path, "wb") as f:
             pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
         return out_path

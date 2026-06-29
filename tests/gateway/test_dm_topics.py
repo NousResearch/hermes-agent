@@ -9,12 +9,11 @@ Covers:
 - _build_message_event: DM topic resolution in message events
 """
 
-import asyncio
 import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch, mock_open
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,24 +21,31 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
     telegram_mod = MagicMock()
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
 
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
+    # Register telegram.constants as a separate module mock so that
+    # ``from telegram.constants import ChatType`` resolves to our mock
+    # with string-valued members (not auto-generated MagicMocks).
+    constants_mod = MagicMock()
+    constants_mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    constants_mod.ChatType.GROUP = "group"
+    constants_mod.ChatType.SUPERGROUP = "supergroup"
+    constants_mod.ChatType.CHANNEL = "channel"
+    constants_mod.ChatType.PRIVATE = "private"
+
+    sys.modules["telegram"] = telegram_mod
+    sys.modules["telegram.ext"] = telegram_mod.ext
+    sys.modules["telegram.constants"] = constants_mod
+    sys.modules["telegram.request"] = telegram_mod.request
+
+    # Force reimport so the adapter picks up the mock ChatType.
+    sys.modules.pop("plugins.platforms.telegram.adapter", None)
 
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 def _make_adapter(dm_topics_config=None, group_topics_config=None):
@@ -198,6 +204,54 @@ async def test_create_dm_topic_returns_none_without_bot():
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_ensure_dm_topic_creates_on_demand_and_persists():
+    """Named delivery targets should create missing private DM topics on demand."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=444)
+    adapter._persist_dm_topic_thread_id = MagicMock()
+
+    result = await adapter.ensure_dm_topic("111", "On Demand")
+
+    assert result == "444"
+    adapter._bot.create_forum_topic.assert_called_once_with(
+        chat_id=111,
+        name="On Demand",
+    )
+    assert adapter._dm_topics["111:On Demand"] == 444
+    assert adapter._dm_topics_config == [
+        {"chat_id": 111, "topics": [{"name": "On Demand", "thread_id": 444}]}
+    ]
+    adapter._persist_dm_topic_thread_id.assert_called_once_with(
+        111, "On Demand", 444, replace_existing=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_dm_topic_force_create_replaces_persisted_thread_id():
+    """Refreshing a stale named topic should replace the cached persisted thread_id."""
+    adapter = _make_adapter()
+    bot = AsyncMock()
+    bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=777)
+    adapter._bot = bot
+    adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._dm_topics = {"111:General": 500}
+    adapter._dm_topics_config = [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 500}]}
+    ]
+
+    result = await adapter.ensure_dm_topic("111", "General", force_create=True)
+
+    assert result == "777"
+    bot.create_forum_topic.assert_called_once_with(chat_id=111, name="General")
+    assert adapter._dm_topics["111:General"] == 777
+    assert adapter._dm_topics_config[0]["topics"][0]["thread_id"] == 777
+    adapter._persist_dm_topic_thread_id.assert_called_once_with(
+        111, "General", 777, replace_existing=True
+    )
+
+
 # ── _persist_dm_topic_thread_id ──
 
 
@@ -278,6 +332,45 @@ def test_persist_dm_topic_thread_id_skips_if_already_set(tmp_path):
 
     topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
     assert topics[0]["thread_id"] == 500  # unchanged
+
+
+def test_persist_dm_topic_thread_id_replaces_existing_when_requested(tmp_path):
+    """Forced refresh should overwrite a stale persisted thread_id."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "General", "icon_color": 123, "thread_id": 500},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+
+    adapter = _make_adapter()
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._persist_dm_topic_thread_id(111, "General", 999, replace_existing=True)
+
+    with open(config_file) as f:
+        result = yaml.safe_load(f)
+
+    topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert topics[0]["thread_id"] == 999
 
 
 # ── _get_dm_topic_info ──

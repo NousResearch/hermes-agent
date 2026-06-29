@@ -87,9 +87,11 @@ export const opsCommands: SlashCommand[] = [
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
+
       const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
+
       if (a === 'now' || a === 'approve' || a === 'once' || a === 'yes') {
         params.confirm = true
       } else if (a === 'always') {
@@ -103,16 +105,20 @@ export const opsCommands: SlashCommand[] = [
           ctx.guarded<ReloadMcpResponse>(r => {
             if (r.status === 'confirm_required') {
               ctx.transcript.sys(r.message || '/reload-mcp requires confirmation')
+
               return
             }
+
             if (r.status === 'reloaded') {
               ctx.transcript.sys(
                 params.always
                   ? 'MCP servers reloaded · future /reload-mcp will run without confirmation'
                   : 'MCP servers reloaded'
               )
+
               return
             }
+
             ctx.transcript.sys('reload complete')
           })
         )
@@ -155,7 +161,7 @@ export const opsCommands: SlashCommand[] = [
       const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
       if (url) {
-        ctx.transcript.sys(`checking Chrome remote debugging at ${url}...`)
+        ctx.transcript.sys(`checking Chromium-family browser remote debugging at ${url}...`)
       }
 
       ctx.gateway
@@ -181,7 +187,7 @@ export const opsCommands: SlashCommand[] = [
             }
 
             if (r.connected) {
-              ctx.transcript.sys('Browser connected to live Chrome via CDP')
+              ctx.transcript.sys('Browser connected to live Chromium-family browser via CDP')
               ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
               ctx.transcript.sys('next browser tool call will use this CDP endpoint')
             }
@@ -488,6 +494,7 @@ export const opsCommands: SlashCommand[] = [
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
       const { panel, sys } = ctx.transcript
+
       const runViaSlashWorker = () => {
         ctx.gateway.gw
           .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
@@ -649,6 +656,34 @@ export const opsCommands: SlashCommand[] = [
       }
 
       runViaSlashWorker()
+    }
+  },
+
+  {
+    help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
+    name: 'plugins',
+    run: (arg, ctx, cmd) => {
+      // No argument → open the interactive Plugins Hub overlay. Any
+      // subcommand (enable/disable/list/install/…) falls through to the
+      // text slash worker so it stays at parity with `hermes plugins`.
+      if (!arg.trim()) {
+        return patchOverlayState({ pluginsHub: true })
+      }
+
+      ctx.gateway.gw
+        .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+        .then(r => {
+          if (ctx.stale()) {
+            return
+          }
+
+          const body = r?.output || '/plugins: no output'
+          const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+          const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+          long ? ctx.transcript.page(text, 'Plugins') : ctx.transcript.sys(text)
+        })
+        .catch(ctx.guardedErr)
     }
   },
 

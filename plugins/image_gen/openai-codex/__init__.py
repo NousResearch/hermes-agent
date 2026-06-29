@@ -19,6 +19,7 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -72,7 +73,7 @@ _SIZES = {
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
 # done by ``API_MODEL``.
-_CODEX_CHAT_MODEL = "gpt-5.4"
+_CODEX_CHAT_MODEL = "gpt-5.5"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
@@ -142,39 +143,18 @@ def _read_codex_access_token() -> Optional[str]:
         return None
 
 
-def _build_codex_client():
-    """Return an OpenAI client pointed at the ChatGPT/Codex backend, or None."""
-    token = _read_codex_access_token()
-    if not token:
-        return None
-    try:
-        import openai
-        from agent.auxiliary_client import _codex_cloudflare_headers
-
-        return openai.OpenAI(
-            api_key=token,
-            base_url=_CODEX_BASE_URL,
-            default_headers=_codex_cloudflare_headers(token),
-        )
-    except Exception as exc:
-        logger.debug("Could not build Codex image client: %s", exc)
-        return None
-
-
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
-    """Stream a Codex Responses image_generation call and return the b64 image."""
-    image_b64: Optional[str] = None
-
-    with client.responses.stream(
-        model=_CODEX_CHAT_MODEL,
-        store=False,
-        instructions=_CODEX_INSTRUCTIONS,
-        input=[{
+def _build_responses_payload(*, prompt: str, size: str, quality: str) -> Dict[str, Any]:
+    """Build the Codex Responses request body for an image_generation call."""
+    return {
+        "model": _CODEX_CHAT_MODEL,
+        "store": False,
+        "instructions": _CODEX_INSTRUCTIONS,
+        "input": [{
             "type": "message",
             "role": "user",
             "content": [{"type": "input_text", "text": prompt}],
         }],
-        tools=[{
+        "tools": [{
             "type": "image_generation",
             "model": API_MODEL,
             "size": size,
@@ -183,33 +163,114 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
             "background": "opaque",
             "partial_images": 1,
         }],
-        tool_choice={
+        "tool_choice": {
             "type": "allowed_tools",
             "mode": "required",
             "tools": [{"type": "image_generation"}],
         },
-    ) as stream:
-        for event in stream:
-            event_type = getattr(event, "type", "")
-            if event_type == "response.output_item.done":
-                item = getattr(event, "item", None)
-                if getattr(item, "type", None) == "image_generation_call":
-                    result = getattr(item, "result", None)
-                    if isinstance(result, str) and result:
-                        image_b64 = result
-            elif event_type == "response.image_generation_call.partial_image":
-                partial = getattr(event, "partial_image_b64", None)
-                if isinstance(partial, str) and partial:
-                    image_b64 = partial
-        final = stream.get_final_response()
+        "stream": True,
+    }
 
-    # Final-response sweep covers the case where the stream finished before
-    # we observed the ``output_item.done`` event for the image call.
-    for item in getattr(final, "output", None) or []:
-        if getattr(item, "type", None) == "image_generation_call":
-            result = getattr(item, "result", None)
+
+def _extract_image_b64(value: Any) -> Optional[str]:
+    """Return the newest image b64 embedded in a Responses event payload."""
+    found: Optional[str] = None
+    if isinstance(value, dict):
+        if value.get("type") == "image_generation_call":
+            result = value.get("result")
             if isinstance(result, str) and result:
-                image_b64 = result
+                found = result
+        partial = value.get("partial_image_b64")
+        if isinstance(partial, str) and partial:
+            found = partial
+        for child in value.values():
+            nested = _extract_image_b64(child)
+            if nested:
+                found = nested
+    elif isinstance(value, list):
+        for child in value:
+            nested = _extract_image_b64(child)
+            if nested:
+                found = nested
+    return found
+
+
+def _iter_sse_json(response: Any):
+    """Yield JSON payloads from an SSE response without OpenAI SDK parsing.
+
+    The ChatGPT/Codex backend can emit image-generation events newer than the
+    pinned Python SDK understands. Parsing raw SSE keeps this provider tolerant
+    of those event-shape changes.
+    """
+    event_name: Optional[str] = None
+    data_lines: List[str] = []
+
+    def flush():
+        nonlocal event_name, data_lines
+        if not data_lines:
+            event_name = None
+            return None
+        raw = "\n".join(data_lines).strip()
+        event = event_name
+        event_name = None
+        data_lines = []
+        if not raw or raw == "[DONE]":
+            return None
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and event and "type" not in payload:
+            payload["type"] = event
+        return payload
+
+    for line in response.iter_lines():
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="replace")
+        line = str(line)
+        if line == "":
+            payload = flush()
+            if payload is not None:
+                yield payload
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[len("data:"):].lstrip())
+
+    payload = flush()
+    if payload is not None:
+        yield payload
+
+
+def _collect_image_b64(token: str, *, prompt: str, size: str, quality: str) -> Optional[str]:
+    """Stream a Codex Responses image_generation call and return the b64 image."""
+    import httpx
+    from agent.auxiliary_client import _codex_cloudflare_headers
+
+    headers = _codex_cloudflare_headers(token)
+    headers.update({
+        "Accept": "text/event-stream",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    })
+    payload = _build_responses_payload(prompt=prompt, size=size, quality=quality)
+    timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
+
+    image_b64: Optional[str] = None
+    with httpx.Client(timeout=timeout, headers=headers) as http:
+        with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                exc.response.read()
+                body = exc.response.text[:500]
+                raise RuntimeError(
+                    f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
+                ) from exc
+            for event in _iter_sse_json(response):
+                found = _extract_image_b64(event)
+                if found:
+                    image_b64 = found
 
     return image_b64
 
@@ -234,7 +295,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         if not _read_codex_access_token():
             return False
         try:
-            import openai  # noqa: F401
+            import httpx  # noqa: F401
         except ImportError:
             return False
         return True
@@ -258,7 +319,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
-            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required",
+            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required (text-to-image only)",
             "env_vars": [],
             "post_setup_hint": (
                 "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
@@ -266,14 +327,40 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             ),
         }
 
+    def capabilities(self) -> Dict[str, Any]:
+        # The Codex Responses image_generation tool path is text-to-image
+        # only here. Image-to-image / editing via Codex OAuth is not wired —
+        # users who need editing should use the `openai` (API key), `fal`, or
+        # `xai` backends. Declaring text-only keeps the dynamic tool schema
+        # honest so the model doesn't attempt an unsupported edit.
+        return {"modalities": ["text"], "max_reference_images": 0}
+
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+
+        # Image-to-image / editing is not supported on the Codex OAuth path.
+        # Surface a clear, actionable error instead of silently ignoring the
+        # source image and producing an unrelated picture.
+        if (isinstance(image_url, str) and image_url.strip()) or reference_image_urls:
+            return error_response(
+                error=(
+                    "This model is not capable of image-to-image / editing. "
+                    "Please provide a text-only prompt (drop image_url and "
+                    "reference_image_urls)."
+                ),
+                error_type="modality_unsupported",
+                provider="openai-codex",
+                aspect_ratio=aspect,
+            )
 
         if not prompt:
             return error_response(
@@ -295,10 +382,10 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            import openai  # noqa: F401
+            import httpx  # noqa: F401
         except ImportError:
             return error_response(
-                error="openai Python package not installed (pip install openai)",
+                error="httpx Python package not installed (pip install httpx)",
                 error_type="missing_dependency",
                 provider="openai-codex",
                 aspect_ratio=aspect,
@@ -307,10 +394,13 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
 
-        client = _build_codex_client()
-        if client is None:
+        token = _read_codex_access_token()
+        if not token:
             return error_response(
-                error="Could not initialize Codex image client",
+                error=(
+                    "No Codex/ChatGPT OAuth credentials available. Run "
+                    "`hermes auth codex` (or `hermes setup` → Codex) to sign in."
+                ),
                 error_type="auth_required",
                 provider="openai-codex",
                 model=tier_id,
@@ -320,7 +410,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         try:
             b64 = _collect_image_b64(
-                client,
+                token,
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],

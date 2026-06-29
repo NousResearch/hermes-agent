@@ -13,6 +13,8 @@ from typing import Any, Dict, List
 
 import pytest
 
+from tests.tools.conftest import register_all_web_providers
+
 
 # ---------------------------------------------------------------------------
 # ABC enforcement
@@ -27,7 +29,7 @@ class TestWebProviderABCs:
     in-tree ABCs at ``tools.web_providers.base`` (separate
     ``WebSearchProvider`` + ``WebExtractProvider``) were deleted in the
     same PR — providers now advertise capabilities via
-    ``supports_search() / supports_extract() / supports_crawl()`` flags.
+    ``supports_search() / supports_extract()`` flags.
     """
 
     def test_cannot_instantiate_abc_directly(self):
@@ -63,7 +65,6 @@ class TestWebProviderABCs:
         assert d.is_available() is True
         assert d.supports_search() is True
         assert d.supports_extract() is False  # default
-        assert d.supports_crawl() is False  # default
         assert d.search("test")["success"] is True
 
     def test_concrete_multi_capability_provider_works(self):
@@ -87,27 +88,19 @@ class TestWebProviderABCs:
             def supports_extract(self) -> bool:
                 return True
 
-            def supports_crawl(self) -> bool:
-                return True
-
             def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
             def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
                 return [{"url": urls[0], "content": "x"}]
 
-            def crawl(self, url: str, **kwargs: Any) -> Dict[str, Any]:
-                return {"results": [{"url": url, "content": "x"}]}
-
         d = Dummy()
         assert d.supports_search() is True
         assert d.supports_extract() is True
-        assert d.supports_crawl() is True
         assert d.extract(["https://example.com"])[0]["url"] == "https://example.com"
-        assert d.crawl("https://example.com")["results"][0]["url"] == "https://example.com"
 
-    def test_search_only_provider_skips_extract_and_crawl(self):
-        """Search-only providers don't have to implement extract() / crawl()."""
+    def test_search_only_provider_skips_extract(self):
+        """Search-only providers don't have to implement extract()."""
         from agent.web_search_provider import WebSearchProvider
 
         class SearchOnly(WebSearchProvider):
@@ -128,13 +121,12 @@ class TestWebProviderABCs:
             def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
-        # Should instantiate fine — extract/crawl have default
-        # supports_*() returning False and aren't required to be
-        # overridden when not advertised.
+        # Should instantiate fine — extract has default supports_*()
+        # returning False and isn't required to be overridden when not
+        # advertised.
         s = SearchOnly()
         assert s.supports_search() is True
         assert s.supports_extract() is False
-        assert s.supports_crawl() is False
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +268,15 @@ class TestUnconfiguredErrorEnvelopeParity:
     ``result.get("error")`` detect the failure cleanly.
     """
 
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
     def _clear_web_creds(self, monkeypatch):
         for k in (
             "BRAVE_SEARCH_API_KEY",
@@ -294,13 +295,13 @@ class TestUnconfiguredErrorEnvelopeParity:
         """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
         — matching main's ``tool_error()`` envelope, not a per-result shape.
         """
-        import json
         from tools import web_tools
 
         self._clear_web_creds(monkeypatch)
         # Reset firecrawl client cache so the unconfigured state is re-evaluated
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
@@ -311,24 +312,183 @@ class TestUnconfiguredErrorEnvelopeParity:
         # No per-result burying
         assert "results" not in result
 
-    def test_unconfigured_crawl_emits_top_level_error(self, monkeypatch):
-        """``web_crawl_tool`` with no creds returns ``{"success": False, "error": "web_crawl requires Firecrawl..."}``
-        — the dispatcher gates on ``provider.is_available()`` BEFORE
-        delegating to the plugin so pre-config errors don't get wrapped
-        into ``results[]``.
+
+class TestDispatchersTriggerPluginDiscovery:
+    """Regression tests for #27580: each web_*_tool dispatcher must
+    idempotently call ``_ensure_web_plugins_loaded()`` before consulting
+    ``agent.web_search_registry``.
+
+    Without this, a tool call from a context that hasn't already loaded
+    plugins (subprocess agent runs, delegate children, standalone scripts,
+    test paths that import the registry directly) sees an empty registry
+    and returns the misleading "No web extract provider configured" error
+    even when the user has both the config key set AND the API key
+    exported.
+
+    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` —
+    every other plugin-backed dispatcher (image_gen, video_gen, browser,
+    skills) already does this.
+    """
+
+    def _clear_registry(self):
+        """Reset the web_search registry to empty and return a callback
+        that restores the original contents. Used in a try/finally so the
+        snapshot is restored even when the dispatcher under test raises."""
+        from agent import web_search_registry
+
+        with web_search_registry._lock:
+            original = dict(web_search_registry._providers)
+            web_search_registry._providers.clear()
+
+        def _restore():
+            with web_search_registry._lock:
+                web_search_registry._providers.clear()
+                web_search_registry._providers.update(original)
+
+        return _restore
+
+    def test_web_extract_tool_runs_discovery_before_registry_lookup(self, monkeypatch):
+        """``web_extract_tool`` must invoke ``_ensure_web_plugins_loaded()``
+        before looking up the configured backend so the registry is
+        populated even from cold-start subprocess contexts.
+
+        Without the fix, ``get_provider('firecrawl')`` returns ``None``
+        on a fresh process and the dispatcher emits "No web extract
+        provider configured" despite the user having both
+        ``web.extract_backend: firecrawl`` and ``FIRECRAWL_API_KEY`` set
+        (issue #27580).
         """
         import asyncio
         import json
+        from unittest.mock import MagicMock
+        from agent.web_search_provider import WebSearchProvider
+        from agent import web_search_registry
         from tools import web_tools
 
-        self._clear_web_creds(monkeypatch)
-        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
-        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        restore = self._clear_registry()
+        try:
+            class FakeFirecrawl(WebSearchProvider):
+                @property
+                def name(self) -> str:
+                    return "firecrawl"
 
-        result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
-        assert result.get("success") is False
-        assert "error" in result, f"expected top-level 'error' key, got {result}"
-        assert "web_crawl requires Firecrawl" in result["error"]
-        # Crucially: no per-page burying
-        assert "results" not in result
+                @property
+                def display_name(self) -> str:
+                    return "Fake Firecrawl"
+
+                def is_available(self) -> bool:
+                    return True
+
+                def supports_extract(self) -> bool:
+                    return True
+
+                async def extract(self, urls, format=None):
+                    return [
+                        {"url": u, "title": "", "content": "ok",
+                         "raw_content": "ok", "metadata": {}}
+                        for u in urls
+                    ]
+
+            # Simulate "plugin discovery loads the firecrawl plugin": the
+            # wrapped helper registers the provider, mirroring what
+            # ``plugins/web/firecrawl/__init__.py:register`` does at
+            # real-process startup. Wrapping with ``MagicMock`` lets us
+            # also assert the dispatcher actually invoked the hook — if
+            # a future refactor accidentally drops the call the regression
+            # would otherwise hide behind a still-populated registry.
+            def _register_fake() -> None:
+                if web_search_registry.get_provider("firecrawl") is None:
+                    web_search_registry.register_provider(FakeFirecrawl())
+
+            mock_hook = MagicMock(wraps=_register_fake)
+            # Patch the helper on ``tools.web_tools`` directly rather than the
+            # underlying ``hermes_cli.plugins._ensure_plugins_discovered`` so
+            # the test stays valid even if the import inside the helper is
+            # later moved to module scope or renamed.
+            monkeypatch.setattr(
+                web_tools, "_ensure_web_plugins_loaded", mock_hook
+            )
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"extract_backend": "firecrawl"},
+            )
+            # Sanity: registry IS empty before the tool call.
+            assert web_search_registry.get_provider("firecrawl") is None
+
+            result = json.loads(asyncio.run(
+                web_tools.web_extract_tool(
+                    ["https://example.com"],
+                )
+            ))
+
+            # The hook must have been called BEFORE the registry lookup —
+            # that is the invariant under regression test. Without the
+            # explicit ``.called`` assertion the test could pass if the
+            # registry were populated by some unrelated side effect.
+            assert mock_hook.called, (
+                "web_extract_tool must call _ensure_web_plugins_loaded() "
+                "before resolving the registry"
+            )
+            assert "No web extract provider configured" not in json.dumps(result)
+            assert web_search_registry.get_provider("firecrawl") is not None
+        finally:
+            restore()
+
+    def test_web_search_tool_runs_discovery_before_registry_lookup(self, monkeypatch):
+        """``web_search_tool`` must invoke ``_ensure_web_plugins_loaded()``
+        before the registry lookup for the same reason as the extract
+        path (issue #27580 root cause applies to all dispatchers).
+        """
+        import json
+        from unittest.mock import MagicMock
+        from agent.web_search_provider import WebSearchProvider
+        from agent import web_search_registry
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        try:
+            class FakeBrave(WebSearchProvider):
+                @property
+                def name(self) -> str:
+                    return "brave-free"
+
+                @property
+                def display_name(self) -> str:
+                    return "Fake Brave"
+
+                def is_available(self) -> bool:
+                    return True
+
+                def supports_search(self) -> bool:
+                    return True
+
+                def search(self, query, limit=5):
+                    return {"success": True, "data": {"web": [
+                        {"title": "ok", "url": "https://x", "description": "",
+                         "position": 0}
+                    ]}}
+
+            def _register_fake() -> None:
+                if web_search_registry.get_provider("brave-free") is None:
+                    web_search_registry.register_provider(FakeBrave())
+
+            mock_hook = MagicMock(wraps=_register_fake)
+            monkeypatch.setattr(
+                web_tools, "_ensure_web_plugins_loaded", mock_hook
+            )
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"search_backend": "brave-free"},
+            )
+            assert web_search_registry.get_provider("brave-free") is None
+
+            result = json.loads(web_tools.web_search_tool("hello", limit=1))
+            assert mock_hook.called, (
+                "web_search_tool must call _ensure_web_plugins_loaded() "
+                "before resolving the registry"
+            )
+            assert "No web search provider configured" not in json.dumps(result)
+            assert web_search_registry.get_provider("brave-free") is not None
+        finally:
+            restore()
+

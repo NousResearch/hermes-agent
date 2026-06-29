@@ -27,8 +27,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -37,7 +36,6 @@ from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
-    get_model_context_length,
     is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -52,8 +50,7 @@ from agent.tool_guardrails import (
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from model_tools import check_toolset_requirements, get_tool_definitions
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -69,6 +66,101 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
+    """Build the one-time notice shown when Codex gpt-5.5 raises compaction.
+
+    ``autoraise`` is ``{"from": <old_ratio>, "to": <new_ratio>}``. The same
+    text is printed inline for CLI users and replayed via ``status_callback``
+    for gateway users, so it must be self-contained and include the exact
+    opt-back-out command.
+    """
+    from_pct = int(round(autoraise["from"] * 100))
+    to_pct = int(round(autoraise["to"] * 100))
+    return (
+        f"ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
+        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
+        f"summarizing.\n"
+        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+    )
+
+
+def _normalized_custom_base_url(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().rstrip("/")
+
+
+def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> bool:
+    provider_model = str(entry.get("model", "") or "").strip().lower()
+    if not provider_model:
+        return True
+    return provider_model == str(agent_model or "").strip().lower()
+
+
+def _custom_provider_extra_body_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
+        return None
+
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+
+    fallback: Optional[Dict[str, Any]] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        extra_body = entry.get("extra_body")
+        if not isinstance(extra_body, dict) or not extra_body:
+            continue
+        provider_model = str(entry.get("model", "") or "").strip()
+        if provider_model:
+            if _custom_provider_model_matches(model, entry):
+                return dict(extra_body)
+        elif fallback is None:
+            fallback = dict(extra_body)
+
+    return fallback
+
+
+def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    extra_body = _custom_provider_extra_body_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+    if not extra_body:
+        return
+
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    merged_extra_body = dict(extra_body)
+    existing_extra_body = overrides.get("extra_body")
+    if isinstance(existing_extra_body, dict):
+        merged_extra_body.update(existing_extra_body)
+    overrides["extra_body"] = merged_extra_body
+    agent.request_overrides = overrides
 
 
 def init_agent(
@@ -89,6 +181,7 @@ def init_agent(
     save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
+    tool_progress_mode: str = "all",
     ephemeral_system_prompt: str = None,
     log_prefix_chars: int = 100,
     log_prefix: str = "",
@@ -106,11 +199,15 @@ def init_agent(
     thinking_callback: callable = None,
     reasoning_callback: callable = None,
     clarify_callback: callable = None,
+    read_terminal_callback: callable = None,
     step_callback: callable = None,
     stream_delta_callback: callable = None,
     interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None,
     status_callback: callable = None,
+    notice_callback: callable = None,
+    notice_clear_callback: callable = None,
+    event_callback: Optional[Callable[[str, dict], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
@@ -118,6 +215,7 @@ def init_agent(
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
     user_id: str = None,
+    user_id_alt: str = None,
     user_name: str = None,
     chat_id: str = None,
     chat_name: str = None,
@@ -179,7 +277,8 @@ def init_agent(
             output_config.format instead of a trailing-assistant prefill.
         platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
             Used to inject platform-specific formatting hints into the system prompt.
-        skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
+        skip_context_files (bool): If True, skip auto-injection of project context files
+            (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
             into the system prompt. Use this for batch processing and data generation to avoid
             polluting trajectories with user-specific persona or project instructions.
         load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
@@ -197,9 +296,11 @@ def init_agent(
     agent.save_trajectories = save_trajectories
     agent.verbose_logging = verbose_logging
     agent.quiet_mode = quiet_mode
+    agent.tool_progress_mode = tool_progress_mode
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
+    agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name
     agent._chat_id = chat_id
     agent._chat_name = chat_name
@@ -212,6 +313,7 @@ def init_agent(
     # would mangle the escape sequences.  None = use builtins.print.
     agent._print_fn = None
     agent.background_review_callback = None  # Optional sync callback for gateway delivery
+    agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id
@@ -331,10 +433,14 @@ def init_agent(
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback
+    agent.read_terminal_callback = read_terminal_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback
     agent.status_callback = status_callback
+    agent.notice_callback = notice_callback
+    agent.notice_clear_callback = notice_clear_callback
+    agent.event_callback = event_callback
     agent.tool_gen_callback = tool_gen_callback
 
     
@@ -438,10 +544,26 @@ def init_agent(
     agent._last_activity_desc: str = "initializing"
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
-
+    # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
+    # Set on internal forks (e.g. background_review) that must keep ``tools[]``
+    # byte-identical to a parent for provider cache parity.
+    agent._skip_mcp_refresh = False
+    # Registry generation the current tool snapshot was derived from. Lets a
+    # late/concurrent refresh reject a stale (older-generation) rebuild instead
+    # of clobbering a newer one. Set adjacent to the tool snapshot below.
+    agent._tool_snapshot_generation = 0
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.
     agent._rate_limit_state: Optional["RateLimitState"] = None
+
+    # Credits tracking (dev-only, L0 usage-aware-credits) — updated from
+    # x-nous-credits-* response headers after each API call.  Session-start
+    # remaining is latched the first time a header is ever seen so we can
+    # report cumulative micros spent.  Surfaced behind HERMES_DEV_CREDITS.
+    agent._credits_state = None
+    agent._credits_session_start_micros = None
+    # Threshold-notice latch (L4): active sticky-notice keys + the warn90 crossing gate.
+    agent._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
 
     # OpenRouter response cache hit counter — incremented when
     # X-OpenRouter-Cache-Status: HIT is seen in streaming response headers.
@@ -497,6 +619,7 @@ def init_agent(
     # (e.g. CLI voice mode adds a temporary prefix for the live call only).
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
 
     # Cache anthropic image-to-text fallbacks per image payload/URL so a
     # single tool loop does not repeatedly re-run auxiliary vision on the
@@ -542,6 +665,31 @@ def init_agent(
             # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
             _is_native_anthropic = agent.provider == "anthropic"
             effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+
+            # MiniMax OAuth issues short-lived (~15-min) access tokens. The
+            # Anthropic SDK caches ``api_key`` as a static string at client
+            # construction time, so a session that resolves the bearer once
+            # at startup will keep sending the same token until MiniMax
+            # returns 401 mid-session. Swap the static string for a callable
+            # token provider — ``build_anthropic_client`` recognizes the
+            # callable and installs an httpx event hook that mints a fresh
+            # bearer per outbound request (re-reading auth.json so a refresh
+            # persisted by another process is visible immediately).
+            # The cached refresh path is a no-op when the token still has
+            # ``MINIMAX_OAUTH_REFRESH_SKEW_SECONDS`` of life left, so steady-
+            # state cost is one file read + one timestamp compare per request.
+            if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
+                try:
+                    from hermes_cli.auth import build_minimax_oauth_token_provider
+                    effective_key = build_minimax_oauth_token_provider()
+                except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "MiniMax OAuth: failed to install per-request token provider "
+                        "(%s); falling back to static bearer that will expire ~15min in.",
+                        _mm_exc,
+                    )
+
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url
@@ -553,7 +701,7 @@ def init_agent(
             # that cause 401/403 on their endpoints.  Guards #1739 and
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            agent._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
+            agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
             # No OpenAI client needed for Anthropic mode
             agent.client = None
@@ -571,6 +719,55 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.provider == "moa":
+        from agent.moa_loop import MoAClient
+        agent.api_mode = "chat_completions"
+
+        # Route reference-model outputs to the agent's tool_progress_callback so
+        # every surface that already consumes it (CLI spinner/scrollback, TUI,
+        # desktop, gateway) can show each reference's answer as a labelled block
+        # before the aggregator acts. The facade emits "moa.reference" and
+        # "moa.aggregating" events; we forward them through the same callback
+        # the tool lifecycle uses. Best-effort and cache-safe — these are
+        # display-only events, they never touch the message history.
+        def _moa_reference_relay(event: str, **kwargs: Any) -> None:
+            cb = getattr(agent, "tool_progress_callback", None)
+            if cb is None:
+                return
+            try:
+                if event == "moa.reference":
+                    label = str(kwargs.get("label") or "")
+                    text = str(kwargs.get("text") or "")
+                    idx = kwargs.get("index")
+                    count = kwargs.get("count")
+                    cb(
+                        "moa.reference",
+                        label,
+                        text,
+                        None,
+                        moa_index=idx,
+                        moa_count=count,
+                    )
+                elif event == "moa.aggregating":
+                    cb(
+                        "moa.aggregating",
+                        str(kwargs.get("aggregator") or ""),
+                        None,
+                        None,
+                        moa_ref_count=kwargs.get("ref_count"),
+                    )
+            except Exception:
+                pass
+
+        agent.client = MoAClient(
+            agent.model or "default",
+            reference_callback=_moa_reference_relay,
+        )
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "moa-virtual-provider"
+        agent.base_url = "moa://local"
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.
@@ -646,8 +843,8 @@ def init_agent(
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Vercel AI Gateway attribution,
-                # Kimi User-Agent on non-kimi.com endpoints).
+                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
+                # endpoints).
                 try:
                     from providers import get_provider_profile as _gpf
                     _ph = _gpf(agent.provider)
@@ -672,6 +869,8 @@ def init_agent(
                 # _custom_headers; older/mocked clients may expose
                 # _default_headers instead.
                 _routed_headers = getattr(_routed_client, "_custom_headers", None)
+                if not _routed_headers:
+                    _routed_headers = getattr(_routed_client, "default_headers", None)
                 if not _routed_headers:
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
@@ -726,6 +925,8 @@ def init_agent(
                                 client_kwargs["timeout"] = _provider_timeout
                             _fb_headers = getattr(_fb_client, "_custom_headers", None)
                             if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "default_headers", None)
+                            if not _fb_headers:
                                 _fb_headers = getattr(_fb_client, "_default_headers", None)
                             if _fb_headers:
                                 client_kwargs["default_headers"] = dict(_fb_headers)
@@ -765,9 +966,20 @@ def init_agent(
                     headers["x-anthropic-beta"] = _FINE_GRAINED
                 client_kwargs["default_headers"] = headers
 
+        # User-configured request headers (model.default_headers in
+        # config.yaml) override provider/SDK defaults. Lets custom
+        # OpenAI-compatible endpoints behind a gateway/WAF that rejects the
+        # OpenAI SDK's identifying headers swap in a plain User-Agent. (#40033)
+        # client_kwargs is the same dict object as agent._client_kwargs, so
+        # this mutation is reflected in the client built just below.
+        agent._apply_user_default_headers()
+
         agent.api_key = client_kwargs.get("api_key", "")
         agent.base_url = client_kwargs.get("base_url", agent.base_url)
         try:
+            from agent.ssl_guard import verify_ca_bundle_with_fallback
+
+            verify_ca_bundle_with_fallback()
             agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model}")
@@ -814,7 +1026,14 @@ def init_agent(
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
-    # Get available tools with filtering
+    # Get available tools with filtering. Capture the registry generation this
+    # snapshot is derived from FIRST, so a later concurrent refresh can tell
+    # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
+    try:
+        from tools.registry import registry as _snapshot_registry
+        agent._tool_snapshot_generation = _snapshot_registry._generation
+    except Exception:
+        agent._tool_snapshot_generation = 0
     agent.tools = _ra().get_tool_definitions(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
@@ -886,25 +1105,42 @@ def init_agent(
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
-    # coordination, and logging.  Uses the ContextVar system from
-    # session_context.py for concurrency safety (gateway runs multiple
-    # sessions in one process).  Also writes os.environ as fallback for
-    # CLI mode where ContextVars aren't used.
-    os.environ["HERMES_SESSION_ID"] = agent.session_id
+    # coordination, and logging. Keep the ContextVar and os.environ
+    # fallback synchronized because different tool paths still read both.
     try:
-        from gateway.session_context import _SESSION_ID
-        _SESSION_ID.set(agent.session_id)
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(agent.session_id)
     except Exception:
-        pass  # CLI/test mode — ContextVar not needed
+        os.environ["HERMES_SESSION_ID"] = agent.session_id
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
+    # Per-session JSON snapshot writer (~/.hermes/sessions/session_{sid}.json)
+    # is opt-in via sessions.write_json_snapshots (default False).  state.db
+    # is canonical — the snapshot is only useful for external tooling that
+    # reads the JSON files directly.  See run_agent._save_session_log.
+    agent._session_json_enabled = False
+    try:
+        from hermes_cli.config import load_config as _load_sess_cfg
+        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
+        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+    except Exception:
+        pass
+    # logs_dir is retained unconditionally for request_dump_*.json (debug
+    # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
+    # Responses encrypted reasoning replay state.  Some OpenAI-compatible
+    # routes accept GPT-5 Responses requests but later reject replayed
+    # encrypted reasoning blobs (HTTP 400 ``invalid_encrypted_content``).
+    # When that happens we disable replay for the rest of the session and
+    # fall back to stateless continuity.  See
+    # agent/conversation_loop.py's invalid_encrypted_content retry branch.
+    agent._codex_reasoning_replay_enabled = True
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
     
@@ -925,6 +1161,12 @@ def init_agent(
     agent._parent_session_id = parent_session_id
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
+    # Most agents own their session row and should finalize it on close().
+    # Some temporary helper agents (manual compression / session-hygiene /
+    # background-review forks) rotate or share the session forward to a
+    # continuation row that must remain open after the helper is torn down;
+    # those callers explicitly set this flag to False.
+    agent._end_session_on_close = True
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -1000,6 +1242,9 @@ def init_agent(
                         "hermes_home": str(get_hermes_home()),
                         "agent_context": "primary",
                     }
+                    if _init_kwargs["platform"] == "cli":
+                        _init_kwargs["warning_callback"] = agent._emit_warning
+                        _init_kwargs["status_callback"] = agent._emit_status
                     # Thread session title for memory provider scoping
                     # (e.g. honcho uses this to derive chat-scoped session keys)
                     if agent._session_db:
@@ -1012,6 +1257,8 @@ def init_agent(
                     # Thread gateway user identity for per-user memory scoping
                     if agent._user_id:
                         _init_kwargs["user_id"] = agent._user_id
+                    if agent._user_id_alt:
+                        _init_kwargs["user_id_alt"] = agent._user_id_alt
                     if agent._user_name:
                         _init_kwargs["user_name"] = agent._user_name
                     if agent._chat_id:
@@ -1042,27 +1289,8 @@ def init_agent(
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
-    # Inject memory provider tool schemas into the tool surface.
-    # Skip tools whose names already exist (plugins may register the
-    # same tools via ctx.register_tool(), which lands in agent.tools
-    # through _ra().get_tool_definitions()).  Duplicate function names cause
-    # 400 errors on providers that enforce unique names (e.g. Xiaomi
-    # MiMo via Nous Portal).
-    if agent._memory_manager and agent.tools is not None:
-        _existing_tool_names = {
-            t.get("function", {}).get("name")
-            for t in agent.tools
-            if isinstance(t, dict)
-        }
-        for _schema in agent._memory_manager.get_all_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
-                continue  # already registered via plugin path
-            _wrapped = {"type": "function", "function": _schema}
-            agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
+    from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
+    _inject_memory_provider_tools(agent)
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
@@ -1078,6 +1306,47 @@ def init_agent(
     if not isinstance(_agent_section, dict):
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+    # Intent-ack continuation config: "auto" (default — codex_responses only,
+    # the historical gate), true (all api_modes), false (never), or a list of
+    # model-name substrings.  Resolved against the active api_mode/model in the
+    # conversation loop's intent-ack block.
+    agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+
+    # Universal task-completion guidance toggle.  Default True.  Surfaced
+    # as a separate flag from tool_use_enforcement because the guidance
+    # applies to ALL models, not just the model families enforcement
+    # targets.
+    agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
+
+    # Universal parallel-tool-call guidance toggle.  Default True.  Separate
+    # flag from task_completion_guidance because a user may want one but not
+    # the other.  Steers the model to batch independent tool calls into a
+    # single turn; the runtime already executes such batches concurrently.
+    agent._parallel_tool_call_guidance = bool(_agent_section.get("parallel_tool_call_guidance", True))
+
+    # Local Python toolchain probe toggle.  Default True.  When False,
+    # the probe is skipped entirely (no subprocess calls, no system-prompt
+    # line).  Useful for users on exotic setups where the probe heuristics
+    # are noisy.
+    agent._environment_probe = bool(_agent_section.get("environment_probe", True))
+
+    # Per-platform prompt-hint overrides (config.yaml → platform_hints).
+    # Lets an enterprise admin append to or replace Hermes' built-in
+    # platform hint for a single messaging platform (e.g. WhatsApp) without
+    # affecting other platforms. Shape:
+    #   platform_hints:
+    #     whatsapp:
+    #       append: "When tabular output would help, invoke the ... skill."
+    #     slack:
+    #       replace: "Custom Slack hint that fully replaces the default."
+    # Stored verbatim; resolution happens in agent/system_prompt.py against
+    # the active platform. Invalid shapes are ignored defensively so a bad
+    # config entry can never break prompt assembly.
+    _platform_hints_cfg = _agent_cfg.get("platform_hints", {})
+    if not isinstance(_platform_hints_cfg, dict):
+        _platform_hints_cfg = {}
+    agent._platform_hint_overrides = _platform_hints_cfg
 
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -1096,11 +1365,41 @@ def init_agent(
     if not isinstance(_compression_cfg, dict):
         _compression_cfg = {}
     compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+    # Per-model/route compaction-threshold override. Codex gpt-5.5 raises to
+    # 85% (the Codex backend caps the window at 272K, so the default 50% would
+    # compact at ~136K — half the usable context). Gated by an opt-out config
+    # flag so the user can fall back to the global threshold; when the override
+    # fires we stash a one-time notification (replayed on the first turn) that
+    # tells the user what changed and how to revert.
+    _codex_gpt55_autoraise = str(
+        _compression_cfg.get("codex_gpt55_autoraise", True)
+    ).lower() in {"true", "1", "yes"}
+    agent._compression_threshold_autoraised = None
     try:
-        from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
-        _model_cthresh = _cthresh_fn(agent.model)
+        from agent.auxiliary_client import (
+            _compression_threshold_for_model as _cthresh_fn,
+            _is_codex_gpt55 as _is_codex_gpt55_fn,
+        )
+        _model_cthresh = _cthresh_fn(
+            agent.model,
+            agent.provider,
+            allow_codex_gpt55_autoraise=_codex_gpt55_autoraise,
+        )
         if _model_cthresh is not None:
+            _prev_threshold = compression_threshold
             compression_threshold = _model_cthresh
+            # Notify only for the Codex gpt-5.5 autoraise (the Arcee Trinity
+            # override is a long-standing silent default). Skip the notice when
+            # the user's global threshold already meets/exceeds the raised
+            # value, since nothing actually changed for them.
+            if (
+                _is_codex_gpt55_fn(agent.model, agent.provider)
+                and _model_cthresh > _prev_threshold + 1e-9
+            ):
+                agent._compression_threshold_autoraised = {
+                    "from": _prev_threshold,
+                    "to": _model_cthresh,
+                }
     except Exception:
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
@@ -1118,6 +1417,14 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # In-place compaction: when True, compress_context() rewrites the message
+    # list + rebuilds the system prompt WITHOUT rotating the session id (no
+    # parent_session_id chain, no `name #N` renumber). See #38763 and
+    # agent/conversation_compression.py. Consumed by compress_context(), not the
+    # compressor, so it rides on the agent.
+    compression_in_place = is_truthy_value(
+        _compression_cfg.get("in_place"), default=False
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1201,6 +1508,7 @@ def init_agent(
     # Store for reuse by _check_compression_model_feasibility (auxiliary
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
+    _merge_custom_provider_extra_body(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:
@@ -1265,6 +1573,7 @@ def init_agent(
     # 3. Check general plugin system (user-installed plugins)
     # 4. Fall back to built-in ContextCompressor
     _selected_engine = None
+    _copy_failed = False
     _engine_name = "compressor"  # default
     try:
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
@@ -1282,15 +1591,35 @@ def init_agent(
 
         # Try general plugin system as fallback
         if _selected_engine is None:
+            _candidate = None
             try:
                 from hermes_cli.plugins import get_plugin_context_engine
                 _candidate = get_plugin_context_engine()
-                if _candidate and _candidate.name == _engine_name:
-                    _selected_engine = _candidate
             except Exception:
-                pass
+                _candidate = None
+            if _candidate is not None and _candidate.name == _engine_name:
+                # Deep-copy the shared plugin singleton so a child agent's
+                # update_model() can't mutate the parent's compressor (#42449).
+                # Copy can fail for engines holding uncopyable state (locks, DB
+                # connections, clients); in that case fall back to the built-in
+                # compressor with an ACCURATE message rather than silently
+                # mislabelling it "not found".
+                import copy
+                try:
+                    _selected_engine = copy.deepcopy(_candidate)
+                except Exception as _copy_err:
+                    _copy_failed = True
+                    _ra().logger.warning(
+                        "Context engine '%s' could not be safely copied for this "
+                        "agent (%s) — falling back to built-in compressor. Plugin "
+                        "engines that hold uncopyable state (locks, DB connections) "
+                        "should implement __deepcopy__ to copy only mutable budget "
+                        "state.",
+                        _engine_name, _copy_err,
+                    )
+                    _selected_engine = None
 
-        if _selected_engine is None:
+        if _selected_engine is None and not _copy_failed:
             _ra().logger.warning(
                 "Context engine '%s' not found — falling back to built-in compressor",
                 _engine_name,
@@ -1315,6 +1644,7 @@ def init_agent(
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
             provider=agent.provider,
+            api_mode=agent.api_mode,
         )
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
@@ -1333,20 +1663,23 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            max_tokens=agent.max_tokens,
         )
     agent.compression_enabled = compression_enabled
+    agent.compression_in_place = compression_in_place
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
-    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     _ctx = getattr(agent.context_compressor, "context_length", 0)
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
             f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-            f"model.context_length in config.yaml to override."
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
+            f"reports a window smaller than the model's true window, set "
+            f"model.context_length in config.yaml to the real value "
+            f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
@@ -1357,23 +1690,48 @@ def init_agent(
     # errors. Even with the cache fix, dedup is the right defense
     # against plugin paths that may register the same schemas via
     # ctx.register_tool(). Mirrors the memory tools dedup above.
+    #
+    # Respect the platform's enabled_toolsets configuration (#5544):
+    # context engine tools follow the same gating pattern as memory
+    # provider tools — without the gate, `platform_toolsets: telegram: []`
+    # would still leak lcm_* tools into the tool surface and incur the
+    # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
-    if hasattr(agent, "context_compressor") and agent.context_compressor and agent.tools is not None:
+    if (
+        hasattr(agent, "context_compressor")
+        and agent.context_compressor
+        and agent.tools is not None
+        and (
+            agent.enabled_toolsets is None
+            or "context_engine" in agent.enabled_toolsets
+        )
+    ):
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools
             if isinstance(t, dict)
         }
-        for _schema in agent.context_compressor.get_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
+        from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
+        for _raw_schema in agent.context_compressor.get_tool_schemas():
+            _schema = _normalize_tool_schema(_raw_schema)
+            if _schema is None:
+                # A schema with no resolvable name (e.g. an already-wrapped
+                # entry) would append a nameless tool that strict providers
+                # 400 on, disabling the whole toolset (#47707). Skip it.
+                _ra().logger.warning(
+                    "Context engine returned a tool schema with no resolvable "
+                    "name; skipping to avoid poisoning the request (%r)",
+                    _raw_schema,
+                )
+                continue
+            _tname = _schema["name"]
+            if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
             _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                agent._context_engine_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
+            agent.valid_tool_names.add(_tname)
+            agent._context_engine_tool_names.add(_tname)
+            _existing_tool_names.add(_tname)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:
@@ -1384,6 +1742,7 @@ def init_agent(
                 platform=agent.platform or "cli",
                 model=agent.model,
                 context_length=getattr(agent.context_compressor, "context_length", 0),
+                conversation_id=getattr(agent, "_gateway_session_key", None),
             )
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
@@ -1461,12 +1820,31 @@ def init_agent(
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
+        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
+        # exact opt-back-out command. Printed inline at startup for CLI users;
+        # gateway users get the same text replayed via _compression_warning on
+        # turn 1 (set below, after the warning slot is initialized).
+        _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+        if _autoraise and compression_enabled:
+            print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    agent._check_compression_model_feasibility()
+    # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
+    # above only reaches the CLI, so stash the same text here to be replayed
+    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    if _autoraise and compression_enabled:
+        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+    # Lazy feasibility check: deferred to the first turn that approaches the
+    # compression threshold. Running it eagerly here costs ~400ms cold (network
+    # probe of the auxiliary provider chain + /models lookup) on every agent
+    # init, including short ``chat -q`` runs that never reach the threshold.
+    # ``ensure_compression_feasibility_checked`` (called from
+    # ``run_conversation``'s preflight) runs it at most once per agent.
+    agent._compression_feasibility_checked = False
 
     # Snapshot primary runtime for per-turn restoration.  When fallback
     # activates during a turn, the next turn restores these values so the

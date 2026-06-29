@@ -2,20 +2,72 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+
+// DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
+// so toggling process.env in a test body can't move it. Mock just that one
+// export (everything else stays real) and flip the holder per test.
+const envState = { dashboardTuiMode: false }
+vi.mock('../config/env.js', async importActual => {
+  const actual = await importActual<typeof EnvModule>()
+
+  return {
+    ...actual,
+    get DASHBOARD_TUI_MODE() {
+      return envState.dashboardTuiMode
+    }
+  }
+})
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
+    envState.dashboardTuiMode = false
   })
 
-  it('opens the resume picker locally', () => {
+  it('opens the unified sessions overlay for /resume', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/resume')).toBe(true)
-    expect(getOverlayState().picker).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
+  })
+
+  it('resumes a prior session by id when /resume has an argument', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
+    expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old')
+    expect(getOverlayState().sessions).toBe(false)
+  })
+
+  it('opens the unified sessions overlay locally even when the current session is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/sessions')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('blocks immediate resume-by-id while a turn is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx({ session: { ...buildSession(), guardBusySessionSwitch: vi.fn(() => true) } })
+
+    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).toHaveBeenCalled()
+    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+  })
+
+  it('treats /session (singular) as an alias of the sessions overlay', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/session')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
   })
 
   it('handles /redraw locally without slash worker fallback', () => {
@@ -26,12 +78,46 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('opens the editor locally for /prompt without slash worker fallback', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/prompt')).toBe(true)
+    expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('routes /compose to the editor and seeds inline text', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/compose draft text')).toBe(true)
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('draft text')
+    expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
+  })
+
   it('exits locally for /quit', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
     expect(ctx.session.die).toHaveBeenCalledTimes(1)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('keeps hosted dashboard chat alive for /exit', () => {
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/exit')).toBe(true)
+    expect(ctx.session.die).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
+  })
+
+  it('keeps /quit available outside hosted dashboard chat', () => {
+    envState.dashboardTuiMode = false
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/quit')).toBe(true)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
   })
 
   it('handles /update locally and exits with code 42 via dieWithCode', () => {
@@ -45,6 +131,22 @@ describe('createSlashHandler', () => {
     // Advance past the 100ms setTimeout
     vi.advanceTimersByTime(150)
     expect(ctx.session.dieWithCode).toHaveBeenCalledWith(42)
+
+    vi.useRealTimers()
+  })
+
+  it('refuses /update in hosted dashboard chat instead of killing the PTY', () => {
+    vi.useFakeTimers()
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/update')).toBe(true)
+    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_UPDATE_DISABLED_MESSAGE)
+
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
 
     vi.useRealTimers()
   })
@@ -74,6 +176,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/model x-model')).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model'
@@ -94,6 +197,7 @@ describe('createSlashHandler', () => {
       createSlashHandler(ctx)(`/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`)
     ).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
@@ -106,6 +210,7 @@ describe('createSlashHandler', () => {
 
     createSlashHandler(ctx)('/model x-model --global')
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model --global'
@@ -114,6 +219,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -136,6 +242,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning show to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -169,6 +276,35 @@ describe('createSlashHandler', () => {
       action: 'install',
       query: 'foo'
     })
+  })
+
+  it('opens the pet picker for /pet list only', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet list')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet' }))
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet toggle')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet toggle' })
+    )
+  })
+
+  it('routes /pet <slug> to the slash worker without opening the picker', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet boba')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet boba' }))
   })
 
   it('routes /skills inspect <name> to skills.manage', () => {
@@ -222,16 +358,34 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('keeps visible scrollback when branching a TUI session', async () => {
+    patchUiState({ sid: 'sid-parent' })
+    const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
+
+    expect(rpc).toHaveBeenCalledWith('session.branch', { name: 'branch title', session_id: 'sid-parent' })
+    await vi.waitFor(() => {
+      expect(getUiState().sid).toBe('sid-branch')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
+    })
+    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+  })
+
   it('reloads skills in the live gateway and refreshes the catalog', async () => {
     const rpc = vi.fn((method: string) => {
       if (method === 'skills.reload') {
         return Promise.resolve({ output: '42 skill(s) available' })
       }
+
       if (method === 'commands.catalog') {
         return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
       }
+
       return Promise.resolve({})
     })
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     createSlashHandler(ctx)('/reload-skills')
@@ -387,8 +541,8 @@ describe('createSlashHandler', () => {
       Promise.resolve({
         connected: false,
         messages: [
-          "Chrome isn't running with remote debugging — attempting to launch...",
-          'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+          "Chromium-family browser isn't running with remote debugging — attempting to launch...",
+          'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'
         ],
         url: 'http://127.0.0.1:9222'
       })
@@ -397,14 +551,16 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chrome remote debugging at http://127.0.0.1:9222...')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      'checking Chromium-family browser remote debugging at http://127.0.0.1:9222...'
+    )
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        "Chrome isn't running with remote debugging — attempting to launch..."
+        "Chromium-family browser isn't running with remote debugging — attempting to launch..."
       )
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+        'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'
       )
       expect(ctx.transcript.sys).not.toHaveBeenCalledWith('browser connect failed')
     })
@@ -591,6 +747,42 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })
 
+  it('handles command.dispatch payloads returned directly by slash.exec', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.resolve({
+                message: 'complete all the steps and provide a final report',
+                notice: '⊙ Goal set (20-turn budget): complete all the steps and provide a final report',
+                type: 'send'
+              })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/goal complete all the steps and provide a final report')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        '⊙ Goal set (20-turn budget): complete all the steps and provide a final report'
+      )
+    })
+    expect(ctx.transcript.send).toHaveBeenCalledWith('complete all the steps and provide a final report')
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith('/goal: no output')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+  })
+
   it('/history pages the current TUI transcript (user + assistant)', () => {
     const ctx = buildCtx({
       local: {
@@ -736,6 +928,7 @@ const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
 const buildComposer = () => ({
   enqueue: vi.fn(),
   hasSelection: false,
+  openEditor: vi.fn(async () => {}),
   paste: vi.fn(),
   queueRef: { current: [] as string[] },
   selection: { copySelection: vi.fn(async () => '') },
@@ -764,6 +957,7 @@ const buildSession = () => ({
   die: vi.fn(),
   dieWithCode: vi.fn(),
   guardBusySessionSwitch: vi.fn(() => false),
+  newLiveSession: vi.fn(),
   newSession: vi.fn(),
   resetVisibleHistory: vi.fn(),
   resumeById: vi.fn(),
@@ -781,7 +975,8 @@ const buildTranscript = () => ({
 
 const buildVoice = () => ({
   setVoiceEnabled: vi.fn(),
-  setVoiceRecordKey: vi.fn()
+  setVoiceRecordKey: vi.fn(),
+  setVoiceTts: vi.fn()
 })
 
 interface Ctx {

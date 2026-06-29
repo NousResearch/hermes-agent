@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
@@ -9,7 +9,6 @@ import {
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
-import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -26,7 +25,6 @@ describe('applyDisplay', () => {
             bell_on_complete: true,
             details_mode: 'expanded',
             inline_diffs: false,
-            show_cost: true,
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
@@ -42,7 +40,6 @@ describe('applyDisplay', () => {
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
-    expect(s.showCost).toBe(true)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
@@ -66,7 +63,6 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
     expect(s.inlineDiffs).toBe(true)
-    expect(s.showCost).toBe(false)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
@@ -77,13 +73,26 @@ describe('applyDisplay', () => {
     const setBell = vi.fn()
 
     applyDisplay({ config: { display: { mouse_tracking: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
+    expect($uiState.get().mouseTracking).toBe('off')
 
     applyDisplay({ config: { display: { mouse_tracking: true, tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(true)
+    expect($uiState.get().mouseTracking).toBe('all')
 
     applyDisplay({ config: { display: { tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
+    expect($uiState.get().mouseTracking).toBe('off')
+  })
+
+  it('threads mouse_tracking presets through to $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { mouse_tracking: 'wheel' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('wheel')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'buttons' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('buttons')
+
+    applyDisplay({ config: { display: { mouse_tracking: 'all' } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe('all')
   })
 
   it('parses display.sections into per-section overrides', () => {
@@ -183,15 +192,30 @@ describe('normalizeStatusBar', () => {
 })
 
 describe('normalizeMouseTracking', () => {
-  it('defaults on and prefers canonical mouse_tracking over legacy tui_mouse', () => {
-    expect(normalizeMouseTracking({})).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ tui_mouse: false })).toBe(false)
+  it('defaults to all and prefers canonical mouse_tracking over legacy tui_mouse', () => {
+    expect(normalizeMouseTracking({})).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ tui_mouse: false })).toBe('off')
+  })
+
+  it('accepts preset strings (wheel/buttons/all) and their aliases', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'wheel' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'scroll' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'buttons' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'click' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'all' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'full' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'on' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: ' WHEEL ' })).toBe('wheel')
+  })
+
+  it('falls back to all for unknown strings', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'rainbows' })).toBe('all')
   })
 })
 
@@ -307,11 +331,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
 
-    applyDisplay(
-      { config: { display: {}, voice: { record_key: 'ctrl+space' } } },
-      setBell,
-      setVoiceRecordKey
-    )
+    applyDisplay({ config: { display: {}, voice: { record_key: 'ctrl+space' } } }, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).toHaveBeenCalledWith(
       expect.objectContaining({ ch: 'space', mod: 'ctrl', named: 'space', raw: 'ctrl+space' })
@@ -324,9 +344,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
 
     applyDisplay({ config: { display: {} } }, setBell, setVoiceRecordKey)
 
-    expect(setVoiceRecordKey).toHaveBeenCalledWith(
-      expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' })
-    )
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' }))
   })
 
   it('is a no-op when the voice setter is not passed (back-compat)', () => {
@@ -334,9 +352,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
 
     // applyDisplay is used in the setVoiceEnabled-less init path too;
     // omitting the third arg must not throw.
-    expect(() =>
-      applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)
-    ).not.toThrow()
+    expect(() => applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)).not.toThrow()
   })
 
   it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {
@@ -381,9 +397,7 @@ describe('hydrateFullConfig', () => {
     await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
 
     expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
-    expect(setVoiceRecordKey).toHaveBeenCalledWith(
-      expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' })
-    )
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' }))
     expect(setBell).toHaveBeenCalledWith(false)
   })
 

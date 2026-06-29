@@ -1,12 +1,14 @@
 ---
 sidebar_position: 16
-title: "xAI Grok OAuth (SuperGrok Subscription)"
-description: "Sign in with your SuperGrok subscription to use Grok models in Hermes Agent — no API key required"
+title: "xAI Grok OAuth (SuperGrok / X Premium+)"
+description: "Sign in with your SuperGrok or X Premium+ subscription to use Grok models in Hermes Agent — no API key required"
 ---
 
-# xAI Grok OAuth (SuperGrok Subscription)
+# xAI Grok OAuth (SuperGrok / X Premium+)
 
-Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using your existing **SuperGrok subscription**. No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
+Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using either a **SuperGrok subscription** ([grok.com](https://x.ai/grok)) or an **X Premium+ subscription** (linked X account). No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
+
+When you sign in with an X account that has Premium+, xAI automatically links the subscription status to your xAI session, so the OAuth flow works the same as it does for direct SuperGrok subscribers.
 
 The transport reuses the `codex_responses` adapter (xAI exposes a Responses-style endpoint), so reasoning, tool-calling, streaming, and prompt caching work without any adapter changes.
 
@@ -17,20 +19,20 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 | Item | Value |
 |------|-------|
 | Provider ID | `xai-oauth` |
-| Display name | xAI Grok OAuth (SuperGrok Subscription) |
+| Display name | xAI Grok OAuth (SuperGrok / X Premium+) |
 | Auth type | Browser OAuth 2.0 PKCE (loopback callback) |
 | Transport | xAI Responses API (`codex_responses`) |
-| Default model | `grok-4.3` |
+| Default model | `grok-build-0.1` |
 | Endpoint | `https://api.x.ai/v1` |
 | Auth server | `https://accounts.x.ai` |
 | Requires env var | No (`XAI_API_KEY` is **not** used for this provider) |
-| Subscription | [SuperGrok](https://x.ai/grok) — see note below |
+| Subscription | [SuperGrok](https://x.ai/grok) or [X Premium+](https://x.com/i/premium_sign_up) — see note below |
 
 ## Prerequisites
 
 - Python 3.9+
 - Hermes Agent installed
-- An active SuperGrok subscription on your xAI account
+- An active **SuperGrok** subscription on your xAI account, **or** an **X Premium+** subscription on the X account you sign in with (xAI links the subscription automatically)
 - A browser available on the local machine (or use `--no-browser` for remote sessions)
 
 :::warning xAI may restrict OAuth API access by tier
@@ -42,10 +44,10 @@ xAI's backend enforces its own allowlist on the OAuth API surface and has been s
 ```bash
 # Launch the provider and model picker
 hermes model
-# → Select "xAI Grok OAuth (SuperGrok Subscription)" from the provider list
+# → Select "xAI Grok OAuth (SuperGrok / X Premium+)" from the provider list
 # → Hermes opens your browser to accounts.x.ai
 # → Approve access in the browser
-# → Pick a model (grok-4.3 is at the top)
+# → Pick a model (grok-build-0.1 is at the top)
 # → Start chatting
 
 hermes
@@ -92,12 +94,14 @@ hermes model --manual-paste
 
 See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md#browser-only-remote-cloud-shell--codespaces--ec2-instance-connect) for the full walkthrough. Regression fix for [#26923](https://github.com/NousResearch/hermes-agent/issues/26923).
 
+If the consent page renders the authorization code directly on the page (xAI's current behavior on browser-based consoles) instead of redirecting to your `127.0.0.1:56121/callback`, paste **just the bare code value** at the `Callback URL:` prompt — Hermes accepts the full URL, a bare `?code=...&state=...` query fragment, or a bare code interchangeably.
+
 ## How the Login Works
 
 1. Hermes opens your browser to `accounts.x.ai`.
 2. You sign in (or confirm your existing session) and approve access.
 3. xAI redirects back to Hermes and the tokens are saved to `~/.hermes/auth.json`.
-4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth remove xai-oauth` or revoke access from your xAI account settings.
+4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth logout xai-oauth` or revoke access from your xAI account settings.
 
 ## Checking Login Status
 
@@ -111,14 +115,14 @@ The `◆ Auth Providers` section will show the current state of every provider, 
 
 ```bash
 hermes model
-# → Select "xAI Grok OAuth (SuperGrok Subscription)"
-# → Pick from the model list (grok-4.3 is pinned to the top)
+# → Select "xAI Grok OAuth (SuperGrok / X Premium+)"
+# → Pick from the model list (grok-build-0.1 is pinned to the top)
 ```
 
 Or set the model directly:
 
 ```bash
-hermes config set model.default grok-4.3
+hermes config set model.default grok-build-0.1
 hermes config set model.provider xai-oauth
 ```
 
@@ -128,7 +132,7 @@ After login, `~/.hermes/config.yaml` will contain:
 
 ```yaml
 model:
-  default: grok-4.3
+  default: grok-build-0.1
   provider: xai-oauth
   base_url: https://api.x.ai/v1
 ```
@@ -155,7 +159,7 @@ hermes tools
 # → Text-to-Speech       → "xAI TTS"
 # → Image Generation     → "xAI Grok Imagine (image)"
 # → Video Generation     → "xAI Grok Imagine"
-# → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok Subscription)"
+# → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok / X Premium+)"
 ```
 
 If OAuth tokens are already stored, the picker confirms it and skips the credential prompt. If neither OAuth nor `XAI_API_KEY` is set, the picker offers a 3-choice menu: OAuth login, paste API key, or skip.
@@ -165,30 +169,33 @@ The `video_gen` toolset is disabled by default. Enable it in `hermes tools` → 
 :::
 
 :::note X search auto-enables when xAI credentials are present
-The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok OAuth token or `XAI_API_KEY`) are configured. Disable explicitly via `hermes tools` → `🐦 X (Twitter) Search` (press space) if you don't want this. The tool routes through xAI's built-in `x_search` Responses API — it works with **either** your SuperGrok OAuth login or a paid `XAI_API_KEY`, and prefers OAuth when both are configured (uses your subscription quota instead of API spend). The tool schema is hidden from the model when no xAI credentials are configured, regardless of whether the toolset is enabled.
+The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Premium+ OAuth token or `XAI_API_KEY`) are configured. Disable explicitly via `hermes tools` → `🐦 X (Twitter) Search` (press space) if you don't want this. The tool routes through xAI's built-in `x_search` Responses API — it works with **either** your SuperGrok / X Premium+ OAuth login or a paid `XAI_API_KEY`, and prefers OAuth when both are configured (uses your subscription quota instead of API spend). The tool schema is hidden from the model when no xAI credentials are configured, regardless of whether the toolset is enabled.
 :::
 
 ### Models
 
 | Tool | Model | Notes |
 |------|-------|-------|
-| Chat | `grok-4.3` | Default; auto-selected when you log in via OAuth |
+| Chat | `grok-build-0.1` | Default; auto-selected when you log in via OAuth |
+| Chat | `grok-4.3` | Previous default |
 | Chat | `grok-4.20-0309-reasoning` | Reasoning variant |
 | Chat | `grok-4.20-0309-non-reasoning` | Non-reasoning variant |
 | Chat | `grok-4.20-multi-agent-0309` | Multi-agent variant |
 | Image | `grok-imagine-image` | Default; ~5–10 s |
 | Image | `grok-imagine-image-quality` | Higher fidelity; ~10–20 s |
-| Video | `grok-imagine-video` | Text-to-video and image-to-video; up to 7 reference images |
+| Video | `grok-imagine-video` | Text-to-video |
+| Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |
 | TTS | (default voice) | xAI `/v1/tts` endpoint |
 
-The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.3` is always pinned to the top of the list.
+The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-build-0.1` is always pinned to the top of the list.
 
 ## Environment Variables
 
 | Variable | Effect |
 |----------|--------|
 | `XAI_BASE_URL` | Override the default `https://api.x.ai/v1` endpoint (rarely needed). |
-| `HERMES_INFERENCE_PROVIDER` | Force the active provider at runtime, e.g. `HERMES_INFERENCE_PROVIDER=xai-oauth hermes`. |
+
+To select xAI as the active provider, set `model.provider: xai-oauth` in `config.yaml` (use `hermes setup` for the guided flow) or pass `--provider xai-oauth` for a single invocation.
 
 ## Troubleshooting
 

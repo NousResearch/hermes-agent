@@ -540,8 +540,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # they don't sit in the chat forever as "Hermes is thinking…".
         self._orphan_typing_messages: Dict[str, List[str]] = {}
         # FlowControl knobs (env-configurable).
-        self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
-        self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
+        try:
+            self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
+        except (ValueError, TypeError):
+            self._max_messages = 1
+        try:
+            self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
+        except (ValueError, TypeError):
+            self._max_bytes = 16 * 1024 * 1024
 
     # ------------------------------------------------------------------
     # Configuration loading and validation
@@ -755,7 +761,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Validate config, authenticate, start Pub/Sub pull, resolve bot id."""
         # First call into the heavy google-cloud stack — trigger the lazy
         # import. ``_load_google_modules()`` is idempotent and rebinds the
@@ -1390,7 +1396,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if arg == "start":
             if not oauth_helper._client_secret_path().exists():
                 await _reply(
-                    "⚠️ No client credentials stored on the host. Send "
+                    "⚠️ No client credentials stored for this profile. Send "
                     "`/setup-files` (no args) for setup instructions."
                 )
                 return True

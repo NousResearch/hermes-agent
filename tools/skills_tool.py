@@ -73,12 +73,16 @@ from hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
+from agent.skill_utils import (
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
+    is_skill_support_path as _is_skill_support_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +105,37 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 _REMOTE_ENV_BACKENDS = frozenset(
-    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+    {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
+
+
+def _skill_lookup_path_error(name: str) -> Optional[str]:
+    """Return an error if a local skill lookup *name* can escape search roots.
+
+    The skill ``name`` is joined onto each trusted search dir to build the
+    on-disk lookup path, so it must stay relative and free of ``..`` segments —
+    otherwise ``name="../outside"`` or an absolute path could select a skill
+    (and read files) outside the skills directory. Mirrors the ``file_path``
+    validation done later via ``tools.path_security``. We also reject Windows
+    drive paths (e.g. ``C:\\skills``), whose ``:`` would otherwise be misread as
+    a plugin namespace separator.
+    """
+    from tools.path_security import has_traversal_component
+
+    if not isinstance(name, str):
+        return "Skill name must be a string."
+    candidate = name.strip()
+    if (
+        PurePosixPath(candidate).is_absolute()
+        or PureWindowsPath(candidate).is_absolute()
+        or PureWindowsPath(candidate).drive
+    ):
+        return "Skill name must be a relative path within the skills directory."
+    if has_traversal_component(candidate):
+        return "Skill name cannot contain '..' path traversal components."
+    return None
 
 
 def load_env() -> Dict[str, str]:
@@ -119,6 +149,8 @@ def load_env() -> Dict[str, str]:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
+                if line.startswith("export "):
+                    line = line[7:]
                 key, _, value = line.partition("=")
                 env_vars[key.strip()] = value.strip().strip("\"'")
     return env_vars
@@ -156,6 +188,18 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     as a public re-export so existing callers don't need updating.
     """
     from agent.skill_utils import skill_matches_platform as _impl
+    return _impl(frontmatter)
+
+
+def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
+    """Check if a skill is relevant to the current runtime environment.
+
+    Delegates to ``agent.skill_utils.skill_matches_environment`` — kept here
+    as a public re-export so existing callers don't need updating. This is an
+    offer-time relevance gate (kanban/docker/s6), NOT a hard-compatibility gate;
+    explicit skill loads bypass it.
+    """
+    from agent.skill_utils import skill_matches_environment as _impl
     return _impl(frontmatter)
 
 
@@ -305,7 +349,13 @@ def _capture_required_environment_variables(
         }
 
     missing_names = [entry["name"] for entry in missing_entries]
-    if _is_gateway_surface():
+    # Most gateway surfaces (messaging platforms) can't prompt for a secret, so
+    # they short-circuit to the "unsupported" hint. Interactive gateway surfaces
+    # — the desktop app / TUI — set HERMES_INTERACTIVE and register a
+    # secret-capture callback that routes to a secure secret.request overlay, so
+    # they fall through and actually prompt. (HERMES_INTERACTIVE is the same flag
+    # tools/approval.py uses to tell an interactive surface from a messaging one.)
+    if _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
         return {
             "missing_names": missing_names,
             "setup_skipped": False,
@@ -538,11 +588,15 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         config = load_config()
         skills_cfg = config.get("skills", {})
         resolved_platform = platform or os.getenv("HERMES_PLATFORM") or _get_session_platform()
+        global_disabled = skills_cfg.get("disabled", [])
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
             if platform_disabled is not None:
-                return name in platform_disabled
-        return name in skills_cfg.get("disabled", [])
+                # A globally-disabled skill stays disabled on every platform;
+                # the platform list adds to it rather than replacing it. Keep
+                # in sync with agent.skill_utils.get_disabled_skill_names.
+                return name in platform_disabled or name in global_disabled
+        return name in global_disabled
     except Exception:
         return False
 
@@ -586,6 +640,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if not skill_matches_platform(frontmatter):
                     continue
 
+                if not skill_matches_environment(frontmatter):
+                    continue
+
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
                 if name in seen_names:
                     continue
@@ -627,49 +684,6 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
-
-
-def _load_category_description(category_dir: Path) -> Optional[str]:
-    """
-    Load category description from DESCRIPTION.md if it exists.
-
-    Args:
-        category_dir: Path to the category directory
-
-    Returns:
-        Description string or None if not found
-    """
-    desc_file = category_dir / "DESCRIPTION.md"
-    if not desc_file.exists():
-        return None
-
-    try:
-        content = desc_file.read_text(encoding="utf-8")
-        # Parse frontmatter if present
-        frontmatter, body = _parse_frontmatter(content)
-
-        # Prefer frontmatter description, fall back to first non-header line
-        description = frontmatter.get("description", "")
-        if not description:
-            for line in body.strip().split("\n"):
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    description = line
-                    break
-
-        # Truncate to reasonable length
-        if len(description) > MAX_DESCRIPTION_LENGTH:
-            description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
-
-        return description if description else None
-    except (UnicodeDecodeError, PermissionError) as e:
-        logger.debug("Failed to read category description %s: %s", desc_file, e)
-        return None
-    except Exception as e:
-        logger.warning(
-            "Error parsing category description %s: %s", desc_file, e, exc_info=True
-        )
-        return None
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -869,6 +883,21 @@ def skill_view(
         JSON string with skill content or error message
     """
     try:
+        # Validate before the ':' qualified-name dispatch so a Windows drive
+        # path (e.g. C:\skills\foo) can't be reinterpreted as a plugin
+        # namespace, and so a traversal/absolute name never reaches the
+        # search-dir join that builds direct_path below.
+        lookup_error = _skill_lookup_path_error(name)
+        if lookup_error:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": lookup_error,
+                    "hint": "Use a skill name or relative path within the skills directory.",
+                },
+                ensure_ascii=False,
+            )
+
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────
         # Names containing ':' are routed to the plugin skill registry.
@@ -939,6 +968,20 @@ def skill_view(
 
         from agent.skill_utils import get_external_skills_dirs
 
+        # The categorized fall-through form (namespace/bare) joins onto each
+        # search dir too; re-validate it since `bare` is not namespace-checked.
+        if local_category_name:
+            lookup_error = _skill_lookup_path_error(local_category_name)
+            if lookup_error:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": lookup_error,
+                        "hint": "Use a skill name or relative path within the skills directory.",
+                    },
+                    ensure_ascii=False,
+                )
+
         # Build list of all skill directories to search
         all_dirs = []
         if SKILLS_DIR.exists():
@@ -982,9 +1025,15 @@ def skill_view(
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
             direct_path = search_dir / name
-            if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+            if (
+                not _is_skill_support_path(direct_path)
+                and direct_path.is_dir()
+                and (direct_path / "SKILL.md").exists()
+            ):
                 _record(direct_path, direct_path / "SKILL.md")
-            elif direct_path.with_suffix(".md").exists():
+            elif direct_path.with_suffix(".md").exists() and not _is_skill_support_path(
+                direct_path.with_suffix(".md")
+            ):
                 _record(None, direct_path.with_suffix(".md"))
 
             # Strategy 1b: categorized form for plugin namespace fall-through
@@ -992,20 +1041,44 @@ def skill_view(
             # tries the on-disk path "myplugin/explore").
             if local_category_name:
                 categorized_path = search_dir / local_category_name
-                if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
+                if (
+                    not _is_skill_support_path(categorized_path)
+                    and categorized_path.is_dir()
+                    and (categorized_path / "SKILL.md").exists()
+                ):
                     _record(categorized_path, categorized_path / "SKILL.md")
-                elif categorized_path.with_suffix(".md").exists():
+                elif categorized_path.with_suffix(
+                    ".md"
+                ).exists() and not _is_skill_support_path(
+                    categorized_path.with_suffix(".md")
+                ):
                     _record(None, categorized_path.with_suffix(".md"))
 
             # Strategy 2: recursive by directory name (catches nested skills
-            # like "foundations/runtime/explore-codebase" called by bare name).
+            # like "foundations/runtime/explore-codebase" called by bare name),
+            # plus frontmatter `name:` lookup. `skills_list()` exposes the
+            # frontmatter name, so `skill_view(name)` must accept it too even
+            # when the on-disk directory is a shorter category/alias.
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
                     _record(found_skill_md.parent, found_skill_md)
+                    continue
+                try:
+                    fm_content = found_skill_md.read_text(encoding="utf-8")
+                    fm, _ = _parse_frontmatter(fm_content)
+                except Exception:
+                    fm = {}
+                if fm.get("name") == name:
+                    _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            # Exclude skill support docs: references/templates/assets/scripts
+            # are loaded through skill_view(skill, file_path=...) and must not
+            # shadow or collide with real skills that share the same basename.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
+                if found_md.name != "SKILL.md" and not _is_skill_support_path(
+                    found_md
+                ):
                     _record(None, found_md)
 
         if len(candidates) > 1:
@@ -1565,4 +1638,3 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
-

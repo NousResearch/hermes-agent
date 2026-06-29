@@ -429,6 +429,28 @@ def aggregate_moa_context(
     )
 
 
+def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
+    """Attach the per-turn reference block at the END of the aggregator prompt.
+
+    The reference text differs on every tool-loop iteration. In an agentic loop
+    the most recent ``user`` message is the *original task* sitting near the TOP
+    of the context (everything after it is assistant/tool turns), so merging the
+    turn-varying reference block into it diverges the prompt prefix early — the
+    server's KV cache cannot be reused and the entire conversation re-prefills on
+    every step (full prefill each tool call, dominating latency on long contexts).
+
+    Appending at the very end keeps the ``[system][task][tool-history]`` prefix
+    stable and cache-reusable (only the new block re-prefills), and gives the
+    aggregator the references with recency. Merge into the last message only when
+    it is already a trailing string ``user`` turn (plain chat — still at the end).
+    """
+    last = agg_messages[-1] if agg_messages else None
+    if last is not None and last.get("role") == "user" and isinstance(last.get("content"), str):
+        last["content"] = last["content"] + "\n\n" + guidance
+    else:
+        agg_messages.append({"role": "user", "content": guidance})
+
+
 class MoAChatCompletions:
     """OpenAI-chat-compatible facade where the aggregator is the acting model."""
 
@@ -550,12 +572,7 @@ class MoAChatCompletions:
                 "answer the user directly or call tools as needed.\n\n"
                 f"{joined}"
             )
-            for msg in reversed(agg_messages):
-                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                    msg["content"] = msg["content"] + "\n\n" + guidance
-                    break
-            else:
-                agg_messages.append({"role": "user", "content": guidance})
+            _attach_reference_guidance(agg_messages, guidance)
 
         if aggregator.get("provider") == "moa":
             raise RuntimeError("MoA aggregator cannot be another MoA preset")

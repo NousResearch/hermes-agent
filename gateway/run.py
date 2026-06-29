@@ -2777,8 +2777,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Initialize session database for session_search tool support
         self._session_db = None
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            from hermes_state import AsyncSessionDB, SessionDB
+            self._session_db = AsyncSessionDB(SessionDB())
         except Exception as e:
             # WARNING (not DEBUG) so the failure appears in errors.log — matches
             # cli.py's handling of the same init path.  Users hitting NFS-mounted
@@ -2799,7 +2799,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from hermes_cli.config import load_config as _load_full_config
                 _sess_cfg = (_load_full_config().get("sessions") or {})
                 if _sess_cfg.get("auto_prune", False):
-                    self._session_db.maybe_auto_prune_and_vacuum(
+                    # Construction-time, before the loop serves traffic; sync DB is fine.
+                    self._session_db._db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                         vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
@@ -6578,23 +6579,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if self._session_db is None:
                     await asyncio.sleep(interval)
                     continue
-                pending = await asyncio.to_thread(self._session_db.list_pending_handoffs)
+                pending = await self._session_db.list_pending_handoffs()
                 for row in pending:
                     session_id = row.get("id")
                     if not session_id:
                         continue
-                    if not await asyncio.to_thread(self._session_db.claim_handoff, session_id):
+                    if not await self._session_db.claim_handoff(session_id):
                         # Another tick or another gateway already claimed it.
                         continue
                     try:
                         await self._process_handoff(row)
-                        await asyncio.to_thread(self._session_db.complete_handoff, session_id)
+                        await self._session_db.complete_handoff(session_id)
                     except Exception as exc:
                         logger.warning(
                             "Handoff for session %s failed: %s",
                             session_id, exc, exc_info=True,
                         )
-                        await asyncio.to_thread(self._session_db.fail_handoff, session_id, str(exc))
+                        await self._session_db.fail_handoff(session_id, str(exc))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -7443,8 +7444,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # old gateway's connection holding the WAL lock until Python
             # actually exits — causing 'database is locked' errors when
             # the new gateway tries to open the same file.
-            for _db_holder in (self, getattr(self, "session_store", None)):
-                _db = getattr(_db_holder, "_db", None) if _db_holder else None
+            # ``self`` holds the DB at ``_session_db`` (an AsyncSessionDB facade);
+            # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
+            _self_db = getattr(self, "_session_db", None)
+            _self_db = getattr(_self_db, "_db", _self_db)
+            for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
                 if _db is None or not hasattr(_db, "close"):
                     continue
                 try:
@@ -9641,10 +9645,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):
             try:
-                binding = self._session_db.get_telegram_topic_binding(
+                binding = (await self._session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
-                ) if self._session_db else None
+                )) if self._session_db else None
             except Exception:
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
@@ -9658,7 +9662,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # a compression parent, so this is cheap and safe.
                 if bound_session_id and self._session_db is not None:
                     try:
-                        canonical_session_id = self._session_db.get_compression_tip(
+                        canonical_session_id = await self._session_db.get_compression_tip(
                             bound_session_id,
                         )
                     except Exception:
@@ -10450,7 +10454,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # prompt caching.  Refreshing here makes the guard fire only on a
             # DIFFERENT process's writes.  Uses the (possibly compaction-
             # updated) live session_id.  Fail-safe inside the helper.
-            self._refresh_agent_cache_message_count(
+            await self._refresh_agent_cache_message_count(
                 session_key, session_entry.session_id
             )
 
@@ -12481,7 +12485,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "5. /topic <id> inside a topic restores an old session into it."
         )
 
-    def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
+    async def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -12491,7 +12495,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "Could not determine chat ID."
         # No-op if never enabled.
         try:
-            currently_enabled = self._session_db.is_telegram_topic_mode_enabled(
+            currently_enabled = await self._session_db.is_telegram_topic_mode_enabled(
                 chat_id=chat_id,
                 user_id=str(source.user_id or ""),
             )
@@ -12500,7 +12504,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not currently_enabled:
             return "Multi-session topic mode is not currently enabled for this chat."
         try:
-            self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
+            await self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
         except Exception as exc:
             logger.exception("Failed to disable Telegram topic mode")
             return f"Failed to disable topic mode: {exc}"
@@ -12518,7 +12522,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
 
-    def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
+    async def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
         lines = [
             "Telegram multi-session topics are enabled.",
             "",
@@ -12528,7 +12532,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "",
         ]
         try:
-            sessions = self._session_db.list_unlinked_telegram_sessions_for_user(
+            sessions = await self._session_db.list_unlinked_telegram_sessions_for_user(
                 chat_id=str(source.chat_id),
                 user_id=str(source.user_id),
                 limit=10,
@@ -12567,11 +12571,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
-        session_id = self._session_db.resolve_session_id(raw_session_id.strip())
+        session_id = await self._session_db.resolve_session_id(raw_session_id.strip())
         if not session_id:
             return f"Session not found: {raw_session_id.strip()}"
 
-        session = self._session_db.get_session(session_id)
+        session = await self._session_db.get_session(session_id)
         if not session:
             return f"Session not found: {raw_session_id.strip()}"
         if str(session.get("source") or "") != "telegram":
@@ -12579,8 +12583,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if str(session.get("user_id") or "") != str(source.user_id):
             return "That session does not belong to this Telegram user."
 
-        linked = self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
-        current_binding = self._session_db.get_telegram_topic_binding(
+        linked = await self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
+        current_binding = await self._session_db.get_telegram_topic_binding(
             chat_id=str(source.chat_id),
             thread_id=str(source.thread_id),
         )
@@ -12590,7 +12594,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_key = self._session_key_for_source(source)
         try:
-            self._session_db.bind_telegram_topic(
+            await self._session_db.bind_telegram_topic(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
                 user_id=str(source.user_id),
@@ -12603,10 +12607,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "That session is already linked to another Telegram topic."
             raise
 
-        title = self._session_db.get_session_title(session_id) or session_id
+        title = await self._session_db.get_session_title(session_id) or session_id
         last_assistant = None
         try:
-            for message in reversed(self._session_db.get_messages(session_id)):
+            for message in reversed(await self._session_db.get_messages(session_id)):
                 if message.get("role") == "assistant" and message.get("content"):
                     last_assistant = str(message.get("content"))
                     break
@@ -14631,7 +14635,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if release_running_state:
             self._release_running_agent_state(session_key)
 
-    def _refresh_agent_cache_message_count(
+    async def _refresh_agent_cache_message_count(
         self, session_key: str, session_id: Optional[str]
     ) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn.
@@ -14663,7 +14667,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not _cache_lock or _cache is None:
             return
         try:
-            _sess_row = self._session_db.get_session(session_id)
+            _sess_row = await self._session_db.get_session(session_id)
             _live = _sess_row.get("message_count", 0) if _sess_row else None
         except Exception:
             return
@@ -16346,7 +16350,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _current_msg_count = None
             if self._session_db is not None and session_id:
                 try:
-                    _sess_row = self._session_db.get_session(session_id)
+                    # run_sync is off-loop (executor); sync DB is fine.
+                    _sess_row = self._session_db._db.get_session(session_id)
                     if _sess_row:
                         _current_msg_count = _sess_row.get("message_count", 0)
                 except Exception:
@@ -17044,7 +17049,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and self._session_db is not None
                 ):
                     try:
-                        _binding = self._session_db.get_telegram_topic_binding_by_session(
+                        # run_sync is off-loop (executor); sync DB is fine.
+                        _binding = self._session_db._db.get_telegram_topic_binding_by_session(
                             session_id=agent_session_id,
                         )
                         if _binding and _binding.get("thread_id"):
@@ -17169,7 +17175,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             title,
                         )
                     maybe_auto_title(
-                        self._session_db,
+                        getattr(self._session_db, "_db", self._session_db),
                         effective_session_id,
                         message,
                         final_response,

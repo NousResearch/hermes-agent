@@ -122,29 +122,40 @@ def test_non_callable_attribute_passes_through():
 _GATEWAY_FILES = ("gateway/run.py", "gateway/slash_commands.py")
 # The only legitimate non-loop paths:
 #   - SessionDB.sanitize_title: pure @staticmethod string cleaning, no DB.
-#   - self._session_db._db.<x>: the sync escape, allowed ONLY at construction.
-_ALLOWED_SYNC_DB_ESCAPES = 1  # exactly the maybe_auto_prune call in __init__
+#   - self._session_db._db.<x>: the sync escape, allowed ONLY where the call is
+#     provably off the event loop — construction (__init__, before the loop
+#     serves) and the run_sync closure (executed in a thread-pool executor).
+#     Three such sites today; a fourth must be justified and this count bumped.
+_ALLOWED_SYNC_DB_ESCAPES = 3
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-class _RawCallVisitor(ast.NodeVisitor):
-    """Collect calls of the shape self._session_db.<method>(...).
+class _RawCallVisitor:
+    """Collect non-awaited self._session_db.<method>(...) calls in a module.
 
-    Whether the call is awaited is irrelevant to the AST node; an Await wraps
-    the Call. We flag the raw shape and separately exempt the _db. escape and
-    the sanitize_title staticmethod (which is called on the class, not self).
+    An ``await x.y()`` parses as Await(value=Call(...)); those Call nodes are
+    exempt — they're the migrated path. We flag only Calls that are NOT directly
+    awaited, and separately count the self._session_db._db.<x> sync escape. The
+    sanitize_title staticmethod is called on the class (SessionDB.sanitize_title),
+    so it never matches the self._session_db.<method> shape.
     """
 
-    def __init__(self):
-        self.raw_calls = []  # (method, lineno)
+    def __init__(self, tree: ast.AST):
+        self.raw_calls = []  # (method, lineno) — non-awaited
         self.db_escapes = []  # self._session_db._db.<x> sites (lineno)
 
-    def visit_Call(self, node: ast.Call):
-        func = node.func
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
+        awaited = {id(n.value) for n in ast.walk(tree)
+                   if isinstance(n, ast.Await) and isinstance(n.value, ast.Call)}
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute)):
+                continue
             inner = func.value
             # self._session_db._db.<method>(...)  -> sync escape
             if (
@@ -155,21 +166,19 @@ class _RawCallVisitor(ast.NodeVisitor):
                 and inner.value.value.id == "self"
             ):
                 self.db_escapes.append(inner.lineno)
-            # self._session_db.<method>(...)  -> raw loop call
+            # self._session_db.<method>(...) not wrapped in await -> raw loop call
             elif (
                 inner.attr == "_session_db"
                 and isinstance(inner.value, ast.Name)
                 and inner.value.id == "self"
+                and id(node) not in awaited
             ):
                 self.raw_calls.append((func.attr, node.lineno))
-        self.generic_visit(node)
 
 
 def _scan(rel_path: str) -> _RawCallVisitor:
     source = (_repo_root() / rel_path).read_text(encoding="utf-8")
-    visitor = _RawCallVisitor()
-    visitor.visit(ast.parse(source))
-    return visitor
+    return _RawCallVisitor(ast.parse(source))
 
 
 def test_no_raw_session_db_calls_on_gateway_loop():
@@ -189,15 +198,16 @@ def test_no_raw_session_db_calls_on_gateway_loop():
     )
 
 
-def test_sync_db_escape_confined_to_construction():
-    """The self._session_db._db. sync escape must stay confined to one site.
+def test_sync_db_escape_confined_to_off_loop_sites():
+    """The self._session_db._db. sync escape must stay confined to known sites.
 
-    It is legitimate only at construction (before the loop serves traffic).
-    More than one occurrence means a blocking call leaked back onto the loop
-    through the escape hatch.
+    It is legitimate only where the call is provably off the loop: construction
+    (before the loop serves) and the run_sync executor closure. More occurrences
+    than the reviewed count means a blocking call may have leaked back onto the
+    loop through the escape hatch.
     """
     total = sum(len(_scan(rel).db_escapes) for rel in _GATEWAY_FILES)
     assert total <= _ALLOWED_SYNC_DB_ESCAPES, (
         f"self._session_db._db. sync escape used {total} times; "
-        f"at most {_ALLOWED_SYNC_DB_ESCAPES} (construction only) is allowed."
+        f"at most {_ALLOWED_SYNC_DB_ESCAPES} (construction + run_sync) is allowed."
     )

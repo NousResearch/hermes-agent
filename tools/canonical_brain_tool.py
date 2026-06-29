@@ -42,6 +42,13 @@ ALLOWED_EVENT_TYPES = {
     "semantic_event.drafted",
 }
 RECEIPT_REQUIRED_EVENT_TYPES = {"route_back.sent"}
+FORBIDDEN_ROUTE_BACK_DM_KEYS = {
+    "dm_channel_id",
+    "direct_message_channel_id",
+    "recipient_id",
+    "dm_recipient_id",
+}
+FORBIDDEN_ROUTE_BACK_DM_VALUES = {"dm", "direct_message", "private_dm", "user_dm"}
 SECRET_MARKERS = (
     "api_key=", "apikey=", "token=", "password=", "secret=",
     "authorization: bearer", "private_key", "BEGIN PRIVATE KEY",
@@ -259,6 +266,44 @@ def _validate_append_request(
         receipt = payload.get("receipt") if isinstance(payload, dict) else None
         if not isinstance(receipt, dict) or not receipt.get("message_id"):
             raise ValueError("route_back.sent requires payload.receipt.message_id")
+        _validate_no_route_back_dm_refs(payload)
+
+
+def _contains_forbidden_dm_route_ref(value: Any) -> bool:
+    """Return True when route-back target/receipt metadata points at a DM.
+
+    Muncho's SkyVision policy allows public approved channels/threads only for
+    team route-backs. A Discord user mention can still be used inside a public
+    channel message, but DM channel ids or recipient-id delivery metadata must
+    not be recorded as valid route_back.sent evidence.
+    """
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized_key = _normalize_secret_key(key)
+            if normalized_key in FORBIDDEN_ROUTE_BACK_DM_KEYS and _has_structured_secret_value(nested):
+                return True
+            if normalized_key in {"channel_type", "target_type", "delivery_type", "lane", "role"}:
+                normalized_value = str(nested or "").strip().casefold()
+                if normalized_value in FORBIDDEN_ROUTE_BACK_DM_VALUES or normalized_value.endswith("_dm"):
+                    return True
+            if _contains_forbidden_dm_route_ref(nested):
+                return True
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return any(_contains_forbidden_dm_route_ref(item) for item in value)
+    return False
+
+
+def _validate_no_route_back_dm_refs(payload: Dict[str, Any]) -> None:
+    route_back = payload.get("route_back") if isinstance(payload, dict) else None
+    surfaces = [
+        payload.get("target_ref"),
+        payload.get("receipt"),
+        route_back.get("target_ref") if isinstance(route_back, dict) else None,
+        route_back.get("receipt") if isinstance(route_back, dict) else None,
+    ]
+    if any(_contains_forbidden_dm_route_ref(surface) for surface in surfaces if surface):
+        raise ValueError("route_back.sent forbids direct-message/DM delivery receipts; use public approved channel/thread target or record_blocked")
 
 
 def canonical_event_append_tool(
@@ -410,6 +455,8 @@ def route_back_tool(
             raise ValueError(f"mode_not_allowed:{mode}")
         if not target_ref.get("id") and not target_ref.get("mention") and not target_ref.get("lane"):
             raise ValueError("target_ref requires id, mention, or lane")
+        if _contains_forbidden_dm_route_ref(target_ref) or _contains_forbidden_dm_route_ref(receipt):
+            raise ValueError("route_back_state forbids direct-message/DM targets; use public approved channel/thread target or record_blocked")
         base_payload = {
             "route_back": {
                 "target_ref": target_ref,

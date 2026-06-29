@@ -174,6 +174,8 @@ def test_prompt_tells_owner_thread_to_continue_case_and_add_next_action(monkeypa
     assert "email subject/body" in prompt
     assert "forward/notify the requester" in prompt
     assert "not a terminal outcome" in prompt
+    assert "must not send route-backs by DM" in prompt
+    assert "public approved Discord channels/threads" in prompt
     assert "route_back.required" in prompt
     assert "route_back.intent.created" in prompt
     assert "Keep working in the same turn" in prompt

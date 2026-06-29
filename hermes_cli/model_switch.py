@@ -1218,6 +1218,35 @@ def switch_model(
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 
+    # --- Check: provider requires API key but none was resolved ---
+    # resolve_runtime_provider() returns api_key="" instead of raising when
+    # the env var is unset, so a missing-key provider slips through and
+    # bricks the session when the client build fails.  Catch it here so the
+    # user sees a clear message before any state mutation. (#50163)
+    if not api_key or not api_key.strip():
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY as _PR
+            _pcfg = _PR.get(target_provider)
+        except Exception:
+            _pcfg = None
+        if (
+            _pcfg is not None
+            and getattr(_pcfg, "auth_type", "") == "api_key"
+            and getattr(_pcfg, "api_key_env_vars", ())
+        ):
+            _env_names = ", ".join(_pcfg.api_key_env_vars)
+            return ModelSwitchResult(
+                success=False,
+                new_model=new_model,
+                target_provider=target_provider,
+                provider_label=provider_label,
+                is_global=is_global,
+                error_message=(
+                    f"Provider '{provider_label}' requires an API key, "
+                    f"but none was found. Set one of: {_env_names}"
+                ),
+            )
+
     # --- Validate ---
     try:
         validation = validate_requested_model(

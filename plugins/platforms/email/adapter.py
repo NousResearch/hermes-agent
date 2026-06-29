@@ -1304,11 +1304,16 @@ async def _standalone_send(
     force_document=False,
 ):
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
-    standalone_sender_fn contract; replaces the legacy _send_email helper."""
+    standalone_sender_fn contract; replaces the legacy _send_email helper.
+
+    Sends multipart/alternative with plain text + HTML (when markdown is
+    available). Uses the same inline CSS styling as the adapter class.
+    """
     import smtplib
     import ssl as _ssl
     from email.mime.text import MIMEText
     from email.utils import formatdate
+    from email.mime.multipart import MIMEMultipart as _MIMEMultipart
 
     extra = getattr(pconfig, "extra", {}) or {}
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
@@ -1323,11 +1328,31 @@ async def _standalone_send(
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        # Build multipart/alternative with plain + HTML
+        msg = _MIMEMultipart()
         msg["From"] = address
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
+
+        # Plain text part (always)
+        alt = _MIMEMultipart("alternative")
+        alt.attach(MIMEText(message, "plain", "utf-8"))
+
+        # HTML part (when markdown is available)
+        try:
+            import markdown
+            html_body = markdown.markdown(
+                message, extensions=["tables", "fenced_code", "nl2br"]
+            )
+            html_body = _style_html_email(_HTML_PREFIX + html_body + _HERMES_EMAIL_FOOTER)
+            alt.attach(MIMEText(html_body, "html", "utf-8"))
+        except ImportError:
+            pass  # no markdown lib, send plain only
+        except Exception:
+            pass  # HTML conversion failed, send plain only
+
+        msg.attach(alt)
 
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls(context=_ssl.create_default_context())
@@ -1373,7 +1398,7 @@ def register(ctx) -> None:
         allow_all_env="EMAIL_ALLOW_ALL_USERS",
         cron_deliver_env_var="EMAIL_HOME_ADDRESS",
         standalone_sender_fn=_standalone_send,
-        max_message_length=50_000,
+        max_message_length=200_000,
         pii_safe=True,
         emoji="📧",
         allow_update_command=True,

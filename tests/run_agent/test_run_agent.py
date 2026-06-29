@@ -6117,6 +6117,7 @@ def test_aiagent_uses_copilot_acp_client():
             provider="copilot-acp",
             acp_command="/usr/local/bin/copilot",
             acp_args=["--acp", "--stdio"],
+            acp_cwd="/remote/workspace",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -6129,6 +6130,7 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
     assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+    assert mock_acp_client.call_args.kwargs["acp_cwd"] == "/remote/workspace"
 
 
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):

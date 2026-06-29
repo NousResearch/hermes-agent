@@ -401,6 +401,33 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_child_inherits_acp_cwd(self):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "acp://copilot"
+        parent.api_key = "copilot-acp"
+        parent.provider = "copilot-acp"
+        parent.api_mode = "chat_completions"
+        parent.acp_command = "ssh"
+        parent.acp_args = ["remote", "opencode", "acp"]
+        parent.acp_cwd = "/remote/workspace"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Keep remote ACP cwd",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["acp_cwd"], "/remote/workspace")
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()

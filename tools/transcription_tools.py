@@ -866,6 +866,22 @@ def _get_provider(stt_config: dict) -> str:
     return "none"
 
 
+def _unregistered_stt_provider_error(provider: str) -> Dict[str, Any]:
+    key = str(provider or "").strip()
+    return {
+        "success": False,
+        "transcript": "",
+        "provider": key,
+        "error_type": "provider_not_registered",
+        "error": (
+            f"stt.provider='{key}' is set but no built-in, command, or plugin "
+            "provider registered that name. Run `hermes plugins list` to see "
+            "installed STT plugins, or configure a command provider under "
+            f"`stt.providers.{key}.command`."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Plugin provider dispatch (issue follow-up to #30398 — STT pluggability)
 # ---------------------------------------------------------------------------
@@ -882,8 +898,8 @@ def _dispatch_to_plugin_provider(
     """Route the call to a plugin-registered transcription provider, or
     return None.
 
-    Returns the transcribe-response dict on dispatch, or ``None`` to
-    fall through to the legacy "No STT provider available" error path.
+    Returns the transcribe-response dict on dispatch, or ``None`` when no
+    plugin claimed the provider name.
 
     Resolution invariants enforced here:
 
@@ -901,8 +917,8 @@ def _dispatch_to_plugin_provider(
     3. Plugin dispatch fires only when ``provider`` matches a
        registered :class:`TranscriptionProvider` whose ``name`` equals
        the configured value. Unknown names with no plugin registered
-       return None (caller surfaces the legacy "No STT provider"
-       message).
+       return None (caller surfaces the configured-provider error when
+       the name came from ``stt.provider``).
     4. Availability gating: when the matched plugin reports
        ``is_available() == False`` (missing API key, missing optional
        SDK, etc.) this returns an error envelope identifying the
@@ -1715,8 +1731,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     # nor ``"none"`` AND there is no same-name command provider. The
     # dispatcher enforces built-ins-always-win + command-wins-over-plugin
     # defensively. Returns None when no plugin is registered for the
-    # configured name, falling through to the legacy "No STT provider"
-    # error message below.
+    # configured name; explicit configured names get a provider-specific
+    # error before the generic auto-detect fallback below.
     #
     # Plugin-scoped config namespace mirrors the built-in pattern
     # (``stt.openai.model``, ``stt.mistral.model``): plugins read their
@@ -1735,6 +1751,15 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     )
     if plugin_result is not None:
         return plugin_result
+
+    provider_key = str(provider or "").strip().lower()
+    if (
+        "provider" in stt_config
+        and provider_key
+        and provider_key not in BUILTIN_STT_PROVIDERS
+        and provider_key != "none"
+    ):
+        return _unregistered_stt_provider_error(provider_key)
 
     # No provider available
     return {

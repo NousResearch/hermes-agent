@@ -8,7 +8,7 @@ to #30398 — STT pluggability):
    built-in name (which the registry blocks), the dispatcher re-checks
    defensively.
 2. Unknown name with no plugin → returns None (caller surfaces the
-   legacy "No STT provider available" error).
+   "provider_not_registered" error).
 3. Unknown name with plugin registered → dispatches, returns result.
 4. Plugin exceptions are caught and converted to the standard error
    envelope.
@@ -229,10 +229,8 @@ class TestTranscribeAudioE2E:
         assert result["transcript"] == "fake transcript"
         assert result["provider"] == "openrouter"
 
-    def test_unknown_name_without_plugin_falls_to_legacy_error(self):
-        """When no plugin is registered for the unknown name, the
-        dispatcher returns None and transcribe_audio falls through to
-        the legacy 'No STT provider available' error message."""
+    def test_unknown_name_without_plugin_returns_provider_specific_error(self):
+        """Explicit unknown providers should get a named registration error."""
         from unittest.mock import patch
 
         with patch("tools.transcription_tools._validate_audio_file", return_value=None), \
@@ -242,7 +240,25 @@ class TestTranscribeAudioE2E:
             result = transcription_tools.transcribe_audio("/tmp/audio.mp3")
 
         assert result["success"] is False
-        assert "No STT provider" in result["error"]
+        assert result["provider"] == "openrouter"
+        assert result["error_type"] == "provider_not_registered"
+        assert "stt.provider='openrouter'" in result["error"]
+        assert "hermes plugins list" in result["error"]
+        assert "No STT provider available" not in result["error"]
+
+    def test_auto_detect_failure_keeps_legacy_no_provider_message(self):
+        """No explicit stt.provider remains the generic setup guidance path."""
+        from unittest.mock import patch
+
+        with patch("tools.transcription_tools._validate_audio_file", return_value=None), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools.is_stt_enabled", return_value=True), \
+             patch("tools.transcription_tools._get_provider", return_value="none"):
+            result = transcription_tools.transcribe_audio("/tmp/audio.mp3")
+
+        assert result["success"] is False
+        assert result.get("error_type") is None
+        assert "No STT provider available" in result["error"]
 
     def test_builtin_name_does_not_consult_plugin_registry(self):
         """Even if a plugin's name collides with a built-in (which the

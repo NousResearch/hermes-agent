@@ -280,6 +280,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       if (!multiSelect) {
         return
       }
+
       setDraft('')
       setSelectedChoice(null)
       setSelectedChoices(current => toggleChoice(current, choice, maxSelections))

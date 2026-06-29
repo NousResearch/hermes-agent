@@ -338,6 +338,7 @@ fi
 # shell isn't a second interpreter — defends against $HERMES_HOME values
 # containing shell metacharacters. PR #30136 review item O2.
 as_hermes mkdir -p \
+    "$HERMES_HOME/backups" \
     "$HERMES_HOME/cron" \
     "$HERMES_HOME/sessions" \
     "$HERMES_HOME/logs" \

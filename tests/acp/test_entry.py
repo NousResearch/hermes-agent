@@ -1,5 +1,6 @@
 """Tests for acp_adapter.entry startup wiring."""
 
+import builtins
 import sys
 
 import acp
@@ -39,6 +40,26 @@ def test_main_check_prints_ok_without_starting_server(monkeypatch, capsys):
     entry.main(["--check"])
 
     assert capsys.readouterr().out.strip() == "Hermes ACP check OK"
+
+
+def test_main_check_reports_missing_acp_dependency(monkeypatch, capsys):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "acp":
+            raise ModuleNotFoundError("No module named 'acp'", name="acp")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main(["--check"])
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "ACP dependencies not installed." in captured.err
+    assert "pip install -e '.[acp]'" in captured.err
 
 
 def test_main_setup_runs_model_configuration(monkeypatch):

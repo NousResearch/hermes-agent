@@ -6,6 +6,7 @@ can invoke skills via /skill-name commands.
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -20,9 +21,119 @@ from agent.skill_preprocessing import (
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
+_skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+
+# ---------------------------------------------------------------------------
+# Skill-scaffolding markers and the canonical extractor.
+#
+# When a user invokes a /skill (or /bundle), Hermes expands the turn into a
+# model-facing message that embeds the full skill body plus scaffolding. That
+# expanded text is what flows into the agent loop — and into memory providers
+# via MemoryManager. Providers that store or embed the raw user turn (mem0,
+# openviking, hindsight, retaindb, byterover, honcho, supermemory) would
+# otherwise capture the entire skill body instead of what the user actually
+# asked. ``extract_user_instruction_from_skill_message`` recovers just the
+# user's instruction so memory stays clean.
+#
+# These markers MUST stay byte-identical to the builders below
+# (``_build_skill_message`` here, ``build_bundle_invocation_message`` in
+# agent/skill_bundles.py). They are co-located with the single-skill builder
+# on purpose, and the bundle markers are asserted against the bundle builder in
+# tests/openviking_plugin/test_openviking.py::test_skill_markers_match_hermes_scaffolding.
+# ---------------------------------------------------------------------------
+_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
+_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
+_SINGLE_SKILL_INSTRUCTION = (
+    "The user has provided the following instruction alongside the skill invocation: "
+)
+_RUNTIME_NOTE = "\n\n[Runtime note:"
+_BUNDLE_MARKER = " skill bundle,"
+_BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
+_BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
+
+
+def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
+    """Recover the user's instruction from a slash-skill-expanded turn.
+
+    Returns:
+        - The original string unchanged when it is NOT skill scaffolding
+          (a normal user message passes straight through).
+        - The extracted user instruction when the scaffolding carried one.
+        - ``None`` when the content is skill scaffolding with no user
+          instruction (i.e. a bare ``/skill`` invocation). Callers that feed
+          memory providers should skip the turn in that case — there is no
+          user content worth storing.
+    """
+    if not isinstance(content, str):
+        return None
+
+    if not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return content
+
+    if _BUNDLE_MARKER in content:
+        return _extract_bundle_user_instruction(content)
+
+    if _SINGLE_SKILL_MARKER in content:
+        return _extract_single_skill_user_instruction(content)
+
+    return None
+
+
+def _extract_single_skill_user_instruction(message: str) -> Optional[str]:
+    # Single-skill format appends the user instruction after the skill body, so
+    # the last occurrence is the user-provided one; the body may quote this text.
+    marker_idx = message.rfind(_SINGLE_SKILL_INSTRUCTION)
+    if marker_idx < 0:
+        return None
+
+    instruction = message[marker_idx + len(_SINGLE_SKILL_INSTRUCTION):]
+    runtime_idx = instruction.find(_RUNTIME_NOTE)
+    if runtime_idx >= 0:
+        instruction = instruction[:runtime_idx]
+    instruction = instruction.strip()
+    return instruction or None
+
+
+def _extract_bundle_user_instruction(message: str) -> Optional[str]:
+    # Bundle format puts the user instruction before the loaded skills, so the
+    # first occurrence is the user-provided one.
+    marker_idx = message.find(_BUNDLE_USER_INSTRUCTION)
+    if marker_idx < 0:
+        return None
+
+    instruction = message[marker_idx + len(_BUNDLE_USER_INSTRUCTION):]
+    first_skill_idx = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
+    if first_skill_idx >= 0:
+        instruction = instruction[:first_skill_idx]
+    instruction = instruction.strip()
+    return instruction or None
+
+
+def _resolve_skill_commands_platform() -> Optional[str]:
+    """Return the current platform scope used for disabled-skill filtering.
+
+    Used to detect when the active platform has shifted so
+    :func:`get_skill_commands` can drop a stale cache that was populated
+    for a different platform's ``skills.platform_disabled`` view (#14536).
+
+    Resolves from (in order) ``HERMES_PLATFORM`` env var and
+    ``HERMES_SESSION_PLATFORM`` from the gateway session context. Returns
+    ``None`` when no platform scope is active (e.g. classic CLI, RL
+    rollouts, standalone scripts).
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        resolved_platform = (
+            os.getenv("HERMES_PLATFORM")
+            or get_session_env("HERMES_SESSION_PLATFORM")
+        )
+    except Exception:
+        resolved_platform = os.getenv("HERMES_PLATFORM")
+    return resolved_platform or None
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -32,13 +143,35 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     try:
         from tools.skills_tool import SKILLS_DIR, skill_view
+        from agent.skill_utils import get_external_skills_dirs
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
+            normalized = None
+            trusted_roots = [SKILLS_DIR]
             try:
-                normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                trusted_roots.extend(get_external_skills_dirs())
             except Exception:
-                normalized = raw_identifier
+                pass
+
+            # Prefer the lexical path under a trusted skill root before
+            # resolving symlinks.  Slash-command discovery can legitimately
+            # find a skill via ~/.hermes/skills/<name> where <name> is a
+            # symlink to a checked-out skill elsewhere.  Resolving first turns
+            # that trusted visible path into an arbitrary absolute path that
+            # skill_view() refuses to load.
+            for root in trusted_roots:
+                try:
+                    normalized = str(identifier_path.relative_to(root))
+                    break
+                except ValueError:
+                    continue
+
+            if normalized is None:
+                try:
+                    normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                except Exception:
+                    normalized = raw_identifier
         else:
             normalized = raw_identifier.lstrip("/")
 
@@ -218,10 +351,11 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands
+    global _skill_commands, _skill_commands_platform
+    _skill_commands_platform = _resolve_skill_commands_platform()
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
+        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
@@ -234,13 +368,17 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
         for scan_dir in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-                if any(part in ('.git', '.github', '.hub', '.archive') for part in skill_md.parts):
+                if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
                     continue
                 try:
                     content = skill_md.read_text(encoding='utf-8')
                     frontmatter, body = _parse_frontmatter(content)
                     # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):
+                        continue
+                    # Skip skills not relevant to the current runtime env
+                    # (kanban/docker/s6). Offer-time only; explicit load bypasses.
+                    if not skill_matches_environment(frontmatter):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:
@@ -278,8 +416,16 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
-    if not _skill_commands:
+    """Return the current skill commands mapping (scan first if empty).
+
+    Rescans when the active platform scope changes (e.g. a gateway
+    process serving Telegram and Discord concurrently) so each platform
+    sees its own ``skills.platform_disabled`` view (#14536).
+    """
+    if (
+        not _skill_commands
+        or _skill_commands_platform != _resolve_skill_commands_platform()
+    ):
         scan_skill_commands()
     return _skill_commands
 
@@ -390,7 +536,7 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        return None
 
     loaded_skill, skill_dir, skill_name = loaded
 

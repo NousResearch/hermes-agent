@@ -15,7 +15,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -151,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     diag["source"] = res.get("source")
     diag["prompt_id"] = args.prompt_id
     emit_json(diag)
-    return 0 if diag.get("status_str") not in ("error",) else 1
+    return 0 if diag.get("status_str") not in {"error",} else 1
 
 
 if __name__ == "__main__":

@@ -11,14 +11,14 @@ Hermes has three hook systems that run custom code at key lifecycle points:
 | System | Registered via | Runs in | Use case |
 |--------|---------------|---------|----------|
 | **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/` | Gateway only | Logging, alerts, webhooks |
-| **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/docs/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
+| **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
 | **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
 
 All three systems are non-blocking — errors in any hook are caught and logged, never crashing the agent.
 
 ## Gateway Event Hooks
 
-Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp) without blocking the main agent pipeline.
+Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp, Teams) without blocking the main agent pipeline.
 
 ### Creating a Hook
 
@@ -202,8 +202,8 @@ Create `~/.hermes/BOOT.md`. Write it as if you were giving instructions to a hum
 # Startup Checklist
 
 1. Run `hermes cron list` and check if any scheduled jobs failed overnight.
-2. If any failed, send a summary to Discord #ops using the `send_message` tool.
-3. Check if `/opt/app/deploy.log` has any ERROR lines from the last 24 hours. If yes, summarize them and include in the same Discord message.
+2. If any failed, summarize them for Discord #ops (the hook delivers your final response to its configured target).
+3. Check if `/opt/app/deploy.log` has any ERROR lines from the last 24 hours. If yes, summarize them and include in the same report.
 4. If nothing went wrong, reply with only `[SILENT]` so no message is sent.
 ```
 
@@ -247,8 +247,9 @@ def _build_prompt(content: str) -> str:
         "---\n"
         f"{content}\n"
         "---\n\n"
-        "Execute each instruction. Use the send_message tool to deliver any "
-        "messages to platforms like Discord or Slack.\n"
+        "Execute each instruction. Put any user-facing summary in your "
+        "final response — the hook delivers it to the configured channel "
+        "(e.g. Discord or Slack); you do not send messages yourself.\n"
         "If nothing needs attention and there is nothing to report, reply "
         "with ONLY: [SILENT]"
     )
@@ -274,8 +275,8 @@ def _run_boot_agent(content: str) -> None:
             max_iterations=20,
         )
         result = agent.run_conversation(_build_prompt(content))
-        response = result.get("final_response", "")
-        if response and "[SILENT]" not in response:
+        response = (result.get("final_response", "") or "").strip()
+        if response.upper() not in {"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"}:
             logger.info("boot-md completed: %s", response[:200])
         else:
             logger.info("boot-md completed (nothing to report)")
@@ -323,7 +324,7 @@ Watch the logs:
 hermes logs --follow --level INFO | grep boot-md
 ```
 
-You should see `Running BOOT.md (N chars)` followed by either `boot-md completed: ...` (summary of what the agent did) or `boot-md completed (nothing to report)` when the agent replied `[SILENT]`.
+You should see `Running BOOT.md (N chars)` followed by either `boot-md completed: ...` (summary of what the agent did) or `boot-md completed (nothing to report)` when the agent replied with an exact silence token such as `[SILENT]`.
 
 Delete `~/.hermes/BOOT.md` to disable the checklist — the hook stays loaded but silently skips when the file isn't there.
 
@@ -346,12 +347,15 @@ An earlier version of Hermes shipped this as a built-in hook and silently spawne
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
 
 :::info
-Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
+Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, Teams). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
 :::
 
 ## Plugin Hooks
 
-[Plugins](/docs/user-guide/features/plugins) can register hooks that fire in **both CLI and gateway** sessions. These are registered programmatically via `ctx.register_hook()` in your plugin's `register()` function.
+[Plugins](/user-guide/features/plugins) can register hooks that fire in **both CLI and gateway** sessions. These are registered programmatically via `ctx.register_hook()` in your plugin's `register()` function.
+
+For plugin packaging and registration details, see
+the [Plugins guide](/docs/user-guide/features/plugins).
 
 ```python
 def register(ctx):
@@ -368,6 +372,7 @@ def register(ctx):
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
 - Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
 
@@ -381,12 +386,14 @@ def register(ctx):
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
+| [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
 | [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
+| [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
 
 ---
 
@@ -800,7 +807,78 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
-See the **[Build a Plugin guide](/docs/guides/build-a-hermes-plugin)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+See the **[Build a Plugin guide](/guides/build-a-hermes-plugin)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+
+---
+
+### `subagent_start`
+
+Fires **once per child agent** after `delegate_task` has constructed the child `AIAgent` and before that child is run. Whether you delegate a single task or a batch of three, this hook fires once for each child.
+
+This hook is specific to delegation/subagent lifecycle. It is not a universal "before any agent invocation" gate for gateway, CLI, cron, batch, MoA, or other runner-originated agent executions.
+
+**Callback signature:**
+
+```python
+def my_callback(parent_session_id: str | None,
+                parent_turn_id: str,
+                parent_subagent_id: str | None,
+                child_session_id: str | None,
+                child_subagent_id: str,
+                child_role: str,
+                child_goal: str,
+                **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `parent_session_id` | `str \| None` | Session ID of the delegating parent agent. |
+| `parent_turn_id` | `str` | Turn ID of the parent agent turn that requested delegation, if available. |
+| `parent_subagent_id` | `str \| None` | Parent subagent ID when this child was spawned by another subagent; `None` for top-level parent agents. |
+| `child_session_id` | `str \| None` | Session ID allocated for the child agent. |
+| `child_subagent_id` | `str` | Stable subagent ID used by delegation observability and controls. |
+| `child_role` | `str` | Effective child role after delegation policy is applied, for example `"leaf"` or `"orchestrator"`. |
+| `child_goal` | `str` | Delegated goal/prompt that the child agent will execute. |
+
+**Fires:** In `tools/delegate_tool.py`, inside `_build_child_agent()`, after the child `AIAgent` has been constructed and annotated with subagent identity metadata, and before `_run_single_child()` runs the child.
+
+**Return value:** Ignored. This is an observer hook only; returning a value does not block or mutate the child agent run.
+
+**Use cases:** Logging subagent creation, mapping parent/child session relationships, tracking nested delegation trees, emitting pre-run audit records, pre-allocating per-child observability resources.
+
+**Example — log subagent creation:**
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+def log_subagent_start(
+    parent_session_id,
+    parent_turn_id,
+    child_session_id,
+    child_subagent_id,
+    child_role,
+    child_goal,
+    **kwargs,
+):
+    logger.info(
+        "SUBAGENT_START parent=%s turn=%s child_session=%s child=%s role=%s goal=%r",
+        parent_session_id,
+        parent_turn_id,
+        child_session_id,
+        child_subagent_id,
+        child_role,
+        child_goal[:200],
+    )
+
+def register(ctx):
+    ctx.register_hook("subagent_start", log_subagent_start)
+```
+
+:::info
+`subagent_start` is useful for delegation observability, but it is not a blocking policy hook. To block delegation before a child is built, use [`pre_tool_call`](#pre_tool_call) to block the `delegate_task` tool call.
+:::
 
 ---
 
@@ -1093,6 +1171,49 @@ Pairs well with `transform_tool_result` (which covers every other tool).
 
 ---
 
+### `transform_llm_output`
+
+Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller). Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    response_text: str,
+    session_id: str,
+    model: str,
+    platform: str,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `response_text` | `str` | The assistant's final response text for this turn. |
+| `session_id` | `str` | Session ID for this conversation (may be empty for one-shot runs). |
+| `model` | `str` | Model name that produced the response (e.g. `anthropic/claude-sonnet-4.6`). |
+| `platform` | `str` | Delivery platform (`cli`, `telegram`, `discord`, …; empty when unset). |
+
+**Return value:** Non-empty `str` to replace the response text, `None` or empty string to leave it unchanged. **First non-empty string wins** when multiple plugins register — mirroring `transform_tool_result`.
+
+**Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
+
+```python
+import os, re
+
+def spongebob(response_text, **kwargs):
+    if os.environ.get("SPONGEBOB_MODE") != "on":
+        return None  # pass through unchanged
+    return re.sub(r"!", "!! Tartar sauce!", response_text)
+
+def register(ctx):
+    ctx.register_hook("transform_llm_output", spongebob)
+```
+
+The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+---
+
 ## Shell Hooks
 
 Declare shell-script hooks in your `cli-config.yaml` and Hermes will run them as subprocesses whenever the corresponding plugin-hook event fires — in both CLI and gateway sessions. No Python plugin authoring required.
@@ -1264,6 +1385,23 @@ Three escape hatches bypass the interactive prompt — any one is sufficient:
 Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning.
 
 **Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
+
+#### Manual allowlisting
+
+Manual allowlisting is useful for non-TTY or service-account deployments where an operator cannot answer the first-use prompt interactively. The allowlist file is `~/.hermes/shell-hooks-allowlist.json`, and the expected format is an `approvals` array. Each approval records the hook `event` and the exact `command` string:
+
+```json
+{
+  "approvals": [
+    {
+      "event": "post_llm_call",
+      "command": "/home/hermes/.hermes/hooks/my-hook.py"
+    }
+  ]
+}
+```
+
+The command string must match the configured hook command exactly. A path-keyed object with a `sha256` field is not the expected format and will not approve the hook. Verify manual entries with `hermes hooks list`.
 
 ### The `hermes hooks` CLI
 

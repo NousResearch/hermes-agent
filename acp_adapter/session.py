@@ -457,26 +457,14 @@ class SessionManager:
             else:
                 # Update model_config (contains cwd) if changed.
                 try:
-                    with db._lock:
-                        db._conn.execute(
-                            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                            (cwd_json, model_str, state.session_id),
-                        )
-                        db._conn.commit()
+                    db.update_session_meta(state.session_id, cwd_json, model_str)
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # Replace stored messages with current history.
-            db.clear_messages(state.session_id)
-            for msg in state.history:
-                db.append_message(
-                    session_id=state.session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                )
+            # Replace stored messages with current history atomically so a
+            # mid-rewrite failure rolls back and the previously persisted
+            # conversation is preserved (salvaged from #13675).
+            db.replace_messages(state.session_id, state.history)
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
 
@@ -608,6 +596,7 @@ class SessionManager:
             ),
             "quiet_mode": True,
             "session_id": session_id,
+            "session_db": self._get_db(),
             "model": model or default_model,
         }
 
@@ -628,6 +617,10 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        # Codex app-server sessions are spawned lazily on the first turn. Stamp
+        # the ACP workspace onto the agent so the Codex runtime starts from the
+        # editor/session cwd instead of the Hermes daemon's process cwd.
+        agent.session_cwd = cwd
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print

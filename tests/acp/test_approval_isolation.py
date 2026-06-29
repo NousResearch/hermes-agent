@@ -13,11 +13,8 @@ Both fixed together by:
    threads don't collide.
 """
 
-import os
 import threading
-from unittest.mock import MagicMock
 
-import pytest
 
 
 class TestThreadLocalApprovalCallback:

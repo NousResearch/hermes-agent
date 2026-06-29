@@ -7,15 +7,12 @@ suspend_recently_active() is skipped so users don't lose their sessions.
 After a crash (no marker), suspension still fires as a safety net for stuck sessions.
 """
 
-import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig, SessionResetPolicy
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.config import GatewayConfig, Platform
+from gateway.session import SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +46,10 @@ class TestSuspendRecentlyActive:
         count = store.suspend_recently_active()
         assert count == 1
 
-        # Re-fetch — should be suspended now
+        # Re-fetch — should be resume_pending (preserved, not wiped)
         refreshed = store.get_or_create_session(source)
-        assert refreshed.was_auto_reset
+        assert refreshed.resume_pending
+        assert refreshed.session_id == entry.session_id  # same session preserved
 
     def test_does_not_suspend_old_sessions(self, tmp_path):
         store = _make_store(tmp_path)
@@ -66,21 +64,22 @@ class TestSuspendRecentlyActive:
         count = store.suspend_recently_active(max_age_seconds=120)
         assert count == 0
 
-    def test_already_suspended_not_double_counted(self, tmp_path):
+    def test_already_resume_pending_not_double_counted(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source()
         entry = store.get_or_create_session(source)
 
-        # Suspend once
+        # Mark resume_pending once
         count1 = store.suspend_recently_active()
         assert count1 == 1
 
-        # Create a new session (the old one got reset on next access)
+        # Re-fetch returns the SAME session (preserved, not reset)
         entry2 = store.get_or_create_session(source)
+        assert entry2.session_id == entry.session_id
 
-        # Suspend again — the new session is recent but not yet suspended
+        # Second call skips already-resume_pending entries
         count2 = store.suspend_recently_active()
-        assert count2 == 1
+        assert count2 == 0
 
 
 # ---------------------------------------------------------------------------
@@ -180,11 +179,11 @@ class TestCleanShutdownMarker:
         else:
             store.suspend_recently_active()
 
-        # Session SHOULD be suspended (crash recovery)
+        # Session SHOULD be resume_pending (crash recovery preserves history)
         with store._lock:
             store._ensure_loaded_locked()
-            suspended_count = sum(1 for e in store._entries.values() if e.suspended)
-        assert suspended_count == 1, "Session should be suspended after crash (no marker)"
+            resume_count = sum(1 for e in store._entries.values() if e.resume_pending)
+        assert resume_count == 1, "Session should be resume_pending after crash (no marker)"
 
     def test_marker_written_on_restart_stop(self, tmp_path, monkeypatch):
         """stop(restart=True) should also write the marker."""
@@ -224,3 +223,24 @@ class TestCleanShutdownMarker:
             asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
 
         assert marker.exists(), ".clean_shutdown marker should exist after restart-stop too"
+
+
+    def test_shutdown_cleanup_does_not_end_gateway_session_rows(self, tmp_path, monkeypatch):
+        """Gateway process restart/stop must not mark live chats ended in state.db."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        agent = MagicMock()
+        agent._end_session_on_close = True
+
+        async def _run():
+            await GatewayRunner._cleanup_agent_resources_off_loop(
+                runner, agent, context="shutdown idle-cache"
+            )
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_run())
+
+        assert agent._end_session_on_close is False
+        agent.close.assert_called_once()

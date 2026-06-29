@@ -33,7 +33,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _no_auto_discovery(monkeypatch):
     """Disable DoH auto-discovery so connect() uses the plain builder chain."""
     async def _noop():
         return []
-    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.discover_fallback_ips", _noop)
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -132,12 +132,22 @@ async def test_reconnect_success_resets_error_count():
 
     mock_app = MagicMock()
     mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(return_value=MagicMock())  # heartbeat probe path
     adapter._app = mock_app
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
         await adapter._handle_polling_network_error(Exception("Bad Gateway"))
 
     assert adapter._polling_network_error_count == 0
+
+    # Clean up the heartbeat-probe task scheduled after a successful reconnect.
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    for t in pending:
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 @pytest.mark.asyncio
@@ -284,3 +294,390 @@ async def test_drain_helper_noop_without_app():
     adapter._app = None
     # Should not raise
     await adapter._drain_polling_connections()
+
+
+# ── Heartbeat probe ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_probe_no_op_when_polling_healthy():
+    """
+    Probe scheduled after a successful reconnect: Updater.running=True and
+    bot.get_me() returns quickly → recovery confirmed, no further action.
+    """
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
+    adapter._app = mock_app
+
+    adapter._handle_polling_network_error = AsyncMock()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._verify_polling_after_reconnect()
+
+    mock_app.bot.get_me.assert_awaited_once()
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_probe_reenters_ladder_when_updater_not_running():
+    """
+    If Updater.running has flipped to False by the heartbeat delay, treat
+    as wedged: re-enter the reconnect ladder.
+    """
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = False
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock()
+    adapter._app = mock_app
+
+    adapter._handle_polling_network_error = AsyncMock()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._verify_polling_after_reconnect()
+
+    mock_app.bot.get_me.assert_not_called()
+    adapter._handle_polling_network_error.assert_awaited_once()
+    err = adapter._handle_polling_network_error.await_args.args[0]
+    assert isinstance(err, RuntimeError)
+    assert "not running" in str(err).lower()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
+    """
+    If bot.get_me() hangs longer than PROBE_TIMEOUT, treat as wedged.
+    Simulates the connection-pool wedge that motivated this fix.
+    """
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+
+    async def hang_forever(*args, **kwargs):
+        await asyncio.sleep(3600)
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(side_effect=hang_forever)
+    adapter._app = mock_app
+
+    adapter._handle_polling_network_error = AsyncMock()
+
+    async def fast_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise asyncio.TimeoutError()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", new=fast_wait_for):
+            await adapter._verify_polling_after_reconnect()
+
+    adapter._handle_polling_network_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_probe_reenters_ladder_on_get_me_network_error():
+    """
+    Any exception raised by bot.get_me() (NetworkError, ConnectionError, etc.)
+    should re-enter the reconnect ladder with the original exception.
+    """
+    adapter = _make_adapter()
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(side_effect=ConnectionError("pool wedged"))
+    adapter._app = mock_app
+
+    adapter._handle_polling_network_error = AsyncMock()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._verify_polling_after_reconnect()
+
+    adapter._handle_polling_network_error.assert_awaited_once()
+    assert isinstance(
+        adapter._handle_polling_network_error.await_args.args[0], ConnectionError
+    )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_probe_skips_when_already_fatal():
+    """
+    If the adapter is already in fatal-error state by the time the probe
+    delay elapses, the probe should bail without further action.
+    """
+    adapter = _make_adapter()
+    adapter._set_fatal_error("telegram_polling_conflict", "already fatal", retryable=False)
+
+    mock_app = MagicMock()
+    mock_app.bot.get_me = AsyncMock()
+    adapter._app = mock_app
+
+    adapter._handle_polling_network_error = AsyncMock()
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._verify_polling_after_reconnect()
+
+    mock_app.bot.get_me.assert_not_called()
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_schedules_heartbeat_probe_on_success():
+    """
+    After a successful start_polling() in the reconnect path, a probe task
+    must be added to _background_tasks. Without it, a wedged Updater would
+    sit silent indefinitely with no further error_callback to advance the
+    reconnect ladder.
+    """
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock()  # succeeds
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
+    adapter._app = mock_app
+
+    initial_count = len(adapter._background_tasks)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("Bad Gateway"))
+
+    assert len(adapter._background_tasks) > initial_count, (
+        "Expected a heartbeat probe task to be scheduled after a successful "
+        "reconnect's start_polling()"
+    )
+
+    # Clean up.
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    for t in pending:
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+# ── Persistent heartbeat loop (_polling_heartbeat_loop) ──────────────────────
+#
+# These tests cover the continuous CLOSE-WAIT detection loop that fixes the bug
+# (#48495) where a dead Telegram TCP socket caused the gateway to stop receiving
+# messages silently. The _verify_polling_after_reconnect tests above cover the
+# one-shot post-reconnect probe; these cover the background loop that runs for
+# the gateway's full lifetime in polling mode.
+#
+# Loop structure: while True: sleep(INTERVAL) → fatal/app checks → get_me().
+# So with cancel raised on the Nth patched sleep, get_me() fires (N-1) times.
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_exits_cleanly_on_cancel():
+    """The heartbeat loop must exit without raising when cancelled (normal shutdown)."""
+    adapter = _make_adapter()
+
+    mock_app = MagicMock()
+    mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
+    adapter._app = mock_app
+
+    sleep_count = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_count
+        sleep_count += 1
+        # sleep #1 → get_me, sleep #2 → get_me, sleep #3 → cancel.
+        if sleep_count >= 3:
+            raise asyncio.CancelledError()
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        # Should not raise — CancelledError is swallowed internally.
+        await adapter._polling_heartbeat_loop()
+
+    assert mock_app.bot.get_me.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_triggers_reconnect_on_timeout():
+    """A TimeoutError from get_me() must schedule a reconnect via _handle_polling_network_error."""
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 3:
+            raise asyncio.CancelledError()
+
+    async def fast_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise asyncio.TimeoutError()
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=fast_wait_for):
+            await adapter._polling_heartbeat_loop()
+
+    # A reconnect task must have been created.
+    assert adapter._polling_error_task is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_triggers_reconnect_on_os_error():
+    """An OSError (e.g. connection reset) from get_me() must trigger a reconnect."""
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 3:
+            raise asyncio.CancelledError()
+
+    async def os_error_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise OSError("Connection reset by peer")
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=os_error_wait_for):
+            await adapter._polling_heartbeat_loop()
+
+    assert adapter._polling_error_task is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
+    """If a reconnect task is already running, the heartbeat must not spawn another."""
+    adapter = _make_adapter()
+
+    # Simulate an already-running reconnect task.
+    existing_task = asyncio.get_event_loop().create_task(asyncio.sleep(3600))
+    adapter._polling_error_task = existing_task
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 3:
+            raise asyncio.CancelledError()
+
+    async def timeout_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise asyncio.TimeoutError()
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=timeout_wait_for):
+            await adapter._polling_heartbeat_loop()
+
+    # _handle_polling_network_error must NOT have been called — existing task still running.
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+    existing_task.cancel()
+    try:
+        await existing_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_ignores_non_connectivity_errors():
+    """Errors that are not connectivity failures (e.g. TelegramError) must be swallowed."""
+    adapter = _make_adapter()
+    adapter._handle_polling_network_error = AsyncMock()
+
+    mock_app = MagicMock()
+    adapter._app = mock_app
+
+    sleep_call = 0
+
+    async def fast_sleep(seconds):
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call >= 3:
+            raise asyncio.CancelledError()
+
+    async def telegram_error_wait_for(coro, timeout):
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        raise RuntimeError("TelegramError: Unauthorized")  # non-OSError, non-TimeoutError
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=telegram_error_wait_for):
+            await adapter._polling_heartbeat_loop()
+
+    # No reconnect should have been triggered for a non-connectivity error.
+    adapter._handle_polling_network_error.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_loop_exits_on_fatal_error():
+    """A fatal error short-circuits the loop before probing get_me()."""
+    adapter = _make_adapter()
+    adapter._set_fatal_error("telegram_network_error", "boom", retryable=True)
+
+    mock_app = MagicMock()
+    mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
+    adapter._app = mock_app
+
+    async def fast_sleep(seconds):
+        return None
+
+    with patch("asyncio.sleep", side_effect=fast_sleep):
+        await adapter._polling_heartbeat_loop()
+
+    # Fatal error returns before the get_me() probe.
+    mock_app.bot.get_me.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_heartbeat_task():
+    """disconnect() must cancel the heartbeat task before shutting down the app."""
+    adapter = _make_adapter()
+
+    # Simulate a running heartbeat.
+    heartbeat_task = asyncio.get_event_loop().create_task(asyncio.sleep(3600))
+    adapter._polling_heartbeat_task = heartbeat_task
+
+    mock_app = MagicMock()
+    mock_app.updater = MagicMock()
+    mock_app.updater.running = False
+    mock_app.running = False
+    mock_app.shutdown = AsyncMock()
+    adapter._app = mock_app
+
+    await adapter.disconnect()
+
+    assert heartbeat_task.cancelled(), "Heartbeat task must be cancelled by disconnect()"
+    assert adapter._polling_heartbeat_task is None

@@ -8,6 +8,12 @@ import {
   type ReactNode,
 } from "react";
 import { BUILTIN_THEMES, defaultTheme } from "./presets";
+import {
+  FONT_CHOICES,
+  THEME_DEFAULT_FONT_ID,
+  getFontChoice,
+  type FontChoice,
+} from "./fonts";
 import type {
   DashboardTheme,
   ThemeAssets,
@@ -17,7 +23,9 @@ import type {
   ThemeLayer,
   ThemeLayout,
   ThemeLayoutVariant,
+  ThemeListEntry,
   ThemePalette,
+  ThemeSeriesColors,
   ThemeTypography,
 } from "./types";
 import { api } from "@/lib/api";
@@ -25,6 +33,27 @@ import { api } from "@/lib/api";
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
 const STORAGE_KEY = "hermes-dashboard-theme";
+
+/** LocalStorage key for the font override (independent of theme). Holds a
+ *  font id from the catalog in `fonts.ts`, or the `THEME_DEFAULT_FONT_ID`
+ *  sentinel / absent = "use the active theme's font". Pre-applied before
+ *  the React tree mounts (see `main.tsx`) to avoid a font flash. */
+const FONT_STORAGE_KEY = "hermes-dashboard-font";
+
+/** Renames of built-in theme keys we've shipped previously. Without this,
+ *  users who saved one of the old names in localStorage (or had it
+ *  persisted server-side) would silently fall back to `defaultTheme`
+ *  because the lookup in `resolveTheme` no longer finds the stale key.
+ *  Keep entries here until enough release cycles have passed that we can
+ *  reasonably assume nobody still has the old value persisted. */
+const THEME_NAME_ALIASES: Record<string, string> = {
+  // Renamed during the LENS_5I port + Nous-blue rebrand.
+  "lens-5i": "nous-blue",
+};
+
+function migrateThemeName(name: string): string {
+  return THEME_NAME_ALIASES[name] ?? name;
+}
 
 /** Tracks fontUrls we've already injected so multiple theme switches don't
  *  pile up <link> tags. Keyed by URL. */
@@ -120,6 +149,30 @@ function overrideVars(
   for (const [key, value] of Object.entries(overrides)) {
     if (!value) continue;
     const cssVar = OVERRIDE_KEY_TO_VAR[key as keyof ThemeColorOverrides];
+    if (cssVar) out[cssVar] = value;
+  }
+  return out;
+}
+
+/** Map data-series accents to their CSS vars. Themes omit either field to
+ *  inherit the `:root` default from `index.css`; when omitted we also
+ *  proactively clear any leftover value from a previous theme so switches
+ *  don't carry stale colors. */
+const SERIES_KEY_TO_VAR: Record<keyof ThemeSeriesColors, string> = {
+  inputTokenAccent: "--series-input-token",
+  outputTokenAccent: "--series-output-token",
+};
+
+const ALL_SERIES_VARS = Object.values(SERIES_KEY_TO_VAR);
+
+function seriesColorVars(
+  series: ThemeSeriesColors | undefined,
+): Record<string, string> {
+  if (!series) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(series)) {
+    if (!value) continue;
+    const cssVar = SERIES_KEY_TO_VAR[key as keyof ThemeSeriesColors];
     if (cssVar) out[cssVar] = value;
   }
   return out;
@@ -256,6 +309,40 @@ function injectFontStylesheet(url: string | undefined) {
 }
 
 // ---------------------------------------------------------------------------
+// Font override (independent of theme)
+// ---------------------------------------------------------------------------
+
+/** The active font-override id, mirrored at module scope so `applyTheme`
+ *  can re-assert it after every theme switch (theme application rewrites
+ *  `--theme-font-sans`, so the override has to win again afterwards). */
+let _ACTIVE_FONT_OVERRIDE: string = THEME_DEFAULT_FONT_ID;
+
+/** Apply (or clear) the font override on `:root`. When a catalog font is
+ *  active we override `--theme-font-sans` and `--theme-font-display` and
+ *  inject its webfont; the theme keeps ownership of `--theme-font-mono`
+ *  (code/terminal) so picking a body font doesn't mangle code blocks.
+ *  Passing the theme-default sentinel removes the override so the theme's
+ *  own font shows through. */
+function applyFontOverride(fontId: string | undefined) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  const choice: FontChoice | undefined = getFontChoice(fontId);
+  if (!choice) {
+    // Clear → fall back to whatever the active theme set (applyTheme already
+    // wrote the theme's --theme-font-sans/-display before this runs).
+    root.style.removeProperty("--theme-font-override-sans");
+    return;
+  }
+  injectFontStylesheet(choice.fontUrl);
+  // Set both the override marker var (used by the picker for diagnostics)
+  // and the live consumed vars. We re-set the consumed vars directly so the
+  // change is immediate and survives the next applyTheme via _ACTIVE_FONT_OVERRIDE.
+  root.style.setProperty("--theme-font-override-sans", choice.stack);
+  root.style.setProperty("--theme-font-sans", choice.stack);
+  root.style.setProperty("--theme-font-display", choice.stack);
+}
+
+// ---------------------------------------------------------------------------
 // Apply a full theme to :root
 // ---------------------------------------------------------------------------
 
@@ -265,6 +352,12 @@ function applyTheme(theme: DashboardTheme) {
 
   // Clear any overrides from a previous theme before applying the new set.
   for (const cssVar of ALL_OVERRIDE_VARS) {
+    root.style.removeProperty(cssVar);
+  }
+  // Same clear-then-set for series colors so a theme that defines them
+  // (e.g. Nous Blue) doesn't leave its values behind when the user
+  // switches to a theme that inherits the `:root` defaults.
+  for (const cssVar of ALL_SERIES_VARS) {
     root.style.removeProperty(cssVar);
   }
   // Clear dynamic (asset/component) vars from the previous theme so the
@@ -286,6 +379,7 @@ function applyTheme(theme: DashboardTheme) {
     ...typographyVars(theme.typography),
     ...layoutVars(theme.layout),
     ...overrideVars(theme.colorOverrides),
+    ...seriesColorVars(theme.seriesColors),
     ...assetMap,
     ...componentMap,
   };
@@ -296,6 +390,16 @@ function applyTheme(theme: DashboardTheme) {
   injectFontStylesheet(theme.typography.fontUrl);
   applyCustomCSS(theme.customCSS);
   applyLayoutVariant(theme.layoutVariant);
+
+  // Terminal background — read by ChatPage via useTheme(); also available as CSS var.
+  root.style.setProperty(
+    "--theme-terminal-background",
+    theme.terminalBackground ?? "#000000",
+  );
+
+  // Re-assert the font override last: theme application just rewrote
+  // --theme-font-sans/-display, so an active override has to win again.
+  applyFontOverride(_ACTIVE_FONT_OVERRIDE);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,14 +410,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   /** Name of the currently active theme (built-in id or user YAML name). */
   const [themeName, setThemeName] = useState<string>(() => {
     if (typeof window === "undefined") return "default";
-    return window.localStorage.getItem(STORAGE_KEY) ?? "default";
+    const stored = window.localStorage.getItem(STORAGE_KEY) ?? "default";
+    const migrated = migrateThemeName(stored);
+    // Write the migrated name back so future reads converge on the new
+    // key and we eventually retire the alias entry.
+    if (migrated !== stored) {
+      window.localStorage.setItem(STORAGE_KEY, migrated);
+    }
+    return migrated;
   });
 
   /** All selectable themes (shown in the picker). Starts with just the
    *  built-ins; the API call below merges in user themes. */
-  const [availableThemes, setAvailableThemes] = useState<
-    Array<{ description: string; label: string; name: string }>
-  >(() =>
+  const [availableThemes, setAvailableThemes] = useState<ThemeListEntry[]>(() =>
     Object.values(BUILTIN_THEMES).map((t) => ({
       name: t.name,
       label: t.label,
@@ -326,6 +435,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [userThemeDefs, setUserThemeDefs] = useState<
     Record<string, DashboardTheme>
   >({});
+
+  /** Active font-override id (independent of theme). `THEME_DEFAULT_FONT_ID`
+   *  = no override. Seeded from localStorage so it's applied flash-free. */
+  const [fontId, setFontId] = useState<string>(() => {
+    if (typeof window === "undefined") return THEME_DEFAULT_FONT_ID;
+    const stored = window.localStorage.getItem(FONT_STORAGE_KEY);
+    const valid = stored && getFontChoice(stored) ? stored : THEME_DEFAULT_FONT_ID;
+    _ACTIVE_FONT_OVERRIDE = valid;
+    return valid;
+  });
 
   // Resolve a theme name to a full DashboardTheme, falling back to default
   // only when neither a built-in nor a user theme is found.
@@ -340,12 +459,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [userThemeDefs],
   );
 
-  // Re-apply on every themeName change, or when user themes arrive from
-  // the API (since the active theme might be a user theme whose definition
-  // hadn't loaded yet on first render).
+  // Apply the active theme (and re-assert the font override at its tail)
+  // whenever the theme, the resolver, OR the font override changes. Folding
+  // font into the same effect means clearing the override re-runs applyTheme,
+  // which restores the theme's own font; setting it re-asserts the override.
   useEffect(() => {
+    _ACTIVE_FONT_OVERRIDE = fontId;
     applyTheme(resolveTheme(themeName));
-  }, [themeName, resolveTheme]);
+  }, [themeName, resolveTheme, fontId]);
 
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
@@ -360,6 +481,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
               name: t.name,
               label: t.label,
               description: t.description,
+              definition: t.definition,
             })),
           );
           // Index any definitions the server shipped (user themes).
@@ -371,9 +493,42 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           }
           if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
         }
-        if (resp.active && resp.active !== themeName) {
-          setThemeName(resp.active);
-          window.localStorage.setItem(STORAGE_KEY, resp.active);
+        if (resp.active) {
+          const migratedActive = migrateThemeName(resp.active);
+          if (migratedActive !== themeName) {
+            setThemeName(migratedActive);
+            window.localStorage.setItem(STORAGE_KEY, migratedActive);
+          }
+          // If the server is still persisting the stale key, push the
+          // migrated value back so it converges too — otherwise every
+          // future page load would re-trigger this branch.
+          if (migratedActive !== resp.active) {
+            api.setTheme(migratedActive).catch(() => {});
+          }
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Load the server-persisted font override once on mount. The server is
+  // the source of truth across browsers; localStorage just avoids the flash.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getFontPref()
+      .then((resp) => {
+        if (cancelled) return;
+        const serverId =
+          resp?.font && getFontChoice(resp.font) ? resp.font : THEME_DEFAULT_FONT_ID;
+        if (serverId !== fontId) {
+          setFontId(serverId);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(FONT_STORAGE_KEY, serverId);
+          }
         }
       })
       .catch(() => {});
@@ -401,14 +556,26 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [availableThemes, userThemeDefs],
   );
 
+  const setFont = useCallback((id: string) => {
+    const next = getFontChoice(id) ? id : THEME_DEFAULT_FONT_ID;
+    setFontId(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(FONT_STORAGE_KEY, next);
+    }
+    api.setFontPref(next).catch(() => {});
+  }, []);
+
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme: resolveTheme(themeName),
       themeName,
       availableThemes,
       setTheme,
+      fontId,
+      fontChoices: FONT_CHOICES,
+      setFont,
     }),
-    [themeName, availableThemes, setTheme, resolveTheme],
+    [themeName, availableThemes, setTheme, resolveTheme, fontId, setFont],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -427,11 +594,20 @@ const ThemeContext = createContext<ThemeContextValue>({
     description: t.description,
   })),
   setTheme: () => {},
+  fontId: THEME_DEFAULT_FONT_ID,
+  fontChoices: FONT_CHOICES,
+  setFont: () => {},
 });
 
 interface ThemeContextValue {
-  availableThemes: Array<{ description: string; label: string; name: string }>;
+  availableThemes: ThemeListEntry[];
   setTheme: (name: string) => void;
   theme: DashboardTheme;
   themeName: string;
+  /** Active font-override id (`THEME_DEFAULT_FONT_ID` = no override). */
+  fontId: string;
+  /** Curated font catalog for the picker. */
+  fontChoices: FontChoice[];
+  /** Set the font override (independent of theme). */
+  setFont: (id: string) => void;
 }

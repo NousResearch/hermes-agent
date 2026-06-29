@@ -76,6 +76,8 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `im:history` | Read direct message history |
 | `im:read` | View basic DM info |
 | `im:write` | Open and manage DMs |
+| `mpim:history` | Read group direct message (multi-person DM) history |
+| `mpim:read` | View basic group DM info |
 | `users:read` | Look up user information |
 | `files:read` | Read and download attached files, including voice notes/audio |
 | `files:write` | Upload files (images, audio, documents) |
@@ -124,6 +126,7 @@ This step is critical — it controls what messages the bot can see.
 | Event | Required? | Purpose |
 |-------|-----------|---------|
 | `message.im` | **Yes** | Bot receives direct messages |
+| `message.mpim` | **Yes** | Bot receives messages in **group DMs** (multi-person DMs) it's added to |
 | `message.channels` | **Yes** | Bot receives messages in **public** channels it's added to |
 | `message.groups` | **Recommended** | Bot receives messages in **private** channels it's invited to |
 | `app_mention` | **Yes** | Prevents Bolt SDK errors when bot is @mentioned |
@@ -264,6 +267,27 @@ For backward compatibility with older manifests, you can still type
 run the tests`. Free-form questions also work: `/hermes what's the
 weather?` is treated as a regular message.
 
+### Using commands inside threads (the `!cmd` prefix)
+
+Slack itself blocks native slash commands inside thread replies — try
+`/queue` in a thread and Slack responds with *"/queue is not supported
+in threads. Sorry!"* There is no app-side setting that re-enables them;
+Slack never delivers them to Hermes.
+
+As a workaround, Hermes recognises a leading `!` as an alternate
+command prefix that works in threads (and anywhere else). Type
+`!queue`, `!stop`, `!model gpt-5.4`, etc. as a regular thread reply —
+Hermes treats it identically to the slash form and replies in the same
+thread.
+
+Only the first token is checked against the known command list, so
+casual messages like `!nice work` pass through to the agent unchanged.
+
+Approval prompts (dangerous command / `execute_code` approval) normally
+render as interactive buttons. When buttons can't be delivered and
+Hermes falls back to a text prompt, the prompt instructs you to reply
+with `!approve` / `!deny` — the form that works inside threads.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash
@@ -372,6 +396,33 @@ Set this to `true` in busy workspaces where Slack's default "the bot remembers t
 :::info
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.
 :::
+
+### Channel allowlist (`allowed_channels`)
+
+Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`.
+
+**DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message.
+
+```yaml
+slack:
+  allowed_channels:
+    - "C0123456789"   # #ops
+    - "C0987654321"   # #incident-response
+```
+
+Or via env var (comma-separated):
+
+```bash
+SLACK_ALLOWED_CHANNELS="C0123456789,C0987654321"
+```
+
+Behavior:
+
+- Empty / unset → no restriction (fully backward compatible).
+- Non-empty → channel ID must be on the list, or the message is dropped before any other gating (mention requirement, `free_response_channels`, etc.) runs.
+- Slack channel IDs start with `C` (public), `G` (private), or `D` (DM). Look them up via the Slack UI's "Open channel details" → "About" panel, or via the API.
+
+See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
 ### Unauthorized User Handling
 
@@ -558,6 +609,7 @@ Notes:
 | Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Hermes Agent` |
 | Bot doesn't respond to @mentions in channels | 1) Check `message.channels` event is subscribed. 2) Bot must be invited to the channel. 3) Ensure `channels:history` scope is added. 4) Reinstall the app after scope/event changes |
 | Bot ignores messages in private channels | Add both the `message.groups` event subscription and `groups:history` scope, then reinstall the app and `/invite` the bot |
+| Bot doesn't respond in group DMs (multi-person DMs) | Add the `message.mpim` event subscription and the `mpim:history` scope (plus `mpim:read`), then **reinstall** the app. Without `message.mpim`, Slack never delivers group-DM messages to the bot — even though 1:1 DMs work. |
 | "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
 | Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |

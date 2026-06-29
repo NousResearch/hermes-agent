@@ -101,7 +101,7 @@ def _load_plugin_config() -> dict:
         return {}
     try:
         import yaml
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             all_config = yaml.safe_load(f) or {}
         return cfg_get(all_config, "plugins", "hermes-memory-store", default={}) or {}
     except Exception:
@@ -136,11 +136,11 @@ class HolographicMemoryProvider(MemoryProvider):
             import yaml
             existing = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     existing = yaml.safe_load(f) or {}
             existing.setdefault("plugins", {})
             existing["plugins"]["hermes-memory-store"] = values
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
         except Exception:
             pass
@@ -251,6 +251,17 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
+        # Close the SQLite connection deterministically instead of leaking it
+        # to GC. MemoryStore opens its connection with check_same_thread=False
+        # (store.py), so without an explicit close() the sqlite3.Connection's
+        # fd is released by refcount/GC at a non-deterministic time on a
+        # non-deterministic thread, churning a DB fd through the kernel's free
+        # pool on every session teardown. close() already exists and is cheap.
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception as e:
+                logger.debug("Holographic shutdown close() failed: %s", e)
         self._store = None
         self._retriever = None
 

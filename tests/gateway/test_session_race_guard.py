@@ -331,6 +331,42 @@ async def test_command_messages_do_not_leave_sentinel():
 
 
 @pytest.mark.asyncio
+async def test_start_command_is_noop_and_does_not_show_help():
+    """Telegram /start is a platform ping; it must not dump /help output."""
+    runner = _make_runner()
+    event = _make_event(text="/start")
+    session_key = build_session_key(event.source)
+
+    runner._handle_help_command = AsyncMock(return_value="Help text")
+
+    result = await runner._handle_message(event)
+
+    assert result == ""
+    runner._handle_help_command.assert_not_awaited()
+    assert session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_start_command_is_noop_during_active_session():
+    """A mid-run /start must not interrupt the active agent or show commands."""
+    runner = _make_runner()
+    event = _make_event(text="/start")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    runner._handle_help_command = AsyncMock(return_value="Help text")
+
+    result = await runner._handle_message(event)
+
+    assert result == ""
+    runner._handle_help_command.assert_not_awaited()
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("command_text", "handler_attr", "handler_result"),
     [

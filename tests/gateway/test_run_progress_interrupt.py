@@ -8,7 +8,6 @@ of tool-progress bubbles for calls that were already parsed from the LLM
 response — making the interrupt feel ignored.
 """
 
-import asyncio
 import importlib
 import sys
 import time
@@ -29,7 +28,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.typing = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:

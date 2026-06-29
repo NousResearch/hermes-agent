@@ -1422,7 +1422,7 @@ describe('uploadComposerAttachment remote read failures', () => {
   })
 
   it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
-    // electron/hardening.cjs rejects the readFileDataUrl IPC with this exact
+    // electron/hardening.ts rejects the readFileDataUrl IPC with this exact
     // shape when a file exceeds DATA_URL_READ_MAX_BYTES.
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,

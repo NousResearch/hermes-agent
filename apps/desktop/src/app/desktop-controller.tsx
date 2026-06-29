@@ -847,7 +847,7 @@ export function DesktopController() {
     // window's gateway (the overlay has none) so it survives restart.
     setPetOverlayScaleHandler(scale => setPetScale(requestGatewayRef.current, scale))
     // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
-    // per session) so "most recent" is the right target. main.cjs already raised
+    // per session) so "most recent" is the right target. main.ts already raised
     // the window before forwarding this.
     setPetOverlayOpenAppHandler(() => {
       const recent = $sessions.get()[0]

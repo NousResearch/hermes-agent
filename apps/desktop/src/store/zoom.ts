@@ -1,7 +1,7 @@
 /**
  * Window text size (zoom).
  *
- * The main process owns the zoom level and persists it (see electron/zoom.cjs
+ * The main process owns the zoom level and persists it (see electron/zoom.ts
  * for the scale). The renderer only mirrors the current percent for the
  * settings UI: preset clicks go to the main process over IPC, and every
  * change comes back through onChanged, including ones made with the

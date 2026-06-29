@@ -79,7 +79,7 @@ export function mediaExternalUrl(path: string): string {
   return /^file:/i.test(path) ? path : `file://${path}`
 }
 
-// Custom Electron scheme (registered in electron/main.cjs) that streams a local
+// Custom Electron scheme (registered in electron/main.ts) that streams a local
 // file with Range support. Used for audio/video so playback bypasses the data
 // URL size cap and supports seeking. `path` may be a plain path or `file://…`.
 export function mediaStreamUrl(path: string): string {

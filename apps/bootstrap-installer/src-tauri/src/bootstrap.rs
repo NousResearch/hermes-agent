@@ -1,6 +1,6 @@
 //! Bootstrap orchestration.
 //!
-//! Direct port of `runBootstrap` from `apps/desktop/electron/bootstrap-runner.cjs`.
+//! Direct port of `runBootstrap` from `apps/desktop/electron/bootstrap-runner.ts`.
 //! Drives install.ps1 / install.sh stage-by-stage, emits progress events
 //! over the Tauri `bootstrap` channel, writes a forensic log to
 //! HERMES_HOME/logs/bootstrap-<timestamp>.log.

@@ -20,6 +20,7 @@ from hermes_cli.auth import (
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
+    _nous_inference_env_override,
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
@@ -334,6 +335,17 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _nous_inference_base_url_override() -> str:
+    """Return the trusted Nous runtime base URL override, if configured.
+
+    Delegates to ``auth._nous_inference_env_override`` so every
+    ``NOUS_INFERENCE_BASE_URL`` read shares one normalization path
+    (trailing-slash stripping, blank → empty). The env source is trusted
+    and intentionally bypasses the network host allowlist there.
+    """
+    return _nous_inference_env_override() or ""
+
+
 def _maybe_apply_codex_app_server_runtime(
     *,
     provider: str,
@@ -412,6 +424,7 @@ def _resolve_runtime_from_pool_entry(
         api_mode = "codex_responses"
     elif provider == "nous":
         api_mode = "chat_completions"
+        base_url = _nous_inference_base_url_override() or base_url
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
@@ -1359,6 +1372,7 @@ def _resolve_explicit_runtime(
         state = auth_mod.get_provider_auth_state("nous") or {}
         base_url = (
             explicit_base_url
+            or _nous_inference_base_url_override()
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
         # Only use the agent_key compatibility field for inference when it

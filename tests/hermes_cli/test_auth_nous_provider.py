@@ -217,6 +217,63 @@ def test_resolve_nous_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     assert pool_entries[0]["source"] == auth_mod.NOUS_DEVICE_CODE_SOURCE
 
 
+def test_resolve_nous_runtime_credentials_env_override_wins_live_not_persisted(
+    tmp_path,
+    monkeypatch,
+    shared_store_env,
+):
+    """NOUS_INFERENCE_BASE_URL is a LIVE override, not a persisted one.
+
+    The env override wins for the base_url returned to the caller this run,
+    but durable auth state (auth.json, the credential pool, the shared
+    store) keeps the network-validated URL from the refresh response. This
+    keeps an ephemeral dev/staging override from poisoning auth.json after
+    the env var is later unset.
+    """
+    import hermes_cli.auth as auth_mod
+
+    hermes_home = tmp_path / "hermes"
+    override_url = "https://ai.wildebeest-newton.ts.net/v1"
+    network_url = "https://inference-api.nousresearch.com/v1"
+    refreshed_token = _invoke_jwt(seconds=3600)
+    _setup_nous_auth(
+        hermes_home,
+        access_token=_invoke_jwt(seconds=-60),
+        refresh_token="refresh-old",
+        expires_at=_future_iso(-60),
+        expires_in=0,
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override_url)
+
+    def _fake_refresh_access_token(*, client, portal_base_url, client_id, refresh_token):
+        return {
+            "access_token": refreshed_token,
+            "refresh_token": "refresh-new",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+            "scope": "inference:invoke",
+            "inference_base_url": network_url,
+        }
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_access_token", _fake_refresh_access_token)
+
+    creds = auth_mod.resolve_nous_runtime_credentials()
+
+    # The env override wins for the LIVE returned base_url...
+    assert creds["base_url"] == override_url
+
+    # ...but it is deliberately NOT persisted: every durable store keeps the
+    # network-validated URL, so the ephemeral override can't poison auth.json.
+    payload = json.loads((hermes_home / "auth.json").read_text())
+    assert payload["providers"]["nous"]["inference_base_url"] == network_url
+    assert payload["providers"]["nous"]["inference_base_url"] != override_url
+    assert payload["credential_pool"]["nous"][0]["inference_base_url"] == network_url
+
+    shared_payload = json.loads((shared_store_env / "nous_auth.json").read_text())
+    assert shared_payload["inference_base_url"] == network_url
+
+
 def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
     tmp_path,
     monkeypatch,

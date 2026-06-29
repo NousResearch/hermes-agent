@@ -600,13 +600,26 @@ def _to_openai_base_url(base_url: str) -> str:
     completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
     ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
     land on ``/anthropic/chat/completions`` — a 404.
+
+    ZAI (open.bigmodel.cn / api.z.ai) has TWO separate OpenAI-compatible
+    endpoints with **independent billing and credit pools**: ``/api/paas/v4``
+    (standard) and ``/api/coding/paas/v4`` (Coding Plan).  The ``/api/anthropic``
+    endpoint serves the same Coding-Plan models (glm-5.2, glm-5.1, etc.) as
+    ``/api/coding/paas/v4`` — same key, same billing path.  Rewriting
+    ``/api/anthropic`` → ``/api/paas/v4`` routes the request to a different
+    billing pool, so a Coding-Plan key with zero standard-pool balance gets
+    HTTP 429 ("余额不足") even though the same key works on the anthropic and
+    coding endpoints.  The correct OpenAI-wire equivalent of
+    ``/api/anthropic`` is ``/api/coding/paas/v4``.
     """
     url = str(base_url or "").strip().rstrip("/")
     if url.endswith("/anthropic"):
-        # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire
-        # but /api/paas/v4 for OpenAI wire — the generic /v1 rewrite is wrong.
-        if "open.bigmodel.cn" in url or "bigmodel" in url:
-            rewritten = url[: -len("/anthropic")] + "/paas/v4"
+        # ZAI (open.bigmodel.cn) uses /api/anthropic for Anthropic wire.
+        # The OpenAI-wire equivalent is /api/coding/paas/v4 (Coding Plan),
+        # NOT /api/paas/v4 (standard) — they have independent billing pools
+        # and a Coding-Plan key has no balance on the standard endpoint.
+        if "open.bigmodel.cn" in url or "bigmodel" in url or "api.z.ai" in url:
+            rewritten = url[: -len("/anthropic")] + "/coding/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
         rewritten = url[: -len("/anthropic")] + "/v1"

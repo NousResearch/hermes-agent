@@ -1,13 +1,10 @@
 import '@xterm/xterm/css/xterm.css'
 
-import { useStore } from '@nanostores/react'
-
 import { Button } from '@/components/ui/button'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $backgroundOutputByProc } from '@/store/composer-status'
 
 import { reportTerminalShell } from './terminals'
 import { useAgentTerminal } from './use-agent-terminal'
@@ -81,11 +78,10 @@ interface AgentTerminalInstanceProps {
   procId: string
 }
 
-/** Read-only mirror of an agent background process — a write-only xterm fed by
- *  the process's output tail (no PTY, no input). */
+/** Read-only mirror of an agent background process — a write-only xterm streamed
+ *  live from the backend output (no PTY, no input). */
 export function AgentTerminalInstance({ active, procId }: AgentTerminalInstanceProps) {
-  const output = useStore($backgroundOutputByProc)[procId] ?? ''
-  const { hostRef } = useAgentTerminal({ active, output })
+  const { hostRef } = useAgentTerminal({ active, procId })
 
   return (
     <div className={cn(INSTANCE_CLASS, active ? 'visible' : 'invisible pointer-events-none')}>

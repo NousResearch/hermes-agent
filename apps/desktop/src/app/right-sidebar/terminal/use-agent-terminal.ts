@@ -5,18 +5,18 @@ import { useEffect, useRef } from 'react'
 
 import { useTheme } from '@/themes/context'
 
+import { registerAgentTerminalWriter } from './agent-terminal-stream'
 import { resolveSurfaceColor, terminalTheme } from './selection'
 
-// Read-only terminal driven by a string (an agent background process's output
-// tail), not a PTY — no input, no shell. Shares the user terminal's look so the
-// two read as one surface.
-export function useAgentTerminal({ active, output }: { active: boolean; output: string }) {
+// Read-only terminal for an agent background process: a write-only xterm (no PTY,
+// no input) fed live by the backend output stream, keyed by process id. Shares
+// the user terminal's look so the two read as one surface.
+export function useAgentTerminal({ active, procId }: { active: boolean; procId: string }) {
   const { renderedMode, theme, themeName } = useTheme()
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
   const fitRef = useRef<(() => void) | null>(null)
-  const writtenRef = useRef('')
 
   const surfaceTheme = () => {
     const ansi = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
@@ -76,34 +76,18 @@ export function useAgentTerminal({ active, output }: { active: boolean; output: 
     const observer = new ResizeObserver(() => fitRef.current?.())
     observer.observe(host)
 
+    // Stream live output straight into the terminal (replays backlog on attach).
+    const unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
+
     return () => {
+      unregister()
       observer.disconnect()
       term.dispose()
       termRef.current = null
       webglRef.current = null
-      writtenRef.current = ''
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // Append the delta when the tail just grew; otherwise (the rolling window slid)
-  // reset and rewrite. Avoids reflowing the whole buffer on every poll.
-  useEffect(() => {
-    const term = termRef.current
-
-    if (!term) {
-      return
-    }
-
-    if (output.startsWith(writtenRef.current)) {
-      term.write(output.slice(writtenRef.current.length))
-    } else {
-      term.reset()
-      term.write(output)
-    }
-
-    writtenRef.current = output
-  }, [output])
 
   useEffect(() => {
     const term = termRef.current

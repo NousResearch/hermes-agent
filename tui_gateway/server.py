@@ -8311,8 +8311,25 @@ def _notification_poller_loop(
         process_registry.completion_queue.put(evt)
 
 
+def _wire_agent_terminal_output() -> None:
+    """Idempotently route background-process output chunks to the desktop as
+    `agent.terminal.output` events (keyed by process id). Read-only agent
+    terminal tabs stream these live instead of polling the output tail.
+    `_emit`/`write_json` is `_stdout_lock`-guarded, so calling it from the
+    registry's reader threads is safe."""
+    from tools.process_registry import process_registry
+
+    if getattr(process_registry, "on_output", None) is not None:
+        return
+
+    process_registry.on_output = lambda session, chunk: _emit(
+        "agent.terminal.output", "", {"process_id": session.id, "chunk": chunk}
+    )
+
+
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
+    _wire_agent_terminal_output()
     stop = threading.Event()
     t = threading.Thread(
         target=_notification_poller_loop,

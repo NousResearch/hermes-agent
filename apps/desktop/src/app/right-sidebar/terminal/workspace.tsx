@@ -1,8 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { $backgroundStatusBySession, refreshBackgroundProcesses } from '@/store/composer-status'
-import { $activeSessionId } from '@/store/session'
+import { $backgroundStatusBySession } from '@/store/composer-status'
 
 import { setActiveTerminalId } from './buffer'
 import { AgentTerminalInstance, TerminalInstance } from './instance'
@@ -12,9 +11,6 @@ interface TerminalWorkspaceProps {
   onAddSelectionToChat: (text: string, label?: string) => void
 }
 
-// Faster than the 5s status-stack poll so an open agent tab tails near-live.
-const AGENT_POLL_MS = 1500
-
 /** The persistent-overlay layer: the stack of live xterm instances (only these
  *  must stay in the fixed overlay, for the WebGL host). Mount/visibility is owned
  *  by PersistentTerminal (latched so shells survive hiding); the tab rail and
@@ -22,7 +18,6 @@ const AGENT_POLL_MS = 1500
 export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspaceProps) {
   const terminals = useStore($terminals)
   const activeId = useStore($activeTerminalId)
-  const activeSession = useStore($activeSessionId)
   const background = useStore($backgroundStatusBySession)
 
   // Mirror the tab selection into the agent reader (read_terminal reads it).
@@ -35,25 +30,15 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
     }
   }, [])
 
-  // Surface the agent's background processes as read-only tabs (once each).
+  // Surface the agent's background processes as read-only tabs (once each); their
+  // output streams in live via agent.terminal.output, no polling needed.
   useEffect(() => {
-    for (const item of (activeSession && background[activeSession]) || []) {
-      ensureAgentTerminal(item.id, item.title)
+    for (const list of Object.values(background)) {
+      for (const item of list) {
+        ensureAgentTerminal(item.id, item.title)
+      }
     }
-  }, [background, activeSession])
-
-  // While an agent tab exists, tail its process faster than the status stack.
-  const hasAgent = terminals.some(term => term.kind === 'agent')
-
-  useEffect(() => {
-    if (!hasAgent || !activeSession) {
-      return
-    }
-
-    const interval = setInterval(() => void refreshBackgroundProcesses(activeSession), AGENT_POLL_MS)
-
-    return () => clearInterval(interval)
-  }, [hasAgent, activeSession])
+  }, [background])
 
   return (
     <>

@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { translateNow } from '@/i18n'
 import {
@@ -1165,6 +1166,9 @@ export function useMessageStream({
             text: result ? JSON.stringify(result) : ''
           })
         }
+      } else if (event.type === 'agent.terminal.output') {
+        // Live chunk from a background process → its read-only agent terminal tab.
+        writeAgentTerminalChunk(payload?.process_id ?? '', payload?.chunk ?? '')
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)

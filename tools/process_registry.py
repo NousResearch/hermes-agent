@@ -196,6 +196,10 @@ class ProcessRegistry:
         self._global_watch_window_hits: int = 0
         self._global_watch_tripped_until: float = 0.0
         self._global_watch_suppressed_during_trip: int = 0
+        # Live-output sink set by a driver (e.g. the desktop gateway): called from
+        # reader threads with (session, chunk) to stream output to a UI in
+        # real time, instead of polling the output tail.
+        self.on_output = None
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -204,6 +208,17 @@ class ProcessRegistry:
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
+
+    def _emit_output(self, session: ProcessSession, chunk: str) -> None:
+        """Forward a freshly-read chunk to the live-output sink, if one is set.
+        Called from reader threads; never raise into the read loop."""
+        sink = self.on_output
+        if sink is None or not chunk:
+            return
+        try:
+            sink(session, chunk)
+        except Exception:
+            pass
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
@@ -916,6 +931,7 @@ class ProcessRegistry:
                     if len(session.output_buffer) > session.max_output_chars:
                         session.output_buffer = session.output_buffer[-session.max_output_chars:]
                 self._check_watch_patterns(session, chunk)
+                self._emit_output(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
@@ -954,6 +970,7 @@ class ProcessRegistry:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     if delta:
                         self._check_watch_patterns(session, delta)
+                        self._emit_output(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
@@ -1002,6 +1019,7 @@ class ProcessRegistry:
                             if len(session.output_buffer) > session.max_output_chars:
                                 session.output_buffer = session.output_buffer[-session.max_output_chars:]
                         self._check_watch_patterns(session, text)
+                        self._emit_output(session, text)
                 except EOFError:
                     break
                 except Exception:

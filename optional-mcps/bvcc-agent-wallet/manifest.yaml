@@ -23,7 +23,7 @@ manifest_version: 1
         required: true
         secret: false
       - name: CHAIN_ID
-        prompt: "Default chain id: 42161 Arbitrum · 56 BNB · 1 Ethereum · 8453 Base · 421614 Arb Sepolia"
+        prompt: "Default chain id: 42161 Arbitrum · 56 BNB · 1 Ethereum · 8453 Base · 137 Polygon · 421614 Arb Sepolia"
         default: "42161"
         required: true
         secret: false

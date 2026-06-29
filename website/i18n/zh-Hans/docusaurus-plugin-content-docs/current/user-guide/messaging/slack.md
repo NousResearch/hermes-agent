@@ -65,6 +65,8 @@ description: "使用 Socket Mode 将 Hermes Agent 设置为 Slack 机器人"
 | `im:history` | 读取私信历史记录 |
 | `im:read` | 查看基本私信信息 |
 | `im:write` | 打开并管理私信 |
+| `mpim:history` | 读取群组私信（多人私信）历史记录 |
+| `mpim:read` | 查看基本群组私信信息 |
 | `users:read` | 查询用户信息 |
 | `files:read` | 读取并下载附件文件，包括语音备忘录/音频 |
 | `files:write` | 上传文件（图片、音频、文档） |
@@ -110,6 +112,7 @@ Socket Mode 让机器人通过 WebSocket 连接，无需公开 URL。
 | 事件 | 是否必需 | 用途 |
 |-------|-----------|---------|
 | `message.im` | **必需** | 机器人接收私信 |
+| `message.mpim` | **推荐** | 机器人接收其加入的**群组私信**（多人私信）消息 |
 | `message.channels` | **必需** | 机器人接收其加入的**公开**频道消息 |
 | `message.groups` | **推荐** | 机器人接收被邀请加入的**私有**频道消息 |
 | `app_mention` | **必需** | 防止机器人被 @ 提及时出现 Bolt SDK 错误 |
@@ -558,6 +561,7 @@ slack:
 | 机器人在私信中正常但在频道中不响应 | **最常见问题。** 将 `message.channels` 和 `message.groups` 添加到事件订阅，重新安装应用，并用 `/invite @Hermes Agent` 邀请机器人加入频道 |
 | 机器人不响应频道中的 @mention | 1) 检查 `message.channels` 事件是否已订阅。2) 机器人必须被邀请到频道。3) 确保已添加 `channels:history` 权限范围。4) 更改权限范围/事件后重新安装应用 |
 | 机器人忽略私有频道中的消息 | 添加 `message.groups` 事件订阅和 `groups:history` 权限范围，然后重新安装应用并 `/invite` 机器人 |
+| 机器人不响应群组私信（多人私信） | 添加 `message.mpim` 事件订阅和 `mpim:history` 权限范围（以及 `mpim:read`），然后**重新安装**应用。没有 `message.mpim`，即使 1:1 私信正常，Slack 也永远不会向机器人投递群组私信消息。 |
 | 私信中出现"向此应用发送消息已被关闭" | 在 App Home 设置中启用 **Messages Tab**（见第五步） |
 | "not_authed" 或 "invalid_auth" 错误 | 重新生成 Bot Token 和 App Token，更新 `.env` |
 | 机器人响应但无法在频道中发帖 | 用 `/invite @Hermes Agent` 邀请机器人加入频道 |

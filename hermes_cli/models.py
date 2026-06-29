@@ -28,6 +28,7 @@ COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
+_MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES = 16 * 1024 * 1024
 
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
@@ -86,6 +87,23 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 
+def _read_model_catalog_json(resp) -> Any:
+    """Read a bounded model-catalog JSON response."""
+    raw = resp.read(_MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "model catalog response exceeded "
+            f"{_MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(raw.decode("utf-8"))
+
+
+def _read_model_catalog_text(resp) -> str:
+    """Read a bounded model-catalog text response."""
+    raw = resp.read(_MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES:
+        raw = raw[:_MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES]
+    return raw.decode("utf-8", errors="ignore")
 
 
 def _codex_curated_models() -> list[str]:
@@ -892,7 +910,7 @@ def fetch_nous_recommended_models(
             headers={"Accept": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
+            data = _read_model_catalog_json(resp)
         if not isinstance(data, dict):
             data = {}
     except Exception:
@@ -1364,7 +1382,7 @@ def fetch_openrouter_models(
             headers={"Accept": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_model_catalog_json(resp)
     except Exception:
         return list(_openrouter_catalog_cache or fallback)
 
@@ -1485,7 +1503,7 @@ def fetch_models_with_pricing(
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_model_catalog_json(resp)
     except Exception:
         _pricing_cache[cache_key] = {}
         return {}
@@ -1599,7 +1617,7 @@ def _fetch_novita_pricing(
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_model_catalog_json(resp)
     except Exception:
         _pricing_cache[cache_key] = {}
         return {}
@@ -2713,7 +2731,7 @@ def _fetch_anthropic_models(
             headers=h,
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+            return _read_model_catalog_json(resp)
 
     try:
         try:
@@ -2728,7 +2746,7 @@ def _fetch_anthropic_models(
                 and http_err.code == 400
             ):
                 try:
-                    body_text = http_err.read().decode(errors="ignore").lower()
+                    body_text = _read_model_catalog_text(http_err).lower()
                 except Exception:
                     body_text = ""
                 if "long context beta" in body_text and "not yet available" in body_text:
@@ -2828,7 +2846,7 @@ def fetch_github_model_catalog(
         req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = _read_model_catalog_json(resp)
                 items = _payload_items(data)
                 models: list[dict[str, Any]] = []
                 seen_ids: set[str] = set()
@@ -2945,7 +2963,7 @@ def _lmstudio_fetch_raw_models(
     request = urllib.request.Request(server_root + "/api/v1/models", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            payload = _read_model_catalog_json(resp)
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
             from hermes_cli.auth import AuthError
@@ -3090,7 +3108,7 @@ def ensure_lmstudio_model_loaded(
             ),
             timeout=timeout,
         ) as resp:
-            resp.read()
+            _read_model_catalog_text(resp)
     except Exception:
         return None
     return target_context_length
@@ -3496,7 +3514,7 @@ def probe_api_models(
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = _read_model_catalog_json(resp)
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],
                     "probed_url": url,

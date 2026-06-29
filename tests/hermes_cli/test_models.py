@@ -66,7 +66,7 @@ class TestFetchOpenRouterModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
@@ -86,6 +86,54 @@ class TestFetchOpenRouterModels:
 
         assert models == OPENROUTER_MODELS
 
+    def test_live_fetch_bounds_response_read(self, monkeypatch):
+        reads: list[int] = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                reads.append(size)
+                return b'{"data":[]}'
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            return_value=None,
+        ), patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            fetch_openrouter_models(force_refresh=True)
+
+        assert reads == [_models_mod._MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES + 1]
+
+    def test_live_fetch_falls_back_on_oversized_response(self, monkeypatch):
+        reads: list[int] = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size=-1):
+                reads.append(size)
+                return b"x" * size
+
+        monkeypatch.setattr(_models_mod, "_MODEL_CATALOG_RESPONSE_BODY_MAX_BYTES", 8)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            return_value=None,
+        ), patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert reads == [9]
+        assert models == OPENROUTER_MODELS
+
     def test_filters_out_models_without_tool_support(self, monkeypatch):
         """Models whose supported_parameters omits 'tools' must not appear in the picker.
 
@@ -100,7 +148,7 @@ class TestFetchOpenRouterModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 # opus-4.6 advertises tools → kept
                 # nano-image has explicit supported_parameters that OMITS tools → dropped
                 # qwen3.7-max advertises tools → kept
@@ -150,7 +198,7 @@ class TestFetchOpenRouterModels:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 # No supported_parameters field at all on either entry.
                 return (
                     b'{"data":['

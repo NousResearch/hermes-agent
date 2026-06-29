@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 try:
     import aiohttp
@@ -38,6 +38,8 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+HA_ERROR_BODY_MAX_BYTES = 8 * 1024
+
 
 def check_ha_requirements() -> bool:
     """Check if Home Assistant dependencies are available and configured."""
@@ -46,6 +48,46 @@ def check_ha_requirements() -> bool:
     if not os.getenv("HASS_TOKEN"):
         return False
     return True
+
+
+async def _read_response_text_limited(
+    response: Any,
+    *,
+    max_bytes: int = HA_ERROR_BODY_MAX_BYTES,
+    label: str = "Home Assistant response",
+) -> str:
+    content = getattr(response, "content", None)
+    raw: bytes
+    if content is not None and hasattr(content, "iter_chunked"):
+        chunks: List[bytes] = []
+        total = 0
+        async for chunk in content.iter_chunked(64 * 1024):
+            if not chunk:
+                continue
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+            total += len(chunk)
+            if total > max_bytes:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
+                raise RuntimeError(f"{label} exceeded {max_bytes} bytes")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+    else:
+        read = getattr(response, "read", None)
+        if callable(read):
+            data = await read()
+        else:
+            data = await response.text()
+        if isinstance(data, str):
+            raw = data.encode("utf-8")
+        else:
+            raw = bytes(data or b"")
+        if len(raw) > max_bytes:
+            raise RuntimeError(f"{label} exceeded {max_bytes} bytes")
+    charset = getattr(response, "charset", None) or "utf-8"
+    return raw.decode(charset, errors="replace")
 
 
 class HomeAssistantAdapter(BasePlatformAdapter):
@@ -416,8 +458,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     if resp.status < 300:
                         return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
                     else:
-                        body = await resp.text()
-                        return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
+                        body = await _read_response_text_limited(
+                            resp,
+                            label="Home Assistant notification error response",
+                        )
+                        return SendResult(success=False, error=f"HTTP {resp.status}: {body[:400]}")
             else:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -429,8 +474,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                         if resp.status < 300:
                             return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
                         else:
-                            body = await resp.text()
-                            return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
+                            body = await _read_response_text_limited(
+                                resp,
+                                label="Home Assistant notification error response",
+                            )
+                            return SendResult(success=False, error=f"HTTP {resp.status}: {body[:400]}")
 
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending notification to HA")
@@ -508,10 +556,13 @@ async def _standalone_send(
         ) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:
-                    body = await resp.text()
+                    body = await _read_response_text_limited(
+                        resp,
+                        label="Home Assistant standalone error response",
+                    )
                     return {
                         "error": (
-                            f"Home Assistant API error ({resp.status}): {body}"
+                            f"Home Assistant API error ({resp.status}): {body[:400]}"
                         )
                     }
         return {

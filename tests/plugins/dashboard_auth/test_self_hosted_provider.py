@@ -99,6 +99,7 @@ def _mint_id_token(
     groups: Any = None,
     org_id: str | None = None,
     ttl_seconds: int = 900,
+    iat_offset: int = 0,
     extra_claims: Dict[str, Any] | None = None,
 ) -> str:
     now = int(time.time())
@@ -106,7 +107,7 @@ def _mint_id_token(
         "iss": iss,
         "aud": aud,
         "sub": sub,
-        "iat": now,
+        "iat": now + iat_offset,
         "exp": now + ttl_seconds,
     }
     if email is not None:
@@ -127,11 +128,15 @@ def _mint_id_token(
     )
 
 
-def _make_provider(rsa_keypair, *, scopes: str | None = None):
+def _make_provider(
+    rsa_keypair, *, scopes: str | None = None, id_token_leeway: float | None = None
+):
     """Construct a provider with discovery + JWKS stubbed (no network)."""
     kwargs: Dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
     if scopes is not None:
         kwargs["scopes"] = scopes
+    if id_token_leeway is not None:
+        kwargs["id_token_leeway"] = id_token_leeway
     p = oidc_plugin.SelfHostedOIDCProvider(**kwargs)
     # Pre-seed discovery so nothing hits the network.
     p._discovery = dict(_DISCOVERY_DOC)
@@ -210,6 +215,22 @@ class TestConstruction:
             issuer=_ISSUER, client_id=_CLIENT_ID, scopes="   "
         )
         assert p._scopes == "openid profile email"
+
+    def test_default_leeway_is_zero(self):
+        p = oidc_plugin.SelfHostedOIDCProvider(issuer=_ISSUER, client_id=_CLIENT_ID)
+        assert p._id_token_leeway == 0.0
+
+    def test_custom_leeway_stored(self):
+        p = oidc_plugin.SelfHostedOIDCProvider(
+            issuer=_ISSUER, client_id=_CLIENT_ID, id_token_leeway=60
+        )
+        assert p._id_token_leeway == 60.0
+
+    def test_negative_leeway_clamped_to_zero(self):
+        p = oidc_plugin.SelfHostedOIDCProvider(
+            issuer=_ISSUER, client_id=_CLIENT_ID, id_token_leeway=-5
+        )
+        assert p._id_token_leeway == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +752,28 @@ class TestVerifySession:
         with pytest.raises(ProviderError, match="JWKS"):
             provider.verify_session(access_token=token)
 
+    def test_future_iat_rejected_without_leeway(self, provider, rsa_keypair):
+        # Default leeway=0: an iat slightly in the future (clock skew between
+        # issuer and verifier) raises ImmatureSignatureError -> ProviderError.
+        token = _mint_id_token(rsa_keypair, iat_offset=30)
+        with pytest.raises(ProviderError, match="verification failed"):
+            provider.verify_session(access_token=token)
+
+    def test_future_iat_accepted_within_leeway(self, rsa_keypair):
+        # With leeway >= the skew, the same future-iat token verifies.
+        provider = _make_provider(rsa_keypair, id_token_leeway=60)
+        token = _mint_id_token(rsa_keypair, iat_offset=30)
+        session = provider.verify_session(access_token=token)
+        assert session is not None
+        assert session.user_id == "usr_abc"
+
+    def test_future_iat_beyond_leeway_still_rejected(self, rsa_keypair):
+        # Leeway bounds tolerance: skew larger than the leeway still fails.
+        provider = _make_provider(rsa_keypair, id_token_leeway=60)
+        token = _mint_id_token(rsa_keypair, iat_offset=120)
+        with pytest.raises(ProviderError, match="verification failed"):
+            provider.verify_session(access_token=token)
+
 
 # ---------------------------------------------------------------------------
 # refresh_session + revoke_session
@@ -843,6 +886,7 @@ class TestPluginRegister:
             "HERMES_DASHBOARD_OIDC_ISSUER",
             "HERMES_DASHBOARD_OIDC_CLIENT_ID",
             "HERMES_DASHBOARD_OIDC_SCOPES",
+            "HERMES_DASHBOARD_OIDC_ID_TOKEN_LEEWAY",
         ):
             monkeypatch.delenv(var, raising=False)
 
@@ -883,7 +927,43 @@ class TestPluginRegister:
         assert registered._issuer == _ISSUER
         assert registered._client_id == _CLIENT_ID
         assert registered._scopes == "openid profile email"
+        assert registered._id_token_leeway == 0.0
         assert oidc_plugin.LAST_SKIP_REASON == ""
+
+    def test_leeway_from_env(self, patch_config, monkeypatch):
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ISSUER", _ISSUER)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_ID", _CLIENT_ID)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ID_TOKEN_LEEWAY", "60")
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._id_token_leeway == 60.0
+
+    def test_leeway_from_config_yaml(self, patch_config):
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "id_token_leeway": 30,
+                }
+            }
+        )
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._id_token_leeway == 30.0
+
+    def test_invalid_leeway_falls_back_to_zero(self, patch_config, monkeypatch):
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ISSUER", _ISSUER)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_ID", _CLIENT_ID)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ID_TOKEN_LEEWAY", "not-a-number")
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._id_token_leeway == 0.0
 
     def test_registers_from_config_yaml(self, patch_config):
         patch_config(

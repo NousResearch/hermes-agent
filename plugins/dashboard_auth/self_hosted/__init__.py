@@ -50,11 +50,13 @@ same precedence convention as the ``nous`` plugin)::
           issuer: https://auth.example.com/application/o/hermes/   # required
           client_id: hermes-dashboard                              # required
           scopes: "openid profile email"                           # optional
+          id_token_leeway: 0                                        # optional; seconds of clock-skew tolerance
 
     # Environment overrides (Docker/Fly secret injection)
     HERMES_DASHBOARD_OIDC_ISSUER
     HERMES_DASHBOARD_OIDC_CLIENT_ID
-    HERMES_DASHBOARD_OIDC_SCOPES        # optional; defaults to "openid profile email"
+    HERMES_DASHBOARD_OIDC_SCOPES          # optional; defaults to "openid profile email"
+    HERMES_DASHBOARD_OIDC_ID_TOKEN_LEEWAY # optional seconds; clock-skew tolerance for exp/nbf/iat (default 0)
 
 Skip reasons: when the plugin loads but can't register (missing issuer /
 client_id), it writes a human-readable reason to the module-level
@@ -172,6 +174,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         issuer: str,
         client_id: str,
         scopes: str = _DEFAULT_SCOPES,
+        id_token_leeway: float = 0.0,
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -186,6 +189,13 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         _require_https_or_loopback(self._issuer, field="issuer")
         self._client_id = client_id
         self._scopes = scopes.strip() or _DEFAULT_SCOPES
+        # Clock-skew tolerance (seconds) applied to the ID token's exp/nbf/iat
+        # checks. Default 0 keeps the strict behaviour; operators whose verifier
+        # and IDP clocks can drift (containers / VMs without tight time-sync)
+        # set a small value (RFC 7519 §4.1.4-4.1.6 allow "some small leeway,
+        # usually no more than a few minutes, to account for clock skew").
+        # Negative values are clamped to 0.
+        self._id_token_leeway = max(0.0, float(id_token_leeway))
 
         # Discovery + JWKS are lazily resolved on first use so plugin
         # registration never makes a network call (the IDP may be down at
@@ -526,6 +536,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 algorithms=list(_ALLOWED_ID_TOKEN_ALGS),
                 audience=self._client_id,
                 issuer=disco["issuer"],
+                leeway=self._id_token_leeway,
                 options={"require": ["exp", "iat", "aud", "iss", "sub"]},
             )
         except jwt.ExpiredSignatureError as exc:
@@ -689,6 +700,28 @@ def _resolve_setting(env_var: str, cfg_value: Any) -> str:
     return str(cfg_value or "").strip()
 
 
+def _resolve_leeway(env_var: str, cfg_value: Any) -> float:
+    """Resolve a non-negative seconds value with env-wins-config precedence.
+
+    Reuses :func:`_resolve_setting`'s precedence, then parses to a float.
+    Unparseable or negative input falls back to ``0.0`` (strict, no leeway) so
+    a typo can never *widen* the verification window — it only ever loses the
+    operator's intended tolerance, which fails closed.
+    """
+    raw = _resolve_setting(env_var, cfg_value)
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "dashboard-auth-self-hosted: ignoring invalid id_token_leeway %r "
+            "(expected seconds); using 0",
+            raw,
+        )
+        return 0.0
+
+
 def register(ctx) -> None:
     """Plugin entry — called by the plugin loader at startup.
 
@@ -717,6 +750,9 @@ def register(ctx) -> None:
         _resolve_setting("HERMES_DASHBOARD_OIDC_SCOPES", oidc_cfg.get("scopes"))
         or _DEFAULT_SCOPES
     )
+    id_token_leeway = _resolve_leeway(
+        "HERMES_DASHBOARD_OIDC_ID_TOKEN_LEEWAY", oidc_cfg.get("id_token_leeway")
+    )
 
     if not issuer or not client_id:
         LAST_SKIP_REASON = (
@@ -733,7 +769,10 @@ def register(ctx) -> None:
 
     try:
         provider = SelfHostedOIDCProvider(
-            issuer=issuer, client_id=client_id, scopes=scopes
+            issuer=issuer,
+            client_id=client_id,
+            scopes=scopes,
+            id_token_leeway=id_token_leeway,
         )
     except (ValueError, ProviderError) as exc:
         LAST_SKIP_REASON = (
@@ -745,8 +784,9 @@ def register(ctx) -> None:
     ctx.register_dashboard_auth_provider(provider)
     logger.info(
         "dashboard-auth-self-hosted: registered provider "
-        "(issuer=%s, client_id=%s, scopes=%r)",
+        "(issuer=%s, client_id=%s, scopes=%r, id_token_leeway=%s)",
         issuer,
         client_id,
         scopes,
+        id_token_leeway,
     )

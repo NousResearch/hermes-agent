@@ -1,5 +1,6 @@
 import { type RefObject, useEffect } from 'react'
 
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { $petMotion, $petRoamDir, type PetState } from '@/store/pet'
 
 interface Point {
@@ -126,6 +127,8 @@ interface PetRoamOptions {
   petH: number
   /** Sprite animation loop duration (ms) — paces the walk to the leg cadence. */
   loopMs: number
+  /** A full-screen route overlay (settings/profiles/…) is up: patrol its base. */
+  overlayOpen: boolean
   /** Persist the resting position back to React state when the loop settles. */
   commit: (point: Point) => void
 }
@@ -151,7 +154,16 @@ interface PetRoamOptions {
  * the shared `$petState`, and `$petRoamDir` (-1/0/1) lets the floating pet pick
  * the directional run row + mirror for the travel direction.
  */
-export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, loopMs, commit }: PetRoamOptions): void {
+export function usePetRoam({
+  enabled,
+  containerRef,
+  isInteracting,
+  petW,
+  petH,
+  loopMs,
+  overlayOpen,
+  commit
+}: PetRoamOptions): void {
   useEffect(() => {
     if (!enabled) {
       $petMotion.set(null)
@@ -281,13 +293,26 @@ export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, l
       return best ?? ledges[0]!
     }
 
-    const planNext = () => {
-      const ledges = snapshotLedges(petW, petH)
-      curLedge = resolveLedge(ledges)
-      const grounded = Math.abs(cur.y - groundTop(curLedge)) <= GROUND_EPS
+    // While an overlay is up, it's the only walkable surface: a single ledge at
+    // the overlay card's bottom inner edge. The card uses `OverlayView`'s equal
+    // inset on every side — `titlebar-height + padding` — so derive it from that
+    // (never measured).
+    const overlayLedge = (): Ledge => {
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      const inset = TITLEBAR_HEIGHT + (vw() >= 640 ? 0.875 : 0.625) * rem
 
-      if (!grounded) {
-        // Dragged into the air (or a perch vanished): fall to the surface below.
+      return { left: inset, right: Math.max(0, vw() - inset - petW), y: vh() - inset }
+    }
+
+    const planNext = () => {
+      // An open overlay swaps the surface set to just its bottom edge, so the pet
+      // patrols along it; closing it restores the normal surfaces (and the pet
+      // drops to whatever's below).
+      const ledges = overlayOpen ? [overlayLedge()] : snapshotLedges(petW, petH)
+      curLedge = resolveLedge(ledges)
+
+      if (Math.abs(cur.y - groundTop(curLedge)) > GROUND_EPS) {
+        // Dragged into the air, or the surface moved out from under it: fall.
         beginVertical(curLedge)
 
         return
@@ -414,5 +439,5 @@ export function usePetRoam({ enabled, containerRef, isInteracting, petW, petH, l
       // the loop stops re-asserting it.
       commit({ ...cur })
     }
-  }, [enabled, petW, petH, loopMs, containerRef, isInteracting, commit])
+  }, [enabled, petW, petH, loopMs, overlayOpen, containerRef, isInteracting, commit])
 }

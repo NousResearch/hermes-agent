@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { persistString, storedString } from '@/lib/storage'
 import { $petAtRest, $petInfo, $petRoam, $petRoamDir, clearPetUnread, type PetInfo, petProfile, setPetInfo } from '@/store/pet'
 import { resetPetGallery, setPetScale } from '@/store/pet-gallery'
@@ -108,6 +109,7 @@ export function FloatingPet() {
   const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
   const roamDir = useStore($petRoamDir)
+  const routeOverlayOpen = useRouteOverlayActive()
 
   const [position, setPosition] = useState<Point>(loadPosition)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -391,6 +393,7 @@ export function FloatingPet() {
     enabled: roamEnabled && active && !overlayActive && atRest,
     isInteracting: isDragging,
     loopMs: info.loopMs ?? 1100,
+    overlayOpen: routeOverlayOpen,
     petH,
     petW
   })

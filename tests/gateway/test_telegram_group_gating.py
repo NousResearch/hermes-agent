@@ -719,36 +719,48 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
-    monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
-    monkeypatch.delenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", raising=False)
-    monkeypatch.delenv("TELEGRAM_GUEST_MODE", raising=False)
-    monkeypatch.delenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
-    monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
-    monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
-    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS", raising=False)
-    monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
+    # Clear the TELEGRAM_* vars this test exercises so a developer's ambient
+    # shell/.env values don't pre-empt the YAML→env bridge (env-over-YAML
+    # precedence, adapter.py::_apply_yaml_config). The authoritative assertions
+    # below read the returned config object, which is immune to env pollution
+    # from third-party import-time load_dotenv calls; see the note at the asserts.
+    for _var in (
+        "TELEGRAM_REQUIRE_MENTION",
+        "TELEGRAM_MENTION_PATTERNS",
+        "TELEGRAM_EXCLUSIVE_BOT_MENTIONS",
+        "TELEGRAM_GUEST_MODE",
+        "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
+        "TELEGRAM_FREE_RESPONSE_CHATS",
+        "TELEGRAM_ALLOWED_CHATS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOWED_TOPICS",
+    ):
+        monkeypatch.delenv(_var, raising=False)
 
     config = load_gateway_config()
 
+    # Assert against the returned config object — the authoritative result of the
+    # bridge. We deliberately do NOT assert on os.environ here: a third-party
+    # import (microsoft_teams/apps/app.py) runs load_dotenv(find_dotenv(usecwd=True))
+    # at import time, which walks up from cwd and can repopulate TELEGRAM_* vars
+    # from a developer's real ~/.hermes/.env, defeating the env-over-YAML bridge
+    # for any key present there. The PlatformConfig.extra values below are parsed
+    # straight from the test's config.yaml and are immune to that ambient leak.
     assert config is not None
-    assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
-    assert __import__("os").environ["TELEGRAM_GUEST_MODE"] == "true"
-    assert __import__("os").environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] == "true"
-    assert __import__("os").environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] == "true"
-    assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
-    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
-    assert __import__("os").environ["TELEGRAM_ALLOWED_CHATS"] == "-100"
-    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_CHATS"] == "-100"
-    assert __import__("os").environ["TELEGRAM_ALLOWED_TOPICS"] == "8"
     tg_cfg = config.platforms.get(Platform.TELEGRAM)
     assert tg_cfg is not None
+    assert tg_cfg.extra.get("require_mention") is True
     assert tg_cfg.extra.get("guest_mode") is True
+    assert tg_cfg.extra.get("exclusive_bot_mentions") is True
+    assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
+    assert tg_cfg.extra.get("mention_patterns") == [r"^\s*chompy\b"]
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
-    assert tg_cfg.extra.get("exclusive_bot_mentions") is True
-    assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
+    # free_response_chats is bridged to the env var only (not PlatformConfig.extra).
+    # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
+    # files, so asserting it via os.environ stays deterministic.
+    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
@@ -776,7 +788,13 @@ def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
     assert config is not None
     assert __import__("os").environ["TELEGRAM_ALLOWED_USERS"] == "111,222"
     assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_USERS"] == "333"
-    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_CHATS"] == "-100"
+    # group_allowed_chats via the config object, not os.environ: the
+    # microsoft_teams import-time load_dotenv(find_dotenv(usecwd=True)) can
+    # repopulate TELEGRAM_GROUP_ALLOWED_CHATS from a developer's real
+    # ~/.hermes/.env, which would defeat the env-over-YAML bridge here.
+    tg_cfg = config.platforms.get(Platform.TELEGRAM)
+    assert tg_cfg is not None
+    assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
 
 
 def test_config_env_overrides_telegram_user_allowlists(monkeypatch, tmp_path):

@@ -94,6 +94,7 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
+    copyContent: string
     rename: string
     delete: string
     renameTitle: string
@@ -101,6 +102,7 @@ export interface Translations {
     deleteTitle: (name: string) => string
     deleteBody: string
     pathCopied: string
+    contentCopied: string
   }
 
   boot: {

@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
-import { copyTextToClipboard, renameDesktopPath, revealDesktopPath, trashDesktopPath } from '@/lib/desktop-fs'
+import { copyTextToClipboard, readDesktopFileText, renameDesktopPath, revealDesktopPath, trashDesktopPath } from '@/lib/desktop-fs'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -60,6 +60,32 @@ export async function copyFilePath(path: string): Promise<void> {
   try {
     await copyTextToClipboard(path)
     notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.pathCopied') })
+  } catch (error) {
+    notifyError(error, translateNow('common.copyFailed'))
+  }
+}
+
+/** Read a file's text content and copy it to the system clipboard. */
+export async function copyFileContent(path: string): Promise<void> {
+  try {
+    const result = await readDesktopFileText(path)
+
+    if (result.binary) {
+      notifyError(new Error('Binary file'), translateNow('common.copyFailed'))
+
+      return
+    }
+
+    const text = result.text
+
+    if (!text) {
+      notifyError(new Error('File has no readable text content'), translateNow('common.copyFailed'))
+
+      return
+    }
+
+    await copyTextToClipboard(text)
+    notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.contentCopied') })
   } catch (error) {
     notifyError(error, translateNow('common.copyFailed'))
   }

@@ -49,13 +49,15 @@ export const en: Translations = {
     revealInSidebar: 'Reveal in filetree',
     copyPath: 'Copy Path',
     copyRelativePath: 'Copy Relative Path',
+    copyContent: 'Copy File Content',
     rename: 'Rename…',
     delete: 'Delete',
     renameTitle: 'Rename',
     renameLabel: 'New name',
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
-    pathCopied: 'Path copied'
+    pathCopied: 'Path copied',
+    contentCopied: 'File content copied'
   },
 
   boot: {

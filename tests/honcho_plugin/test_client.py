@@ -819,17 +819,28 @@ class TestResolveSessionNameLengthLimit:
 
 
 class TestResetHonchoClient:
-    def test_reset_clears_singleton(self):
+    def test_reset_clears_all_compartment_slots(self):
         import plugins.memory.honcho.client as mod
+        from plugins.plugin_utils import SingletonSlot
 
-        # Seed the cached client through the slot's public surface, then
-        # verify reset_honcho_client() clears it. (The client is cached in
-        # mod._honcho_client_slot, a thread-safe SingletonSlot, not a bare
-        # module global anymore — see #24759.)
-        mod._honcho_client_slot.get(lambda: MagicMock())
-        assert mod._honcho_client_slot.peek() is not None
+        # Seed multiple cached clients through the slot public surface, then
+        # verify reset_honcho_client() clears every slot. Compartment routing
+        # now caches one SingletonSlot per resolved workspace/key/session tuple
+        # rather than one process-wide _honcho_client_slot.
+        slot_a = SingletonSlot()
+        slot_b = SingletonSlot()
+        slot_a.get(lambda: MagicMock())
+        slot_b.get(lambda: MagicMock())
+        with mod._honcho_client_slots_lock:
+            mod._honcho_client_slots[("env", "workspace-a", "peer")] = slot_a
+            mod._honcho_client_slots[("env", "workspace-b", "peer")] = slot_b
+
+        assert slot_a.peek() is not None
+        assert slot_b.peek() is not None
         reset_honcho_client()
-        assert mod._honcho_client_slot.peek() is None
+        assert slot_a.peek() is None
+        assert slot_b.peek() is None
+        assert mod._honcho_client_slots == {}
 
 
 class TestDialecticDepthParsing:

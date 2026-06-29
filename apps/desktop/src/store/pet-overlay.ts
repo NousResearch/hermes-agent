@@ -8,7 +8,7 @@ import { $awaitingResponse, $busy } from '@/store/session'
  * Controller for the pop-out pet overlay (main-renderer side).
  *
  * Shift-clicking the in-window pet "pops it out" into a transparent,
- * always-on-top OS window (created in electron/main.cjs) that can leave the
+ * always-on-top OS window (created in electron/main.ts) that can leave the
  * app's bounds and stays visible while Hermes is minimized. That window carries
  * NO gateway connection — this renderer remains the single source of truth and
  * pushes the live pet state to it over IPC. Control flows back (pop the pet back
@@ -30,7 +30,7 @@ export interface PetOverlayBounds {
 /**
  * Request to open the overlay window. `screen` says whether `bounds` are already
  * in absolute screen coordinates (a remembered/dragged spot) or in the main
- * window's viewport space (a fresh shift-click pop-out, which main.cjs converts
+ * window's viewport space (a fresh shift-click pop-out, which main.ts converts
  * by adding the content origin).
  */
 export interface PetOverlayOpenRequest {
@@ -172,7 +172,7 @@ function openOverlay(request: PetOverlayOpenRequest): void {
 /**
  * Pop the pet out of the window. `petRect` is the in-window sprite's viewport
  * rect; we grow it to the padded overlay size and center the window on the
- * pet's old spot (main.cjs adds the window's screen origin). If the user has
+ * pet's old spot (main.ts adds the window's screen origin). If the user has
  * popped out before, reopen at that remembered desktop spot instead.
  */
 export function popOutPet(petRect: PetOverlayBounds): void {
@@ -273,7 +273,7 @@ export function initPetOverlayBridge(): () => void {
       // overlay on the next push, keeping both surfaces in sync.
       scaleHandler?.(payload.scale)
     } else if (payload?.type === 'open-app') {
-      // Mail icon: surface the app on the most recent thread (main.cjs already
+      // Mail icon: surface the app on the most recent thread (main.ts already
       // focused the window before forwarding this) and mark it read.
       clearPetUnread()
       openAppHandler?.()

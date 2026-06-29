@@ -21,9 +21,9 @@ import {
   _submitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
+  isGatewayTimeoutError,
   isProviderSetupError,
   isSessionBusyError,
-  isGatewayTimeoutError,
   isSessionNotFoundError,
   type SubmitTextOptions,
   withSessionBusyRetry

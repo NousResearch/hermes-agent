@@ -459,7 +459,7 @@ export interface DesktopBootProgress {
 }
 
 // First-launch install ("bootstrap") event types -- emitted by
-// electron/bootstrap-runner.cjs and observed by the renderer install overlay.
+// electron/bootstrap-runner.ts and observed by the renderer install overlay.
 // Mirrors the event shapes emitted by runBootstrap()'s onEvent callback.
 
 export interface DesktopBootstrapStageDescriptor {

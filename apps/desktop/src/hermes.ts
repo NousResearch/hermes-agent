@@ -61,7 +61,7 @@ import type {
 // model info/options, cron) the moment the backend passes readiness. On a
 // profile-heavy or remote install these can each take tens of seconds — e.g.
 // /api/profiles runs list_profiles(), which does a recursive skill-tree walk
-// per profile — so the 15s default (DEFAULT_FETCH_TIMEOUT_MS in hardening.cjs)
+// per profile — so the 15s default (DEFAULT_FETCH_TIMEOUT_MS in hardening.ts)
 // times out a backend that is alive-but-busy, surfacing as a spurious
 // "Timed out connecting to Hermes backend" that hangs the UI (#48504).
 //

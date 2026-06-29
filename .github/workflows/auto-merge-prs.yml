@@ -1,0 +1,107 @@
+name: Auto-Merge Pull Requests
+
+on:
+  pull_request:
+    types:
+      - opened
+      - ready_for_review
+      - reopened
+  pull_request_review:
+    types:
+      - submitted
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: 'Pull request number (leave empty to enable on all open PRs)'
+        required: false
+        type: string
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    name: Enable Auto-Merge
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Enable auto-merge for pull request(s)
+        run: |
+          REPO=${{ github.repository }}
+
+          # Determine which PRs to process
+          if [ -n "${{ github.event.inputs.pull_request_number }}" ]; then
+            # Manual trigger with specific PR - validate input (must be numeric)
+            INPUT="${{ github.event.inputs.pull_request_number }}"
+            if ! echo "$INPUT" | grep -qE '^[0-9]( [0-9])*$'; then
+              echo "Error: Invalid PR number format. Must be numeric, space-separated."
+              exit 1
+            fi
+            PR_NUMBERS="$INPUT"
+          elif [ -n "${{ github.event.pull_request.number }}" ]; then
+            # Automatic trigger from PR event
+            PR_NUMBERS="${{ github.event.pull_request.number }}"
+          else
+            # Manual trigger without PR number - enable on all open PRs
+            echo "Fetching all open PRs..."
+            PR_NUMBERS=$(gh pr list --repo $REPO --state open --json number --jq '.[].number' | tr '\n' ' ')
+          fi
+
+          if [ -z "$PR_NUMBERS" ]; then
+            echo "No PRs to process"
+            exit 0
+          fi
+
+          echo "Processing PRs: $PR_NUMBERS"
+
+          retry_with_backoff() {
+            local max_attempts=3
+            local timeout=1
+            local attempt=1
+            local exitcode=0
+            while [ $attempt -le $max_attempts ]; do
+              if "$@"; then
+                return 0
+              else
+                exitcode=$?
+              fi
+              if [ $attempt -lt $max_attempts ]; then
+                echo "Attempt $attempt failed. Retrying in ${timeout}s..."
+                sleep $timeout
+                timeout=$((timeout * 2))
+              fi
+              attempt=$((attempt + 1))
+            done
+            return $exitcode
+          }
+
+          for PR_NUMBER in $PR_NUMBERS; do
+            echo "Processing PR #$PR_NUMBER..."
+
+            # Check if PR is already merged or closed (with retry)
+            PR_STATE=$(retry_with_backoff gh pr view $PR_NUMBER --repo $REPO --json state --jq '.state') || {
+              echo "  ✗ Failed to fetch PR #$PR_NUMBER state after retries"
+              continue
+            }
+
+            if [ "$PR_STATE" = "MERGED" ] || [ "$PR_STATE" = "CLOSED" ]; then
+              echo "  PR #$PR_NUMBER is already $PR_STATE, skipping"
+              continue
+            fi
+
+            # Enable auto-merge with squash merge strategy (with retry and exponential backoff)
+            if retry_with_backoff gh pr merge $PR_NUMBER \
+              --repo $REPO \
+              --auto \
+              --squash \
+              --delete-branch 2>/dev/null; then
+              echo "  ✓ Auto-merge enabled for PR #$PR_NUMBER"
+            else
+              echo "  ✗ Failed to enable auto-merge for PR #$PR_NUMBER (may already have auto-merge enabled)"
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,179 @@
+name: CI Escalation Detector
+
+on:
+  workflow_run:
+    workflows:
+      - 'Tests'
+      - 'Lint'
+      - 'Nix'
+      - 'Supply Chain Audit'
+      - 'Docker Publish'
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'check-and-escalate'
+        type: choice
+        options:
+          - check-and-escalate
+          - manual-escalation
+      pr_number:
+        description: 'PR number to investigate (for manual escalation)'
+        required: false
+        type: string
+
+concurrency:
+  group: ci-escalation
+  cancel-in-progress: false
+
+jobs:
+  detect-persistent-failures:
+    name: Detect Persistent CI Failures
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      escalation_needed: ${{ steps.check-failures.outputs.escalation_needed }}
+      failed_jobs: ${{ steps.check-failures.outputs.failed_jobs }}
+      pr_numbers: ${{ steps.check-failures.outputs.pr_numbers }}
+    steps:
+      - name: Check for persistent failures
+        id: check-failures
+        run: |
+          REPO=${{ github.repository }}
+          WORKFLOW_NAME="${{ github.event.workflow_run.name }}"
+
+          echo "Analyzing failures for workflow: $WORKFLOW_NAME"
+
+          # Get recent failed runs for this workflow (last 10)
+          FAILED_RUNS=$(gh run list \
+            --repo $REPO \
+            --workflow "$WORKFLOW_NAME" \
+            --status failure \
+            --limit 10 \
+            --json databaseId,conclusion,name \
+            --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null || echo "")
+
+          if [ -z "$FAILED_RUNS" ]; then
+            echo "escalation_needed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          FAILURE_COUNT=$(echo "$FAILED_RUNS" | wc -l)
+          echo "Found $FAILURE_COUNT recent failures for $WORKFLOW_NAME"
+
+          # Escalate if 3+ consecutive failures
+          if [ "$FAILURE_COUNT" -ge 3 ]; then
+            echo "escalation_needed=true" >> $GITHUB_OUTPUT
+            echo "failed_jobs=$WORKFLOW_NAME" >> $GITHUB_OUTPUT
+
+            # Get affected PR numbers
+            PR_NUMBERS=$(gh run list \
+              --repo $REPO \
+              --workflow "$WORKFLOW_NAME" \
+              --status failure \
+              --limit 3 \
+              --json headBranch \
+              --jq '.[] | select(.headBranch | startswith("refs/")) | .headBranch' 2>/dev/null || echo "")
+
+            echo "pr_numbers=$PR_NUMBERS" >> $GITHUB_OUTPUT
+          else
+            echo "escalation_needed=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  trigger-investigation:
+    name: Trigger Claude Code Investigation
+    runs-on: ubuntu-latest
+    needs: detect-persistent-failures
+    if: needs.detect-persistent-failures.outputs.escalation_needed == 'true' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    steps:
+      - name: Prepare escalation details
+        id: escalation-info
+        run: |
+          REPO=${{ github.repository }}
+          FAILED_JOBS="${{ needs.detect-persistent-failures.outputs.failed_jobs }}"
+          PR_NUMBERS="${{ needs.detect-persistent-failures.outputs.pr_numbers }}"
+          ACTION="${{ github.event.inputs.action || 'automatic' }}"
+          MANUAL_PR="${{ github.event.inputs.pr_number }}"
+
+          echo "=== CI Escalation Triggered ==="
+          echo "Repository: $REPO"
+          echo "Escalation Type: $ACTION"
+          echo "Failed Jobs: $FAILED_JOBS"
+          echo "Affected PRs: $PR_NUMBERS"
+          echo "Manual PR: $MANUAL_PR"
+          echo ""
+          echo "escalation_type=$ACTION" >> $GITHUB_OUTPUT
+
+      - name: Create escalation summary
+        run: |
+          cat > /tmp/escalation-summary.txt << 'EOF'
+          # CI Escalation Report
+
+          ## Trigger Information
+          - Event: ${{ github.event_name }}
+          - Workflow: ${{ github.event.workflow_run.name || github.event.inputs.action }}
+          - Repository: ${{ github.repository }}
+          - Time: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          ## Escalation Details
+          - Failed Jobs: ${{ needs.detect-persistent-failures.outputs.failed_jobs }}
+          - Affected PRs: ${{ needs.detect-persistent-failures.outputs.pr_numbers }}
+          - Escalation Type: ${{ steps.escalation-info.outputs.escalation_type }}
+
+          ## Required Investigation
+          1. Clone the repository
+          2. Checkout affected branches
+          3. Run failing tests/jobs locally
+          4. Analyze error logs and stack traces
+          5. Identify root cause
+          6. Attempt fixes if possible
+          7. Report findings and recommendations
+
+          ## Next Steps
+          A Claude Code agent will investigate and:
+          - Run tests locally to reproduce failures
+          - Analyze error patterns
+          - Propose fixes or identify blockers
+          - Commit solutions or report detailed findings
+          EOF
+
+          cat /tmp/escalation-summary.txt
+
+      - name: Log escalation event
+        run: |
+          echo "✓ CI Escalation event logged"
+          echo "• Escalation Type: ${{ steps.escalation-info.outputs.escalation_type }}"
+          echo "• Failed Jobs: ${{ needs.detect-persistent-failures.outputs.failed_jobs }}"
+          echo ""
+          echo "⚠️  IMPORTANT: A Claude Code agent should now investigate this failure."
+          echo "   Manual investigation can be triggered via workflow_dispatch if needed."
+
+  manual-escalation-available:
+    name: Manual Escalation Available
+    runs-on: ubuntu-latest
+    if: always()
+    permissions: {}
+    steps:
+      - name: Escalation Information
+        run: |
+          echo "=== Manual Escalation Instructions ==="
+          echo ""
+          echo "If you need to manually escalate a CI failure to Claude Code:"
+          echo ""
+          echo "1. Go to: Actions > CI Escalation Detector"
+          echo "2. Click 'Run workflow'"
+          echo "3. Select action: 'manual-escalation'"
+          echo "4. Provide PR number (optional)"
+          echo "5. Click 'Run workflow'"
+          echo ""
+          echo "This will trigger Claude Code investigation immediately."

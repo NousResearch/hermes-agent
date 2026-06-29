@@ -1,0 +1,130 @@
+name: CI Auto-Healer
+
+on:
+  workflow_run:
+    workflows:
+      - 'Tests'
+      - 'Lint'
+      - 'Nix'
+      - 'Supply Chain Audit'
+      - 'Docker Publish'
+    types:
+      - completed
+  schedule:
+    # Check for failed workflows every 30 minutes
+    - cron: '*/30 * * * *'
+
+concurrency:
+  group: ci-auto-healer
+  cancel-in-progress: false
+
+jobs:
+  check-and-repair:
+    name: Check Failed Runs & Attempt Repair
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Check recent failed workflow runs
+        id: check-failures
+        run: |
+          REPO=${{ github.repository }}
+
+          # Get recent failed workflow runs (last 24 hours)
+          FAILED_RUNS=$(gh run list --repo $REPO --status failure --limit 20 --json databaseId,name,headBranch,conclusion --jq '.[] | select(.conclusion=="failure") | .databaseId' 2>/dev/null || echo "")
+
+          if [ -z "$FAILED_RUNS" ]; then
+            echo "No failed runs found"
+            echo "failed_runs=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Found failed runs: $FAILED_RUNS"
+          echo "failed_runs=$FAILED_RUNS" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attempt to rerun failed jobs
+        if: steps.check-failures.outputs.failed_runs != ''
+        run: |
+          REPO=${{ github.repository }}
+          FAILED_RUNS="${{ steps.check-failures.outputs.failed_runs }}"
+          RERUN_COUNT=0
+          MAX_RERUNS=3
+
+          for RUN_ID in $FAILED_RUNS; do
+            echo "Processing run ID: $RUN_ID"
+
+            # Get run details
+            RUN_INFO=$(gh run view $RUN_ID --repo $REPO --json status,conclusion,databaseId,name 2>/dev/null || echo "")
+
+            if [ -z "$RUN_INFO" ]; then
+              echo "Could not fetch run info for $RUN_ID, skipping"
+              continue
+            fi
+
+            # Only rerun if still in failed state
+            CONCLUSION=$(echo "$RUN_INFO" | jq -r '.conclusion // empty')
+            if [ "$CONCLUSION" != "failure" ]; then
+              echo "Run $RUN_ID is not in failed state anymore, skipping"
+              continue
+            fi
+
+            # Limit number of reruns to prevent infinite loops
+            if [ $RERUN_COUNT -ge $MAX_RERUNS ]; then
+              echo "Reached maximum reruns ($MAX_RERUNS), stopping"
+              break
+            fi
+
+            echo "Rerunning failed job for run $RUN_ID..."
+            if gh run rerun $RUN_ID --repo $REPO 2>/dev/null; then
+              echo "  ✓ Successfully triggered rerun for $RUN_ID"
+              RERUN_COUNT=$((RERUN_COUNT + 1))
+            else
+              echo "  ✗ Failed to trigger rerun for $RUN_ID"
+            fi
+
+            # Rate limiting - wait between reruns
+            sleep 2
+          done
+
+          echo "Reran $RERUN_COUNT failed job(s)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Analyze failures for patterns
+        if: always()
+        run: |
+          REPO=${{ github.repository }}
+
+          echo "=== Recent Failure Analysis ==="
+
+          # Get recent failed runs with details
+          gh run list --repo $REPO --status failure --limit 5 --json name,conclusion,databaseId \
+            --jq '.[] | select(.conclusion=="failure") | "\(.name) (Run: \(.databaseId))"' 2>/dev/null || echo "No failures to analyze"
+
+          echo ""
+          echo "Common failure patterns:"
+          echo "- Flaky tests: Rerun often fixes transient test failures"
+          echo "- Network timeouts: Rerun handles temporary network issues"
+          echo "- Resource contention: Rerun allows resources to become available"
+          echo ""
+          echo "If failures persist after 3 reruns, manual investigation needed"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-persistent-failures:
+    name: Alert on Persistent Failures
+    runs-on: ubuntu-latest
+    if: failure()
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment on affected PR
+        run: |
+          echo "CI Auto-Healer detected persistent failures"
+          echo "Attempted automatic recovery but manual review may be needed"
+        continue-on-error: true

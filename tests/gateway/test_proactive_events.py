@@ -159,6 +159,38 @@ def test_resolved_proactive_events_are_not_injected(tmp_path):
     assert build_proactive_context_prompt(store, event.conversation_id) == ""
 
 
+def test_proactive_context_follows_whatsapp_lid_alias_when_session_key_changes(tmp_path):
+    store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
+    event = store.create_or_get_event(
+        conversation_id="agent:main:whatsapp:dm:905380361604",
+        platform="whatsapp",
+        chat_id="36361360928894@lid",
+        user_id="36361360928894@lid",
+        event_type="email_alert",
+        alert_id="mail_alert_disk_resize",
+        idempotency_key="disk-resize",
+        canonical_summary="Aptible resized the production database disk from 50GB to 75GB.",
+        rendered_message="aptible resized the disk",
+        source_ref="gmail:disk",
+        payload={
+            "account_label": "personal",
+            "subject": "Action taken to resize disk",
+            "urgency": "urgent-ish",
+            "suggested_action": "read",
+        },
+    )
+    store.mark_sent(event.event_id)
+    store.mark_attached(event.event_id)
+    store.mark_context_ready(event.event_id)
+    store.mark_introduced([event.event_id])
+
+    block = build_proactive_context_prompt(store, "agent:main:whatsapp:dm:36361360928894")
+    payload = _payload(block)
+
+    assert payload["active_alert_breadcrumbs"][0]["alert_id"] == "mail_alert_disk_resize"
+    assert payload["active_alert_breadcrumbs"][0]["subject"] == "Action taken to resize disk"
+
+
 def test_wrap_user_message_with_proactive_context_keeps_user_text_separate():
     block = "[HERMES TURN-LOCAL AUTOMATIC HERMES EMAIL ALERT INJECTION — trusted Hermes metadata, NOT written by the user]\n{\"new_alerts\": []}\n[/HERMES TURN-LOCAL AUTOMATIC HERMES EMAIL ALERT INJECTION]"
 

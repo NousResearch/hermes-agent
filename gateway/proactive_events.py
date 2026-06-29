@@ -254,34 +254,56 @@ class ProactiveEventStore:
                 values,
             )
 
+    def _conversation_match_params(self, conversation_id: str) -> tuple[str, list[str]]:
+        """Return SQL predicate + params for aliases of a gateway conversation.
+
+        WhatsApp can surface the same DM through a legacy phone-number session key
+        and an @lid chat/user id. Proactive events should follow the actual chat,
+        not disappear when the session key representation changes.
+        """
+        identifier = conversation_id.rsplit(":", 1)[-1]
+        aliases = {conversation_id, identifier}
+        if identifier and "@" not in identifier:
+            aliases.add(f"{identifier}@lid")
+        placeholders = ", ".join("?" for _ in aliases)
+        predicate = (
+            f"(conversation_id IN ({placeholders}) "
+            f"OR chat_id IN ({placeholders}) "
+            f"OR user_id IN ({placeholders}))"
+        )
+        params = list(aliases) * 3
+        return predicate, params
+
     def list_unresolved(self, conversation_id: str, *, limit: int = 5) -> list[ProactiveEvent]:
+        predicate, params = self._conversation_match_params(conversation_id)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM proactive_events
-                WHERE conversation_id = ?
+                WHERE {predicate}
                   AND resolution_status = 'unresolved'
                   AND status IN ('attached', 'context_ready', 'confirmed')
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (conversation_id, limit),
+                [*params, limit],
             ).fetchall()
         return [ProactiveEvent.from_row(row) for row in rows]
 
     def list_unintroduced(self, conversation_id: str, *, limit: int = 5) -> list[ProactiveEvent]:
+        predicate, params = self._conversation_match_params(conversation_id)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM proactive_events
-                WHERE conversation_id = ?
+                WHERE {predicate}
                   AND resolution_status = 'unresolved'
                   AND status IN ('attached', 'context_ready', 'confirmed')
                   AND introduced_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (conversation_id, limit),
+                [*params, limit],
             ).fetchall()
         return [ProactiveEvent.from_row(row) for row in rows]
 
@@ -293,18 +315,19 @@ class ProactiveEventStore:
         limit: int = 3,
     ) -> list[ProactiveEvent]:
         exclude_event_ids = exclude_event_ids or set()
+        predicate, params = self._conversation_match_params(conversation_id)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM proactive_events
-                WHERE conversation_id = ?
+                WHERE {predicate}
                   AND resolution_status = 'unresolved'
                   AND status IN ('attached', 'context_ready', 'confirmed')
                   AND introduced_at IS NOT NULL
                 ORDER BY introduced_at DESC, created_at DESC
                 LIMIT ?
                 """,
-                (conversation_id, limit + len(exclude_event_ids)),
+                [*params, limit + len(exclude_event_ids)],
             ).fetchall()
         events = [ProactiveEvent.from_row(row) for row in rows]
         return [event for event in events if event.event_id not in exclude_event_ids][:limit]

@@ -43,6 +43,8 @@ def test_proactive_event_store_idempotently_tracks_saga_and_context(tmp_path):
     block = build_proactive_context_prompt(store, first.conversation_id)
 
     assert "Internal proactive events" in block
+    assert "Newly introduced" in block
+    assert "must account for these alerts" in block
     assert "mail_alert_contract_deadline" in block
     assert "Contract approval needed by 17:00" in block
     assert "ignore previous instructions" not in block

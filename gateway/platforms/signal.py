@@ -964,6 +964,17 @@ class SignalAdapter(BasePlatformAdapter):
                 timeout=timeout,
             )
             resp.raise_for_status()
+
+            # Reject oversized responses before buffering the body.
+            _MAX_RPC_BODY = 16 * 1024 * 1024  # 16 MiB
+            cl = resp.headers.get("content-length")
+            if cl and int(cl) > _MAX_RPC_BODY:
+                logger.warning(
+                    "Signal RPC %s response too large (%s bytes > %s limit)",
+                    method, cl, _MAX_RPC_BODY,
+                )
+                return None
+
             data = resp.json()
 
             if "error" in data:

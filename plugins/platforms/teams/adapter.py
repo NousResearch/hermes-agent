@@ -708,6 +708,53 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        # Cached Bot Framework bearer token for downloading inbound image attachments.
+        self._bf_token: Optional[str] = None
+        self._bf_token_exp: float = 0.0
+
+    async def _bot_framework_token(self) -> Optional[str]:
+        """Mint (and briefly cache) a Bot Framework bearer token for downloading
+        inbound image attachments from Bot Framework hosts (smba.*), whose URLs
+        require auth.
+
+        Uses the same client-credentials flow + ``api.botframework.com`` scope the
+        adapter already uses to send activities. **Fail-soft:** returns ``None`` on
+        any error so the caller falls back to an unauthenticated fetch — a token
+        hiccup must never break message handling.
+        """
+        import time
+
+        now = time.monotonic()
+        if self._bf_token and self._bf_token_exp > now:
+            return self._bf_token
+        if not (self._client_id and self._client_secret and self._tenant_id):
+            return None
+        token_url = f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token"
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    token_url,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": self._client_id,
+                        "client_secret": self._client_secret,
+                        "scope": "https://api.botframework.com/.default",
+                    },
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+            token = payload.get("access_token")
+            if not token:
+                return None
+            expires_in = float(payload.get("expires_in", 3600) or 3600)
+            self._bf_token = token
+            self._bf_token_exp = now + max(60.0, expires_in - 60.0)  # refresh ~1 min early
+            return token
+        except Exception as e:  # noqa: BLE001 — must not propagate; fall back to no-auth
+            logger.warning("[teams] Could not acquire Bot Framework token for attachment download: %s", e)
+            return None
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -924,8 +971,23 @@ class TeamsAdapter(BasePlatformAdapter):
                 continue
 
             if content_url and content_type.startswith("image/"):
+                # Bot Framework image URLs (smba.*) require the bot's bearer token;
+                # without it the download 401s and the image is silently dropped.
+                # Attach the token, but only for allowlisted Bot Framework hosts so
+                # it can never leak to an attacker-controlled contentUrl. Non-BF
+                # hosts (and any token failure) fall back to an unauthenticated GET.
+                _dl_headers = None
                 try:
-                    cached = await cache_image_from_url(content_url)
+                    from urllib.parse import urlparse
+
+                    if urlparse(content_url).hostname in _ALLOWED_TEAMS_SERVICE_HOSTS:
+                        _tok = await self._bot_framework_token()
+                        if _tok:
+                            _dl_headers = {"Authorization": f"Bearer {_tok}"}
+                except Exception:  # noqa: BLE001 — gating is best-effort; fall back to no-auth
+                    _dl_headers = None
+                try:
+                    cached = await cache_image_from_url(content_url, headers=_dl_headers)
                     if cached:
                         media_urls.append(cached)
                         media_types.append(content_type)

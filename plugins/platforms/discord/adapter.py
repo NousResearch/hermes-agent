@@ -4084,8 +4084,27 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_model(interaction: discord.Interaction, name: str = ""):
             await self._run_simple_slash(interaction, f"/model {name}".strip())
 
-        @tree.command(name="reasoning", description="Show or change reasoning effort")
-        @discord.app_commands.describe(effort="Effort: none, minimal, low, medium, high, xhigh, max, or ultra.")
+        @tree.command(name="reasoning", description="Show/change reasoning effort, or toggle showing it")
+        @discord.app_commands.describe(effort="Pick a level, reset the override, or show/hide reasoning. Leave empty to see current.")
+        @discord.app_commands.choices(effort=[
+            # Effort levels and the reset/show/hide subcommands all arrive on the
+            # gateway's single `/reasoning <arg>` handler. Discord's native UI has
+            # no subcommand affordance for a free-text field (it just funnels the
+            # user into the `effort` box), so expose every accepted value as an
+            # explicit choice. --global persistence stays reachable by typing the
+            # command as plain text.
+            discord.app_commands.Choice(name="none — disable reasoning", value="none"),
+            discord.app_commands.Choice(name="minimal", value="minimal"),
+            discord.app_commands.Choice(name="low", value="low"),
+            discord.app_commands.Choice(name="medium", value="medium"),
+            discord.app_commands.Choice(name="high", value="high"),
+            discord.app_commands.Choice(name="xhigh", value="xhigh"),
+            discord.app_commands.Choice(name="max", value="max"),
+            discord.app_commands.Choice(name="ultra — maximum reasoning", value="ultra"),
+            discord.app_commands.Choice(name="reset — clear this session's override", value="reset"),
+            discord.app_commands.Choice(name="show — reveal reasoning in replies", value="show"),
+            discord.app_commands.Choice(name="hide — hide reasoning from replies", value="hide"),
+        ])
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
             await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
 

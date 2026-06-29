@@ -2098,6 +2098,9 @@ export const en: Translations = {
       notReady: 'Clarify request is not ready yet',
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send clarify response',
+      responsePendingTitle: 'Clarify response may still be processing',
+      responsePendingMessage:
+        'Hermes did not confirm the choice in time. The backend may still receive it, so wait a moment before trying again to avoid duplicate responses.',
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',

@@ -23,13 +23,21 @@ import { Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 
 import { selectMessageRunning } from './tool/fallback-model'
 
 interface ClarifyArgs {
   question?: string
   choices?: string[] | null
+}
+
+const CLARIFY_RESPOND_TIMEOUT_MS = 120_000
+
+function isClarifyRespondTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /request timed out:\s*clarify\.respond/i.test(message)
 }
 
 function readClarifyArgs(args: unknown): ClarifyArgs {
@@ -169,20 +177,44 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
-          request_id: matchingRequest.requestId,
-          answer
-        })
+        await gateway.request<{ ok?: boolean }>(
+          'clarify.respond',
+          {
+            request_id: matchingRequest.requestId,
+            answer
+          },
+          CLARIFY_RESPOND_TIMEOUT_MS
+        )
         triggerHaptic('submit')
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
       } catch (error) {
-        notifyError(error, copy.sendFailed)
+        if (isClarifyRespondTimeoutError(error)) {
+          notify({
+            kind: 'warning',
+            title: copy.responsePendingTitle,
+            message: copy.responsePendingMessage,
+            detail: error instanceof Error ? error.message : String(error),
+            durationMs: 12_000
+          })
+        } else {
+          notifyError(error, copy.sendFailed)
+        }
+
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
+    [
+      copy.gatewayDisconnected,
+      copy.notReady,
+      copy.responsePendingMessage,
+      copy.responsePendingTitle,
+      copy.sendFailed,
+      gateway,
+      matchingRequest,
+      ready
+    ]
   )
 
   const trimmedDraft = draft.trim()

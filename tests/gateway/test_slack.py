@@ -1526,6 +1526,49 @@ class TestIncomingDocumentHandling:
         assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
     @pytest.mark.asyncio
+    async def test_unauthorized_message_does_not_fetch_file_info(
+        self,
+        adapter,
+        monkeypatch,
+    ):
+        """Global gateway auth must run before Slack file metadata fetches."""
+        monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "U_ALLOWED")
+
+        class Runner:
+            def _is_user_authorized(self, source):
+                return source.user_id == "U_ALLOWED"
+
+            async def handle(self, _event):
+                raise AssertionError("gateway handler should not run")
+
+        adapter._message_handler = Runner().handle
+        adapter._app.client.files_info = AsyncMock()
+
+        await adapter._handle_slack_message(
+            {
+                "type": "message",
+                "channel": "D123",
+                "channel_type": "im",
+                "user": "U_INTRUDER",
+                "text": "please read this",
+                "ts": "1234567890.000001",
+                "files": [
+                    {
+                        "id": "FSECRET",
+                        "mimetype": "text/plain",
+                        "name": "secret.txt",
+                    }
+                ],
+            }
+        )
+
+        adapter._app.client.files_info.assert_not_awaited()
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_download_failure_is_surfaced_in_message_text(self, adapter):
         """Attachment download failures (401/403/HTML-body/etc.) should be
         translated into a user-facing `[Slack attachment notice]` block so

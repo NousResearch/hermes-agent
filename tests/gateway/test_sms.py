@@ -459,10 +459,11 @@ class TestWebhookSignatureEnforcement:
         adapter._message_handler = AsyncMock()
         return adapter
 
-    def _mock_request(self, body, headers=None):
+    def _mock_request(self, body, headers=None, content_length=None):
         request = MagicMock()
         request.read = AsyncMock(return_value=body)
         request.headers = headers or {}
+        request.content_length = content_length
         return request
 
     @pytest.mark.asyncio
@@ -536,3 +537,27 @@ class TestWebhookSignatureEnforcement:
         request = self._mock_request(body, headers={"X-Twilio-Signature": sig})
         resp = await adapter._handle_webhook(request)
         assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_oversized_body_via_content_length(self):
+        """POST with Content-Length exceeding 64 KiB returns 413 before reading."""
+        adapter = self._make_adapter(webhook_url="")
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, content_length=65_537)
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 413
+        # request.read must NOT have been called — we bailed on Content-Length
+        request.read.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_oversized_body_via_read_length(self):
+        """POST whose actual read size exceeds 64 KiB returns 413.
+
+        Covers the case where Content-Length is absent (chunked transfer) but
+        the body still exceeds the cap.
+        """
+        adapter = self._make_adapter(webhook_url="")
+        oversized = b"x" * 65_537
+        request = self._mock_request(oversized, content_length=None)
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 413

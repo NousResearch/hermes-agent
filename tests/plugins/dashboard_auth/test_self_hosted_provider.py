@@ -51,6 +51,32 @@ _DISCOVERY_DOC = {
 }
 
 
+class _FakeStreamResponse:
+    def __init__(
+        self,
+        method: str,
+        url: str,
+        *,
+        chunks: list[bytes],
+        status_code: int = 200,
+        headers: Dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.request = httpx.Request(method, url)
+        self._chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def iter_bytes(self, chunk_size: int = 65536):
+        _ = chunk_size
+        yield from self._chunks
+
+
 # ---------------------------------------------------------------------------
 # RSA keypair fixture (module-scope — keygen is slow)
 # ---------------------------------------------------------------------------
@@ -241,7 +267,7 @@ class TestDiscovery:
         p = self._provider()
         mock_resp = self._mock_get(200, dict(_DISCOVERY_DOC))
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_get:
             disco1 = p._get_discovery()
             disco2 = p._get_discovery()
@@ -257,7 +283,7 @@ class TestDiscovery:
         p = self._provider()
         mock_resp = self._mock_get(404, {})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="404"):
                 p._get_discovery()
@@ -265,7 +291,7 @@ class TestDiscovery:
     def test_discovery_unreachable_raises(self):
         p = self._provider()
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get",
+            "plugins.dashboard_auth.self_hosted._request_limited_response",
             side_effect=httpx.ConnectError("no route"),
         ):
             with pytest.raises(ProviderError, match="unreachable"):
@@ -277,7 +303,7 @@ class TestDiscovery:
         del doc["token_endpoint"]
         mock_resp = self._mock_get(200, doc)
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="token_endpoint"):
                 p._get_discovery()
@@ -288,7 +314,7 @@ class TestDiscovery:
         doc["issuer"] = "https://evil.example"
         mock_resp = self._mock_get(200, doc)
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="issuer mismatch"):
                 p._get_discovery()
@@ -299,7 +325,7 @@ class TestDiscovery:
         doc["issuer"] = _ISSUER + "/"  # only a trailing-slash difference
         mock_resp = self._mock_get(200, doc)
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             disco = p._get_discovery()
         assert disco["token_endpoint"] == f"{_ISSUER}/token"
@@ -310,10 +336,27 @@ class TestDiscovery:
         doc["token_endpoint"] = "http://auth.example.com/token"  # not loopback
         mock_resp = self._mock_get(200, doc)
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="https"):
                 p._get_discovery()
+
+    def test_discovery_rejects_oversized_response_body(self, monkeypatch):
+        p = self._provider()
+
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method,
+                url,
+                chunks=[b"a" * 6, b"b" * 6],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", fake_stream)
+        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            p._get_discovery()
 
 
 # ---------------------------------------------------------------------------
@@ -324,8 +367,9 @@ class TestDiscovery:
 class TestDiscoveryRealRedirect:
     """Discovery must follow a 3xx on the .well-known GET.
 
-    The rest of the discovery suite mocks ``httpx.get`` with a canned 200, so
-    it cannot see httpx's ``follow_redirects=False`` default. Many real IDPs
+    The rest of the discovery suite mocks the bounded request helper with a
+    canned 200, so it cannot see httpx's ``follow_redirects=False`` default.
+    Many real IDPs
     answer the discovery GET with a redirect rather than a direct 200 —
     Authentik canonicalises the ``.well-known`` path, and any IDP behind a
     reverse proxy doing http→https upgrade redirects too. Before the fix the
@@ -523,7 +567,7 @@ class TestCompleteLogin:
             },
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -546,7 +590,7 @@ class TestCompleteLogin:
             200, {"id_token": id_token, "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -561,7 +605,7 @@ class TestCompleteLogin:
             200, {"access_token": "opaque", "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="id_token"):
                 provider.complete_login(
@@ -574,7 +618,7 @@ class TestCompleteLogin:
     def test_400_raises_invalid_code(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
@@ -587,7 +631,7 @@ class TestCompleteLogin:
     def test_500_raises_provider_error(self, provider):
         mock_resp = _mock_post(500, "boom", ctype="text/plain")
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="500"):
                 provider.complete_login(
@@ -597,9 +641,29 @@ class TestCompleteLogin:
                     redirect_uri="https://hermes.example/auth/callback",
                 )
 
+    def test_token_endpoint_rejects_oversized_response_body(self, provider, monkeypatch):
+        def fake_stream(method, url, **kwargs):
+            return _FakeStreamResponse(
+                method,
+                url,
+                chunks=[b"x" * 8, b"y" * 8],
+                headers={"content-type": "application/json"},
+            )
+
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", fake_stream)
+        monkeypatch.setattr(oidc_plugin, "_OIDC_RESPONSE_BODY_LIMIT_BYTES", 10)
+
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            provider.complete_login(
+                code="x",
+                state="s",
+                code_verifier="v",
+                redirect_uri="https://hermes.example/auth/callback",
+            )
+
     def test_network_error_raises_provider_error(self, provider):
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post",
+            "plugins.dashboard_auth.self_hosted._request_limited_response",
             side_effect=httpx.ConnectError("conn refused"),
         ):
             with pytest.raises(ProviderError, match="unreachable"):
@@ -616,7 +680,7 @@ class TestCompleteLogin:
             200, {"id_token": id_token, "token_type": "DPoP"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="token_type"):
                 provider.complete_login(
@@ -630,7 +694,7 @@ class TestCompleteLogin:
         id_token = _mint_id_token(rsa_keypair)
         mock_resp = _mock_post(200, {"id_token": id_token, "token_type": "Bearer"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_post:
             provider.complete_login(
                 code="the-code",
@@ -753,7 +817,7 @@ class TestRefreshAndRevoke:
             },
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ) as mock_post:
             session = provider.refresh_session(refresh_token="rt_old")
         assert isinstance(session, Session)
@@ -770,7 +834,7 @@ class TestRefreshAndRevoke:
         id_token = _mint_id_token(rsa_keypair)
         mock_resp = _mock_post(200, {"id_token": id_token, "token_type": "Bearer"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             session = provider.refresh_session(refresh_token="rt_kept")
         assert session.refresh_token == "rt_kept"
@@ -778,20 +842,20 @@ class TestRefreshAndRevoke:
     def test_refresh_400_raises_refresh_expired(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "plugins.dashboard_auth.self_hosted._request_limited_response", return_value=mock_resp
         ):
             with pytest.raises(RefreshExpiredError, match="invalid_grant"):
                 provider.refresh_session(refresh_token="rt_dead")
 
     def test_refresh_empty_token_no_network(self, provider):
-        with patch("plugins.dashboard_auth.self_hosted.httpx.post") as mock_post:
+        with patch("plugins.dashboard_auth.self_hosted._request_limited_response") as mock_post:
             with pytest.raises(RefreshExpiredError):
                 provider.refresh_session(refresh_token="")
         mock_post.assert_not_called()
 
     def test_refresh_network_error_raises_provider_error(self, provider):
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post",
+            "plugins.dashboard_auth.self_hosted._request_limited_response",
             side_effect=httpx.RequestError("boom"),
         ):
             with pytest.raises(ProviderError, match="unreachable"):
@@ -799,24 +863,25 @@ class TestRefreshAndRevoke:
 
     def test_revoke_posts_to_revocation_endpoint(self, provider):
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post"
+            "plugins.dashboard_auth.self_hosted._request_limited_response"
         ) as mock_post:
             provider.revoke_session(refresh_token="rt_x")
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args
-        assert args[0] == f"{_ISSUER}/revoke"
+        assert args[0] == "POST"
+        assert args[1] == f"{_ISSUER}/revoke"
         assert kwargs["data"]["token"] == "rt_x"
 
     def test_revoke_empty_token_noop(self, provider):
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post"
+            "plugins.dashboard_auth.self_hosted._request_limited_response"
         ) as mock_post:
             assert provider.revoke_session(refresh_token="") is None
         mock_post.assert_not_called()
 
     def test_revoke_swallows_errors(self, provider):
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post",
+            "plugins.dashboard_auth.self_hosted._request_limited_response",
             side_effect=httpx.RequestError("down"),
         ):
             # Must not raise.
@@ -825,7 +890,7 @@ class TestRefreshAndRevoke:
     def test_revoke_noop_when_no_revocation_endpoint(self, provider):
         provider._discovery["revocation_endpoint"] = ""
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post"
+            "plugins.dashboard_auth.self_hosted._request_limited_response"
         ) as mock_post:
             assert provider.revoke_session(refresh_token="rt_x") is None
         mock_post.assert_not_called()

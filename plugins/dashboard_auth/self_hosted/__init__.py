@@ -105,6 +105,8 @@ _ALLOWED_ID_TOKEN_ALGS = ("RS256", "ES256", "RS384", "RS512", "ES384", "ES512")
 # httpx timeouts.
 _DISCOVERY_TIMEOUT_SEC = 10.0
 _TOKEN_ENDPOINT_TIMEOUT_SEC = 10.0
+_OIDC_RESPONSE_BODY_LIMIT_BYTES = 1 * 1024 * 1024
+_OIDC_RESPONSE_CHUNK_BYTES = 64 * 1024
 
 # OIDC discovery is low-frequency and the document is effectively static;
 # cache it for the process lifetime with a soft TTL so a long-running
@@ -153,6 +155,46 @@ def _require_https_or_loopback(url: str, *, field: str) -> str:
     raise ProviderError(
         f"OIDC {field} must be https:// (or http on localhost), got {url!r}"
     )
+
+
+def _request_limited_response(
+    method: str,
+    url: str,
+    *,
+    body_limit: Optional[int] = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Return a fully-read response without buffering unbounded IDP bodies."""
+    limit = _OIDC_RESPONSE_BODY_LIMIT_BYTES if body_limit is None else body_limit
+    with httpx.stream(method, url, **kwargs) as response:
+        declared = response.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) > limit:
+                    raise ProviderError(
+                        f"OIDC endpoint response exceeds {limit} bytes"
+                    )
+            except ValueError:
+                pass
+
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes(chunk_size=_OIDC_RESPONSE_CHUNK_BYTES):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > limit:
+                raise ProviderError(
+                    f"OIDC endpoint response exceeds {limit} bytes"
+                )
+            chunks.append(chunk)
+
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            content=b"".join(chunks),
+            request=response.request,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +347,8 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         if not endpoint:
             return None
         try:
-            httpx.post(
+            _request_limited_response(
+                "POST",
                 endpoint,
                 data={
                     "token": refresh_token,
@@ -337,7 +380,8 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         for the refresh path — preserving the middleware's distinct handling.
         """
         try:
-            response = httpx.post(
+            response = _request_limited_response(
+                "POST",
                 token_endpoint,
                 data=data,
                 headers={"Accept": "application/json"},
@@ -434,7 +478,8 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
             # NOT follow redirects — see _exchange — because they carry an auth
             # code / refresh token and the endpoint is already the canonical
             # absolute URL resolved here.)
-            response = httpx.get(
+            response = _request_limited_response(
+                "GET",
                 url,
                 headers={"Accept": "application/json"},
                 timeout=_DISCOVERY_TIMEOUT_SEC,

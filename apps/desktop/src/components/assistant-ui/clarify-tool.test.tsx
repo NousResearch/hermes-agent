@@ -240,6 +240,7 @@ describe('ClarifyTool response timeout handling', () => {
     const requestMock = renderPendingClarify()
 
     fireEvent.click(screen.getByRole('button', { name: /Continue waiting/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }))
 
     await waitFor(() => {
       expect(requestMock).toHaveBeenCalledWith(
@@ -258,6 +259,7 @@ describe('ClarifyTool response timeout handling', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Stop now/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }))
 
     await waitFor(() => expect(requestMock).toHaveBeenCalled())
 

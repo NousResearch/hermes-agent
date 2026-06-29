@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import FrozenSet, Optional
+from typing import Dict, FrozenSet, Optional
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,9 @@ class UpstreamCredential:
 
     expires_at: Optional[str] = None
     """ISO-8601 expiry timestamp for the bearer, when known. Informational."""
+
+    extra_headers: Optional[Dict[str, str]] = None
+    """Provider-required request headers to attach after client headers are filtered."""
 
 
 class UpstreamAdapter(ABC):

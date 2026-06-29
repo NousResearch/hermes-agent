@@ -12,8 +12,10 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
+import time
 from typing import Optional
 
 try:
@@ -81,6 +83,101 @@ def _filter_response_headers(headers) -> dict:
     return out
 
 
+def _codex_chat_completions_to_responses(body: bytes) -> tuple[bytes, str]:
+    """Translate OpenAI chat.completions JSON into Codex Responses JSON.
+
+    The ChatGPT Codex backend only accepts ``/responses`` with ``stream=true``.
+    ``hermes proxy`` still exposes ``/v1/chat/completions`` so OpenAI-compatible
+    clients can borrow the broker without learning Codex's private wire shape.
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    payload = json.loads(body.decode("utf-8") if body else "{}")
+    messages = payload.get("messages") or []
+    model = str(payload.get("model") or "gpt-5.5")
+    instructions = None
+    replay_messages = []
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "system" and instructions is None:
+                content = msg.get("content") or ""
+                instructions = content if isinstance(content, str) else str(content)
+            else:
+                replay_messages.append(msg)
+
+    responses_payload = {
+        "model": model,
+        "input": _chat_messages_to_responses_input(replay_messages) or [
+            {"role": "user", "content": ""}
+        ],
+        "store": False,
+        "stream": True,
+    }
+    if instructions:
+        responses_payload["instructions"] = instructions
+    extra_body = payload.get("extra_body")
+    if isinstance(extra_body, dict):
+        reasoning = extra_body.get("reasoning")
+        if isinstance(reasoning, dict) and reasoning.get("enabled") is not False:
+            effort = reasoning.get("effort") or "medium"
+            if effort == "minimal":
+                effort = "low"
+            responses_payload["reasoning"] = {"effort": effort, "summary": "auto"}
+            responses_payload["include"] = ["reasoning.encrypted_content"]
+
+    return json.dumps(responses_payload).encode("utf-8"), model
+
+
+async def _codex_responses_sse_to_chat_json(upstream_resp, *, model: str) -> "web.Response":
+    """Collect a Codex Responses SSE stream and return chat.completions JSON."""
+    raw = await upstream_resp.text(errors="replace")
+    text_parts = []
+    response_id = None
+    usage = None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data_s = line[len("data:"):].strip()
+        if not data_s or data_s == "[DONE]":
+            continue
+        try:
+            event = json.loads(data_s)
+        except Exception:
+            continue
+        event_type = event.get("type")
+        if event_type == "response.created":
+            response = event.get("response") or {}
+            response_id = response.get("id") or response_id
+        elif event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str):
+                text_parts.append(delta)
+        elif event_type == "response.completed":
+            response = event.get("response") or {}
+            response_id = response.get("id") or response_id
+            usage = response.get("usage") or usage
+
+    body = {
+        "id": response_id or f"chatcmpl-codex-proxy-{int(time.time())}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "".join(text_parts)},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+    if usage is not None:
+        body["usage"] = usage
+    return web.json_response(body)
+
+
 def create_app(adapter: UpstreamAdapter) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter."""
     if not AIOHTTP_AVAILABLE:
@@ -129,21 +226,32 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         # need to forward large multipart uploads we'll switch to streaming
         # the request body too.
         body = await request.read()
+        codex_chat_compat = adapter.name == "openai-codex" and rel_path == "/chat/completions"
+        codex_chat_model = ""
+        upstream_rel_path = rel_path
+        if codex_chat_compat:
+            try:
+                body, codex_chat_model = _codex_chat_completions_to_responses(body)
+                upstream_rel_path = "/responses"
+            except Exception as exc:
+                return _json_error(400, f"invalid chat.completions request: {exc}", code="bad_request")
 
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
 
         async def _send_upstream(active_cred: UpstreamCredential):
-            upstream_url = f"{active_cred.base_url.rstrip('/')}{rel_path}"
+            upstream_url = f"{active_cred.base_url.rstrip('/')}{upstream_rel_path}"
             # Preserve query string verbatim.
             if request.query_string:
                 upstream_url = f"{upstream_url}?{request.query_string}"
 
             fwd_headers = _filter_request_headers(request.headers)
             fwd_headers["Authorization"] = f"{active_cred.token_type} {active_cred.bearer}"
+            if active_cred.extra_headers:
+                fwd_headers.update(active_cred.extra_headers)
 
             logger.debug(
                 "proxy: forwarding %s %s -> %s (body=%d bytes)",
-                request.method, rel_path, upstream_url, len(body),
+                request.method, upstream_rel_path, upstream_url, len(body),
             )
 
             try:
@@ -211,6 +319,16 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 if upstream_resp is None:
                     return session_or_response
                 session = session_or_response
+
+        if codex_chat_compat:
+            try:
+                return await _codex_responses_sse_to_chat_json(
+                    upstream_resp,
+                    model=codex_chat_model or "gpt-5.5",
+                )
+            finally:
+                upstream_resp.release()
+                await session.close()
 
         # Stream response back. Headers first, then chunked body.
         resp = web.StreamResponse(

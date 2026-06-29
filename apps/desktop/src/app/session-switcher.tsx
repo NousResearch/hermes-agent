@@ -65,7 +65,9 @@ export function SessionSwitcher() {
                 'flex cursor-pointer items-center rounded leading-tight',
                 HUD_ITEM,
                 HUD_TEXT,
-                selected ? 'bg-accent text-accent-foreground' : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background)'
+                selected
+                  ? 'bg-accent text-accent-foreground'
+                  : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background)'
               )}
               key={session.id}
               onMouseDown={e => {

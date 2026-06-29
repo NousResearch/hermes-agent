@@ -4983,6 +4983,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     PLATFORM = Platform.YUANBAO
     MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
+    splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50  # Max media file size in MB for upload validation
     REPLY_REF_MAX_ENTRIES: ClassVar[int] = 500  # Max capacity of reference dedup dict
 
@@ -5113,7 +5114,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
         return True
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Yuanbao WS gateway and authenticate.
 
         Delegates to ConnectionManager.open().

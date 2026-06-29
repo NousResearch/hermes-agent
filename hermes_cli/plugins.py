@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
-from utils import env_var_enabled
+from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 
@@ -167,6 +167,31 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Kanban task lifecycle hooks. Fired by hermes_cli.kanban_db when a task
+    # transitions state, AFTER the change is committed to the board DB (so the
+    # hook always sees durable state and a slow plugin can never hold the
+    # SQLite write lock). Observers only: return values are ignored.
+    #
+    # WHICH PROCESS each fires in matters, because kanban workers run as
+    # separate `hermes -p <profile> chat -q` subprocesses:
+    #   - kanban_task_claimed   -> the DISPATCHER process (gateway-embedded
+    #                              dispatcher or `hermes kanban dispatch`),
+    #                              right before the worker subprocess spawns.
+    #   - kanban_task_completed -> the WORKER process, when it calls
+    #                              kanban_complete (or a CLI/manual complete).
+    #   - kanban_task_blocked   -> the WORKER process (worker-initiated block)
+    #                              or whichever process drove the block.
+    # A plugin that needs to observe every transition centrally should hook in
+    # the dispatcher; one that needs per-task in-session context should hook in
+    # the worker.
+    #
+    # Common kwargs: task_id: str, board: str | None, assignee: str | None,
+    #   run_id: int | None, profile_name: str.
+    # kanban_task_completed adds: summary: str | None.
+    # kanban_task_blocked adds:   reason: str | None.
+    "kanban_task_claimed",
+    "kanban_task_completed",
+    "kanban_task_blocked",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -281,6 +306,10 @@ class LoadedPlugin:
     commands_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
+    # True for a bundled platform plugin recorded as a deferred (not-yet-
+    # imported) loader. The module loads on first real use via the
+    # platform_registry; see PluginManager._register_deferred_platform.
+    deferred: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +343,28 @@ class PluginContext:
             plugin_id = self.manifest.key or self.manifest.name
             self._llm = PluginLlm(plugin_id=plugin_id)
         return self._llm
+
+    # -- profile awareness --------------------------------------------------
+
+    @property
+    def profile_name(self) -> str:
+        """Return the active Hermes profile name (e.g. ``"default"``).
+
+        Derived from ``HERMES_HOME`` via
+        :func:`hermes_cli.profiles.get_active_profile_name`, so it works in
+        every execution context — interactive CLI, gateway, and
+        kanban-spawned worker sessions alike — without depending on
+        ``_cli_ref`` (which is ``None`` outside an interactive CLI run).
+
+        Returns ``"default"`` for the default profile, the profile id when
+        running under ``~/.hermes/profiles/<name>``, or ``"custom"`` when
+        ``HERMES_HOME`` points somewhere unrecognized.
+        """
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name()
+        except Exception:
+            return "default"
 
     # -- tool registration --------------------------------------------------
 
@@ -1271,12 +1322,23 @@ class PluginManager:
             # just work. Selection among them (e.g. which image_gen backend
             # services calls) is driven by ``<category>.provider`` config,
             # enforced by the tool wrapper.
-            #
-            # Bundled platform plugins (gateway adapters like IRC) auto-load
-            # for the same reason: every platform Hermes ships must be
-            # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
+            if manifest.source == "bundled" and manifest.kind == "backend":
                 self._load_plugin(manifest)
+                continue
+
+            # Bundled platform plugins (gateway adapters: telegram, discord,
+            # feishu, teams, ...) are registered LAZILY. Their modules import
+            # heavy, platform-specific SDKs at module level (lark_oapi,
+            # microsoft_teams, discord.py, slack_bolt, ...), so eagerly loading
+            # all ~20 of them added several seconds to every `hermes`
+            # invocation — including plain `hermes chat`, which never touches a
+            # gateway platform. Instead we register a cheap deferred loader in
+            # the platform_registry keyed on the platform name; the real module
+            # is imported only when the gateway / cron / setup / send_message
+            # path actually asks for that platform. Every platform Hermes ships
+            # remains available out of the box — it just loads on first use.
+            if manifest.source == "bundled" and manifest.kind == "platform":
+                self._register_deferred_platform(manifest)
                 continue
 
             # Everything else (standalone, user-installed backends,
@@ -1407,7 +1469,7 @@ class PluginManager:
             if yaml is None:
                 logger.warning("PyYAML not installed – cannot load %s", manifest_file)
                 return None
-            data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+            data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
 
             name = data.get("name", plugin_dir.name)
             key = f"{prefix}/{plugin_dir.name}" if prefix else name
@@ -1516,6 +1578,66 @@ class PluginManager:
     # -----------------------------------------------------------------------
     # Loading
     # -----------------------------------------------------------------------
+
+    def _platform_name_from_manifest(self, manifest: PluginManifest) -> str:
+        """Derive the gateway platform name (e.g. ``feishu``) for a platform plugin.
+
+        The platform name registered via ``register_platform(name=...)`` lives
+        inside the adapter module (which we are explicitly trying NOT to import
+        early). It is not carried in ``plugin.yaml``. Across every bundled
+        platform plugin the manifest name is ``<platform>-platform`` and the
+        plugin directory basename is ``<platform>``, so we derive the name
+        without importing: strip a trailing ``-platform`` from the manifest
+        name, falling back to the directory basename. This is also a sensible
+        convention for third-party platform plugins.
+        """
+        name = manifest.name or ""
+        if name.endswith("-platform"):
+            return name[: -len("-platform")]
+        if manifest.path:
+            return Path(manifest.path).name
+        return name
+
+    def _register_deferred_platform(self, manifest: PluginManifest) -> None:
+        """Register a lazy loader for a bundled platform plugin.
+
+        The platform adapter module is imported only when the gateway / cron /
+        setup / send_message path first asks the ``platform_registry`` for this
+        platform. Until then we record a lightweight ``LoadedPlugin`` so
+        ``hermes plugins list`` still shows the platform as available, and we
+        hand the registry a loader that runs the normal eager-load path.
+        """
+        lookup_key = manifest.key or manifest.name
+        platform_name = self._platform_name_from_manifest(manifest)
+
+        # Record an enabled placeholder for introspection (`hermes plugins
+        # list`). The real module load swaps in a fully-populated LoadedPlugin
+        # (tools/hooks/commands attribution) when the loader fires.
+        loaded = LoadedPlugin(manifest=manifest, enabled=True)
+        loaded.deferred = True
+        self._plugins[lookup_key] = loaded
+
+        def _loader(_manifest: PluginManifest = manifest) -> None:
+            self._load_plugin(_manifest)
+
+        try:
+            from gateway.platform_registry import platform_registry
+
+            platform_registry.register_deferred(platform_name, _loader)
+            logger.debug(
+                "Registered deferred platform loader: %s (plugin=%s)",
+                platform_name,
+                lookup_key,
+            )
+        except Exception:
+            # If the registry import fails for any reason, fall back to eager
+            # loading so the platform is never silently lost.
+            logger.debug(
+                "Deferred platform registration failed for '%s'; eager-loading",
+                lookup_key,
+                exc_info=True,
+            )
+            self._load_plugin(manifest)
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""

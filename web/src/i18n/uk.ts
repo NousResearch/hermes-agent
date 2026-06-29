@@ -158,6 +158,7 @@ export const uk: Translations = {
     selectedSessionsDeleted: "Видалено сесій: {count}",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
+    newChat: "Новий чат",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
     roles: {
@@ -287,7 +288,8 @@ export const uk: Translations = {
     nameRule:
       "Лише малі літери, цифри, _ та -; має починатися з літери або цифри; до 64 символів.",
     invalidName: "Недопустима назва профілю",
-    cloneFromDefault: "Клонувати конфігурацію з профілю за замовчуванням",
+    cloneFrom: "Клонувати з профілю",
+    cloneFromNone: "Жоден (порожній)",
     allProfiles: "Профілі",
     noProfiles: "Профілів не знайдено.",
     defaultBadge: "за замовчуванням",
@@ -432,6 +434,14 @@ export const uk: Translations = {
     replaceCurrentValue: "Замінити поточне значення ({preview})",
     showValue: "Показати справжнє значення",
     hideValue: "Сховати значення",
+    customTitle: "Власні ключі",
+    customHint: "Довільні змінні середовища, збережені у вашому .env, які Hermes не розпізнає. Використовуйте їх для впровадження змінних середовища для навичок, серверів MCP або власних інструментів.",
+    customConfigured: "Задано власних ключів: {count}",
+    addCustomKey: "Додати власний ключ",
+    customKeyName: "Назва змінної",
+    customKeyNamePlaceholder: "напр. MY_SERVICE_API_KEY",
+    add: "Додати",
+    invalidKeyName: "Використовуйте лише літери, цифри та підкреслення (має починатися з літери або підкреслення).",
   },
 
   oauth: {

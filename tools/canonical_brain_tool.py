@@ -420,15 +420,21 @@ def route_back_tool(
             },
             "next_action": {"kind": "deliver_route_back_or_record_receipt", "target_ref": target_ref},
         }
+        terminal_outcome = False
+        required_next_step = "deliver_route_back_or_record_blocked"
         if mode == "record_sent_receipt":
             event_type = "route_back.sent"
             if not receipt.get("message_id"):
                 raise ValueError("record_sent_receipt requires receipt.message_id")
             base_payload["receipt"] = receipt
+            terminal_outcome = True
+            required_next_step = "none"
         elif mode == "record_blocked":
             event_type = "route_back.blocked"
             if not blocker_reason:
                 raise ValueError("record_blocked requires blocker_reason")
+            terminal_outcome = True
+            required_next_step = "none"
         elif mode == "queue_intent":
             event_type = "route_back.intent.created"
         else:
@@ -441,7 +447,7 @@ def route_back_tool(
             next_action=base_payload.get("next_action"),
             clean_payload=base_payload,
         )
-        return canonical_event_append_tool(
+        result = canonical_event_append_tool(
             event_type=event_type,
             case_id=case_id,
             summary=message_summary,
@@ -451,6 +457,25 @@ def route_back_tool(
             safety={"contains_secret": False, "contains_payment_credential": False},
             idempotency_key=idempotency_key,
         )
+        try:
+            data = json.loads(result)
+        except Exception:
+            return result
+        if isinstance(data, dict) and data.get("success"):
+            data["route_back"] = {
+                "mode": mode,
+                "event_type": event_type,
+                "terminal_outcome": terminal_outcome,
+                "required_next_step": required_next_step,
+            }
+            if not terminal_outcome:
+                data["route_back"]["final_answer_guard"] = (
+                    "Do not present this as delivered or complete. Continue in the same turn "
+                    "until the message is actually sent and record_sent_receipt is recorded, "
+                    "or record_blocked is recorded with a concrete blocker."
+                )
+            return json.dumps(data, ensure_ascii=False, sort_keys=True)
+        return result
     except Exception as exc:
         return tool_error(f"ROUTE_BACK_STATE_FAIL: {exc}")
 

@@ -262,6 +262,8 @@ def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> 
             "- Notify the source/requester thread at most once, with only the actionable delta.",
             "- Record `route_back.sent` only after a real delivery receipt/message_id.",
             "- If a resolver asks you to forward/notify the requester, either actually notify the source/requester thread and record `route_back.sent`, or record/report `route_back.blocked` with the blocker. A reply like 'noted', 'marked', or 'for forwarding' is not a terminal outcome.",
+            "- A `route_back.required` or `route_back.intent.created` tool result is not completion. Keep working in the same turn until there is a `route_back.sent` receipt or `route_back.blocked` blocker.",
+            "- Never answer the resolver with only 'noted/marked for forwarding' after a concrete forward request; that leaves the requester uninformed.",
             "- Do not use cron for immediate route-back delivery; use direct Discord delivery when available. Cron is only for future reminders/watchers, and never both create+run for the same immediate message.",
             "- Do not repeat the owner/resolver request after the owner/resolver has answered.",
             "- If durable route-back recording fails after a send, do not send duplicate public corrections; record/report the state blocker separately.",

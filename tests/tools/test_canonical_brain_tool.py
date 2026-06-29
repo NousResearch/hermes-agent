@@ -20,6 +20,57 @@ def test_route_back_sent_requires_receipt_message_id():
     assert "requires receipt.message_id" in data["error"]
 
 
+@pytest.mark.parametrize("mode", ["record_required_only", "queue_intent"])
+def test_route_back_pending_modes_return_non_terminal_guard(monkeypatch, mode):
+    fake = _FakeHelper()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    out = cbt.route_back_tool(
+        case_id="case:test",
+        target_ref={"id": "plamenka-thread"},
+        message_summary="forward this status to Plamenka",
+        source_refs={"platform": "discord", "message_id": "m1"},
+        mode=mode,
+        idempotency_key=f"idem-{mode}",
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    assert data["route_back"]["mode"] == mode
+    assert data["route_back"]["terminal_outcome"] is False
+    assert data["route_back"]["required_next_step"] == "deliver_route_back_or_record_blocked"
+    assert "Do not present this as delivered or complete" in data["route_back"]["final_answer_guard"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "kwargs"),
+    [
+        ("record_sent_receipt", {"receipt": {"message_id": "delivered-1"}}),
+        ("record_blocked", {"blocker_reason": "missing target channel permission"}),
+    ],
+)
+def test_route_back_terminal_modes_return_terminal_outcome(monkeypatch, mode, kwargs):
+    fake = _FakeHelper()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    out = cbt.route_back_tool(
+        case_id="case:test",
+        target_ref={"id": "plamenka-thread"},
+        message_summary="forward this status to Plamenka",
+        source_refs={"platform": "discord", "message_id": "m1"},
+        mode=mode,
+        idempotency_key=f"idem-{mode}",
+        **kwargs,
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    assert data["route_back"]["mode"] == mode
+    assert data["route_back"]["terminal_outcome"] is True
+    assert data["route_back"]["required_next_step"] == "none"
+    assert "final_answer_guard" not in data["route_back"]
+
+
 def test_canonical_event_append_blocks_keyword_authority_secret_like_payload():
     out = cbt.canonical_event_append_tool(
         event_type="case.note",

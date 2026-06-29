@@ -32,10 +32,13 @@ export function TerminalInstance({ id, active, cwd, onAddSelectionToChat }: Term
   return (
     <div
       className={cn(
-        // No top padding — the prompt hugs the titlebar-clearance line instead of
-        // floating a row below it (the rest of the gap is the required clearance).
-        'relative min-h-0 min-w-0 flex-1 flex-col bg-(--ui-editor-surface-background) px-2 pb-2 pt-0',
-        active ? 'flex' : 'hidden'
+        // Stack every terminal absolutely and toggle visibility (NOT display) so
+        // inactive tabs keep their layout size and track pane resizes — a
+        // display:none host goes 0×0, skips fit, and renders garbled when shown
+        // again at a changed size. No top padding so the prompt hugs the
+        // titlebar-clearance line (the rest of the gap is required clearance).
+        'absolute inset-0 flex flex-col bg-(--ui-editor-surface-background) px-2 pb-2 pt-0',
+        active ? 'visible' : 'invisible pointer-events-none'
       )}
     >
       {status === 'starting' && (

@@ -9,6 +9,7 @@ from hermes_cli.models import (
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
     union_with_portal_free_recommendations,
     union_with_portal_paid_recommendations,
+    provider_model_ids,
 )
 import hermes_cli.models as _models_mod
 
@@ -969,3 +970,60 @@ class TestCodexSoftAcceptPlausibilityGate:
         r = validate_requested_model("gpt-5.5", "openai-codex")
         assert r["accepted"] is True
         assert r["recognized"] is True
+
+
+
+class TestCustomProviderCatalogLookup:
+    """provider_model_ids('custom:<name>') should resolve to the bare <name> catalog.
+
+    Regression test for #55153: when a user configures
+    ``model.provider: custom:fireworks``, the /model picker showed an empty
+    list because ``_PROVIDER_MODELS.get("custom:fireworks")`` returned ``[]``.
+    """
+
+    def test_custom_prefix_stripped_for_static_catalog(self):
+        """custom:fireworks should return the 'fireworks' static catalog."""
+        fake_catalog = ["accounts/fireworks/models/llama-v3p3-70b"]
+        orig_models = _models_mod._PROVIDER_MODELS.copy()
+        orig_models["fireworks"] = fake_catalog
+        # Remove fireworks from _MODELS_DEV_PREFERRED to avoid live merge
+        orig_preferred = _models_mod._MODELS_DEV_PREFERRED - {"fireworks"}
+        with patch.object(_models_mod, "_PROVIDER_MODELS", orig_models), \
+             patch.object(_models_mod, "_MODELS_DEV_PREFERRED", orig_preferred), \
+             patch("providers.get_provider_profile", return_value=None):
+            result = provider_model_ids("custom:fireworks")
+        assert result == fake_catalog
+
+    def test_custom_prefix_stripped_for_models_dev_merge(self):
+        """custom:<name> should check _MODELS_DEV_PREFERRED with the bare name."""
+        orig_models = _models_mod._PROVIDER_MODELS.copy()
+        orig_models["deepseek"] = []
+        orig_preferred = _models_mod._MODELS_DEV_PREFERRED | {"deepseek"}
+        with patch.object(_models_mod, "_PROVIDER_MODELS", orig_models), \
+             patch.object(_models_mod, "_MODELS_DEV_PREFERRED", orig_preferred), \
+             patch("hermes_cli.models._merge_with_models_dev", return_value=["deepseek-chat"]) as mock_merge, \
+             patch("providers.get_provider_profile", return_value=None):
+            result = provider_model_ids("custom:deepseek")
+        mock_merge.assert_called_once_with("deepseek", [])
+        assert result == ["deepseek-chat"]
+
+    def test_bare_custom_without_suffix_falls_through(self):
+        """custom (without :suffix) should use 'custom' as the catalog key."""
+        orig_models = _models_mod._PROVIDER_MODELS.copy()
+        orig_models["custom"] = ["custom-model"]
+        with patch("hermes_cli.models._get_custom_base_url", return_value=""), \
+             patch("providers.get_provider_profile", return_value=None), \
+             patch.object(_models_mod, "_PROVIDER_MODELS", orig_models):
+            result = provider_model_ids("custom")
+        assert "custom-model" in result
+
+    def test_non_custom_provider_unchanged(self):
+        """Providers without 'custom:' prefix should work unchanged."""
+        fake_catalog = ["claude-opus-4", "claude-sonnet-4"]
+        orig_models = _models_mod._PROVIDER_MODELS.copy()
+        orig_models["anthropic"] = fake_catalog
+        with patch.object(_models_mod, "_PROVIDER_MODELS", orig_models), \
+             patch("providers.get_provider_profile", return_value=None):
+            result = provider_model_ids("anthropic")
+        assert isinstance(result, list)
+        assert len(result) > 0

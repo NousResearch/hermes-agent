@@ -2253,6 +2253,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     on the platform appear in ``/model`` without a Hermes release.
     """
     normalized = normalize_provider(provider)
+    # Strip "custom:" prefix for catalog lookups — custom:fireworks should
+    # resolve models from the "fireworks" catalog.  Mirrors the pattern in
+    # auxiliary_client._normalize_aux_provider().
+    _catalog_key = normalized
+    if _catalog_key.startswith("custom:"):
+        _catalog_key = _catalog_key[len("custom:"):].strip() or "custom"
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
     if normalized == "openai-codex":
@@ -2367,7 +2373,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 if live:
                     if is_default_openai:
                         live_lower = {m.lower() for m in live}
-                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                        curated = list(_PROVIDER_MODELS.get(_catalog_key, []))
                         # Keep curated order; only surface curated models the
                         # account actually has access to.
                         filtered = [m for m in curated if m.lower() in live_lower]
@@ -2428,10 +2434,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         from providers import get_provider_profile
         from hermes_cli.auth import resolve_api_key_provider_credentials
 
-        _p = get_provider_profile(normalized)
+        _p = get_provider_profile(_catalog_key)
         if _p and _p.auth_type == "api_key" and _p.base_url:
             try:
-                creds = resolve_api_key_provider_credentials(normalized)
+                creds = resolve_api_key_provider_credentials(_catalog_key)
                 api_key = str(creds.get("api_key") or "").strip()
                 base_url = str(creds.get("base_url") or "").strip()
             except Exception:
@@ -2451,9 +2457,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     # live API is the authoritative catalog, so they merge
                     # live-first — live entries lead and stale curated entries
                     # no longer pollute the top of the picker. (#49129)
-                    curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    curated = list(_PROVIDER_MODELS.get(_catalog_key, []))
                     if curated:
-                        if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+                        if _catalog_key in _LIVE_FIRST_PICKER_PROVIDERS:
                             primary, secondary = live, curated
                         else:
                             primary, secondary = curated, live
@@ -2471,9 +2477,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     except Exception:
         pass
 
-    curated_static = list(_PROVIDER_MODELS.get(normalized, []))
-    if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
+    curated_static = list(_PROVIDER_MODELS.get(_catalog_key, []))
+    if _catalog_key in _MODELS_DEV_PREFERRED:
+        return _merge_with_models_dev(_catalog_key, curated_static)
     return curated_static
 
 

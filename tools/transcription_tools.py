@@ -4,12 +4,12 @@ Transcription Tools Module
 
 Provides speech-to-text transcription with six providers:
 
-  - **local** (default, free) — faster-whisper running locally, no API key needed.
+  - **local** (default, free) - faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
-  - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
-  - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
-  - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
-  - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
+  - **groq** (free tier) - Groq Whisper API, requires ``GROQ_API_KEY``.
+  - **openai** (paid) - OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mistral** - Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
+  - **xai** - xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
 
 Used by the messaging gateway to automatically transcribe voice messages
@@ -57,7 +57,7 @@ def get_env_value(name, default=None):
     return default if value is None else value
 
 # ---------------------------------------------------------------------------
-# Optional imports — graceful degradation
+# Optional imports - graceful degradation
 # ---------------------------------------------------------------------------
 
 import importlib.util as _ilu
@@ -91,6 +91,8 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+HERMES_STT_HOST = os.getenv("HERMES_STT_HOST", "")
+HERMES_STT_PROVIDER = os.getenv("HERMES_STT_PROVIDER", "")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -100,7 +102,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
-# Singleton for the local model — loaded once, reused across calls
+# Singleton for the local model - loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
@@ -201,7 +203,7 @@ def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
     When ``stt.provider`` is explicitly set in config, that choice is
-    honoured — no silent cloud fallback.  When no provider is configured,
+    honoured - no silent cloud fallback.  When no provider is configured,
     auto-detect tries: local > groq (free) > openai (paid).
     """
     if not is_stt_enabled(stt_config):
@@ -275,11 +277,28 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
-        return provider  # Unknown — let it fail downstream
+        if provider == "http":
+            host = stt_config.get("http", {}).get("host") or get_env_value("HERMES_STT_HOST", "")
+            if host:
+                return "http"
+            logger.warning(
+                "STT provider 'http' configured but HERMES_STT_HOST is not set"
+            )
+            return "none"
+
+        return provider  # Unknown - let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
     # mistral is intentionally skipped while `mistralai` is quarantined on
     # PyPI (malicious 2.4.6 release on 2026-05-12).
+
+    # HTTP sidecar takes priority when HERMES_STT_HOST is set, even in
+    # auto-detect mode, so operators can inject a sidecar without touching
+    # config.yaml.
+    _http_host = stt_config.get("http", {}).get("host") or get_env_value("HERMES_STT_HOST", "")
+    if _http_host:
+        logger.info("HERMES_STT_HOST set, using HTTP sidecar STT provider")
+        return "http"
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -341,11 +360,11 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 # Substrings that identify a missing/unloadable CUDA runtime library.  When
 # ctranslate2 (the backend for faster-whisper) cannot dlopen one of these, the
 # "auto" device picker has already committed to CUDA and the model can no
-# longer be used — we fall back to CPU and reload.
+# longer be used - we fall back to CPU and reload.
 #
 # Deliberately narrow: we match on library-name tokens and dlopen phrasing so
 # we DO NOT accidentally catch legitimate runtime failures like "CUDA out of
-# memory" — those should surface to the user, not silently fall back to CPU
+# memory" - those should surface to the user, not silently fall back to CPU
 # (a 32GB audio clip on CPU at int8 isn't useful either).
 _CUDA_LIB_ERROR_MARKERS = (
     "libcublas",
@@ -376,7 +395,7 @@ def _load_local_whisper_model(model_name: str):
 
     faster-whisper's ``device="auto"`` picks CUDA when the ctranslate2 wheel
     ships CUDA shared libs, even on hosts where the NVIDIA runtime
-    (``libcublas.so.12`` / ``libcudnn*``) isn't installed — common on WSL2
+    (``libcublas.so.12`` / ``libcudnn*``) isn't installed - common on WSL2
     without CUDA-on-WSL, headless servers, and CPU-only developer machines.
     On those hosts the load itself sometimes succeeds and the dlopen failure
     only surfaces at first ``transcribe()`` call.
@@ -552,7 +571,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
-# Provider: groq (Whisper API — free tier)
+# Provider: groq (Whisper API - free tier)
 # ---------------------------------------------------------------------------
 
 
@@ -807,6 +826,101 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: http sidecar (generic REST STT endpoint)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_http(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe by POSTing audio to a local or remote HTTP STT sidecar.
+
+    The sidecar must accept ``POST /transcribe`` with a ``multipart/form-data``
+    body containing a ``file`` field and an optional ``model`` field, and must
+    return JSON with a ``"text"`` key::
+
+        {"text": "transcribed words here"}
+
+    Configuration (in priority order):
+      1. ``stt.http.host`` in config.yaml  (e.g. ``http://localhost:8080``)
+      2. ``HERMES_STT_HOST`` environment variable
+
+    Optional config keys under ``stt.http``:
+      - ``path``    - URL path to POST to (default: ``/transcribe``)
+      - ``timeout`` - request timeout in seconds (default: 120)
+    """
+    stt_config = _load_stt_config()
+    http_cfg = stt_config.get("http", {})
+
+    host = str(http_cfg.get("host") or get_env_value("HERMES_STT_HOST", "") or "").strip().rstrip("/")
+    if not host:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "HTTP STT provider requires HERMES_STT_HOST to be set",
+        }
+
+    path = str(http_cfg.get("path") or "/transcribe").strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    url = f"{host}{path}"
+
+    try:
+        timeout = float(http_cfg.get("timeout") or 120)
+    except (TypeError, ValueError):
+        timeout = 120.0
+
+    try:
+        import requests
+
+        with open(file_path, "rb") as audio_file:
+            files = {"file": (Path(file_path).name, audio_file)}
+            data: Dict[str, str] = {}
+            if model_name:
+                data["model"] = model_name
+            response = requests.post(url, files=files, data=data, timeout=timeout)
+
+        if response.status_code != 200:
+            detail = ""
+            try:
+                err_body = response.json()
+                detail = (
+                    err_body.get("error", {}).get("message", "")
+                    or err_body.get("detail", "")
+                    or response.text[:300]
+                )
+            except Exception:
+                detail = response.text[:300]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"HTTP STT sidecar error (HTTP {response.status_code}): {detail}",
+            }
+
+        result = response.json()
+        transcript_text = result.get("text", "").strip()
+
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "HTTP STT sidecar returned empty transcript",
+            }
+
+        logger.info(
+            "Transcribed %s via HTTP sidecar (%s, %d chars)",
+            Path(file_path).name,
+            url,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "http"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("HTTP STT sidecar transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"HTTP STT sidecar transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -875,9 +989,14 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_mistral(file_path, model_name)
 
     if provider == "xai":
-        # xAI Grok STT doesn't use a model parameter — pass through for logging
+        # xAI Grok STT doesn't use a model parameter - pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
+
+    if provider == "http":
+        http_cfg = stt_config.get("http", {})
+        model_name = model or http_cfg.get("model", "") or ""
+        return _transcribe_http(file_path, model_name)
 
     # No provider available
     return {
@@ -887,7 +1006,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
+            "set HERMES_STT_HOST for an HTTP STT sidecar, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

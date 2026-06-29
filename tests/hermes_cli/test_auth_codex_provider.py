@@ -1020,6 +1020,23 @@ class _FakeResp:
     def json(self):
         return self._json
 
+    def iter_bytes(self):
+        if isinstance(self._json, bytes):
+            yield self._json
+        else:
+            yield json.dumps(self._json).encode("utf-8")
+
+
+class _FakeStream:
+    def __init__(self, response):
+        self.response = response
+
+    def __enter__(self):
+        return self.response
+
+    def __exit__(self, *args):
+        return False
+
 
 def _patch_httpx_post(monkeypatch, responses):
     """Patch hermes_cli.auth.httpx.Client so .post() returns queued responses."""
@@ -1034,6 +1051,9 @@ def _patch_httpx_post(monkeypatch, responses):
 
         def post(self, *args, **kwargs):
             return next(seq)
+
+        def stream(self, *args, **kwargs):
+            return _FakeStream(next(seq))
 
     monkeypatch.setattr("hermes_cli.auth.httpx.Client", lambda *a, **k: _FakeClient())
 
@@ -1093,3 +1113,55 @@ def test_device_code_login_non_429_error_unchanged(monkeypatch):
         auth_mod._codex_device_code_login()
 
     assert exc_info.value.code == "device_code_request_error"
+
+
+def test_device_code_login_bounds_device_code_json(monkeypatch):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(auth_mod, "CODEX_AUTH_JSON_BODY_MAX_BYTES", 8)
+    _patch_httpx_post(monkeypatch, [_FakeResp(200, b"x" * 9)])
+
+    with pytest.raises(AuthError, match="device code response exceeded 8 bytes") as exc_info:
+        auth_mod._codex_device_code_login()
+
+    assert exc_info.value.code == "device_code_response_invalid"
+
+
+def test_device_code_login_bounds_poll_json(monkeypatch):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(auth_mod, "CODEX_AUTH_JSON_BODY_MAX_BYTES", 128)
+    _patch_httpx_post(
+        monkeypatch,
+        [
+            _FakeResp(200, {"user_code": "ABCD", "device_auth_id": "dev-1", "interval": "5"}),
+            _FakeResp(200, b"x" * 129),
+        ],
+    )
+
+    with pytest.raises(AuthError, match="device auth poll response exceeded 128 bytes") as exc_info:
+        auth_mod._codex_device_code_login()
+
+    assert exc_info.value.code == "device_code_poll_invalid"
+
+
+def test_device_code_login_bounds_token_exchange_json(monkeypatch):
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(auth_mod, "CODEX_AUTH_JSON_BODY_MAX_BYTES", 128)
+    _patch_httpx_post(
+        monkeypatch,
+        [
+            _FakeResp(200, {"user_code": "ABCD", "device_auth_id": "dev-1", "interval": "5"}),
+            _FakeResp(200, {"authorization_code": "auth-code", "code_verifier": "verifier"}),
+            _FakeResp(200, b"x" * 129),
+        ],
+    )
+
+    with pytest.raises(AuthError, match="token exchange response exceeded 128 bytes") as exc_info:
+        auth_mod._codex_device_code_login()
+
+    assert exc_info.value.code == "token_exchange_invalid"

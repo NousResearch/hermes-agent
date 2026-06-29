@@ -20,6 +20,7 @@ The fix:
 These tests pin the corrected behavior.
 """
 import asyncio
+import json
 import time
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -225,9 +226,26 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
         def __init__(self, status_code, payload):
             self.status_code = status_code
             self._payload = payload
+            self.headers = {}
 
         def json(self):
             return self._payload
+
+        def iter_bytes(self):
+            if isinstance(self._payload, bytes):
+                yield self._payload
+            else:
+                yield json.dumps(self._payload).encode("utf-8")
+
+    class _Stream:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self.response
+
+        def __exit__(self, *args):
+            return False
 
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -255,6 +273,9 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
                 "access_token": access_token,
                 "refresh_token": "codex-refresh",
             })
+
+        def stream(self, method, url, **kwargs):
+            return _Stream(self.post(url, **kwargs))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(httpx, "Client", _Client)
@@ -286,9 +307,26 @@ def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkey
         def __init__(self, status_code, payload):
             self.status_code = status_code
             self._payload = payload
+            self.headers = {}
 
         def json(self):
             return self._payload
+
+        def iter_bytes(self):
+            if isinstance(self._payload, bytes):
+                yield self._payload
+            else:
+                yield json.dumps(self._payload).encode("utf-8")
+
+    class _Stream:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self.response
+
+        def __exit__(self, *args):
+            return False
 
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -317,6 +355,9 @@ def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkey
                 "refresh_token": "codex-refresh",
             })
 
+        def stream(self, method, url, **kwargs):
+            return _Stream(self.post(url, **kwargs))
+
     saved_homes = []
     monkeypatch.setattr(httpx, "Client", _Client)
     monkeypatch.setattr(ws.time, "sleep", lambda _: None)
@@ -336,6 +377,54 @@ def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkey
 
         assert ws._oauth_sessions[sid]["status"] == "approved"
         assert saved_homes == [profile_home]
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_codex_dashboard_worker_bounds_device_code_json(tmp_path, monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    class _Resp:
+        status_code = 200
+        headers = {}
+
+        def iter_bytes(self):
+            yield b"x" * 9
+
+    class _Stream:
+        def __enter__(self):
+            return _Resp()
+
+        def __exit__(self, *args):
+            return False
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return _Stream()
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(httpx, "Client", _Client)
+    monkeypatch.setattr(auth_mod, "CODEX_AUTH_JSON_BODY_MAX_BYTES", 8)
+
+    sid, _ = ws._new_oauth_session("openai-codex", "device_code")
+    try:
+        ws._codex_full_login_worker(sid)
+
+        assert ws._oauth_sessions[sid]["status"] == "error"
+        assert (
+            "dashboard device code response exceeded 8 bytes"
+            in ws._oauth_sessions[sid]["error_message"]
+        )
     finally:
         ws._oauth_sessions.pop(sid, None)
 

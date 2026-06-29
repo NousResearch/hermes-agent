@@ -196,6 +196,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._api_key = ""
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
+        self._auto_capture = True  # per-turn LLM fact-extraction (config-gated)
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
@@ -324,6 +325,11 @@ class Mem0MemoryProvider(MemoryProvider):
             configured = None
         self._user_id = configured or kwargs.get("user_id") or _DEFAULT_USER_ID
         self._agent_id = self._config.get("agent_id", "hermes")
+        # auto_capture gates per-turn LLM fact-extraction (sync_turn). Default
+        # True preserves stock behavior; set false in mem0.json for a
+        # retrieval-only store fed exclusively by explicit mem0_add (verbatim,
+        # no LLM in the write path — works offline, no per-turn cost/noise).
+        self._auto_capture = bool(self._config.get("auto_capture", True))
         self._channel = kwargs.get("platform") or "cli"
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
@@ -390,7 +396,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
-        if self._backend is None or self._is_breaker_open():
+        if self._backend is None or not self._auto_capture or self._is_breaker_open():
             return
 
         def _sync():

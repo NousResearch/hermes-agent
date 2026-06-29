@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "anysearch"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -160,14 +160,17 @@ def _get_backend() -> str:
     # with "no subscription" and the tool returns an error to the agent
     # without falling back). Free-tier backends trail the paid ones.
     backend_candidates = (
-        ("tavily", _has_env("TAVILY_API_KEY")),
-        ("exa", _has_env("EXA_API_KEY")),
-        ("parallel", _has_env("PARALLEL_API_KEY")),
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
-        ("firecrawl", _is_tool_gateway_ready()),
-        ("searxng", _has_env("SEARXNG_URL")),
-        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
-        ("ddgs", _ddgs_package_importable()),
+        ( "anysearch", _has_env("ANYSEARCH_API_KEY")),
+        ( "firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
+        ( "parallel", _has_env("PARALLEL_API_KEY")),
+        ( "tavily", _has_env("TAVILY_API_KEY")),
+        ( "exa", _has_env("EXA_API_KEY")),
+        ( "parallel", _has_env("PARALLEL_API_KEY")),
+        ( "firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
+        ( "firecrawl", _is_tool_gateway_ready()),
+        ( "searxng", _has_env("SEARXNG_URL")),
+        ( "brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ( "ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
         if available:
@@ -224,6 +227,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "anysearch":
+        return _has_env("ANYSEARCH_API_KEY")
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
@@ -850,13 +855,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             get_provider as _wsp_get_provider,
         )
 
-        backend = _get_search_backend()
-        provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
-            provider = get_active_search_provider()
+        provider = get_active_search_provider()
 
         if provider is None:
             response_data = {
@@ -1185,11 +1184,11 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "anysearch"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "anysearch")
     )
 
 
@@ -1225,6 +1224,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "anysearch":
+            print(f"   Using AnySearch (search): {os.getenv('ANYSEARCH_API_KEY', '')[:10]}...")
         elif backend == "searxng":
             print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":

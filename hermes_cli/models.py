@@ -1045,11 +1045,12 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models, direct API)"),
     ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (Multi-model direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
-    ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (Curated models, pay-as-you-go)"),
-    ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (Open models subscription)"),
-    ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
-    ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
-    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
+    ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
+    ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
+    ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
+    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
+    ProviderEntry("longcat",        "LongCat AI",               "LongCat AI (LongCat-Flash-Thinking, LongCat-Flash-Lite — free tier)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -1074,6 +1075,7 @@ except Exception:
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+_PROVIDER_LABELS["longcat"] = "LongCat AI"
 
 
 # ---------------------------------------------------------------------------
@@ -4021,6 +4023,53 @@ def validate_requested_model(
                 f"model listing.  Many Anthropic-compatible proxies do not "
                 f"implement GET /v1/models.  The model name has been accepted "
                 f"without verification."
+            ),
+        }
+
+    # LongCat AI doesn't expose /v1/models — validate against known model IDs
+    if normalized == "longcat":
+        known_models = {"LongCat-Flash-Thinking", "LongCat-Flash-Thinking-2601", "LongCat-Flash-Lite", "LongCat-Flash-Omni", "LongCat-2.0-Preview"}
+        if requested_for_lookup in known_models or requested_for_lookup.lower().startswith("longcat"):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        suggestions = get_close_matches(requested, list(known_models), n=3, cutoff=0.5)
+        suggestion_text = "\n  Known LongCat models: " + ", ".join(f"`{s}`" for s in suggestions) if suggestions else ""
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` is not a known LongCat model ID."
+                f"{suggestion_text}"
+            ),
+        }
+    # DashScope coding endpoint doesn't expose /v1/models — validate against known model IDs
+    if normalized == "bailian":
+        known_models = {
+            "qwen3.6-plus", "qwen-plus", "qwen-turbo", "qwen-max", "qwen-max-latest",
+            "qwen-coder-plus", "qwen-coder-turbo", "qwen-coder-plus-latest",
+            "qwen3-coder-plus", "qwen3-coder",
+            "qwen2.5-coder-32b-instruct", "qwen2.5-coder-7b-instruct",
+        }
+        if requested_for_lookup in known_models:
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        # Accept unknown models too — DashScope has many models not listed here
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Note: `{requested}` is not a known DashScope coding model ID. "
+                f"It may still work if the model is available on the coding endpoint."
             ),
         }
 

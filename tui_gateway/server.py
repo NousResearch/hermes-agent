@@ -11199,6 +11199,7 @@ def _(rid, params: dict) -> dict:
     if hint:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
         r = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
@@ -11209,6 +11210,7 @@ def _(rid, params: dict) -> dict:
             # needs provider credentials. Tier-1 secrets still stripped (#29157).
             env=hermes_subprocess_env(inherit_credentials=True),
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
@@ -11263,6 +11265,7 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            from hermes_cli._subprocess_compat import windows_hide_flags
             r = subprocess.run(
                 qc.get("command", ""),
                 shell=True,
@@ -11270,6 +11273,7 @@ def _(rid, params: dict) -> dict:
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             output = (
                 (r.stdout or "")
@@ -13608,9 +13612,11 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         return _ok(
             rid,

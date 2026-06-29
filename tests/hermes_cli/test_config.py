@@ -1155,3 +1155,64 @@ class TestWriteApprovalMigration:
             # gate ends up off and there's no leftover write_mode key.
             assert raw["memory"].get("write_approval", False) is False
             assert "write_mode" not in raw.get("memory", {})
+
+
+class TestStaleToolsetMigration:
+    """Version 30→31 prunes removed toolset names from persisted config."""
+
+    def test_migrate_prunes_removed_toolsets_from_platform_and_agent(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 30,
+                    "platform_toolsets": {
+                        "cli": ["hermes-cli", "messaging"],
+                    },
+                    "agent": {
+                        "enabled_toolsets": ["messaging", "web"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["platform_toolsets"]["cli"] == ["hermes-cli"]
+        assert raw["agent"]["enabled_toolsets"] == ["web"]
+
+    def test_migrate_keeps_configured_mcp_server_names(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 30,
+                    "mcp_servers": {
+                        "paperclip": {
+                            "enabled": True,
+                            "type": "stdio",
+                            "command": ["python", "-m", "paperclip.server"],
+                        }
+                    },
+                    "platform_toolsets": {
+                        "cli": ["paperclip"],
+                    },
+                    "agent": {
+                        "enabled_toolsets": ["paperclip"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["platform_toolsets"]["cli"] == ["paperclip"]
+        assert raw["agent"]["enabled_toolsets"] == ["paperclip"]

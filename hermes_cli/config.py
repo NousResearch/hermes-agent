@@ -2733,7 +2733,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -2756,6 +2756,60 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
 # selection step (Nous Portal / OpenRouter / Custom endpoint), so this
 # dict is intentionally empty — no single env var is universally required.
 REQUIRED_ENV_VARS = {}
+
+
+def _prune_stale_toolset_names(config: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Drop persisted toolset names that no longer resolve.
+
+    Old configs can keep removed toolsets like ``messaging`` in
+    ``platform_toolsets`` or ``agent.enabled_toolsets`` forever. The runtime
+    only warns, so every startup keeps printing the same "Unknown toolsets"
+    notice until the user hand-edits config.yaml. Preserve configured MCP
+    server names, which are also accepted in toolset lists.
+
+    Returns a dict of removal buckets keyed by config path.
+    """
+    try:
+        from toolsets import validate_toolset
+    except Exception:
+        return {}
+
+    raw_mcp_servers = config.get("mcp_servers")
+    mcp_names = (
+        {name for name in raw_mcp_servers.keys() if isinstance(name, str)}
+        if isinstance(raw_mcp_servers, dict)
+        else set()
+    )
+
+    removed: Dict[str, List[str]] = {}
+
+    def _keep(name: Any) -> bool:
+        return not isinstance(name, str) or validate_toolset(name) or name in mcp_names
+
+    platform_toolsets = config.get("platform_toolsets")
+    if isinstance(platform_toolsets, dict):
+        for platform_name, names in platform_toolsets.items():
+            if not isinstance(names, list):
+                continue
+            filtered = [name for name in names if _keep(name)]
+            if filtered != names:
+                platform_toolsets[platform_name] = filtered
+                removed[f"platform_toolsets.{platform_name}"] = [
+                    name for name in names if name not in filtered
+                ]
+
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        enabled_toolsets = agent_cfg.get("enabled_toolsets")
+        if isinstance(enabled_toolsets, list):
+            filtered = [name for name in enabled_toolsets if _keep(name)]
+            if filtered != enabled_toolsets:
+                agent_cfg["enabled_toolsets"] = filtered
+                removed["agent.enabled_toolsets"] = [
+                    name for name in enabled_toolsets if name not in filtered
+                ]
+
+    return removed
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
@@ -5054,6 +5108,26 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "  ✓ Seeded curator.consolidate: false "
                     "(LLM consolidation is now opt-in; pruning stays on)"
                 )
+
+    # ── Version 30 → 31: prune stale persisted toolset names ──
+    # Configs upgraded from pre-#47856 builds can keep removed toolsets like
+    # ``messaging`` in agent.enabled_toolsets / platform_toolsets forever. The
+    # runtime warns on every startup, but there was no migration that cleans
+    # the dead name out of config.yaml. Use the same acceptance rule as the
+    # CLI warning path: keep valid built-in/plugin toolsets and configured MCP
+    # server names; drop only names that no longer resolve at all.
+    if current_ver < 31:
+        config = read_raw_config()
+        removed_toolsets = _prune_stale_toolset_names(config)
+        if removed_toolsets:
+            save_config(config)
+            for path, removed_names in removed_toolsets.items():
+                if not removed_names:
+                    continue
+                removed_display = ", ".join(sorted(set(removed_names)))
+                results["config_added"].append(f"pruned stale toolsets from {path}: {removed_display}")
+                if not quiet:
+                    print(f"  ✓ Pruned stale toolsets from {path}: {removed_display}")
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

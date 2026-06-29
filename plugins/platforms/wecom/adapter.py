@@ -40,6 +40,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
+from email.message import Message
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -138,6 +139,41 @@ def _entry_matches(entries: List[str], target: str) -> bool:
         if normalized == "*" or normalized == normalized_target:
             return True
     return False
+
+
+def _safe_filename_candidate(value: Any, *, decode_percent: bool = False) -> str:
+    if isinstance(value, tuple):
+        value = value[-1] if value else ""
+    candidate = str(value or "")
+    if decode_percent:
+        candidate = unquote(candidate)
+    candidate = candidate.replace("\x00", "").strip()
+    candidate = Path(candidate.replace("\\", "/")).name.strip()
+    return "" if not candidate or candidate in {".", ".."} else candidate
+
+
+def _filename_from_content_disposition(content_disposition: Optional[str]) -> str:
+    if not content_disposition:
+        return ""
+    msg = Message()
+    msg["Content-Disposition"] = content_disposition
+    params = msg.get_params(header="content-disposition", unquote=True) or []
+
+    filename_star_values: List[Any] = []
+    filename_values: List[Any] = []
+    for key, value in params:
+        if str(key or "").lower() != "filename":
+            continue
+        if isinstance(value, tuple):
+            filename_star_values.append(value)
+        else:
+            filename_values.append(value)
+
+    for value in filename_star_values + filename_values:
+        candidate = _safe_filename_candidate(value, decode_percent=isinstance(value, tuple))
+        if candidate:
+            return candidate
+    return ""
 
 
 class WeComAdapter(BasePlatformAdapter):
@@ -830,12 +866,9 @@ class WeComAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _guess_filename(url: str, content_disposition: Optional[str], content_type: str) -> str:
-        if content_disposition:
-            match = re.search(r'filename="?([^";]+)"?', content_disposition)
-            if match:
-                return match.group(1)
-
-        name = Path(urlparse(url).path).name or "document"
+        name = _filename_from_content_disposition(content_disposition)
+        if not name:
+            name = _safe_filename_candidate(Path(urlparse(url).path).name) or "document"
         if "." not in name:
             ext = mimetypes.guess_extension(content_type) or ".bin"
             name = f"{name}{ext}"

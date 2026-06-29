@@ -2176,6 +2176,7 @@ def list_authenticated_providers(
                     "api_url": api_url,
                     "api_key": api_key,
                     "models": [],
+                    "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
                 }
@@ -2201,6 +2202,7 @@ def list_authenticated_providers(
             for model_id in _declared_model_ids(entry.get("models", {})):
                 if model_id not in groups[group_key]["models"]:
                     groups[group_key]["models"].append(model_id)
+                    groups[group_key]["has_explicit_models"] = True
 
         _section4_emitted_slugs: set = set()
         _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
@@ -2262,11 +2264,13 @@ def list_authenticated_providers(
             #   the (possibly partial) ``models:`` subset configured for
             #   context-length overrides with the full live catalog.
             #   This is the Bifrost / aggregator-gateway case.
-            # - Without an api_key but with an explicit ``models:`` list
-            #   (or top-level ``model:``), the user is narrowing a public
-            #   endpoint to a specific subset (e.g. ollama.com /v1/models
-            #   returns 35 models but the user only wants 4). Preserve the
-            #   explicit list and skip live discovery.
+            # - Without an api_key but with an explicit ``models:`` list,
+            #   the user is narrowing a public endpoint to a specific subset
+            #   (e.g. ollama.com /v1/models returns 35 models but the user
+            #   only wants 4). Preserve the explicit list and skip live
+            #   discovery. The singular ``model:`` field is only the current
+            #   active selection and must not suppress discovery on local
+            #   no-key endpoints.
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
@@ -2278,7 +2282,7 @@ def list_authenticated_providers(
             should_probe = (
                 probe_custom_providers
                 and bool(api_url)
-                and (bool(api_key) or not grp["models"])
+                and (bool(api_key) or not grp.get("has_explicit_models"))
                 and grp.get("discover_models", True)
             )
             if should_probe:

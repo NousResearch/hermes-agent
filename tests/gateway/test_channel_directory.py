@@ -173,6 +173,23 @@ class TestResolveChannelName:
             # Lowercase still falls through to name matching (case-insensitive)
             assert resolve_channel_name("slack", "c0b0qv5434g") == "C99"
 
+    def test_discord_thread_id_resolves_to_parent_thread_target(self, tmp_path):
+        platforms = {
+            "discord": [
+                {
+                    "id": "1504852553031221391:1514503390321967184",
+                    "name": "Adventico / #booking-ops / VZ827147 / topic 1514503390321967184",
+                    "type": "thread",
+                    "thread_id": "1514503390321967184",
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert (
+                resolve_channel_name("discord", "1514503390321967184")
+                == "1504852553031221391:1514503390321967184"
+            )
+
     def test_display_label_with_type_suffix_resolves(self, tmp_path):
         platforms = {
             "telegram": [
@@ -321,6 +338,33 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+
+    def test_discord_thread_uses_parent_chat_id_for_send_target(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "thread": {
+                "origin": {
+                    "platform": "discord",
+                    "chat_id": "1514503390321967184",
+                    "chat_name": "Adventico / #booking-ops / VZ827147",
+                    "chat_type": "thread",
+                    "thread_id": "1514503390321967184",
+                    "parent_chat_id": "1504852553031221391",
+                },
+                "chat_type": "thread",
+            },
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("discord")
+
+        assert entries == [
+            {
+                "id": "1504852553031221391:1514503390321967184",
+                "name": "Adventico / #booking-ops / VZ827147 / topic 1514503390321967184",
+                "type": "thread",
+                "thread_id": "1514503390321967184",
+            }
+        ]
 
 
 class TestFormatDirectoryForDisplay:

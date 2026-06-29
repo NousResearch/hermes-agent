@@ -370,6 +370,43 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_bare_discord_thread_id_normalizes_to_parent_thread_target(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch(
+                 "gateway.channel_directory.resolve_channel_name",
+                 return_value="1504852553031221391:1514503390321967184",
+             ), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:1514503390321967184",
+                        "message": "status update",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_cfg,
+            "1504852553031221391",
+            "status update",
+            thread_id="1514503390321967184",
+            media_files=[],
+            force_document=False,
+        )
+
     def test_resolved_slack_thread_name_preserves_thread_id(self):
         slack_cfg = SimpleNamespace(enabled=True, token="xoxb-test", extra={})
         config = SimpleNamespace(

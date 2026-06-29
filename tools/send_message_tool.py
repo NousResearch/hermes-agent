@@ -313,6 +313,19 @@ def _handle_send(args):
     else:
         is_explicit = False
 
+    # Discord threads are channels with their own snowflake IDs, but Hermes
+    # lane checks and mirrors need the parent lane plus thread id. If a user or
+    # model provides a bare known thread id, normalize it through the channel
+    # directory before treating it as a direct channel send.
+    if platform_name == "discord" and target_ref and is_explicit and thread_id is None:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved and resolved != target_ref:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+        except Exception:
+            pass
+
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
         try:

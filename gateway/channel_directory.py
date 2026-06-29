@@ -165,6 +165,13 @@ def _session_entry_id(origin: Dict[str, Any]) -> Optional[str]:
         return None
     thread_id = origin.get("thread_id")
     if thread_id:
+        # Discord thread sessions use the thread itself as ``chat_id`` while
+        # preserving the parent lane as ``parent_chat_id``.  send_message
+        # targets need the parent lane plus the thread id so lane validation and
+        # delivery both address the same public thread.
+        parent_chat_id = origin.get("parent_chat_id")
+        if parent_chat_id:
+            return f"{parent_chat_id}:{thread_id}"
         return f"{chat_id}:{thread_id}"
     return str(chat_id)
 
@@ -425,6 +432,8 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     raw = name.strip()
     for ch in channels:
         if ch.get("id") == raw:
+            return ch["id"]
+        if platform_name == "discord" and ch.get("thread_id") == raw:
             return ch["id"]
 
     query = _normalize_channel_query(name)

@@ -9,18 +9,12 @@ name: Lint (ruff + ty)
 #      enforcement fails.
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "website/**"
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "website/**"
+  workflow_call:
+    inputs:
+      event_name:
+        description: The event name from the calling orchestrator (pull_request or push).
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -33,6 +27,7 @@ concurrency:
 jobs:
   lint-diff:
     name: ruff + ty diff
+    if: inputs.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -42,19 +37,19 @@ jobs:
           fetch-depth: 0 # need full history for merge-base + worktree
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
 
       - name: Install ruff + ty
-        run: |
-          uv tool install ruff
-          uv tool install ty
+        uses: ./.github/actions/retry
+        with:
+          command: uv tool install ruff && uv tool install ty
 
       - name: Determine base ref
         id: base
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ inputs.event_name }}" = "pull_request" ]; then
             BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
             BASE_REF="origin/${{ github.base_ref }}"
           else
@@ -110,19 +105,19 @@ jobs:
             --base-ty   .lint-reports/base/ty.json \
             --head-ty   .lint-reports/head/ty.json \
             --base-ref  "${{ steps.base.outputs.ref }}" \
-            --head-ref  "${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
+            --head-ref  "${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reports as artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lint-reports
           path: .lint-reports/
           retention-days: 14
 
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: inputs.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
@@ -154,7 +149,6 @@ jobs:
               });
             }
 
-
   ruff-blocking:
     # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently
     # PLW1514 (unspecified-encoding) — catches bare ``open()`` /
@@ -170,10 +164,12 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
 
       - name: Install ruff
-        run: uv tool install ruff
+        uses: ./.github/actions/retry
+        with:
+          command: uv tool install ruff
 
       - name: ruff check .
         # No --exit-zero, no || true. Exit code propagates to the job,

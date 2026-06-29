@@ -452,3 +452,132 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+
+# =========================================================================
+# Per-job model/provider override resolution
+# =========================================================================
+
+from tools.cronjob_tools import _resolve_model_override  # noqa: E402
+
+
+class TestResolveModelOverride:
+    """`_resolve_model_override` must not silently hijack a job that meant to
+    use a configured custom endpoint (e.g. ``providers.custom`` → cliproxy).
+    Regression for cron jobs with ``provider: "custom"`` falling back to codex.
+    """
+
+    def test_keeps_bare_custom_when_a_named_entry_exists(self, monkeypatch):
+        import hermes_cli.runtime_provider as rp_mod
+
+        monkeypatch.setattr(rp_mod, "has_named_custom_provider", lambda name: True)
+        provider, model = _resolve_model_override(
+            {"provider": "custom", "model": "gpt-5.4"}
+        )
+        assert provider == "custom"
+        assert model == "gpt-5.4"
+
+    def test_pins_main_provider_when_bare_custom_unresolvable(self, monkeypatch):
+        import hermes_cli.config as cfg_mod
+        import hermes_cli.runtime_provider as rp_mod
+
+        monkeypatch.setattr(rp_mod, "has_named_custom_provider", lambda name: False)
+        monkeypatch.setattr(
+            cfg_mod, "load_config", lambda: {"model": {"provider": "openai-codex"}}
+        )
+        provider, model = _resolve_model_override(
+            {"provider": "custom", "model": "gpt-5.4"}
+        )
+        # No matching custom entry → fall back to pinning the main provider.
+        assert provider == "openai-codex"
+        assert model == "gpt-5.4"
+
+    def test_keeps_explicit_custom_name_unchanged(self, monkeypatch):
+        import hermes_cli.runtime_provider as rp_mod
+
+        # Even if the resolver claims no entry, the canonical "custom:<name>"
+        # form is never stripped or pinned.
+        monkeypatch.setattr(rp_mod, "has_named_custom_provider", lambda name: False)
+        provider, model = _resolve_model_override(
+            {"provider": "custom:cliproxy", "model": "gpt-5.4"}
+        )
+        assert provider == "custom:cliproxy"
+        assert model == "gpt-5.4"
+
+
+class TestLocalDeliveryNotice:
+    """#51568 — TUI/CLI cron jobs are local-only; surface that at create time
+    so the agent doesn't promise a delivery that never happens."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        # Default: no session origin (the TUI/CLI condition).
+        for var in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_CHAT_NAME",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars()  # reset ContextVars to empty
+        yield
+        clear_session_vars(tokens)
+
+    def test_omitted_deliver_no_origin_emits_notice(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Output the time", schedule="every 2m")
+        )
+        assert created["success"] is True
+        # Omitted deliver from a session with no origin downgrades to local.
+        assert created["deliver"] == "local"
+        assert "local-only cron job" in created["message"]
+        assert "deliver='telegram'" in created["message"]
+
+    def test_explicit_origin_no_origin_emits_notice(self):
+        created = json.loads(
+            cronjob(
+                action="create", prompt="x", schedule="every 2m", deliver="origin"
+            )
+        )
+        assert created["deliver"] == "origin"
+        assert "local-only cron job" in created["message"]
+
+    def test_explicit_local_no_notice(self):
+        # The user explicitly asked for local — no surprise to flag.
+        created = json.loads(
+            cronjob(
+                action="create", prompt="x", schedule="every 2m", deliver="local"
+            )
+        )
+        assert created["deliver"] == "local"
+        assert "local-only cron job" not in created["message"]
+
+    def test_explicit_platform_target_no_notice(self):
+        # An explicit platform:chat target resolves to a real delivery target.
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="x",
+                schedule="every 2m",
+                deliver="telegram:123",
+            )
+        )
+        assert created["deliver"] == "telegram:123"
+        assert "local-only cron job" not in created["message"]
+
+    def test_gateway_origin_no_notice(self, monkeypatch):
+        # With a captured gateway origin, omitted deliver becomes origin and
+        # resolves to that chat — nothing to warn about.
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(platform="telegram", chat_id="999")
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 2m")
+        )
+        assert created["deliver"] == "origin"
+        assert "local-only cron job" not in created["message"]

@@ -1,9 +1,11 @@
 import { useCallback } from 'react'
 
-import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
+import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
+import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
 import {
   addComposerAttachment,
   type ComposerAttachment,
@@ -33,7 +35,7 @@ function blobExtension(blob: Blob): string {
   return (mime && BLOB_MIME_EXTENSION[mime]) || '.png'
 }
 
-function isImagePath(filePath: string): boolean {
+export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
 }
 
@@ -181,6 +183,35 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
   return result
 }
 
+/**
+ * Split dropped entries by origin. OS/Finder drops carry a native `File`
+ * handle; in-app drags (project tree, gutter line refs) are path-only.
+ *
+ * The distinction is load-bearing: an in-app path is workspace-relative and
+ * resolves on the gateway as-is, so it stays an inline `@file:`/`@line:` ref.
+ * An OS drop is an absolute path on *this* machine — the gateway can't read it
+ * in remote mode, and an image needs its bytes uploaded to get vision either
+ * way. So OS drops must go through the attachment/upload pipeline rather than
+ * leaking a local path into the prompt text.
+ */
+export function partitionDroppedFiles(candidates: DroppedFile[]): {
+  osDrops: DroppedFile[]
+  inAppRefs: DroppedFile[]
+} {
+  const osDrops: DroppedFile[] = []
+  const inAppRefs: DroppedFile[] = []
+
+  for (const candidate of candidates) {
+    if (candidate.file) {
+      osDrops.push(candidate)
+    } else {
+      inAppRefs.push(candidate)
+    }
+  }
+
+  return { osDrops, inAppRefs }
+}
+
 interface ComposerActionsOptions {
   activeSessionId: string | null
   currentCwd: string
@@ -196,9 +227,10 @@ const attachToMain = (attachment: ComposerAttachment) => {
 export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
-  }, [copy.imagePreviewFailed])
+  }, [])
 
   const addTerminalSelectionAttachment = useCallback((text: string, label = 'selection') => {
     const trimmed = text.trim()
@@ -231,7 +263,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {
-      const paths = await window.hermesDesktop?.selectPaths({
+      const paths = await selectDesktopPaths({
         title: kind === 'file' ? 'Add files as context' : 'Add folders as context',
         defaultPath: currentCwd || undefined,
         directories: kind === 'folder'
@@ -253,6 +285,26 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           path
         })
       }
+    },
+    [currentCwd]
+  )
+
+  const insertContextPathInlineRef = useCallback(
+    (path: string, isDirectory = false) => {
+      if (!path) {
+        return false
+      }
+
+      const ref = droppedFileInlineRef({ isDirectory, path }, currentCwd)
+
+      if (!ref) {
+        return false
+      }
+
+      requestComposerInsertRefs([ref])
+      requestComposerFocus('main')
+
+      return true
     },
     [currentCwd]
   )
@@ -279,35 +331,38 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [currentCwd]
   )
 
-  const attachImagePath = useCallback(async (filePath: string) => {
-    if (!filePath) {
-      return false
-    }
-
-    const baseAttachment: ComposerAttachment = {
-      id: attachmentId('image', filePath),
-      kind: 'image',
-      label: pathLabel(filePath),
-      detail: filePath,
-      path: filePath
-    }
-
-    attachToMain(baseAttachment)
-
-    try {
-      const previewUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
-
-      if (previewUrl) {
-        addComposerAttachment({ ...baseAttachment, previewUrl })
+  const attachImagePath = useCallback(
+    async (filePath: string) => {
+      if (!filePath) {
+        return false
       }
 
-      return true
-    } catch (err) {
-      notifyError(err, copy.imagePreviewFailed)
+      const baseAttachment: ComposerAttachment = {
+        id: attachmentId('image', filePath),
+        kind: 'image',
+        label: pathLabel(filePath),
+        detail: filePath,
+        path: filePath
+      }
 
-      return true
-    }
-  }, [])
+      attachToMain(baseAttachment)
+
+      try {
+        const previewUrl = await readDesktopFileDataUrl(filePath)
+
+        if (previewUrl) {
+          addComposerAttachment({ ...baseAttachment, previewUrl })
+        }
+
+        return true
+      } catch (err) {
+        notifyError(err, copy.imagePreviewFailed)
+
+        return true
+      }
+    },
+    [copy.imagePreviewFailed]
+  )
 
   const attachImageBlob = useCallback(
     async (blob: Blob) => {
@@ -341,7 +396,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
   )
 
   const pickImages = useCallback(async () => {
-    const paths = await window.hermesDesktop?.selectPaths({
+    const paths = await selectDesktopPaths({
       title: copy.attachImages,
       defaultPath: currentCwd || undefined,
       filters: [
@@ -361,25 +416,36 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     }
   }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
 
-  const pasteClipboardImage = useCallback(async () => {
-    try {
-      const path = await window.hermesDesktop?.saveClipboardImage()
+  const pasteClipboardImage = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      try {
+        const path = await window.hermesDesktop?.saveClipboardImage()
 
-      if (!path) {
-        notify({
-          kind: 'warning',
-          title: copy.clipboard,
-          message: copy.noClipboardImage
-        })
+        if (!path) {
+          if (!silent) {
+            notify({
+              kind: 'warning',
+              title: copy.clipboard,
+              message: copy.noClipboardImage
+            })
+          }
 
-        return
+          return false
+        }
+
+        await attachImagePath(path)
+
+        return true
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, copy.clipboardPasteFailed)
+        }
+
+        return false
       }
-
-      await attachImagePath(path)
-    } catch (err) {
-      notifyError(err, copy.clipboardPasteFailed)
-    }
-  }, [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage])
+    },
+    [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage]
+  )
 
   const attachContextFolderPath = useCallback(
     (folderPath: string) => {
@@ -517,6 +583,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
+    insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,
     pickImages,

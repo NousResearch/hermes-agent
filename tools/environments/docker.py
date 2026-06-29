@@ -177,6 +177,7 @@ def reap_orphan_containers(
         listing = subprocess.run(
             [docker, "ps", "-a", *filters, "--format", "{{.ID}}"],
             capture_output=True, text=True, timeout=15, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker ps failed: %s", e)
@@ -210,6 +211,7 @@ def reap_orphan_containers(
             result = subprocess.run(
                 [docker, "rm", "-f", cid],
                 capture_output=True, text=True, timeout=30,
+                stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0:
                 removed += 1
@@ -239,6 +241,7 @@ def _container_finished_at(docker_exe: str, container_id: str):
         result = subprocess.run(
             [docker_exe, "inspect", "--format", "{{.State.FinishedAt}}", container_id],
             capture_output=True, text=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.debug("orphan reaper docker inspect %s failed: %s", container_id[:12], e)
@@ -319,18 +322,27 @@ def find_docker() -> Optional[str]:
 #       preserved. Omitted entirely when the container starts as a
 #       non-root user via --user, since no privilege drop is needed
 #       in that mode.
-# Block privilege escalation and limit PIDs.
+# Block privilege escalation.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
+#
+# Note: ``--pids-limit`` is *not* in this list — it lives in ``resource_args``
+# and is gated on ``_cgroup_limits_available(image)`` because it requires the
+# ``pids`` cgroup controller to be delegated, which is not the case on hosts
+# such as unprivileged LXCs. ``--cpus``/``--memory`` are gated for the same
+# reason.
 _BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
     "--security-opt", "no-new-privileges",
-    "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
 ]
+
+# Default per-container PID limit. Applied as ``--pids-limit`` only when the
+# cgroup ``pids`` controller is available (see ``_cgroup_limits_available``).
+_DEFAULT_PIDS_LIMIT = "256"
 
 # /run is split out from _BASE_SECURITY_ARGS because s6-overlay images need it
 # mounted ``exec``: s6 stage0 later runs ``exec /run/s6/basedir/bin/init``, which
@@ -381,6 +393,7 @@ def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
             capture_output=True,
             text=True,
             timeout=15,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("Docker: could not inspect entrypoint for %s: %s", image, e)
@@ -427,6 +440,59 @@ def _resolve_host_user_spec() -> Optional[str]:
 
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
+_cgroup_limits_ok: Optional[bool] = None  # cached result across instances
+
+
+def _cgroup_limits_available(image: str) -> bool:
+    """Probe whether cgroup resource limits work in this environment.
+
+    Tests ``--cpus``, ``--memory`` and ``--pids-limit`` together by spawning
+    a throwaway container from *image* (the same sandbox image we are about
+    to use for real, so no extra pull and no dependency on a public
+    registry). The container runs ``sleep 0`` — sleep is guaranteed to be
+    present because the sandbox itself uses ``sleep 2h`` as its long-lived
+    entrypoint.
+
+    On hosts where the corresponding cgroup controllers are not delegated
+    to this process (typical inside unprivileged LXCs and some rootless
+    setups) these flags cause every container start to fail with ``OCI
+    runtime error`` / exit 126. The probe runs once per process and the
+    result — which is host-wide, not image-specific — is cached.
+    """
+    global _cgroup_limits_ok
+    if _cgroup_limits_ok is not None:
+        return _cgroup_limits_ok
+
+    docker_exe = find_docker()
+    if not docker_exe or not image:
+        _cgroup_limits_ok = False
+        return False
+
+    try:
+        result = subprocess.run(
+            [docker_exe, "run", "--rm",
+             "--cpus", "0.5", "--memory", "64m", "--pids-limit", "32",
+             image, "sleep", "0"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
+        _cgroup_limits_ok = result.returncode == 0
+        if not _cgroup_limits_ok:
+            logger.warning(
+                "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
+                "available in this environment. Containers will run without "
+                "CPU, memory or PID limits. To enable, delegate the cpu, "
+                "memory and pids cgroup controllers to this container. "
+                "Probe stderr: %s",
+                (result.stderr or "").strip()[:500],
+            )
+    except Exception as e:
+        _cgroup_limits_ok = False
+        logger.warning("Cgroup limit probe failed; disabling resource limits: %s", e)
+
+    return _cgroup_limits_ok
 
 
 def _ensure_docker_available() -> None:
@@ -453,6 +519,7 @@ def _ensure_docker_available() -> None:
             capture_output=True,
             text=True,
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         logger.error(
@@ -550,12 +617,17 @@ class DockerEnvironment(BaseEnvironment):
         # Fail fast if Docker is not available.
         _ensure_docker_available()
 
-        # Build resource limit args
+        # Build resource limit args (gated by cgroup availability probe so
+        # they degrade gracefully on hosts without controller delegation,
+        # e.g. unprivileged LXCs). The probe runs once per process and is
+        # cached host-wide.
         resource_args = []
-        if cpu > 0:
+        if cpu > 0 and _cgroup_limits_available(image):
             resource_args.extend(["--cpus", str(cpu)])
-        if memory > 0:
+        if memory > 0 and _cgroup_limits_available(image):
             resource_args.extend(["--memory", f"{memory}m"])
+        if _cgroup_limits_available(image):
+            resource_args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
                 resource_args.extend(["--storage-opt", f"size={disk}m"])
@@ -833,6 +905,7 @@ class DockerEnvironment(BaseEnvironment):
                             text=True,
                             timeout=30,
                             check=True,
+                            stdin=subprocess.DEVNULL,
                         )
                     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                         logger.warning(
@@ -871,6 +944,7 @@ class DockerEnvironment(BaseEnvironment):
                     text=True,
                     timeout=120,  # image pull may take a while
                     check=True,
+                    stdin=subprocess.DEVNULL,
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 # Docker may create the container object before `docker run`
@@ -887,6 +961,7 @@ class DockerEnvironment(BaseEnvironment):
                 subprocess.run(
                     [self._docker_exe, "rm", "-f", container_name],
                     capture_output=True, timeout=10,
+                    stdin=subprocess.DEVNULL,
                 )
                 raise
             self._container_id = result.stdout.strip()
@@ -997,6 +1072,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [self._docker_exe, "start", cid],
                         capture_output=True, text=True, timeout=30, check=True,
+                        stdin=subprocess.DEVNULL,
                     )
                     self._container_id = cid
                     logger.info("Recovery: restarted container %s", cid[:12])
@@ -1027,6 +1103,7 @@ class DockerEnvironment(BaseEnvironment):
                 ]
                 result = subprocess.run(
                     run_cmd, capture_output=True, text=True, timeout=120, check=True,
+                    stdin=subprocess.DEVNULL,
                 )
                 self._container_id = result.stdout.strip()
                 self._container_name = new_name
@@ -1081,6 +1158,7 @@ class DockerEnvironment(BaseEnvironment):
             result = subprocess.run(
                 [docker, "info", "--format", "{{.Driver}}"],
                 capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
             )
             driver = result.stdout.strip().lower()
             if driver != "overlay2":
@@ -1091,13 +1169,15 @@ class DockerEnvironment(BaseEnvironment):
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
                 capture_output=True, text=True, timeout=15,
+                stdin=subprocess.DEVNULL,
             )
             if probe.returncode == 0:
                 # Clean up the created container
                 container_id = probe.stdout.strip()
                 if container_id:
                     subprocess.run([docker, "rm", container_id],
-                                   capture_output=True, timeout=5)
+                                   capture_output=True, timeout=5,
+                                   stdin=subprocess.DEVNULL)
                 _storage_opt_ok = True
             else:
                 _storage_opt_ok = False
@@ -1132,6 +1212,7 @@ class DockerEnvironment(BaseEnvironment):
                 text=True,
                 timeout=10,
                 check=False,
+                stdin=subprocess.DEVNULL,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             logger.debug("docker ps probe failed: %s — will start a fresh container", e)
@@ -1248,6 +1329,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [docker_exe, "stop", "-t", "10", container_id],
                         capture_output=True, timeout=30,
+                        stdin=subprocess.DEVNULL,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker stop %s timed out / failed: %s", log_id, e)
@@ -1256,6 +1338,7 @@ class DockerEnvironment(BaseEnvironment):
                     subprocess.run(
                         [docker_exe, "rm", "-f", container_id],
                         capture_output=True, timeout=30,
+                        stdin=subprocess.DEVNULL,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("docker rm -f %s failed: %s", log_id, e)

@@ -219,9 +219,9 @@ _TOOL_STUBS = {
     ),
     "web_extract": (
         "web_extract",
-        "urls: list",
-        '"""Extract content from URLs. Returns dict with results list of {url, title, content, error}."""',
-        '{"urls": urls}',
+        "urls: list, char_limit: int = None",
+        '"""Extract content from URLs (no LLM summarization). Returns dict with results list of {url, title, content, error}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown."""',
+        '{"urls": urls, "char_limit": char_limit}',
     ),
     "read_file": (
         "read_file",
@@ -472,6 +472,7 @@ def _rpc_server_loop(
     tool_call_counter: list,   # mutable [int] so the thread can increment
     max_tool_calls: int,
     allowed_tools: frozenset,
+    stop_event: threading.Event,
 ):
     """
     Accept one client connection and dispatch tool-call requests until
@@ -481,8 +482,15 @@ def _rpc_server_loop(
 
     conn = None
     try:
-        server_sock.settimeout(5)
-        conn, _ = server_sock.accept()
+        server_sock.settimeout(0.05)
+        while not stop_event.is_set():
+            try:
+                conn, _ = server_sock.accept()
+                break
+            except socket.timeout:
+                continue
+        if conn is None:
+            return
         conn.settimeout(300)
 
         buf = b""
@@ -953,7 +961,7 @@ def _execute_remote(
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
         if tz:
-            env_prefix += f" TZ={tz}"
+            env_prefix += f" TZ={shlex.quote(tz)}"
 
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
@@ -1023,9 +1031,11 @@ def _execute_remote(
     from tools.ansi_strip import strip_ansi
     stdout_text = strip_ansi(stdout_text)
 
-    # Redact secrets
+    # Redact secrets. code_file=True: execute_code output is code-execution
+    # output that often echoes source/config — skip false-positive ENV/JSON/
+    # f-string-template redaction while still masking real credentials.
     from agent.redact import redact_sensitive_text
-    stdout_text = redact_sensitive_text(stdout_text)
+    stdout_text = redact_sensitive_text(stdout_text, code_file=True)
 
     # Build response
     result: Dict[str, Any] = {
@@ -1094,15 +1104,21 @@ def execute_code(
         return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config
-    env_type = _get_env_config()["env_type"]
+    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+    _env_config = _get_env_config()
+    env_type = _env_config["env_type"]
 
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
     # here before either dispatch path spawns it. Runs synchronously in the
     # caller (tool-executor) thread, which holds the session context (#30882).
+    # A Docker sandbox with host bind mounts is no longer isolated, so its
+    # script does not get the container fast-path.
     from tools.approval import check_execute_code_guard
-    _guard = check_execute_code_guard(code, env_type)
+    _guard = check_execute_code_guard(
+        code, env_type,
+        has_host_access=_docker_has_host_access(_env_config),
+    )
     if not _guard.get("approved", False):
         return json.dumps({
             "status": "error",
@@ -1157,6 +1173,7 @@ def execute_code(
     tool_call_counter = [0]  # mutable so the RPC thread can increment
     exec_start = time.monotonic()
     server_sock = None
+    stop_event = threading.Event()
 
     try:
         # Write the auto-generated hermes_tools module.
@@ -1204,7 +1221,7 @@ def execute_code(
             target=propagate_context_to_thread(_rpc_server_loop),
             args=(
                 server_sock, task_id, tool_call_log,
-                tool_call_counter, max_tool_calls, sandbox_tools,
+                tool_call_counter, max_tool_calls, sandbox_tools, stop_event,
             ),
             daemon=True,
         )
@@ -1261,12 +1278,8 @@ def execute_code(
             child_env["TZ"] = _tz_name
         child_env.pop("HERMES_TIMEZONE", None)
 
-        # Per-profile HOME isolation: redirect system tool configs into
-        # {HERMES_HOME}/home/ when that directory exists.
-        from hermes_constants import get_subprocess_home
-        _profile_home = get_subprocess_home()
-        if _profile_home:
-            child_env["HOME"] = _profile_home
+        from hermes_constants import apply_subprocess_home_env
+        apply_subprocess_home_env(child_env)
 
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).
@@ -1285,7 +1298,7 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
 
@@ -1369,23 +1382,33 @@ def execute_code(
             "last_touch": time.monotonic(),
             "start": exec_start,
         }
+        try:
+            from tools.environments.base import touch_activity_if_due
+        except Exception:
+            touch_activity_if_due = None
+        poll_interval = 0.005
         while proc.poll() is None:
             if _is_interrupted():
                 _kill_process_group(proc)
                 status = "interrupted"
                 break
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            if now > deadline:
                 _kill_process_group(proc, escalate=True)
                 status = "timeout"
                 break
             # Periodic activity touch so the gateway's inactivity timeout
             # doesn't kill the agent during long code execution (#10807).
+            if touch_activity_if_due is not None:
+                try:
+                    touch_activity_if_due(_activity_state, "execute_code running")
+                except Exception:
+                    pass
             try:
-                from tools.environments.base import touch_activity_if_due
-                touch_activity_if_due(_activity_state, "execute_code running")
-            except Exception:
+                proc.wait(timeout=min(poll_interval, max(0.0, deadline - now)))
+            except subprocess.TimeoutExpired:
                 pass
-            time.sleep(0.2)
+            poll_interval = min(0.2, poll_interval * 1.5)
 
         # Wait for readers to finish draining
         stdout_reader.join(timeout=3)
@@ -1411,6 +1434,7 @@ def execute_code(
         duration = round(time.monotonic() - exec_start, 2)
 
         # Wait for RPC thread to finish
+        stop_event.set()
         server_sock.close()  # break accept() so thread exits promptly
         server_sock = None  # prevent double close in finally
         rpc_thread.join(timeout=3)
@@ -1425,9 +1449,11 @@ def execute_code(
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
         # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
         # This ensures leaked secrets never enter the model context.
+        # code_file=True: this is code-execution output — skip false-positive
+        # ENV/JSON/f-string-template redaction; real credentials still masked.
         from agent.redact import redact_sensitive_text
-        stdout_text = redact_sensitive_text(stdout_text)
-        stderr_text = redact_sensitive_text(stderr_text)
+        stdout_text = redact_sensitive_text(stdout_text, code_file=True)
+        stderr_text = redact_sensitive_text(stderr_text, code_file=True)
 
         # Build response
         result: Dict[str, Any] = {
@@ -1618,6 +1644,7 @@ def _is_usable_python(python_path: str) -> bool:
             timeout=5,
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            stdin=subprocess.DEVNULL,
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
@@ -1700,8 +1727,9 @@ _TOOL_DOC_LINES = [
      "  web_search(query: str, limit: int = 5) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
     ("web_extract",
-     "  web_extract(urls: list[str]) -> dict\n"
-     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
+     "  web_extract(urls: list[str], char_limit: int = None) -> dict\n"
+     "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
+     "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file",
      "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),

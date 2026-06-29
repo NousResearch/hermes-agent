@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 import urllib.request
 import urllib.error
 import time
@@ -56,9 +57,11 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k2.6",                   "recommended"),
+    ("moonshotai/kimi-k2.7-code",              ""),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
+    ("z-ai/glm-5.2",                           ""),
     ("z-ai/glm-5.1",                           ""),
     # Xiaomi
     ("xiaomi/mimo-v2.5-pro",                   ""),
@@ -73,8 +76,10 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
+    ("poolside/laguna-m.1:free",               "free"),
     ("tencent/hy3-preview:free",               "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
@@ -105,14 +110,20 @@ def _codex_curated_models() -> list[str]:
 # (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
+    "grok-build-0.1",
     "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
     "grok-4.20-multi-agent-0309",
 ]
 
+# Callable via xAI OAuth but omitted from models.dev and /v1/models listings.
+_XAI_CURATED_EXTRAS: list[str] = [
+    "grok-composer-2.5-fast",
+]
 
-_XAI_TOP_MODEL = "grok-4.3"
+
+_XAI_TOP_MODEL = "grok-build-0.1"
 
 
 def _xai_promote_top(ids: list[str]) -> list[str]:
@@ -120,6 +131,18 @@ def _xai_promote_top(ids: list[str]) -> list[str]:
     if _XAI_TOP_MODEL in ids:
         return [_XAI_TOP_MODEL] + [m for m in ids if m != _XAI_TOP_MODEL]
     return ids
+
+
+def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
+    """Append Hermes-curated xAI models that are missing from models.dev."""
+    out = list(ids)
+    for extra in _XAI_CURATED_EXTRAS:
+        if extra in out:
+            continue
+        # Keep the headline model pinned; slot extras immediately after it.
+        insert_at = 1 if out and out[0] == _XAI_TOP_MODEL else len(out)
+        out.insert(insert_at, extra)
+    return out
 
 
 def _xai_curated_models() -> list[str]:
@@ -141,15 +164,16 @@ def _xai_curated_models() -> list[str]:
         if isinstance(models, dict) and models:
             ids = [mid for mid in models.keys() if isinstance(mid, str)]
             if ids:
-                return _xai_promote_top(sorted(ids))
+                return _xai_merge_curated_extras(_xai_promote_top(sorted(ids)))
     except Exception:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
         pass
-    return list(_XAI_STATIC_FALLBACK)
+    return _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
+    "moa": ["default"],
     "nous": [
         # Anthropic
         "anthropic/claude-opus-4.8",
@@ -174,9 +198,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2.7-code",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
+        "z-ai/glm-5.2",
         "z-ai/glm-5.1",
         # Xiaomi
         "xiaomi/mimo-v2.5-pro",
@@ -240,18 +266,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
-    "google-gemini-cli": [
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        # Code Assist serves two flash slugs with different access gates
-        # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
-        # that subscription/free-tier OAuth users actually reach, while
-        # gemini-3.5-flash is GA-channel-gated. Offer both so non-GA users
-        # aren't stuck with a slug cloudcode-pa 404s for them.
-        "gemini-3-flash-preview",
-        "gemini-3.5-flash",
-    ],
     "zai": [
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",
@@ -276,6 +292,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
@@ -322,6 +339,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-fable-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -363,9 +381,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "opencode-zen": [
         "kimi-k2.5",
+        "kimi-k2.6",
+        "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-5.4-pro",
         "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
         "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
         "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.1",
@@ -375,6 +399,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5",
         "gpt-5-codex",
         "gpt-5-nano",
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-opus-4-5",
         "claude-opus-4-1",
@@ -382,21 +409,25 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-5",
         "claude-sonnet-4",
         "claude-haiku-4-5",
-        "claude-3-5-haiku",
+        "gemini-3.5-flash",
         "gemini-3.1-pro",
-        "gemini-3-pro",
         "gemini-3-flash",
         "minimax-m2.7",
         "minimax-m2.5",
-        "minimax-m2.5-free",
-        "minimax-m2.1",
+        "minimax-m3-free",
+        "glm-5.1",
         "glm-5",
-        "glm-4.7",
-        "glm-4.6",
-        "kimi-k2-thinking",
-        "kimi-k2",
-        "qwen3-coder",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-free",
+        "qwen3.6-plus",
+        "qwen3.6-plus-free",
+        "qwen3.5-plus",
+        "grok-build-0.1",
         "big-pickle",
+        "mimo-v2.5-free",
+        "north-mini-code-free",
+        "nemotron-3-ultra-free",
     ],
     "opencode-go": [
         "kimi-k2.6",
@@ -764,6 +795,64 @@ _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 _nous_recommended_cache: dict[str, tuple[dict[str, Any], float]] = {}
 
 
+def _nous_recommended_disk_path() -> "Path":
+    """Disk path for the persisted recommended-models cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "nous_recommended_cache.json"
+
+
+def _read_nous_recommended_disk(base: str) -> dict[str, Any] | None:
+    """Return the last-known-good payload for ``base`` from disk, or None.
+
+    The disk file is a JSON object keyed by portal base URL so staging and
+    prod don't collide:
+    ``{"<base>": {"data": {...}, "ts": <epoch_seconds>}}``.
+    """
+    try:
+        with open(_nous_recommended_disk_path(), encoding="utf-8") as fh:
+            blob = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    entry = blob.get(base)
+    if not isinstance(entry, dict):
+        return None
+    data = entry.get("data")
+    return data if isinstance(data, dict) and data else None
+
+
+def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
+    """Persist ``data`` as the last-known-good payload for ``base``.
+
+    Merges into any existing per-base map, then writes atomically. Failures
+    are non-fatal (logged at debug) — the in-process cache still works.
+    """
+    if not data:
+        return
+    path = _nous_recommended_disk_path()
+    try:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+            if not isinstance(blob, dict):
+                blob = {}
+        except (OSError, json.JSONDecodeError):
+            blob = {}
+        blob[base] = {"data": data, "ts": time.time()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(blob, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        import logging
+        logging.getLogger(__name__).debug(
+            "nous recommended-models disk cache write failed: %s", exc
+        )
+
+
 def fetch_nous_recommended_models(
     portal_base_url: str = "",
     timeout: float = 5.0,
@@ -774,12 +863,19 @@ def fetch_nous_recommended_models(
 
     Hits ``<portal>/api/nous/recommended-models``. The endpoint is public —
     no auth is required. Results are cached per portal URL for
-    ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds; pass ``force_refresh=True`` to
-    bypass the cache.
+    ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds in process; pass
+    ``force_refresh=True`` to bypass the in-process cache.
 
-    Returns the parsed JSON dict on success, or ``{}`` on any failure
-    (network, parse, non-2xx). Callers must treat missing/null fields as
-    "no recommendation" and fall back to their own default.
+    A successful live fetch is also persisted to a per-base disk cache
+    (``$HERMES_HOME/cache/nous_recommended_cache.json``) as last-known-good.
+    When the live fetch fails (network, parse, non-2xx) and the in-process
+    cache is empty, the disk copy is returned instead of ``{}`` — so a
+    transient Portal hiccup no longer silently drops the free/paid model
+    recommendations from the picker. Self-heals on the next successful fetch.
+
+    Returns the parsed JSON dict, or ``{}`` only when neither the network nor
+    any cache layer can supply data. Callers must treat missing/null fields
+    as "no recommendation" and fall back to their own default.
     """
     base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
     now = time.monotonic()
@@ -801,6 +897,19 @@ def fetch_nous_recommended_models(
             data = {}
     except Exception:
         data = {}
+
+    if data:
+        # Live fetch succeeded — refresh both cache layers.
+        _nous_recommended_cache[base] = (data, now)
+        _write_nous_recommended_disk(base, data)
+        return data
+
+    # Live fetch failed. Fall back to the last-known-good disk copy so a
+    # transient Portal hiccup doesn't drop the recommendations entirely.
+    disk = _read_nous_recommended_disk(base)
+    if disk:
+        _nous_recommended_cache[base] = (disk, now)
+        return disk
 
     _nous_recommended_cache[base] = (data, now)
     return data
@@ -908,6 +1017,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
+    ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
@@ -922,7 +1032,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
-    ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
     ProviderEntry("deepseek",       "DeepSeek",                 "DeepSeek (V3, R1, coder, direct API)"),
     ProviderEntry("xai",            "xAI",                      "xAI Grok (Direct API)"),
     ProviderEntry("zai",            "Z.AI / GLM",               "Z.AI / GLM (Zhipu direct API)"),
@@ -993,7 +1102,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
     "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
-    "google":   ("Google Gemini",   "AI Studio API or OAuth + Code Assist",            ["gemini", "google-gemini-cli"]),
+    "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "Codex CLI or direct OpenAI API",                  ["openai-codex", "openai-api"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription",            ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
@@ -1114,8 +1223,6 @@ _PROVIDER_ALIASES = {
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
     "qwen-portal": "qwen-oauth",
-    "gemini-cli": "google-gemini-cli",
-    "gemini-oauth": "google-gemini-cli",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
@@ -1607,15 +1714,36 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
 
 def _get_custom_base_url() -> str:
     """Get the custom endpoint base_url from config.yaml."""
+    model_cfg = _get_model_config_dict()
+    return str(model_cfg.get("base_url", "")).strip()
+
+
+def _get_model_config_dict() -> dict[str, Any]:
+    """Return the main model config mapping, or an empty dict."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
-            return str(model_cfg.get("base_url", "")).strip()
+            return model_cfg
     except Exception:
         pass
-    return ""
+    return {}
+
+
+def _base_url_looks_like_anthropic_messages(base_url: str) -> bool:
+    normalized = str(base_url or "").strip().lower().rstrip("/")
+    if not normalized:
+        return False
+    path = urllib.parse.urlparse(normalized).path.rstrip("/")
+    return path.endswith("/anthropic") or path.endswith("/anthropic/v1")
+
+
+def _anthropic_models_url(base_url: Optional[str] = None) -> str:
+    endpoint = str(base_url or "https://api.anthropic.com").strip().rstrip("/")
+    if endpoint.endswith("/v1"):
+        return endpoint + "/models"
+    return endpoint + "/v1/models"
 
 
 def curated_models_for_provider(
@@ -1661,6 +1789,23 @@ _AGGREGATOR_PROVIDERS = frozenset(
     {"nous", "openrouter", "copilot", "kilocode"}
 )
 
+# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
+# would be listed here (tried only as a last resort for bare short-alias
+# resolution, after every native-vendor catalog, so they never hijack an alias
+# away from the model's native vendor). None are currently defined.
+_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
+
+# Providers whose live /v1/models endpoint is the authoritative catalog, so the
+# curated list is a discovery-only fallback. For these, the picker merges
+# live-first (live entries lead, curated-only entries append). Every OTHER
+# provider keeps curated-first (commit 658ac1d86, #46309) so a deliberately
+# surfaced newest model stays at the top even when the live API lags. OpenCode
+# Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
+# their stale curated entries must not pollute the top of the picker. (#49129)
+_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
+    {"opencode-zen", "opencode-go"}
+)
+
 
 def _resolve_static_model_alias(
     name_lower: str,
@@ -1698,12 +1843,23 @@ def _resolve_static_model_alias(
             return provider, matched
 
     for provider in _PROVIDER_MODELS:
-        if provider in current_keys or provider in _AGGREGATOR_PROVIDERS:
+        if (
+            provider in current_keys
+            or provider in _AGGREGATOR_PROVIDERS
+            or provider in _BORROWED_MODEL_PROVIDERS
+        ):
             continue
         if matched := _match(provider):
             return provider, matched
 
     for provider in _AGGREGATOR_PROVIDERS:
+        if provider in current_keys and (matched := _match(provider)):
+            return provider, matched
+
+    # Last resort: providers that re-expose other vendors' models. Only reached
+    # when no native-vendor catalog matched — so `sonnet` resolves to anthropic.
+    # None are currently defined (_BORROWED_MODEL_PROVIDERS is empty).
+    for provider in _BORROWED_MODEL_PROVIDERS:
         if provider in current_keys and (matched := _match(provider)):
             return provider, matched
 
@@ -1752,10 +1908,32 @@ def detect_static_provider_for_model(
         return None
 
     # --- Step 1: check static provider catalogs for a direct match ---
+    # If the current provider is a custom endpoint (custom or custom:*), never
+    # auto-switch away from it based on a static catalog match — the user
+    # explicitly configured their own endpoint and the same model name may be
+    # served there (#48305).
+    _is_custom_current = (
+        current_provider == "custom"
+        or current_provider.startswith("custom:")
+    )
     for pid, models in _PROVIDER_MODELS.items():
-        if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
+        if (
+            pid in current_keys
+            or pid in _AGGREGATOR_PROVIDERS
+            or pid in _BORROWED_MODEL_PROVIDERS
+        ):
+            continue
+        if _is_custom_current:
             continue
         if any(name_lower == m.lower() for m in models):
+            return (pid, name)
+
+    # Borrow-list providers (re-expose other vendors' models) only after every
+    # native-vendor catalog, and only when one is the current provider.
+    for pid in _BORROWED_MODEL_PROVIDERS:
+        if pid in current_keys:
+            continue
+        if any(name_lower == m.lower() for m in _PROVIDER_MODELS.get(pid, [])):
             return (pid, name)
 
     return None
@@ -2135,9 +2313,35 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
     if normalized == "anthropic":
-        live = _fetch_anthropic_models()
+        model_cfg = _get_model_config_dict()
+        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
+        if cfg_provider == "anthropic":
+            cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
+            cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
+        else:
+            cfg_base_url = ""
+            cfg_api_key = ""
+        live = _fetch_anthropic_models(
+            base_url=cfg_base_url or None,
+            api_key=cfg_api_key or None,
+        )
         if live:
-            return live
+            if cfg_base_url:
+                return live
+            # The live /v1/models dump lags newly-routed curated aliases
+            # (e.g. claude-fable-5, which is reachable on Anthropic before it
+            # is enumerated by the models endpoint). Surface curated entries
+            # first, then append any live-only models, so a fresh curated
+            # model never disappears just because the API hasn't listed it yet.
+            curated = list(_PROVIDER_MODELS.get("anthropic", []))
+            merged = list(curated)
+            merged_lower = {m.lower() for m in curated}
+            for m in live:
+                if m.lower() not in merged_lower:
+                    merged.append(m)
+                    merged_lower.add(m.lower())
+            return merged
+        return list(_PROVIDER_MODELS.get("anthropic", []))
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
@@ -2192,13 +2396,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
+            model_cfg = _get_model_config_dict()
             # Try common API key env vars for custom endpoints
             api_key = (
-                os.getenv("CUSTOM_API_KEY", "")
+                str(model_cfg.get("api_key", "") or "").strip()
+                or os.getenv("CUSTOM_API_KEY", "")
                 or os.getenv("OPENAI_API_KEY", "")
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
-            live = fetch_api_models(api_key, base_url)
+            api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
+            live = fetch_api_models(api_key, base_url, api_mode=api_mode)
             if live:
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that
@@ -2232,8 +2439,31 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key)
+                live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
                 if live:
+                    # Merge static curated list with live API results so
+                    # models that the live endpoint omits (stale cache,
+                    # partial rollout) still appear in the picker.
+                    #
+                    # Single providers (kimi, zai) use curated-first
+                    # (commit 658ac1d86) to surface newest models even when live
+                    # API lags (#46309). OpenCode Zen / Go are different: their
+                    # live API is the authoritative catalog, so they merge
+                    # live-first — live entries lead and stale curated entries
+                    # no longer pollute the top of the picker. (#49129)
+                    curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    if curated:
+                        if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+                            primary, secondary = live, curated
+                        else:
+                            primary, secondary = curated, live
+                        merged = list(primary)
+                        merged_lower = {m.lower() for m in primary}
+                        for m in secondary:
+                            if m.lower() not in merged_lower:
+                                merged.append(m)
+                                merged_lower.add(m.lower())
+                        return merged
                     return live
             # Use profile's fallback_models if defined
             if _p.fallback_models:
@@ -2447,18 +2677,24 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         pass
 
 
-def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
+def _fetch_anthropic_models(
+    timeout: float = 5.0,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[list[str]]:
     """Fetch available models from the Anthropic /v1/models endpoint.
 
     Uses resolve_anthropic_token() to find credentials (env vars or
-    Claude Code auto-discovery).  Returns sorted model IDs or None.
+    Claude Code auto-discovery) unless api_key is provided explicitly.
+    Returns sorted model IDs or None.
     """
     try:
         from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
     except ImportError:
         return None
 
-    token = resolve_anthropic_token()
+    token = (api_key or "").strip() or resolve_anthropic_token()
     if not token:
         return None
 
@@ -2473,7 +2709,7 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
 
     def _do_request(h: dict[str, str]):
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/models",
+            _anthropic_models_url(base_url),
             headers=h,
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -2666,13 +2902,19 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
 
 
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
-    """Strip ``/v1`` suffix from an LM Studio base URL to get the native API root.
+    """Return the LM Studio server root for native ``/api/v1`` endpoints.
 
+    Users commonly copy either the OpenAI-compatible runtime URL
+    (``.../v1``) or the native API prefix (``.../api`` / ``.../api/v1``).
+    Native probes append ``/api/v1/...`` themselves, so normalize all accepted
+    forms back to the bare server root to avoid ``/api/api/v1`` requests.
     Returns ``None`` when the base URL is empty/invalid.
     """
     root = (base_url or "").strip().rstrip("/")
-    if root.endswith("/v1"):
-        root = root[:-3].rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
     return root or None
 
 
@@ -3460,6 +3702,24 @@ def validate_requested_model(
             "message": "Model name cannot be empty.",
         }
 
+    if normalized == "moa":
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import normalize_moa_config
+
+            cfg = normalize_moa_config(load_config().get("moa") or {})
+            if requested in cfg["presets"]:
+                return {"accepted": True, "persist": True, "recognized": True, "message": None}
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"MoA preset `{requested}` was not found. Run `hermes moa list`.",
+            }
+        except Exception as exc:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"Could not read MoA presets: {exc}",
+            }
+
     if any(ch.isspace() for ch in requested):
         return {
             "accepted": False,
@@ -3600,6 +3860,37 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+            # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
+            # for entitlement-gated *hidden* slugs the curated listing hasn't
+            # caught up with — but those are always the provider's own family
+            # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an
+            # unrelated typed name (e.g. `qwen3.5-4b`, `llama-3.1-8b`) here turns
+            # what should be an actionable "did you mean --provider <x>?" error
+            # into a confusing success that 400s on the next turn. Only soft-
+            # accept names that share the provider's family prefix; reject the
+            # rest with guidance to pin the right provider.
+            _family_prefixes = {
+                "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
+                "xai-oauth": ("grok-",),
+            }.get(normalized, ())
+            _lower = requested_for_lookup.strip().lower()
+            _plausible = (not _family_prefixes) or any(
+                _lower.startswith(p) for p in _family_prefixes
+            )
+            if not _plausible:
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        f"`{requested}` doesn't look like a {provider_label} model "
+                        f"and isn't in its listing, so it was not accepted. If it "
+                        f"belongs to another configured provider, switch with "
+                        f"`--provider <slug>` (or select it from the `/model` "
+                        f"picker)."
+                        f"{suggestion_text}"
+                    ),
+                }
             return {
                 "accepted": True,
                 "persist": True,
@@ -3663,7 +3954,10 @@ def validate_requested_model(
     # tokens.  (The api_mode=="anthropic_messages" branch below handles the
     # Messages-API transport case separately.)
     if normalized == "anthropic":
-        anthropic_models = _fetch_anthropic_models()
+        anthropic_models = _fetch_anthropic_models(
+            base_url=base_url or None,
+            api_key=api_key or None,
+        )
         if anthropic_models is not None:
             if requested_for_lookup in set(anthropic_models):
                 return {
@@ -3779,6 +4073,24 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+
+            # Model not in live /v1/models — check the curated catalog
+            # before rejecting.  Providers may omit models from their live
+            # listing that are still valid (stale cache, partial rollout,
+            # gated previews).  Use the pure-catalog helper (no extra live
+            # fetch) so we only accept models Hermes actually ships.  (#46850)
+            if _model_in_provider_catalog(
+                requested_for_lookup.lower(), _provider_keys(normalized)
+            ):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": (
+                        f"Note: `{requested}` was not found in the live /v1/models listing "
+                        f"but exists in the curated catalog — accepted."
+                    ),
+                }
 
         return {
             "accepted": False,

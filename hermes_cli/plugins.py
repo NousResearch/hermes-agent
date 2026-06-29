@@ -2020,13 +2020,55 @@ def get_pre_tool_call_block_message(
     for result in hook_results:
         if not isinstance(result, dict):
             continue
-        if result.get("action") != "block":
-            continue
-        message = result.get("message")
-        if isinstance(message, str) and message:
-            return message
+        action = result.get("action")
+        if action == "block":
+            message = result.get("message")
+            if isinstance(message, str) and message:
+                return message
+        elif action == "mutate":
+            args_update = result.get("args")
+            if isinstance(args_update, dict):
+                _store_pre_tool_call_mutation(args_update)
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# pre_tool_call mutation support
+# ---------------------------------------------------------------------------
+
+import threading
+
+_pre_tool_call_mutation_storage = threading.local()
+
+
+def _store_pre_tool_call_mutation(args_update: Dict[str, Any]) -> None:
+    """Store a mutation request from a pre_tool_call hook."""
+    if not hasattr(_pre_tool_call_mutation_storage, "pending"):
+        _pre_tool_call_mutation_storage.pending = {}
+    _pre_tool_call_mutation_storage.pending.update(args_update)
+
+
+def get_pre_tool_call_mutation() -> Optional[Dict[str, Any]]:
+    """Retrieve any pending tool argument mutation from the current hook invocation.
+
+    Called by the tool executor after :func:`get_pre_tool_call_block_message`
+    to check if any plugin wants to modify the tool's arguments before
+    execution.  Mutations are single-use and cleared after retrieval.
+
+    Returns:
+        Dict of args to merge into the tool call, or None if no mutation.
+    """
+    return _consume_pre_tool_call_mutation()
+
+
+def _consume_pre_tool_call_mutation() -> Optional[Dict[str, Any]]:
+    """Consume and clear the pending mutation (single-use semantics)."""
+    if not hasattr(_pre_tool_call_mutation_storage, "pending"):
+        return None
+    pending = _pre_tool_call_mutation_storage.pending
+    _pre_tool_call_mutation_storage.pending = {}
+    return pending if pending else None
 
 
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:

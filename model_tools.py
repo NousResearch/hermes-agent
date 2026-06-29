@@ -1055,7 +1055,7 @@ def handle_function_call(
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
+                from hermes_cli.plugins import get_pre_tool_call_block_message, get_pre_tool_call_mutation
                 block_message = get_pre_tool_call_block_message(
                     function_name,
                     function_args,
@@ -1066,6 +1066,9 @@ def handle_function_call(
                     api_request_id=api_request_id or "",
                     middleware_trace=list(_tool_middleware_trace),
                 )
+                _mutation = get_pre_tool_call_mutation()
+                if _mutation and isinstance(function_args, dict):
+                    function_args.update(_mutation)
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 

@@ -393,7 +393,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             )
         else:
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
+                from hermes_cli.plugins import get_pre_tool_call_block_message, get_pre_tool_call_mutation
                 block_message = get_pre_tool_call_block_message(
                     function_name,
                     function_args,
@@ -404,6 +404,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     middleware_trace=list(middleware_trace),
                 )
+                _mutation = get_pre_tool_call_mutation()
+                if _mutation and isinstance(function_args, dict):
+                    function_args.update(_mutation)
             except Exception:
                 block_message = None
 
@@ -926,7 +929,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _block_error_type = "tool_scope_block"
         else:
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
+                from hermes_cli.plugins import get_pre_tool_call_block_message, get_pre_tool_call_mutation
                 _block_msg = get_pre_tool_call_block_message(
                     function_name,
                     function_args,
@@ -937,6 +940,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     middleware_trace=list(middleware_trace),
                 )
+                _mutation = get_pre_tool_call_mutation()
+                if _mutation and isinstance(function_args, dict):
+                    function_args.update(_mutation)
             except Exception:
                 pass
 

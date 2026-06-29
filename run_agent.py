@@ -31,6 +31,7 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+import argparse
 import asyncio
 import base64
 import copy
@@ -5431,6 +5432,96 @@ class AIAgent:
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
+
+def _build_legacy_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="hermes-agent",
+        description=(
+            "Legacy Hermes Agent runner. For the primary CLI, use the "
+            "`hermes` command."
+        ),
+        add_help=False,
+    )
+    parser.add_argument(
+        "prompt",
+        nargs="*",
+        help="Natural language query to run. Prefer --query for scripted use.",
+    )
+    parser.add_argument("-h", "--help", action="store_true", dest="show_help")
+    parser.add_argument("--version", "-V", action="store_true")
+    parser.add_argument("--query", "-q")
+    parser.add_argument("--model", default="")
+    parser.add_argument("--api-key", "--api_key", dest="api_key")
+    parser.add_argument("--base-url", "--base_url", dest="base_url", default="")
+    parser.add_argument("--max-turns", "--max_turns", dest="max_turns", type=int, default=10)
+    parser.add_argument("--enabled-toolsets", "--enabled_toolsets", dest="enabled_toolsets")
+    parser.add_argument("--disabled-toolsets", "--disabled_toolsets", dest="disabled_toolsets")
+    parser.add_argument("--list-tools", "--list_tools", dest="list_tools", action="store_true")
+    parser.add_argument(
+        "--save-trajectories",
+        "--save_trajectories",
+        dest="save_trajectories",
+        action="store_true",
+    )
+    parser.add_argument("--save-sample", "--save_sample", dest="save_sample", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--log-prefix-chars",
+        "--log_prefix_chars",
+        dest="log_prefix_chars",
+        type=int,
+        default=20,
+    )
+    return parser
+
+
+def legacy_cli_main(argv: Optional[List[str]] = None) -> int:
+    """Console-script wrapper for the legacy ``hermes-agent`` entry point.
+
+    The packaged console script calls the target function with no arguments.
+    Pointing it at ``main`` therefore used to start a live model request before
+    flags like ``--version`` or ``--help`` could be parsed.
+    """
+    parser = _build_legacy_cli_parser()
+    args = parser.parse_args(argv)
+
+    if args.version:
+        from hermes_cli import __release_date__, __version__
+
+        print(f"Hermes Agent v{__version__} ({__release_date__})")
+        return 0
+
+    if args.show_help:
+        parser.print_help()
+        return 0
+
+    positional_query = " ".join(args.prompt).strip() if args.prompt else None
+    if args.query and positional_query:
+        parser.error("pass the query either positionally or via --query, not both")
+
+    query = args.query or positional_query
+    if not query and not args.list_tools:
+        parser.print_help()
+        print("\nNo query provided; pass --query to run the legacy agent entry point.")
+        return 0
+
+    main(
+        query=query,
+        model=args.model,
+        api_key=args.api_key,
+        base_url=args.base_url,
+        max_turns=args.max_turns,
+        enabled_toolsets=args.enabled_toolsets,
+        disabled_toolsets=args.disabled_toolsets,
+        list_tools=args.list_tools,
+        save_trajectories=args.save_trajectories,
+        save_sample=args.save_sample,
+        verbose=args.verbose,
+        log_prefix_chars=args.log_prefix_chars,
+    )
+    return 0
+
+
 def main(
     query: str = None,
     model: str = "",
@@ -5646,5 +5737,4 @@ def main(
 
 
 if __name__ == "__main__":
-    import fire
-    fire.Fire(main)
+    raise SystemExit(legacy_cli_main())

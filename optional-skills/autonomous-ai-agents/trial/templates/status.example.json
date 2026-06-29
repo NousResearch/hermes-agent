@@ -1,0 +1,35 @@
+{
+  "task": "Build a CSV-to-JSON CLI with tests",
+  "mode": "standard",
+  "lang": "ar",
+  "creator": "Da7_Tech",
+  "current_gate": 6,
+  "round": 1,
+  "verdict": "in-progress",
+  "gates": [
+    {"n": 1, "state": "done", "artifact": "mission-brief.md"},
+    {"n": 2, "state": "done", "artifact": "research/"},
+    {"n": 3, "state": "done", "artifact": "decision-brief.md"},
+    {"n": 4, "state": "done", "artifact": "council/"},
+    {"n": 5, "state": "done", "artifact": "build/"},
+    {"n": 6, "state": "active", "artifact": "judging/"},
+    {"n": 7, "state": "pending"},
+    {"n": 8, "state": "pending"}
+  ],
+  "judges": [
+    {"name": "قاضي المتطلبات", "lens": "requirements", "state": "pass", "note": "٣/٣ معايير"},
+    {"name": "قاضي التشغيل", "lens": "execution", "state": "think", "note": "يشغّل الاختبارات"},
+    {"name": "قاضي الخصومة", "lens": "adversarial", "state": "idle", "note": "بانتظار"}
+  ],
+  "builders": [
+    {"name": "وكيل البنية", "pct": 100, "state": "done"},
+    {"name": "وكيل المنطق", "pct": 100, "state": "done"},
+    {"name": "وكيل الاختبارات", "pct": 60, "state": "active"}
+  ],
+  "ledger": [
+    {"text": "بطاقة المهمة محدّدة", "tag": "محدّدة", "tone": "ok", "time": "00:04"},
+    {"text": "بحث ثلاثي مكتمل (٣ عدسات)", "tag": "بحث", "tone": "info", "time": "00:12"},
+    {"text": "المجلس: قبول مشروط", "tag": "مشروط", "tone": "warn", "time": "00:19"},
+    {"text": "فريق التنفيذ أنجز", "tag": "أُنجز", "tone": "ok", "time": "00:31"}
+  ]
+}

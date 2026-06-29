@@ -78,17 +78,19 @@ def _load_yaml_mapping(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def write_managed_model_gateway_config(
+def write_managed_gateway_config(
     config: ManagedRuntimeConfig | None = None,
     *,
     env: Mapping[str, str] | None = None,
 ) -> Path | None:
     """Render managed runtime config without persisting raw provider keys.
 
-    Managed containers see exactly one model provider: the KarinAI model gateway.
-    The gateway itself lives outside the user container and owns real provider
-    credentials. The container stores only a key_env reference to the scoped
-    runtime token that runtime-manager injected for this warm container.
+    Managed containers see exactly one model provider: the KarinAI model gateway,
+    and exactly one image-generation backend when image generation is configured:
+    the KarinAI image gateway. Both gateways live outside the user container and
+    own real provider credentials. The container stores only backend/plugin
+    selection plus ``key_env`` references to the scoped runtime token that
+    runtime-manager injected for this warm container.
 
     Managed API-server runs have no interactive user approval channel today.
     Leaving upstream approvals.mode at its default manual value can therefore
@@ -113,28 +115,29 @@ def write_managed_model_gateway_config(
 
     if cfg.model_gateway_url:
         base_url = _normalize_model_gateway_base_url(cfg.model_gateway_url)
-        model_cfg = data.get("model") if isinstance(data.get("model"), dict) else {}
-        model_cfg = dict(model_cfg or {})
-        model_cfg.update(
-            {
-                "default": cfg.model_gateway_model,
-                "provider": "custom:karinai-model-gateway",
-                "base_url": base_url,
-                "api_mode": cfg.model_gateway_api_mode,
-            }
-        )
-        data["model"] = model_cfg
-
-        providers = data.get("providers") if isinstance(data.get("providers"), dict) else {}
-        providers = dict(providers or {})
-        providers["karinai-model-gateway"] = {
-            "name": "KarinAI model gateway",
-            "api": base_url,
-            "key_env": "KARINAI_RUNTIME_TOKEN",
-            "default_model": cfg.model_gateway_model,
-            "transport": cfg.model_gateway_api_mode,
+        data["model"] = {
+            "default": cfg.model_gateway_model,
+            "provider": "custom:karinai-model-gateway",
+            "base_url": base_url,
+            "api_mode": cfg.model_gateway_api_mode,
         }
-        data["providers"] = providers
+        data["providers"] = {
+            "karinai-model-gateway": {
+                "name": "KarinAI model gateway",
+                "api": base_url,
+                "key_env": "KARINAI_RUNTIME_TOKEN",
+                "default_model": cfg.model_gateway_model,
+                "transport": cfg.model_gateway_api_mode,
+            }
+        }
+
+    if cfg.image_gateway_url:
+        image_cfg = {"provider": "karinai-image-gateway"}
+        if cfg.image_gateway_model:
+            image_cfg["model"] = cfg.image_gateway_model
+        data["image_gen"] = image_cfg
+    else:
+        data.pop("image_gen", None)
 
     if config_path.exists() and data == original_data:
         return config_path
@@ -142,6 +145,15 @@ def write_managed_model_gateway_config(
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return config_path
+
+
+def write_managed_model_gateway_config(
+    config: ManagedRuntimeConfig | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Backward-compatible alias for the broader managed gateway renderer."""
+    return write_managed_gateway_config(config, env=env)
 
 
 def apply_managed_startup_env(

@@ -366,7 +366,7 @@ if [ -f "$HERMES_HOME/config.yaml" ]; then
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
 
-if [ "$KARINAI_DOCKER_MANAGED_RUNTIME" = true ] && [ -n "${KARINAI_MODEL_GATEWAY_URL:-}" ]; then
+if [ "$KARINAI_DOCKER_MANAGED_RUNTIME" = true ]; then
     "$INSTALL_DIR/.venv/bin/python" - <<'PY'
 from karinai.runtime.managed import write_managed_model_gateway_config
 write_managed_model_gateway_config()

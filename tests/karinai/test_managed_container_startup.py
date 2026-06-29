@@ -52,6 +52,7 @@ def test_stage2_applies_managed_paths_before_bootstrapping_hermes_home() -> None
     assert "KARINAI_DOCKER_MANAGED_RUNTIME" in text
     assert 'mkdir -p "$KARINAI_WORKSPACE_DIR"' in text
     assert "write_managed_model_gateway_config" in text
+    assert 'if [ "$KARINAI_DOCKER_MANAGED_RUNTIME" = true ]; then' in text
     assert text.index("docker_config_migrate.py") < text.index("write_managed_model_gateway_config")
 
 

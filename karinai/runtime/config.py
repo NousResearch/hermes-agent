@@ -76,6 +76,9 @@ class ManagedRuntimeConfig:
     model_gateway_model: str = "karinai/default"
     model_gateway_api_mode: str = "chat_completions"
     model_gateway_backend_provider: str = ""
+    image_gateway_url: str = ""
+    image_gateway_provider: str = ""
+    image_gateway_model: str = ""
     tool_gateway_url: str = ""
     runtime_token: str = field(default="", repr=False)
     enabled_toolsets: tuple[str, ...] = BETA_ENABLED_TOOLSETS
@@ -126,6 +129,9 @@ class ManagedRuntimeConfig:
             model_gateway_backend_provider=_clean(
                 source.get("KARINAI_MODEL_GATEWAY_BACKEND_PROVIDER")
             ),
+            image_gateway_url=_clean(source.get("KARINAI_IMAGE_GATEWAY_URL")),
+            image_gateway_provider=_clean(source.get("KARINAI_IMAGE_GATEWAY_PROVIDER")),
+            image_gateway_model=_clean(source.get("KARINAI_IMAGE_GATEWAY_MODEL")),
             tool_gateway_url=_clean(source.get("KARINAI_TOOL_GATEWAY_URL")),
             runtime_token=_clean(source.get("KARINAI_RUNTIME_TOKEN")),
             enabled_toolsets=parse_csv(source.get("KARINAI_ENABLED_TOOLSETS"))
@@ -176,6 +182,20 @@ class ManagedRuntimeConfig:
                 errors.append(
                     "KARINAI_MODEL_GATEWAY_API_MODE must be chat_completions or codex_responses"
                 )
+        image_gateway_hints = [
+            self.image_gateway_url,
+            self.image_gateway_provider,
+            self.image_gateway_model,
+        ]
+        if any(image_gateway_hints) and not self.image_gateway_url:
+            errors.append(
+                "KARINAI_IMAGE_GATEWAY_URL is required when image gateway provider/model hints are set"
+            )
+        if self.image_gateway_url:
+            parsed = urlparse(self.image_gateway_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                errors.append("KARINAI_IMAGE_GATEWAY_URL must be an absolute HTTP(S) URL")
+            _require_non_empty("KARINAI_RUNTIME_TOKEN", self.runtime_token, errors)
         try:
             validate_beta_tool_policy(self.enabled_toolsets, self.disabled_toolsets)
         except ValueError as exc:
@@ -208,6 +228,8 @@ class ManagedRuntimeConfig:
             "model_gateway_configured": "true" if self.model_gateway_url else "false",
             "model_gateway_model": self.model_gateway_model,
             "model_gateway_api_mode": self.model_gateway_api_mode,
+            "image_gateway_configured": "true" if self.image_gateway_url else "false",
+            "image_gateway_model": self.image_gateway_model,
             "tool_gateway_configured": "true" if self.tool_gateway_url else "false",
         }
 

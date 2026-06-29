@@ -339,6 +339,7 @@ plugins = [
   # plugin's Python code but none of its manifests — the scan finds zero
   # plugins and all gateway platforms fail with "No adapter available for
   # <platform>" (#34034), web-search providers go missing (#28149), etc.
+  "**/*.py",
   "**/plugin.yaml",
   "**/plugin.yml",
   "**/README.md",

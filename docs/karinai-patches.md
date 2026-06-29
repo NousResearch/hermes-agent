@@ -34,6 +34,7 @@ Initial fork setup and managed-runtime scaffolding:
 - Added `karinai/docker/managed-env.sh` for Docker/s6 managed-mode env mapping.
 - Added `tests/karinai/test_managed_runtime.py`.
 - Added `tests/karinai/test_managed_container_startup.py`.
+- Added `plugins/image_gen/karinai-image-gateway/` for managed image-generation gateway calls.
 
 ## Core upstream file patches
 
@@ -59,6 +60,17 @@ Behavior:
 
 - In managed mode, use `karinai.runtime.managed_agent_toolsets()` for `AIAgent.enabled_toolsets` and `AIAgent.disabled_toolsets`.
 - Outside managed mode, keep the existing `platform_toolsets.api_server`/`hermes-api-server` resolution.
+
+### `tools/image_generation_tool.py`
+
+Status: temporary/product-specific bridge until upstream has a generic managed media-gateway hook.
+
+Reason: KarinAI managed containers must route `image_generate` through the trusted backend image gateway when runtime-manager provides `KARINAI_IMAGE_GATEWAY_URL`, even if a persisted upstream `image_gen.provider` value is stale. Raw image-provider credentials must stay outside the user container.
+
+Behavior:
+
+- In managed mode with `KARINAI_IMAGE_GATEWAY_URL`, force the effective image provider to `karinai-image-gateway`; if the URL is absent, fail image generation closed instead of honoring stale upstream `image_gen` config.
+- Outside managed mode, keep normal upstream image-generation provider selection.
 
 ### `agent/chat_completion_helpers.py`
 

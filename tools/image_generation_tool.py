@@ -1093,14 +1093,30 @@ def check_image_generation_requirements() -> bool:
 
     Providers are considered in this order:
 
-    1. The in-tree FAL backend (FAL_KEY or managed gateway).
-    2. Any plugin-registered provider whose ``is_available()`` returns True.
+    1. In KarinAI managed runtime, the trusted image gateway only. If
+       ``KARINAI_IMAGE_GATEWAY_URL`` is absent or its scoped runtime token is
+       missing, image generation is unavailable and stale upstream config is not
+       honored.
+    2. Outside managed runtime, the in-tree FAL backend (FAL_KEY or managed
+       gateway).
+    3. Outside managed runtime, any plugin-registered provider whose
+       ``is_available()`` returns True.
 
     Plugins win only when the in-tree FAL path is NOT ready, which matches
     the historical behavior: shipping hermes with a FAL key configured
     should still expose the tool. The active selection among ready
     providers is resolved per-call by ``image_gen.provider``.
     """
+    if _is_karinai_managed_runtime():
+        if _managed_karinai_image_gateway_provider() != "karinai-image-gateway":
+            return False
+        try:
+            from karinai.runtime.image_gateway_provider import KarinAIImageGatewayProvider
+
+            return KarinAIImageGatewayProvider().is_available()
+        except Exception:
+            return False
+
     try:
         if check_fal_api_key():
             # Trigger the lazy fal_client import here as the SDK presence
@@ -1276,6 +1292,42 @@ def _read_configured_image_provider():
     return None
 
 
+def _is_karinai_managed_runtime():
+    try:
+        from karinai.runtime.managed import is_managed_runtime
+
+        return is_managed_runtime()
+    except Exception:
+        return False
+
+
+def _managed_karinai_image_gateway_provider():
+    """Return the managed image-gateway provider name when runtime-manager configured it.
+
+    Managed containers must route image generation through KarinAI's trusted
+    image gateway, even if a persisted upstream ``image_gen.provider`` value is
+    stale. Outside managed mode this returns None and normal Hermes image-gen
+    provider selection is unchanged.
+    """
+    if not _is_karinai_managed_runtime():
+        return None
+    if os.getenv("KARINAI_IMAGE_GATEWAY_URL", "").strip():
+        return "karinai-image-gateway"
+    return None
+
+
+def _managed_karinai_image_generation_disabled():
+    return _is_karinai_managed_runtime() and not os.getenv(
+        "KARINAI_IMAGE_GATEWAY_URL", ""
+    ).strip()
+
+
+def _effective_configured_image_provider():
+    if _managed_karinai_image_generation_disabled():
+        return None
+    return _managed_karinai_image_gateway_provider() or _read_configured_image_provider()
+
+
 def _dispatch_to_plugin_provider(
     prompt: str,
     aspect_ratio: str,
@@ -1287,8 +1339,9 @@ def _dispatch_to_plugin_provider(
     Returns a JSON string on dispatch, or ``None`` to fall through to the
     in-tree FAL fallback in ``image_generate_tool``.
 
-    Dispatch fires when ``image_gen.provider`` is explicitly set — including
-    ``"fal"`` itself, which now resolves to the
+    Dispatch fires when ``image_gen.provider`` is explicitly set, or when a
+    KarinAI managed runtime has ``KARINAI_IMAGE_GATEWAY_URL`` configured. This
+    includes ``"fal"`` itself, which now resolves to the
     ``plugins/image_gen/fal/`` plugin (the plugin re-enters this module's
     pipeline via ``_it`` indirection so behavior is identical to the
     direct call, just routed through the registry).
@@ -1297,34 +1350,55 @@ def _dispatch_to_plugin_provider(
     they are forwarded to the provider's ``generate()`` so the backend can
     route to its edit endpoint.
     """
-    configured = _read_configured_image_provider()
+    configured = _effective_configured_image_provider()
     if not configured:
         return None
 
-    # Also read configured model so we can pass it to the plugin
+    # Also read configured model so we can pass it to the plugin. Managed
+    # KarinAI image-gateway env wins over stale persisted image_gen.model.
     configured_model = _read_configured_image_model()
-
-    try:
-        # Import locally so plugin discovery isn't triggered just by
-        # importing this module (tests rely on that).
-        from agent.image_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        provider = get_provider(configured)
-    except Exception as exc:
-        logger.debug("image_gen plugin dispatch skipped: %s", exc)
-        return None
-
-    if provider is None:
+    managed_image_gateway = (
+        configured == "karinai-image-gateway"
+        and _managed_karinai_image_gateway_provider() == "karinai-image-gateway"
+    )
+    if managed_image_gateway:
+        configured_model = (
+            os.getenv("KARINAI_IMAGE_GATEWAY_MODEL", "").strip() or None
+        )
         try:
-            # Long-lived sessions may have discovered plugins before a bundled
-            # backend was patched in or before config changed. Retry once with
-            # a forced refresh before surfacing a missing-provider error.
-            _ensure_plugins_discovered(force=True)
+            from karinai.runtime.image_gateway_provider import KarinAIImageGatewayProvider
+
+            provider = KarinAIImageGatewayProvider()
+        except Exception as exc:
+            logger.warning("KarinAI managed image gateway provider unavailable: %s", exc)
+            return json.dumps({
+                "success": False,
+                "image": None,
+                "error": "KarinAI image gateway provider is unavailable in managed runtime",
+                "error_type": "provider_not_available",
+            })
+    else:
+        try:
+            # Import locally so plugin discovery isn't triggered just by
+            # importing this module (tests rely on that).
+            from agent.image_gen_registry import get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
             provider = get_provider(configured)
         except Exception as exc:
-            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+            logger.debug("image_gen plugin dispatch skipped: %s", exc)
+            return None
+
+        if provider is None:
+            try:
+                # Long-lived sessions may have discovered plugins before a bundled
+                # backend was patched in or before config changed. Retry once with
+                # a forced refresh before surfacing a missing-provider error.
+                _ensure_plugins_discovered(force=True)
+                provider = get_provider(configured)
+            except Exception as exc:
+                logger.debug("image_gen plugin force-refresh skipped: %s", exc)
 
     if provider is None:
         return json.dumps({
@@ -1415,6 +1489,14 @@ def _handle_image_generate(args, **kw):
     reference_image_urls = args.get("reference_image_urls")
     task_id = kw.get("task_id")
 
+    if _managed_karinai_image_generation_disabled():
+        return tool_error(
+            "KarinAI managed image generation is unavailable because KARINAI_IMAGE_GATEWAY_URL is not configured",
+            success=False,
+            image=None,
+            error_type="image_gateway_not_configured",
+        )
+
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
     dispatched = _dispatch_to_plugin_provider(
@@ -1461,14 +1543,22 @@ def _active_image_capabilities() -> Dict[str, Any]:
     """
     info: Dict[str, Any] = {"modalities": ["text"], "max_reference_images": 0}
 
-    configured_provider = _read_configured_image_provider()
+    configured_provider = _effective_configured_image_provider()
     if configured_provider and configured_provider != "fal":
         try:
-            from agent.image_gen_registry import get_provider
-            from hermes_cli.plugins import _ensure_plugins_discovered
+            if (
+                configured_provider == "karinai-image-gateway"
+                and _managed_karinai_image_gateway_provider() == "karinai-image-gateway"
+            ):
+                from karinai.runtime.image_gateway_provider import KarinAIImageGatewayProvider
 
-            _ensure_plugins_discovered()
-            provider = get_provider(configured_provider)
+                provider = KarinAIImageGatewayProvider()
+            else:
+                from agent.image_gen_registry import get_provider
+                from hermes_cli.plugins import _ensure_plugins_discovered
+
+                _ensure_plugins_discovered()
+                provider = get_provider(configured_provider)
             if provider is not None:
                 caps = {}
                 try:
@@ -1476,7 +1566,15 @@ def _active_image_capabilities() -> Dict[str, Any]:
                 except Exception:  # noqa: BLE001
                     caps = {}
                 info["provider"] = provider.display_name
-                info["model"] = _read_configured_image_model() or (provider.default_model() or "")
+                if configured_provider == "karinai-image-gateway":
+                    info["model"] = (
+                        os.getenv("KARINAI_IMAGE_GATEWAY_MODEL", "").strip()
+                        or (provider.default_model() or "")
+                    )
+                else:
+                    info["model"] = _read_configured_image_model() or (
+                        provider.default_model() or ""
+                    )
                 if caps.get("modalities"):
                     info["modalities"] = list(caps["modalities"])
                 if caps.get("max_reference_images"):

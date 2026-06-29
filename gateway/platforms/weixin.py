@@ -94,6 +94,8 @@ BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
+ILINK_JSON_BODY_MAX_BYTES = 1 * 1024 * 1024
+ILINK_ERROR_BODY_MAX_BYTES = 8 * 1024
 
 
 def _is_stale_session_ret(
@@ -169,6 +171,46 @@ def _safe_id(value: Optional[str], keep: int = 8) -> str:
 
 def _json_dumps(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+async def _read_response_text_limited(
+    response: Any,
+    *,
+    max_bytes: int,
+    label: str,
+) -> str:
+    content = getattr(response, "content", None)
+    raw: bytes
+    if content is not None and hasattr(content, "iter_chunked"):
+        chunks: List[bytes] = []
+        total = 0
+        async for chunk in content.iter_chunked(64 * 1024):
+            if not chunk:
+                continue
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+            total += len(chunk)
+            if total > max_bytes:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
+                raise RuntimeError(f"{label} exceeded {max_bytes} bytes")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+    else:
+        read = getattr(response, "read", None)
+        if callable(read):
+            data = await read()
+        else:
+            data = await response.text()
+        if isinstance(data, str):
+            raw = data.encode("utf-8")
+        else:
+            raw = bytes(data or b"")
+        if len(raw) > max_bytes:
+            raise RuntimeError(f"{label} exceeded {max_bytes} bytes")
+    charset = getattr(response, "charset", None) or "utf-8"
+    return raw.decode(charset, errors="replace")
 
 
 def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
@@ -383,9 +425,18 @@ async def _api_post(
     # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
     async def _do() -> Dict[str, Any]:
         async with session.post(url, data=body, headers=_headers(token, body)) as response:
-            raw = await response.text()
             if not response.ok:
+                raw = await _read_response_text_limited(
+                    response,
+                    max_bytes=ILINK_ERROR_BODY_MAX_BYTES,
+                    label=f"iLink POST {endpoint} error response",
+                )
                 raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
+            raw = await _read_response_text_limited(
+                response,
+                max_bytes=ILINK_JSON_BODY_MAX_BYTES,
+                label=f"iLink POST {endpoint} response",
+            )
             return json.loads(raw)
     return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
@@ -407,9 +458,18 @@ async def _api_get(
     # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
     async def _do() -> Dict[str, Any]:
         async with session.get(url, headers=headers) as response:
-            raw = await response.text()
             if not response.ok:
+                raw = await _read_response_text_limited(
+                    response,
+                    max_bytes=ILINK_ERROR_BODY_MAX_BYTES,
+                    label=f"iLink GET {endpoint} error response",
+                )
                 raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
+            raw = await _read_response_text_limited(
+                response,
+                max_bytes=ILINK_JSON_BODY_MAX_BYTES,
+                label=f"iLink GET {endpoint} response",
+            )
             return json.loads(raw)
     return await asyncio.wait_for(_do(), timeout=timeout_ms / 1000)
 
@@ -567,11 +627,21 @@ async def _upload_ciphertext(
             if response.status == 200:
                 encrypted_param = response.headers.get("x-encrypted-param")
                 if encrypted_param:
-                    await response.read()
+                    release = getattr(response, "release", None)
+                    if callable(release):
+                        release()
                     return encrypted_param
-                raw = await response.text()
+                raw = await _read_response_text_limited(
+                    response,
+                    max_bytes=ILINK_ERROR_BODY_MAX_BYTES,
+                    label="CDN upload response",
+                )
                 raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-            raw = await response.text()
+            raw = await _read_response_text_limited(
+                response,
+                max_bytes=ILINK_ERROR_BODY_MAX_BYTES,
+                label="CDN upload error response",
+            )
             raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
     return await asyncio.wait_for(_do_upload(), timeout=120)
 

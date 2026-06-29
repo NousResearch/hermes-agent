@@ -404,3 +404,41 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+class TestActiveFeaturesSignatureGating:
+    """active_features() keys on the signature (first) spec only.
+
+    Regression for the false-positive that made ``hermes update`` try to
+    refresh ``platform.matrix`` — and fail building ``mautrix[encryption]``
+    → ``python-olm`` — on any host that merely had a shared transitive dep
+    like ``asyncpg`` installed for an unrelated reason.
+    """
+
+    def test_shared_dep_present_does_not_flag_feature(self, monkeypatch):
+        # Signature package absent, only a trailing shared lib present.
+        monkeypatch.setattr(ld, "LAZY_DEPS", {
+            "platform.faux": ("signature-pkg==1.0", "asyncpg==0.31.0"),
+        })
+        present = {"asyncpg"}
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) in present,
+        )
+        assert ld.active_features() == []
+
+    def test_signature_present_flags_feature(self, monkeypatch):
+        monkeypatch.setattr(ld, "LAZY_DEPS", {
+            "platform.faux": ("signature-pkg==1.0", "asyncpg==0.31.0"),
+        })
+        present = {"signature-pkg"}
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) in present,
+        )
+        assert ld.active_features() == ["platform.faux"]
+
+    def test_empty_specs_never_flagged(self, monkeypatch):
+        monkeypatch.setattr(ld, "LAZY_DEPS", {"weird.empty": ()})
+        monkeypatch.setattr(ld, "_is_present", lambda spec: True)
+        assert ld.active_features() == []

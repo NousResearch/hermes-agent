@@ -52,6 +52,7 @@ _DPASTE_COM_URL = "https://dpaste.com/api/"
 # Maximum bytes to read from a single log file for upload.
 # paste.rs caps at ~1 MB; we stay under that with headroom.
 _MAX_LOG_BYTES = 512_000
+_PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES = 16 * 1024
 
 # Auto-delete pastes after this many seconds (6 hours).
 _AUTO_DELETE_SECONDS = 21600
@@ -272,10 +273,20 @@ def _upload_paste_rs(content: str) -> str:
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        url = resp.read().decode("utf-8").strip()
+        url = _read_paste_upload_url(resp, "paste.rs")
     if not url.startswith("http"):
         raise ValueError(f"Unexpected response from paste.rs: {url[:200]}")
     return url
+
+
+def _read_paste_upload_url(resp, service: str) -> str:
+    raw = resp.read(_PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            f"{service} response exceeded "
+            f"{_PASTE_UPLOAD_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return raw.decode("utf-8").strip()
 
 
 def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
@@ -308,7 +319,7 @@ def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
-        url = resp.read().decode("utf-8").strip()
+        url = _read_paste_upload_url(resp, "dpaste.com")
     if not url.startswith("http"):
         raise ValueError(f"Unexpected response from dpaste.com: {url[:200]}")
     return url

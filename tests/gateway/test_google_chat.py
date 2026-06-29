@@ -2501,6 +2501,24 @@ class TestFormatMessage:
         out = GoogleChatAdapter.format_message("rate is ** TBD")
         assert "**" in out  # not converted
 
+    def test_inline_code_inside_header_is_restored(self):
+        """Inline code nested inside a header must not leak NUL sentinels.
+
+        The header placeholder is created AFTER the inline-code placeholder,
+        so its stored value contains the inner code key. Restoring in forward
+        (insertion) order re-injected that inner sentinel after its key had
+        already been passed, shipping a raw \\x00GC0\\x00 control sequence.
+        """
+        out = GoogleChatAdapter.format_message("## Run `npm test` now")
+        assert out == "*Run `npm test` now*"
+        assert "\x00" not in out
+
+    def test_inline_code_inside_bold_is_restored(self):
+        """Inline code nested inside a bold span must round-trip cleanly."""
+        out = GoogleChatAdapter.format_message("**use `git` here**")
+        assert "\x00" not in out
+        assert "`git`" in out
+
 
 class TestADCFallback:
     """When no SA JSON is configured, fall back to Application Default Credentials.

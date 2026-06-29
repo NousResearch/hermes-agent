@@ -2091,9 +2091,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Collapse double spaces left over from stripped chars.
         text = re.sub(r"  +", " ", text)
 
-        # Restore protected regions.
-        for key, value in placeholders.items():
-            text = text.replace(key, value)
+        # Restore protected regions in reverse (outer-first) insertion order.
+        # Placeholders are created inner-first (e.g. inline code before the
+        # header that wraps it), so an outer placeholder's stored value can
+        # contain an earlier (inner) placeholder key. Restoring forward would
+        # re-inject that inner sentinel only after its key had already been
+        # passed, leaving a raw \x00GC{n}\x00 control sequence in the output.
+        # Reverse order injects the outer value first so the inner key still
+        # has a later pass to resolve. Mirrors the Slack adapter's restore loop.
+        for key in reversed(placeholders):
+            text = text.replace(key, placeholders[key])
 
         return text
 

@@ -64,6 +64,32 @@ describe('formatToolResultSummary', () => {
     expect(summary).toContain('- Title: Build report')
     expect(summary).toContain('- Completed: true')
   })
+
+  it('does not count empty fields as hidden "more fields"', () => {
+    // `tags: []` and `note: ''` render nothing (formatFieldValue returns
+    // empty for empty arrays / empty strings), so they are not fields the
+    // user is "missing" — only the cap-truncated remainder should be
+    // reported. Before the fix this emitted "- … 2 more fields".
+    const summary = formatToolResultSummary({ name: 'x', tags: [], note: '' })
+
+    expect(summary).toBe('- Name: x')
+    expect(summary).not.toContain('more fields')
+  })
+
+  it('still reports genuinely cap-truncated fields as "N more fields"', () => {
+    // 10 content-bearing keys with an 8-field cap → 2 truly hidden fields.
+    // This guards against over-correcting the empty-field fix into dropping
+    // the real cap-overflow tail.
+    const record: Record<string, string> = {}
+
+    for (let i = 1; i <= 10; i += 1) {
+      record[`field${i}`] = `value${i}`
+    }
+
+    const summary = formatToolResultSummary(record)
+
+    expect(summary).toContain('… 2 more fields')
+  })
 })
 
 describe('extractToolErrorMessage', () => {
@@ -102,31 +128,5 @@ describe('extractToolErrorMessage', () => {
     })
 
     expect(error).toBe('')
-  })
-
-  it('does not count empty fields as hidden "more fields"', () => {
-    // `tags: []` and `note: ''` render nothing (formatFieldValue returns
-    // empty for empty arrays / empty strings), so they are not fields the
-    // user is "missing" — only the cap-truncated remainder should be
-    // reported. Before the fix this emitted "- … 2 more fields".
-    const summary = formatToolResultSummary({ name: 'x', tags: [], note: '' })
-
-    expect(summary).toBe('- Name: x')
-    expect(summary).not.toContain('more fields')
-  })
-
-  it('still reports genuinely cap-truncated fields as "N more fields"', () => {
-    // 10 content-bearing keys with an 8-field cap → 2 truly hidden fields.
-    // This guards against over-correcting the empty-field fix into dropping
-    // the real cap-overflow tail.
-    const record: Record<string, string> = {}
-
-    for (let i = 1; i <= 10; i += 1) {
-      record[`field${i}`] = `value${i}`
-    }
-
-    const summary = formatToolResultSummary(record)
-
-    expect(summary).toContain('… 2 more fields')
   })
 })

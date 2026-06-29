@@ -71,6 +71,14 @@ def expensive_model_warning(
     if not model:
         return None
 
+    # Custom providers (custom:xxx) use their own pricing that differs from
+    # the models.dev catalog (which stores OpenRouter prices).  Triggering
+    # the expensive-model warning on inaccurate catalog data blocks model
+    # switching silently — skip the check entirely for custom providers.
+    # See #54348.
+    if provider and provider.startswith("custom:"):
+        return None
+
     input_cost, output_cost, source = _pricing_from_model_info(model_info)
     if input_cost is None and output_cost is None and provider:
         try:

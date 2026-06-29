@@ -10590,8 +10590,9 @@ def _build_project_tree(
 def _(rid, params: dict) -> dict:
     """Authoritative project overview: project -> repo -> lane structure with
     counts + a few preview sessions per project, plus the flat set of session
-    ids claimed by any project (so the desktop excludes them from flat Recents).
-    Lanes carry no session rows here; drill-in uses ``projects.project_sessions``.
+    ids represented by the grouped view (for optimistic eviction/tombstone
+    reconciliation). Lanes carry no session rows here; drill-in uses
+    ``projects.project_sessions``.
     """
     try:
         db = _get_db()

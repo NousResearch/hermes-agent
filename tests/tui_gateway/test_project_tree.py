@@ -216,8 +216,40 @@ def test_scoped_session_ids_is_union_of_placed_sessions():
 
     tree = pt.build_tree([project], [owned, auto, homeless], [], resolve, hydrate=True)
 
-    assert set(tree["scoped_session_ids"]) == {owned["id"], auto["id"]}
-    assert homeless["id"] not in tree["scoped_session_ids"]
+    assert set(tree["scoped_session_ids"]) == {owned["id"], auto["id"], homeless["id"]}
+    no_project = next(p for p in tree["projects"] if p.get("isNoProject"))
+    assert no_project["sessionCount"] == 1
+
+
+def test_no_project_bucket_keeps_unplaced_sessions_visible():
+    # Project grouping must not make non-repo / cwd-less conversations vanish.
+    # Older sessions may have no cwd at all, cwd='/' (the filesystem root), or a
+    # cwd inside a junk root that should not become an auto project. They still
+    # need a stable "No project" bucket in the grouped sidebar.
+    resolve = _resolver({"/home/me/.hermes": ("/home/me/.hermes", "/home/me/.hermes"), "/repo": ("/repo", "/repo")})
+    cwdless = _session(None)
+    fs_root = _session("/")
+    junk = _session("/home/me/.hermes", branch="main")
+    real = _session("/repo", branch="main")
+
+    tree = pt.build_tree(
+        [],
+        [cwdless, fs_root, junk, real],
+        [],
+        resolve,
+        hydrate=True,
+        is_junk_root=lambda root: root == "/home/me/.hermes",
+    )
+
+    no_project = next(p for p in tree["projects"] if p.get("isNoProject"))
+    assert no_project["id"] == pt.NO_PROJECT_ID
+    assert no_project["sessionCount"] == 3
+    assert [s["id"] for s in no_project["repos"][0]["groups"][0]["sessions"]] == [
+        cwdless["id"],
+        fs_root["id"],
+        junk["id"],
+    ]
+    assert set(tree["scoped_session_ids"]) == {cwdless["id"], fs_root["id"], junk["id"], real["id"]}
 
 
 def test_overview_drops_session_rows_but_keeps_counts_and_previews():
@@ -309,8 +341,8 @@ def test_nested_project_folders_pick_the_deepest_match():
 
 def test_junk_root_never_becomes_an_auto_project():
     # A session whose git root is HERMES_HOME (config/state) must not spawn a
-    # phantom project; it falls through to flat Recents (unscoped). A real repo
-    # alongside it still groups normally.
+    # phantom repo project; it lands in the synthetic No project bucket instead.
+    # A real repo alongside it still groups normally.
     resolve = _resolver(
         {
             "/home/me/.hermes": ("/home/me/.hermes", "/home/me/.hermes"),
@@ -324,8 +356,10 @@ def test_junk_root_never_becomes_an_auto_project():
     tree = pt.build_tree([], [junk, real], [], resolve, hydrate=True, is_junk_root=is_junk)
 
     ids = {p["id"] for p in tree["projects"]}
-    assert ids == {"/www/app"}
-    assert junk["id"] not in tree["scoped_session_ids"]
+    assert ids == {"/www/app", pt.NO_PROJECT_ID}
+    no_project = next(p for p in tree["projects"] if p.get("isNoProject"))
+    assert no_project["sessionCount"] == 1
+    assert junk["id"] in tree["scoped_session_ids"]
     assert real["id"] in tree["scoped_session_ids"]
 
 

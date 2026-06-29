@@ -698,6 +698,20 @@ describe('overlayLivePreviews', () => {
     const previews = overlayLivePreviews([project], live, [], 3)
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['fresh', 'old'])
+    expect(previews[project.id].map(s => s.id)).toEqual(['fresh', 'old'])
+  })
+
+  it('keeps backend previews reachable for a pathless No project bucket', () => {
+    const project = projectNode({
+      id: '__no_project__',
+      isNoProject: true,
+      path: null,
+      previewSessions: [makeSession(null, { id: 'rootless', started_at: 1, last_active: 1 })]
+    })
+
+    const previews = overlayLivePreviews([project], [], [], 3)
+
+    expect(previews.__no_project__.map(s => s.id)).toEqual(['rootless'])
   })
 
   it('evicts a deleted session from a project preview (snapshot + live)', () => {

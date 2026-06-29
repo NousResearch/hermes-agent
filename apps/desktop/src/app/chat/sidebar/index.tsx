@@ -707,7 +707,7 @@ export function ChatSidebar({
 
     const sorted = sortProjectsForOverview(
       projectTree
-        .filter(node => !(node.isAuto && dismissed.has(node.id)))
+        .filter(node => !(node.isAuto && !node.isNoProject && dismissed.has(node.id)))
         .map(project => ({ ...project, repos: orderRepos(project.repos) })),
       activeProjectId
     )
@@ -898,7 +898,13 @@ export function ChatSidebar({
   // "Sessions" when flat, "Projects" at the overview, and the project's name
   // once you've entered one.
   const sessionsLabel =
-    inProject && enteredProject ? enteredProject.label : worktreeGroupingActive ? s.projects.sectionLabel : s.sessions
+    inProject && enteredProject
+      ? enteredProject.isNoProject
+        ? s.noProject
+        : enteredProject.label
+      : worktreeGroupingActive
+        ? s.projects.sectionLabel
+        : s.sessions
 
   // Mirror the section's skeleton gate (projectsLoading + nothing to show yet):
   // while the skeleton is up there's no point also spinning the header count.
@@ -1855,7 +1861,11 @@ function SidebarSessionsSection({
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
-        previewSessions={project.path ? projectOverviewPreviews?.[project.path] : undefined}
+        previewSessions={
+          projectOverviewPreviews?.[project.id] ??
+          (project.path ? projectOverviewPreviews?.[project.path] : undefined) ??
+          project.previewSessions
+        }
         project={project}
         renderRows={renderRows}
       />

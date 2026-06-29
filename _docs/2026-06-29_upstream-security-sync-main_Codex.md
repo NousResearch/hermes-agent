@@ -19,7 +19,7 @@ SOPログ追加前の同期済み実装HEADは
 | fork remote | `origin` = `zapabob/hermes-agent` |
 | official remote | `upstream` = `NousResearch/hermes-agent` |
 | 作業補助worktree | `C:\Users\downl\hwt\hermes-upstream-security-sync-20260629` |
-| 最終同期状態 | `git rev-list --left-right --count HEAD...upstream/main` = `454 0` |
+| 最終同期状態 | `git rev-list --left-right --count HEAD...upstream/main` = `458 0` |
 
 ## 実施内容
 
@@ -93,3 +93,18 @@ SOPログ初回コミット後、公式 `upstream/main` がさらに進んだた
 - 正本ルートの未追跡ローカル成果物（`.specstory/`, `_tmp/`, 音声/動画一時ファイル等）は既存作業物として触らない。
 - 旧worktree側の既存未追跡ファイルは stash
   `codex-preserve-before-canonical-main-sync-20260629` で保護済み。
+
+## 追記: Slack group DM upstream追随
+
+最終確認中に公式 `upstream/main` がさらに3コミット進んだため、正本 `main` に
+追加で取り込んだ。
+
+- `29f096827 test(windows): harden pid-scan no-window assertion against captured-call leakage (#54707)`
+- `4125cc3b7 fix(slack): subscribe to message.mpim + mpim scopes so group DMs work`
+- `34e616e77 feat(slack): nudge stale installs to add mpim scopes; mark message.mpim required`
+
+追加検証:
+
+- `uv lock --check`: passed
+- `uv run --extra dev python -m pytest tests/gateway/test_slack_group_dm_scope_warning.py tests/hermes_cli/test_slack_cli.py tests/test_windows_subprocess_no_window_flags.py -q`: `29 passed`
+- `uv run --extra dev python -m ruff check tests/gateway/test_slack_group_dm_scope_warning.py tests/hermes_cli/test_slack_cli.py tests/test_windows_subprocess_no_window_flags.py hermes_cli/config.py hermes_cli/slack_cli.py plugins/platforms/slack/adapter.py`: passed

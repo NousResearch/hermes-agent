@@ -48,6 +48,20 @@ _EXCLUDED_DIRS = {
     "image_cache",      # cached fetched images — regenerable, not state
 }
 
+# Path-anchored excludes: a dir name that is only Apple-IP (or otherwise droppable)
+# when it sits at a SPECIFIC location, NOT anywhere the name happens to appear. Unlike
+# _EXCLUDED_DIRS (which prunes a bare name at any depth), each entry here is a
+# (parent_dir_name, child_dir_name) pair and matches only when child is a direct child
+# of parent — so an unrelated user dir that coincidentally shares the leaf name is kept.
+_EXCLUDED_PARENT_CHILD = (
+    # Apple's AdditionalDocumentation extracted from a local Xcode is Apple IP. The
+    # mobile-design/swiftui-skills skill reads it IN-PLACE from the live Xcode.app and
+    # never copies it here — but if a stray copy ever lands under the skill's own
+    # swiftui-docs/ dir, keep Apple's IP out of the backup zip. Scoped to swiftui-skills/
+    # so a user's unrelated dir named "swiftui-docs" elsewhere is still backed up.
+    ("swiftui-skills", "swiftui-docs"),
+)
+
 # Directory-NAME prefixes to skip anywhere in the tree. Browser-automation debug
 # profiles (browser-access / CDP) are transient junk: they hold dozens of Chrome
 # SQLite DBs (first_party_sets.db, History, Cookies, …) that a LIVE Chrome keeps
@@ -106,6 +120,14 @@ def _should_exclude(rel_path: Path) -> bool:
         if part == "hermes-agent" and part != parts[0]:
             continue
         return True
+
+    # Path-anchored (parent/child) excludes — match only when the child dir is a
+    # DIRECT child of the named parent, so a coincidental same-named dir elsewhere
+    # in a user's workspace is preserved (see _EXCLUDED_PARENT_CHILD).
+    for parent, child in _EXCLUDED_PARENT_CHILD:
+        for i in range(len(parts) - 1):
+            if parts[i] == parent and parts[i + 1] == child:
+                return True
 
     name = rel_path.name
 

@@ -3019,13 +3019,25 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
-        # When delegation.api_key is not set, return None so _build_child_agent
-        # falls back to the parent agent's API key via the credential inheritance
-        # path (effective_api_key = override_api_key or parent_api_key). This
-        # lets providers that store their key in a non-OPENAI_API_KEY env var
-        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
-        # callers to duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
+        # When delegation.api_key is not set, try to resolve the API key
+        # from the configured provider's env var (e.g. OPENCODE_GO_API_KEY).
+        # Falls back to parent agent's key only if provider resolution also
+        # yields no key.  This lets providers that store their key in a
+        # provider-specific env var (MINIMAX_API_KEY, OPENCODE_GO_API_KEY,
+        # DASHSCOPE_API_KEY, etc.) work without requiring callers to
+        # duplicate the key under delegation.api_key.
+        api_key = configured_api_key  # may be None
+
+        if not api_key and configured_provider:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                _prov_runtime = resolve_runtime_provider(
+                    requested=configured_provider, target_model=configured_model,
+                )
+                api_key = _prov_runtime.get("api_key") or None
+            except Exception:
+                pass  # fall through to parent key inheritance
 
         # Use the shared URL-based api_mode detector (same path the main agent's
         # runtime resolver uses) so Anthropic-compatible direct endpoints with a
@@ -3036,7 +3048,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         from hermes_cli.runtime_provider import _detect_api_mode_for_url
 
         base_lower = configured_base_url.lower()
-        provider = "custom"
+        provider = configured_provider or "custom"
         api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"

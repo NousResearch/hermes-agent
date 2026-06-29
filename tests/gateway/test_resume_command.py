@@ -174,6 +174,40 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_clears_session_model_overrides(self, tmp_path):
+        """Resume must not carry a previous session's /model override into the
+        restored conversation, while leaving other chats' overrides intact (#10702)."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session_abc", "telegram")
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume My Project")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        key = _session_key_for_event(event)
+        runner._session_model_overrides = {
+            key: {"model": "gpt-5", "provider": "openai"},
+            "agent:main:telegram:dm:other": {"model": "keep-me"},
+        }
+        runner._pending_model_notes = {
+            key: "[Note: switched to gpt-5]",
+            "agent:main:telegram:dm:other": "[Note: keep-me]",
+        }
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        # The resumed chat's override + pending note are cleared...
+        assert key not in runner._session_model_overrides
+        assert key not in runner._pending_model_notes
+        # ...but an unrelated chat's state is untouched.
+        assert runner._session_model_overrides["agent:main:telegram:dm:other"] == {"model": "keep-me"}
+        assert runner._pending_model_notes["agent:main:telegram:dm:other"] == "[Note: keep-me]"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_nonexistent_name(self, tmp_path):
         """Returns error for unknown session name."""
         from hermes_state import SessionDB

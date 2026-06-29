@@ -2314,7 +2314,7 @@ maybe_start_gateway() {
     # in Docker builds where the device node is in the mount namespace
     # but opening fails with ENXIO. See #16746.
     if ! (: </dev/tty) 2>/dev/null; then
-        log_info "Gateway setup skipped (no terminal available). Run 'hermes gateway install' later."
+        log_info "Gateway setup skipped (no terminal available). Run 'hermes --profile biobio gateway install' later."
         return 0
     fi
 
@@ -2334,16 +2334,16 @@ maybe_start_gateway() {
         HERMES_CMD="$(get_hermes_command_path)"
 
         if [ "$DISTRO" != "termux" ] && command -v systemctl &> /dev/null; then
-            log_info "Installing systemd service..."
-            if $HERMES_CMD gateway install 2>/dev/null; then
-                log_success "Gateway service installed"
-                if $HERMES_CMD gateway start 2>/dev/null; then
+            log_info "Installing systemd service for profile biobio..."
+            if $HERMES_CMD --profile biobio gateway install 2>/dev/null; then
+                log_success "Gateway service installed for profile biobio"
+                if $HERMES_CMD --profile biobio gateway start 2>/dev/null; then
                     log_success "Gateway started! Your bot is now online."
                 else
-                    log_warn "Service installed but failed to start. Try: hermes gateway start"
+                    log_warn "Service installed but failed to start. Try: hermes --profile biobio gateway start"
                 fi
             else
-                log_warn "Systemd install failed. You can start manually: hermes gateway"
+                log_warn "Systemd install failed. You can start manually: hermes --profile biobio gateway"
             fi
         else
             if [ "$DISTRO" = "termux" ]; then
@@ -2351,7 +2351,7 @@ maybe_start_gateway() {
             else
                 log_info "systemd not available — starting gateway in background..."
             fi
-            nohup $HERMES_CMD gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
+            nohup $HERMES_CMD --profile biobio gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
             GATEWAY_PID=$!
             log_success "Gateway started (PID $GATEWAY_PID). Logs: ~/.hermes/logs/gateway.log"
             log_info "To stop: kill $GATEWAY_PID"
@@ -2391,7 +2391,7 @@ print_success() {
     echo -e "   ${GREEN}hermes setup${NC}        Configure API keys & settings"
     echo -e "   ${GREEN}hermes config${NC}       View/edit configuration"
     echo -e "   ${GREEN}hermes config edit${NC}  Open config in editor"
-    echo -e "   ${GREEN}hermes gateway install${NC} Install gateway service (messaging + cron)"
+    echo -e "   ${GREEN}hermes --profile biobio gateway install${NC} Install gateway service (messaging + cron)"
     echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
     echo ""
 

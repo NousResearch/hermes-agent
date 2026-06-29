@@ -6662,6 +6662,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _should_dispatch_message_event(self, event: MessageEvent) -> bool:
+        """Re-apply Telegram trigger rules before active-session dispatch."""
+        if getattr(event, "internal", False):
+            return True
+        raw_message = getattr(event, "raw_message", None)
+        if raw_message is None:
+            return True
+        return self._should_process_message(raw_message, is_command=event.is_command())
+
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.
 

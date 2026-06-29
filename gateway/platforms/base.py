@@ -2677,6 +2677,10 @@ class BasePlatformAdapter(ABC):
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    def _should_dispatch_message_event(self, event: MessageEvent) -> bool:
+        """Final platform gate before an event enters session dispatch."""
+        return True
     
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -4385,6 +4389,10 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+
+        if not self._should_dispatch_message_event(event):
+            logger.debug("[%s] Dropping message before session dispatch: platform gate rejected event", self.name)
+            return
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or

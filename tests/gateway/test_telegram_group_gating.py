@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
-from gateway.platforms.base import MessageType
-from gateway.session import SessionSource
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource, build_session_key
 
 
 def _make_adapter(
@@ -148,6 +148,58 @@ def _bot_command_entity(text, command):
     """
     offset = text.index(command)
     return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
+
+
+def _message_event_from_group_message(message):
+    return MessageEvent(
+        text=message.text,
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(message.chat.id),
+            chat_type="group",
+            user_id=str(message.from_user.id),
+            user_name=message.from_user.full_name,
+        ),
+        raw_message=message,
+        message_id=str(message.message_id),
+        reply_to_message_id=(
+            str(message.reply_to_message.message_id)
+            if message.reply_to_message is not None
+            else None
+        ),
+    )
+
+
+async def _dispatch_event_during_active_session(adapter, event):
+    adapter._busy_session_handler = None
+    adapter._busy_text_mode = "interrupt"
+    adapter._session_tasks = {}
+    adapter._background_tasks = set()
+    adapter._expected_cancelled_tasks = set()
+    adapter._topic_recovery_fn = None
+
+    session_key = build_session_key(
+        event.source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+
+    async def _active_run():
+        await asyncio.sleep(10)
+
+    task = asyncio.create_task(_active_run())
+    adapter._session_tasks[session_key] = task
+    adapter._active_sessions[session_key] = asyncio.Event()
+    try:
+        await adapter.handle_message(event)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    return session_key
 
 
 def test_group_messages_can_be_opened_via_config():
@@ -481,6 +533,58 @@ def test_explicit_multi_bot_mentions_route_only_to_named_bots():
     assert default_bot._should_process_message(_group_message(text, reply_to_bot=True, entities=entities)) is False
     assert research_bot._should_process_message(_group_message(text, entities=entities)) is True
     assert ops_bot._should_process_message(_group_message(text, entities=entities)) is True
+
+
+def test_unmentioned_bot_reply_dropped_during_active_session():
+    async def _run():
+        adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+
+        message = _group_message(
+            "default bot reply",
+            chat_id=-100,
+            from_user_id=8810308684,
+            from_user_name="Default Bot",
+        )
+        message.from_user.is_bot = True
+        message.reply_to_message = SimpleNamespace(
+            message_id=41,
+            from_user=SimpleNamespace(id=123, is_bot=False),
+            text="user message",
+            caption=None,
+        )
+        assert adapter._should_process_message(message) is False
+
+        event = _message_event_from_group_message(message)
+        session_key = await _dispatch_event_during_active_session(adapter, event)
+
+        adapter._message_handler.assert_not_awaited()
+        assert session_key not in adapter._pending_messages
+
+    asyncio.run(_run())
+
+
+def test_addressed_group_messages_still_queue_during_active_session():
+    async def _run():
+        reply_adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        reply_message = _group_message("replying to dev", reply_to_bot=True)
+        assert reply_adapter._should_process_message(reply_message) is True
+        reply_key = await _dispatch_event_during_active_session(
+            reply_adapter,
+            _message_event_from_group_message(reply_message),
+        )
+        assert reply_key in reply_adapter._pending_messages
+
+        mention_adapter = _make_adapter(require_mention=True, bot_username="dev_bot")
+        text = "@dev_bot please continue"
+        mention_message = _group_message(text, entities=[_mention_entity(text, "@dev_bot")])
+        assert mention_adapter._should_process_message(mention_message) is True
+        mention_key = await _dispatch_event_during_active_session(
+            mention_adapter,
+            _message_event_from_group_message(mention_message),
+        )
+        assert mention_key in mention_adapter._pending_messages
+
+    asyncio.run(_run())
 
 
 def test_entityless_multi_bot_mentions_still_route_exclusively():

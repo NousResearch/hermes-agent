@@ -1867,13 +1867,33 @@ async function checkUpdates() {
       git(['status', '--porcelain']),
       git(['rev-parse', '--abbrev-ref', 'HEAD'])
     ])
-    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+    let targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
     if (target.code !== 0 || !targetSha) {
+      // HTTPS ls-remote failed (e.g. firewall blocks git's HTTPS but allows
+      // SSH, or corporate proxy intercepts). Fall back to `git fetch origin`
+      // which uses the configured remote protocol (SSH in this case).
+      const fallback = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
+      if (fallback.code !== 0) {
+        return {
+          supported: true,
+          branch,
+          error: 'fetch-failed',
+          message: firstLine(target.stderr) || firstLine(fallback.stderr) || 'git ls-remote and git fetch both failed.',
+          hermesRoot: updateRoot,
+          fetchedAt: Date.now()
+        }
+      }
+      const fallbackSha = await git(['rev-parse', `origin/${branch}`])
+      targetSha = fallbackSha
       return {
         supported: true,
         branch,
-        error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
+        currentBranch,
+        behind: currentSha && currentSha === targetSha ? 0 : 1,
+        currentSha,
+        targetSha,
+        commits: [],
+        dirty: dirtyStr.length > 0,
         hermesRoot: updateRoot,
         fetchedAt: Date.now()
       }

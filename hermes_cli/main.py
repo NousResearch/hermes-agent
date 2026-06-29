@@ -5818,6 +5818,11 @@ def _find_stale_dashboard_pids(
         "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
+        # Older TUI/dashboard launchers can appear in ps output without the
+        # leading `hermes` executable name. Keep these specific so chat/log
+        # processes that merely mention "dashboard" are not swept up.
+        "dashboard --tui",
+        "dashboard --no-open",
     ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
@@ -11734,6 +11739,16 @@ def cmd_dashboard(args):
         _setup_logging_gui(mode="gui")
     except Exception:
         pass
+
+    # Clean up stale dashboard processes before starting a new instance.
+    # The dashboard has no service manager, so processes left by desktop-app
+    # updates or direct binary replacement keep running with stale Python
+    # backends, consuming ports and causing frontend/backend mismatches.
+    # `hermes update` already does this for CLI updates; this covers the
+    # desktop-app and general dashboard-start paths (#39136).
+    _kill_stale_dashboard_processes(
+        reason="cleaning up before starting a new dashboard instance"
+    )
 
     try:
         import fastapi  # noqa: F401

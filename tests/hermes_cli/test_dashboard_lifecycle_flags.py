@@ -179,3 +179,67 @@ class TestArgparseWiring:
              pytest.raises(SystemExit) as exc:
             mod.cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
+
+
+class TestDashboardStartupCleanup:
+    """Verify stale dashboard processes are cleaned up when starting a new one.
+
+    Regression for #39136: ``_kill_stale_dashboard_processes()`` was only
+    called at the end of ``hermes update``, so processes left by desktop-app
+    updates or direct binary replacement were never cleaned.  Adding the
+    call to ``cmd_dashboard`` ensures every dashboard start begins with a
+    clean process table.
+    """
+
+    def test_startup_calls_kill_stale_before_server(self):
+        """Normal dashboard start (no --stop/--status) must clean stale
+        processes before binding ports."""
+        with patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as mock_kill, patch(
+            "hermes_cli.main._build_web_ui", return_value=True
+        ), patch(
+            "hermes_cli.main._sync_bundled_skills_quietly"
+        ), patch(
+            # prevent actual server startup
+            "hermes_cli.web_server.start_server",
+            side_effect=SystemExit(0),
+        ), patch(
+            "hermes_cli.plugins.discover_plugins"
+        ), patch(
+            "hermes_cli.main.PROJECT_ROOT",
+            __import__("pathlib").Path("/tmp"),
+        ), pytest.raises(SystemExit):
+            cmd_dashboard(_ns())
+
+        mock_kill.assert_called_once()
+
+    def test_startup_does_not_call_kill_for_stop_flag(self):
+        """When --stop is passed and stale processes exist, the kill is
+        handled inside the stop block.  The startup cleanup must stay in
+        the server-start path only (after the stop/status early returns)."""
+        # Use two separate scan results: first finds a PID, second (post-kill)
+        # returns empty so stop exits with code 0.
+        scans = iter([[12345], []])
+        with patch(
+            "hermes_cli.main._find_stale_dashboard_pids",
+            side_effect=lambda: next(scans),
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as mock_kill, pytest.raises(SystemExit):
+            cmd_dashboard(_ns(stop=True))
+
+        # Kill is called exactly once inside the stop block.  If the
+        # startup cleanup path also fired, call_count would be 2.
+        assert mock_kill.call_count == 1
+
+    def test_startup_does_not_call_kill_for_status_flag(self):
+        """--status must remain a read-only scan — no kill should fire."""
+        with patch(
+            "hermes_cli.main._find_stale_dashboard_pids", return_value=[]
+        ), patch(
+            "hermes_cli.main._kill_stale_dashboard_processes"
+        ) as mock_kill, pytest.raises(SystemExit):
+            cmd_dashboard(_ns(status=True))
+
+        mock_kill.assert_not_called()

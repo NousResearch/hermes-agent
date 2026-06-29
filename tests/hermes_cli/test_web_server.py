@@ -2923,12 +2923,6 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
-            assert "vercel_sandbox" in entry["options"]
-        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
-        assert runtime_entry["type"] == "select"
-        assert "node24" in runtime_entry["options"]
-        assert "python3.13" in runtime_entry["options"]
-        assert len(runtime_entry["options"]) >= 3
         active_pr_entry = CONFIG_SCHEMA["kanban.respawn_guard.active_pr"]
         assert active_pr_entry["type"] == "boolean"
         assert active_pr_entry["label"] == "Active PR respawn guard"

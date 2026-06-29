@@ -464,6 +464,7 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
+    copyContent: string
     download: string
     downloadSaved: string
     downloadFailed: string
@@ -476,6 +477,7 @@ export interface Translations {
     pathCopied: string
     revealMissing: string
     revealUnavailable: string
+    contentCopied: string
   }
 
   boot: {

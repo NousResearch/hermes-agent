@@ -19,6 +19,7 @@ import {
   beginInlineRename,
   cancelInlineRename,
   closeFileActionDialog,
+  copyFileContent,
   copyFilePath,
   downloadRemoteFile,
   executeFileDelete,
@@ -85,6 +86,7 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
             {m.copyRelativePath}
           </ContextMenuItem>
         )}
+        {!isDirectory && <ContextMenuItem onSelect={() => void copyFileContent(path)}>{m.copyContent}</ContextMenuItem>}
         {remoteDownload && (
           <>
             <ContextMenuSeparator />

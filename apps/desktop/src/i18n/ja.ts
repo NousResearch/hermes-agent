@@ -155,6 +155,7 @@ export const ja = defineLocale({
     revealInSidebar: 'ファイルツリーで表示',
     copyPath: 'パスをコピー',
     copyRelativePath: '相対パスをコピー',
+    copyContent: 'ファイルの内容をコピー',
     download: 'ダウンロード',
     downloadSaved: '保存しました',
     downloadFailed: 'ダウンロードに失敗しました',
@@ -165,7 +166,8 @@ export const ja = defineLocale({
     deleteTitle: name => `${name} を削除しますか？`,
     deleteBody: 'ゴミ箱に移動します。そこから復元できます。',
     pathCopied: 'パスをコピーしました',
-    revealMissing: 'そのフォルダーはこのコンピューターにありません'
+    revealMissing: 'そのフォルダーはこのコンピューターにありません',
+    contentCopied: 'ファイルの内容をコピーしました'
   },
 
   boot: {

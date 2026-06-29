@@ -1613,6 +1613,8 @@ export const zh: Translations = {
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
     voiceDictation: '语音听写',
+    speakReplies: '朗读回复',
+    stopSpeakingReplies: '停止朗读回复',
     lookupLoading: '查找中…',
     lookupNoMatches: '没有匹配项。',
     lookupTry: '试试',

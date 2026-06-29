@@ -1434,6 +1434,8 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceDictation: 'Voice dictation',
+    speakReplies: 'Read replies aloud',
+    stopSpeakingReplies: 'Stop reading replies aloud',
     lookupLoading: 'Looking up…',
     lookupNoMatches: 'No matches.',
     lookupTry: 'Try',

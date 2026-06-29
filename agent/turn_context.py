@@ -706,6 +706,8 @@ def build_turn_context(
     # issue #27405 (a few very large messages slipping past the count gate).
     _preflight_compressed = False
     _preflight_compression_blocked = False
+    agent._turn_received_provider_response = False
+    agent._turn_preflight_display_snapshot = None
     if agent.compression_enabled and _should_run_preflight_estimate(
         messages,
         agent.context_compressor.protect_first_n,
@@ -718,6 +720,9 @@ def build_turn_context(
             tools=agent.tools or None,
         )
         _compressor = agent.context_compressor
+        agent._turn_preflight_display_snapshot = (
+            _compressor.snapshot_preflight_display_tokens()
+        )
         _defer_preflight = getattr(
             _compressor,
             "should_defer_preflight_to_real_usage",

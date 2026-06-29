@@ -287,3 +287,93 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert cron_started is False
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_cleans_up_on_post_shutdown_failure(tmp_path, monkeypatch):
+    """Regression test for #12175.
+
+    When the runner reports should_exit_with_failure=True AFTER shutdown, the
+    gateway must still run cron/housekeeping/MCP cleanup before returning.
+    Otherwise the cron and housekeeping daemon threads (plus any in-flight MCP
+    connections) leak until process exit.
+
+    The closest existing test (test_start_gateway_does_not_start_cron_after_aborted_startup)
+    only exercises the pre-startup abort path where cron was never started, so
+    it cannot catch a regression in the post-shutdown failure cleanup.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    shutdown_mcp_calls = {"count": 0}
+    await_thread_exit_calls = []
+
+    class _FakeCronProvider:
+        def start(self, stop_event, *, adapters=None, loop=None, can_dispatch=None):
+            # Block until stop_event is set, then exit. Real ticker.
+            stop_event.wait()
+            return None
+
+        def stop(self):
+            return None
+
+    class PostShutdownFailureRunner:
+        def __init__(self, config):
+            self.config = config
+            self.adapters = {}
+            self._running = True
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = True
+            self.exit_reason = "simulated post-shutdown failure (#12175)"
+            self.exit_code = None
+
+        async def start(self):
+            return True
+
+        async def wait_for_shutdown(self):
+            return None
+
+    def tracked_shutdown_mcp_servers():
+        shutdown_mcp_calls["count"] += 1
+
+    async def tracked_await_thread_exit(thread, timeout, poll=0.1):
+        await_thread_exit_calls.append(getattr(thread, "name", None))
+        return True
+
+    def fake_resolve_cron_scheduler():
+        return _FakeCronProvider()
+
+    def fake_start_housekeeping(*args, **kwargs):
+        # Exit immediately so _await_thread_exit can return True.
+        return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", PostShutdownFailureRunner)
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", fake_resolve_cron_scheduler)
+    monkeypatch.setattr("gateway.run._start_gateway_housekeeping", fake_start_housekeeping)
+    monkeypatch.setattr("gateway.run._await_thread_exit", tracked_await_thread_exit)
+    monkeypatch.setattr("gateway.run._run_planned_stop_watcher", lambda *a, **k: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", tracked_shutdown_mcp_servers)
+
+    result = await gateway_run.start_gateway(
+        config=GatewayConfig(), replace=False, verbosity=None
+    )
+
+    # Failure path returns False, never raising SystemExit (exit_code is None).
+    assert result is False
+
+    # Cooperative joins must have run for both cron and housekeeping threads.
+    assert len(await_thread_exit_calls) >= 2, (
+        f"Expected _await_thread_exit for cron+housekeeping, got {await_thread_exit_calls}"
+    )
+
+    # MCP server connections must have been closed before the failure return.
+    assert shutdown_mcp_calls["count"] == 1, (
+        f"Expected shutdown_mcp_servers to be called exactly once on the "
+        f"failure path, got {shutdown_mcp_calls['count']}"
+    )

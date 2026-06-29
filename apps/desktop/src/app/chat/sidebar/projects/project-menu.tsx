@@ -94,6 +94,10 @@ export function ProjectMenu({
   // when the panes are flipped (sidebar on the right).
   const panesFlipped = useStore($panesFlipped)
 
+  if (project.isNoProject) {
+    return null
+  }
+
   const removeAuto = () => {
     dismissAutoProject(project.id)
 

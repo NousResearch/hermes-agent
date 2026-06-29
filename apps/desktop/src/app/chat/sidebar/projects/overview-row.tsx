@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
+  SidebarCount,
   SidebarRowBody,
   SidebarRowCluster,
   SidebarRowGrab,
@@ -91,16 +92,18 @@ export function ProjectOverviewRow({
   const { t } = useI18n()
   const s = t.sidebar
   const isActive = project.id === activeProjectId
+  const projectLabel = project.isNoProject ? s.noProject : project.label
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
   const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
   const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
+  const remainingCount = Math.max(0, project.sessionCount - preview.length)
 
   const lead = reorderable ? (
     <SidebarRowGrab
-      ariaLabel={s.projects.reorder(project.label)}
+      ariaLabel={s.projects.reorder(projectLabel)}
       dragging={dragging}
       dragHandleProps={dragHandleProps}
       leadClassName="overflow-visible"
@@ -117,7 +120,7 @@ export function ProjectOverviewRow({
         actions={
           <>
             {onNewSession && (
-              <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+              <WorkspaceAddButton label={s.newSessionIn(projectLabel)} onClick={() => onNewSession(project.path)} />
             )}
             <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />
           </>
@@ -128,15 +131,16 @@ export function ProjectOverviewRow({
         <SidebarRowCluster className="min-w-0 flex-1">
           {lead}
           <SidebarRowLink
-            aria-label={s.projects.enter(project.label)}
+            aria-label={s.projects.enter(projectLabel)}
             labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
             onClick={() => onEnter?.(project.id)}
           >
-            {project.label}
+            {projectLabel}
           </SidebarRowLink>
+          {project.sessionCount > 0 && <SidebarCount>{project.sessionCount}</SidebarCount>}
           {preview.length > 0 ? (
             <button
-              aria-label={s.projects.toggle(project.label)}
+              aria-label={s.projects.toggle(projectLabel)}
               className="flex flex-1 items-center self-stretch bg-transparent p-0"
               onClick={toggleOpen}
               type="button"
@@ -151,7 +155,28 @@ export function ProjectOverviewRow({
           )}
         </SidebarRowCluster>
       </SidebarRowShell>
-      {open && preview.length > 0 && <SidebarRowNest>{renderRows?.(preview)}</SidebarRowNest>}
+      {open && preview.length > 0 && (
+        <SidebarRowNest>
+          {renderRows?.(preview)}
+          {remainingCount > 0 && onEnter && (
+            <SidebarRowShell>
+              <SidebarRowBody
+                className="group/show-more text-(--ui-text-tertiary) hover:text-foreground"
+                onClick={() => onEnter(project.id)}
+              >
+                <SidebarRowLead>
+                  <SidebarRowLeadGlyph>
+                    <Codicon name="ellipsis" size={SIDEBAR_LEAD_ICON_SIZE} />
+                  </SidebarRowLeadGlyph>
+                </SidebarRowLead>
+                <SidebarRowLabel className="text-xs underline-offset-4 group-hover/show-more:underline">
+                  {s.showMoreIn(remainingCount, projectLabel)}
+                </SidebarRowLabel>
+              </SidebarRowBody>
+            </SidebarRowShell>
+          )}
+        </SidebarRowNest>
+      )}
     </div>
   )
 }

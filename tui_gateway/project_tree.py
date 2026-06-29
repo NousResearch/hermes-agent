@@ -40,6 +40,9 @@ Resolve = Callable[[str], Optional[dict]]
 _KANBAN_DIR_RE = re.compile(r"^(.*[/\\]\.worktrees)[/\\]t_[0-9a-f]+[/\\]?$")
 _TRUNK_BRANCHES = {"main", "master", "trunk", "develop"}
 DEFAULT_BRANCH_LABEL = "main"
+NO_PROJECT_ID = "__no_project__"
+NO_PROJECT_LABEL = "No project"
+_NO_PROJECT_LANE_ID = f"{NO_PROJECT_ID}::sessions"
 
 
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
@@ -406,8 +409,9 @@ def _project_node(
     color: Any = None,
     icon: Any = None,
     is_auto: bool = False,
+    is_no_project: bool = False,
 ) -> dict:
-    return {
+    node = {
         "id": pid,
         "label": label,
         "path": path,
@@ -419,6 +423,32 @@ def _project_node(
         "repos": repos,
         "previewSessions": preview_sessions,
     }
+    if is_no_project:
+        node["isNoProject"] = True
+    return node
+
+
+def _no_project_repos(project_sessions: list[dict], hydrate: bool) -> list[dict]:
+    ordered = sorted(project_sessions, key=_session_time, reverse=True)
+    lane_sessions = ordered if hydrate else []
+    return [
+        {
+            "id": NO_PROJECT_ID,
+            "label": NO_PROJECT_LABEL,
+            "path": None,
+            "groups": [
+                {
+                    "id": _NO_PROJECT_LANE_ID,
+                    "label": NO_PROJECT_LABEL,
+                    "path": None,
+                    "isMain": False,
+                    "isKanban": False,
+                    "sessions": lane_sessions,
+                }
+            ],
+            "sessionCount": len(project_sessions),
+        }
+    ]
 
 
 def build_tree(
@@ -438,8 +468,9 @@ def build_tree(
     ``git_branch``, ``git_repo_root``, ``started_at``, ``last_active``).
     ``discovered_repos`` are ``{"root", "label", "sessions", "last_active"}``.
     ``is_junk_root`` flags roots that must never become an AUTO project (the
-    bare home dir, the HERMES_HOME subtree) — their sessions fall through to the
-    flat Recents list. User-created projects are honored regardless.
+    bare home dir, the HERMES_HOME subtree) — their sessions go into the
+    synthetic "No project" bucket instead of a phantom repo. User-created
+    projects are honored regardless.
 
     Returns ``{"projects": [...], "scoped_session_ids": [...]}``. When
     ``hydrate`` is False (overview), lane ``sessions`` arrays are emptied but
@@ -460,6 +491,7 @@ def build_tree(
             unowned.append(session)
 
     scoped_ids: list[str] = []
+    placed_ids: set[str] = set()
 
     def _previews(project_sessions: list[dict]) -> list[dict]:
         if preview_limit <= 0:
@@ -476,6 +508,7 @@ def build_tree(
     for project in active_projects:
         psessions = by_project.get(project["id"], [])
         scoped_ids.extend(s["id"] for s in psessions if s.get("id"))
+        placed_ids.update(s["id"] for s in psessions if s.get("id"))
         repos = _seed_folder_repos(
             _build_repos(psessions, resolve, hydrate), project.get("folders") or [], resolve
         )
@@ -502,8 +535,10 @@ def build_tree(
 
     seen: set[str] = set()
     for repo_root, repo_sessions in by_repo.items():
-        # The home dir / HERMES_HOME subtree is config + state, never a project;
-        # its sessions stay loose in Recents (not scoped to a phantom project).
+        # The home dir / HERMES_HOME subtree is config + state, never a real
+        # auto project. Those rows remain unplaced here and are collected into
+        # the synthetic "No project" bucket below so grouped mode does not hide
+        # them.
         if _junk(repo_root):
             continue
         repos = _build_repos(repo_sessions, resolve, hydrate)
@@ -512,6 +547,7 @@ def build_tree(
             continue
         seen.add(repo_root)
         scoped_ids.extend(s["id"] for s in repo_sessions if s.get("id"))
+        placed_ids.update(s["id"] for s in repo_sessions if s.get("id"))
         result.append(
             _project_node(
                 pid=repo_root,
@@ -522,6 +558,23 @@ def build_tree(
                 last_active=_last_active(repo_sessions),
                 preview_sessions=_previews(repo_sessions),
                 is_auto=True,
+            )
+        )
+
+    no_project_sessions = [s for s in sessions if s.get("id") and s["id"] not in placed_ids]
+    if no_project_sessions:
+        scoped_ids.extend(s["id"] for s in no_project_sessions if s.get("id"))
+        result.append(
+            _project_node(
+                pid=NO_PROJECT_ID,
+                label=NO_PROJECT_LABEL,
+                path=None,
+                repos=_no_project_repos(no_project_sessions, hydrate),
+                session_count=len(no_project_sessions),
+                last_active=_last_active(no_project_sessions),
+                preview_sessions=_previews(no_project_sessions),
+                is_auto=True,
+                is_no_project=True,
             )
         )
 

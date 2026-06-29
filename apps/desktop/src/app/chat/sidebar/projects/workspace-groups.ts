@@ -532,7 +532,7 @@ export function overlayLiveLanes(
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
-/** Merge live sessions into per-project overview previews, keyed by project path. */
+/** Merge live sessions into per-project overview previews, keyed by project id (and legacy path when present). */
 export function overlayLivePreviews(
   projects: SidebarProjectTree[],
   live: SessionInfo[],
@@ -561,10 +561,6 @@ export function overlayLivePreviews(
   const out: Record<string, SessionInfo[]> = {}
 
   for (const node of projects) {
-    if (!node.path) {
-      continue
-    }
-
     const liveRows = byProject.get(node.id) ?? []
     const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
 
@@ -581,7 +577,13 @@ export function overlayLivePreviews(
       }
     }
 
-    out[node.path] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
+    out[node.id] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
+
+    // Legacy callers keyed previews by project path; pathless projects (the
+    // synthetic "No project" bucket) need the stable id key, so publish both.
+    if (node.path) {
+      out[node.path] = out[node.id]
+    }
   }
 
   return out

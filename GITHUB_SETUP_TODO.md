@@ -1,20 +1,21 @@
-# GitHub Dual Setup - Action Required (AUTOMATED FOLLOW-UP SCHEDULED)
+# GitHub Dual Setup - Action Required
 
 **Status**: Waiting for access scope expansion  
 **Created**: 2026-06-29  
-**Automated Check-ins**: Scheduled hourly
+
+> **Note (Codex P2 correction):** GitHub's `.github` special repository stores community health files (CODE_OF_CONDUCT, CONTRIBUTING, issue templates, etc.) and *workflow templates* visible in the "Actions → New workflow" picker — but workflows placed under `.github/.github/workflows/` are **not** automatically installed or executed in other repositories. To deploy the 4 CI workflows (auto-merge, healer, auto-fix, escalation-detector) globally, each target repository needs the workflow files copied into its own `.github/workflows/` directory. The steps below reflect this: once access is granted, the agent will push the files directly to `dizhaky/hermes-agent` (and any other target repos you specify) rather than relying on cross-repo workflow inheritance.
 
 ---
 
 ## What's Needed
 
-### 1. Create Two `.github` Repositories
+### 1. Create Two `.github` Repositories (for community health files only)
 
 **Personal Account (dizhaky):**
 ```
 Name: .github
 URL: https://github.com/dizhaky/.github
-Description: Shared GitHub configuration and workflows
+Description: Community health files (CONTRIBUTING, issue templates, etc.)
 Visibility: Public
 Create via: https://github.com/new
 ```
@@ -23,7 +24,7 @@ Create via: https://github.com/new
 ```
 Name: .github
 URL: https://github.com/JHJ/.github
-Description: Shared GitHub configuration and workflows
+Description: Community health files (CONTRIBUTING, issue templates, etc.)
 Visibility: Public
 Create via: https://github.com/organizations/JHJ/repositories/new
 ```
@@ -33,6 +34,7 @@ Create via: https://github.com/organizations/JHJ/repositories/new
 Request that my GitHub access be expanded to include:
 - `dizhaky/.github`
 - `JHJ/.github`
+- Any other target repos where workflows should be deployed
 
 **How to request:**
 - Contact your Claude Code environment admin
@@ -47,71 +49,30 @@ Once repositories exist and access is granted:
 
 ✅ Claude Code agent will:
 1. Detect access to new repositories
-2. Clone both `.github` repos
-3. Create `.github/workflows/` directories
-4. Push all 4 workflow files:
+2. Push all 4 workflow files into each **target repo's** `.github/workflows/` directory:
    - `auto-merge-prs.yml`
    - `ci-auto-healer.yml`
    - `ci-auto-fix.yml`
    - `ci-escalation-detector.yml`
-5. Add documentation and README files
-6. Commit changes to both repos
-7. Verify workflows are live
-8. Send completion confirmation
+3. Add documentation and README files
+4. Commit changes to each repo
+5. Send completion confirmation
 
-**No manual intervention needed after repos are created!**
-
----
-
-## Timeline
-
-- **Now**: Repos need to be created + access expanded
-- **Check-in #1**: 1 hour (automatic)
-- **Check-in #2**: 2 hours (automatic)
-- **Check-in #3**: 4 hours (automatic)
-- **If completed**: Setup runs automatically, confirmation sent
+> **Important:** Workflows must be added to each repo individually. There is no GitHub mechanism to auto-deploy workflows from a `.github` repo to all other repos.
 
 ---
 
 ## Success Criteria
 
-Once setup completes, you'll have:
+Once setup completes for each target repository, you'll have:
 
-✅ **Personal Account (dizhaky)**
-- `.github` repository with 4 workflows
-- Auto-merge enabled for all personal repos
-- CI escalation available globally
-
-✅ **Organization (JHJ)**
-- `.github` repository with 4 workflows  
-- Auto-merge enabled for all org repos
-- CI escalation available globally
-
-✅ **Both in Sync**
-- Identical workflows in both accounts
-- Ready for mirroring
-
----
-
-## Current PR Status
-
-PR #50 (auto-merge feature) is:
-- ✅ Security fixed (CodeQL passing)
-- ✅ All CI checks passing
-- ✅ Auto-merge enabled locally
-- ⏳ Waiting for final tests to complete
-- 🔄 Will auto-merge once all checks pass
+✅ **Per-repository**
+- `.github/workflows/` directory with 4 workflows
+- Auto-merge enabled (applies to PRs in that repo)
+- CI escalation available (applies to that repo's CI runs)
 
 ---
 
 ## Questions?
 
 See `CI_ESCALATION_GUIDE.md` for detailed workflow documentation.
-
----
-
-**IMPORTANT**: This file is being monitored. Claude Code will automatically:
-1. Check hourly if repos exist
-2. Attempt setup once access is granted
-3. Report success/failure
-4. Continue monitoring until complete

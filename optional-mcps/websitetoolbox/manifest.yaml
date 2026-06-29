@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: websitetoolbox
+description: Manage your Website Toolbox community forum — categories, topics, posts, users, groups, conversations, messages, moderators, tags, and page views via the Forum REST API.
+source: https://github.com/webtoolbox/websitetoolbox-mcp
+
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "websitetoolbox-mcp"
+
+auth:
+  type: api_key
+  env:
+    - name: WEBSITETOOLBOX_API_KEY
+      prompt: "Website Toolbox API key (from your forum's Integrate → API settings)"
+      required: true
+      secret: true
+    - name: WEBSITETOOLBOX_USERNAME
+      prompt: "Username to act as (optional — leave blank for default)"
+      required: false
+      secret: false
+    - name: WEBSITETOOLBOX_EMAIL
+      prompt: "Email for the user (optional)"
+      required: false
+      secret: false
+
+post_install: |
+  Get your API key from your forum's admin panel under Integrate → API.
+
+  The server connects to your Website Toolbox community forum via the REST API.
+  Start a new Hermes session to load the community forum tools.

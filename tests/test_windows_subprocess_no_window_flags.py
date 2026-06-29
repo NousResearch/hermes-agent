@@ -168,7 +168,21 @@ def test_gateway_pid_scan_hides_wmic_and_powershell_windows(monkeypatch):
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway._scan_gateway_pids(set()) == [123]
-    assert [kwargs["creationflags"] for _, kwargs in captured] == [
+    # The wmic probe and the PowerShell fallback are the two console spawns
+    # this scan makes on Windows; both must hide the window via
+    # ``creationflags``. Filter to those two commands (rather than indexing a
+    # positional list) so the contract — "every Windows pid-scan spawn is
+    # windowless" — is asserted directly and can't be tripped by an unrelated
+    # captured call leaking in from prior module-state churn in the same
+    # process. ``.get`` keeps a stray non-windowed call from masking the real
+    # assertion behind a bare KeyError.
+    scan_spawns = [
+        kwargs
+        for cmd, kwargs in captured
+        if cmd and cmd[0] in {"wmic", "powershell", "pwsh"}
+    ]
+    assert len(scan_spawns) == 2, captured
+    assert [kwargs.get("creationflags") for kwargs in scan_spawns] == [
         _CREATE_NO_WINDOW,
         _CREATE_NO_WINDOW,
     ]
@@ -260,4 +274,104 @@ def test_inline_skill_shell_hides_bash_window(monkeypatch):
 
     assert skill_preprocessing.run_inline_shell("echo ok", cwd=None, timeout=5) == "ok"
     assert captured[0][0] == ["bash", "-c", "echo ok"]
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_tts_opus_conversion_hides_ffmpeg_window(monkeypatch, tmp_path):
+    from tools import tts_tool
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(returncode=0)
+
+    monkeypatch.setattr(tts_tool, "_has_ffmpeg", lambda: True)
+    monkeypatch.setattr(tts_tool, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(tts_tool.subprocess, "run", fake_run)
+
+    tts_tool._convert_to_opus(str(tmp_path / "v.mp3"))
+
+    assert captured[0][0][0] == "ffmpeg"
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_local_stt_audio_prep_hides_ffmpeg_window(monkeypatch, tmp_path):
+    from tools import transcription_tools
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(returncode=0)
+
+    monkeypatch.setattr(transcription_tools, "_find_ffmpeg_binary", lambda: "ffmpeg")
+    monkeypatch.setattr(transcription_tools, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(transcription_tools.subprocess, "run", fake_run)
+
+    transcription_tools._prepare_local_audio(str(tmp_path / "in.m4a"), str(tmp_path))
+
+    assert captured[0][0][0] == "ffmpeg"
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+def test_checkpoint_manager_git_hides_windows(monkeypatch):
+    from tools import checkpoint_manager
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="clean\n")
+
+    monkeypatch.setattr(checkpoint_manager, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(checkpoint_manager.subprocess, "run", fake_run)
+
+    ok, _, _ = checkpoint_manager._run_git(["status", "--short"], Path("C:/store"), ".")
+    assert ok
+    assert captured[0][0][0] == "git"
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_skills_hub_gh_token_hides_windows(monkeypatch):
+    from tools import skills_hub
+
+    captured = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Completed(stdout="gho_from_cli\n")
+
+    monkeypatch.setattr(skills_hub, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(skills_hub.subprocess, "run", fake_run)
+
+    auth = skills_hub.GitHubAuth.__new__(skills_hub.GitHubAuth)
+    assert auth._try_gh_cli() == "gho_from_cli"
+    assert captured[0][0] == ["gh", "auth", "token"]
+    assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+
+
+def test_tui_slash_worker_hides_python_window(monkeypatch):
+    from tui_gateway import server
+
+    captured = []
+
+    class _Proc:
+        stdin = SimpleNamespace()
+        stdout = []
+        stderr = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return _Proc()
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: SimpleNamespace(start=lambda: None))
+
+    import hermes_cli._subprocess_compat as subprocess_compat
+
+    monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+
+    server._SlashWorker("session-key", "model-x")
+
+    assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW

@@ -2892,6 +2892,25 @@ class MatrixAdapter(BasePlatformAdapter):
         is_direct = bool(getattr(content, "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
 
+        # Only auto-join when the inviter is authorized. Without this, any
+        # federated Matrix user could invite the bot into arbitrary rooms,
+        # exposing its presence and metadata. Mirrors the allow-list gate
+        # used on the message/reaction paths.
+        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if not allow_all and not (
+            self._allowed_user_ids and inviter in self._allowed_user_ids
+        ):
+            logger.warning(
+                "Matrix: rejecting invite to %s from unauthorized user %s",
+                room_id,
+                inviter,
+            )
+            return
+
         logger.info(
             "Matrix: invited to %s — joining (is_direct=%s)",
             room_id,

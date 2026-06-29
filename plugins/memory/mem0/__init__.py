@@ -250,6 +250,18 @@ class Mem0MemoryProvider(MemoryProvider):
         post_setup(hermes_home, config)
 
     def _create_backend(self):
+        # Lazy-install the mem0 SDK on demand before either backend imports
+        # it. ensure() honors security.allow_lazy_installs (default true) and,
+        # on a sealed Docker venv, redirects the install to the durable
+        # target. On failure we fall through so the import inside the backend
+        # produces the canonical error, captured below.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("memory.mem0", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            pass
         try:
             if self._mode == "oss":
                 from ._backend import OSSBackend

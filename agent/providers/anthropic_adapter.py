@@ -657,7 +657,7 @@ def _build_anthropic_client_with_bearer_hook(
     normalize_proxy_env_vars()
 
     from httpx import Timeout
-    from agent.azure_identity_adapter import build_bearer_http_client
+    from agent.providers.azure_identity_adapter import build_bearer_http_client
 
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
@@ -2685,7 +2685,7 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
     if "stream" in err_lower and "not supported" in err_lower:
         return True
     if "invokemodelwithresponsestream" in err_lower:
-        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from agent.providers.bedrock_adapter import is_streaming_access_denied_error
 
         return is_streaming_access_denied_error(exc)
     return False

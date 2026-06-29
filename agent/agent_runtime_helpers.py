@@ -21,6 +21,7 @@ Methods covered:
 """
 
 from __future__ import annotations
+from agent.providers.openrouter_adapter import is_openrouter_url
 
 import copy
 import json
@@ -851,7 +852,7 @@ def try_recover_primary_transport(
         return False
 
     # Skip for aggregator providers — they manage their own retry infra
-    if agent._is_openrouter_url():
+    if is_openrouter_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", "")):
         return False
     provider_lower = (agent.provider or "").strip().lower()
     if provider_lower in {"nous", "nous-research"}:
@@ -879,7 +880,7 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
 
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.providers.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
@@ -1051,7 +1052,7 @@ def restore_primary_runtime(agent) -> bool:
 
         # ── Rebuild client for the primary provider ──
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.providers.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
@@ -1443,7 +1444,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         )
         return client
     if agent.provider == "gemini":
-        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+        from agent.providers.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
         base_url = str(client_kwargs.get("base_url", "") or "")
         if is_native_gemini_base_url(base_url):
@@ -1630,7 +1631,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._client_kwargs = {}
             agent.client = MoAClient(agent.model or "default")
         elif api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import (
+            from agent.providers.anthropic_adapter import (
                 build_anthropic_client,
                 resolve_anthropic_token,
                 _is_oauth_token,

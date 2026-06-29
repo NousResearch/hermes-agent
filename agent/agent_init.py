@@ -509,8 +509,9 @@ def init_agent(
     # input costs by ~75% on multi-turn conversations. Uses system_and_3
     # strategy (4 breakpoints). See ``_anthropic_prompt_cache_policy``
     # for the layout-vs-transport decision.
+    from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
     agent._use_prompt_caching, agent._use_native_cache_layout = (
-        agent._anthropic_prompt_cache_policy()
+        anthropic_prompt_cache_policy(agent)
     )
     # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
     # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
@@ -641,12 +642,12 @@ def init_agent(
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
     if agent.api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+        from agent.providers.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
         if _is_bedrock_anthropic:
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            from agent.providers.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
             _br_region = _region_match.group(1) if _region_match else "us-east-1"
             agent._bedrock_region = _br_region
@@ -700,7 +701,7 @@ def init_agent(
             # so injects Claude-Code identity headers and system prompts
             # that cause 401/403 on their endpoints.  Guards #1739 and
             # the third-party identity-injection bug.
-            from agent.anthropic_adapter import _is_oauth_token as _is_oat
+            from agent.providers.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
             # No OpenAI client needed for Anthropic mode
@@ -713,7 +714,7 @@ def init_agent(
                 # The Anthropic adapter installs an httpx event hook
                 # that mints a fresh JWT per request — we never
                 # invoke or inspect the callable in the banner.
-                from agent.azure_identity_adapter import is_token_provider
+                from agent.providers.azure_identity_adapter import is_token_provider
 
                 if is_token_provider(effective_key):
                     print("🔑 Using credentials: Microsoft Entra ID")
@@ -989,7 +990,7 @@ def init_agent(
                 # provider (Azure Foundry). The OpenAI SDK mints a
                 # fresh JWT per request internally — the banner
                 # never invokes or inspects the callable.
-                from agent.azure_identity_adapter import is_token_provider
+                from agent.providers.azure_identity_adapter import is_token_provider
 
                 key_used = client_kwargs.get("api_key", "none")
                 if is_token_provider(key_used):

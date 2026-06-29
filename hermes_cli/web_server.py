@@ -6167,7 +6167,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     double-counts the token and shadows a real ANTHROPIC_API_KEY.
     """
     try:
-        from agent.anthropic_adapter import (
+        from agent.providers.anthropic_adapter import (
             read_hermes_oauth_credentials,
             _HERMES_OAUTH_FILE,
         )
@@ -6232,7 +6232,7 @@ def _claude_code_only_status() -> Dict[str, Any]:
     when they also have a separate Hermes-managed PKCE login.
     """
     try:
-        from agent.anthropic_adapter import read_claude_code_credentials
+        from agent.providers.anthropic_adapter import read_claude_code_credentials
         creds = read_claude_code_credentials()
     except Exception:
         creds = None
@@ -6622,7 +6622,7 @@ async def disconnect_oauth_provider(
         if provider_id == "anthropic":
             cleared = False
             try:
-                from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+                from agent.providers.anthropic_adapter import _HERMES_OAUTH_FILE
                 if _HERMES_OAUTH_FILE.exists():
                     _HERMES_OAUTH_FILE.unlink()
                     cleared = True
@@ -6706,7 +6706,7 @@ _oauth_sessions_lock = threading.Lock()
 # Guarded so hermes web still starts if anthropic_adapter is unavailable;
 # Phase 2 endpoints will return 501 in that case.
 try:
-    from agent.anthropic_adapter import (
+    from agent.providers.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
         _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
         _OAUTH_TOKEN_URLS as _ANTHROPIC_OAUTH_TOKEN_URLS,
@@ -6781,7 +6781,7 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     Mirrors what auth_commands.add_command does so the dashboard flow leaves
     the system in the same state as ``hermes auth add anthropic``.
     """
-    from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+    from agent.providers.anthropic_adapter import _HERMES_OAUTH_FILE
     payload = {
         "accessToken": access_token,
         "refreshToken": refresh_token,

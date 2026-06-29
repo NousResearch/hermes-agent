@@ -14,7 +14,7 @@ import sys, os
 sys.path.insert(0, os.path.expanduser("~/.hermes/hermes-agent"))
 
 import pytest
-from agent.anthropic_adapter import (
+from agent.providers.anthropic_adapter import (
     _sanitize_replay_block,
     _convert_content_part_to_anthropic,
     _convert_assistant_message,

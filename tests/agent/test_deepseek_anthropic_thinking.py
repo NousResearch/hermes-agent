@@ -38,7 +38,7 @@ class TestDeepSeekAnthropicPreservesThinking:
     )
     def test_unsigned_thinking_block_survives_replay(self, base_url: str) -> None:
         """Unsigned thinking (synthesised from reasoning_content) must be preserved."""
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -75,7 +75,7 @@ class TestDeepSeekAnthropicPreservesThinking:
 
     def test_unsigned_thinking_preserved_on_non_latest_assistant_turn(self) -> None:
         """DeepSeek validates history across every prior assistant turn, not just last."""
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "q1"},
@@ -125,7 +125,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         DeepSeek issues its own signatures and cannot validate Anthropic's —
         the strip-signed / keep-unsigned split matches the Kimi policy.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -163,7 +163,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         as ignored — cache markers interfere with signature validation on
         upstreams that do check them, so Hermes strips them everywhere.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -200,7 +200,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         detector should still fail closed so an accidental misuse doesn't
         quietly send signed Anthropic blocks to an OpenAI endpoint.
         """
-        from agent.anthropic_adapter import _is_deepseek_anthropic_endpoint
+        from agent.providers.anthropic_adapter import _is_deepseek_anthropic_endpoint
 
         assert _is_deepseek_anthropic_endpoint("https://api.deepseek.com") is False
         assert _is_deepseek_anthropic_endpoint("https://api.deepseek.com/v1") is False
@@ -211,7 +211,7 @@ class TestDeepSeekAnthropicPreservesThinking:
         """MiniMax and other third-party Anthropic endpoints must keep the
         generic strip-all behaviour (they reject unsigned blocks outright).
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},

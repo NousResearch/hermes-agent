@@ -952,7 +952,7 @@ def build_converse_kwargs(
     if system_prompt:
         kwargs["system"] = system_prompt
 
-    from agent.anthropic_adapter import _forbids_sampling_params
+    from agent.providers.anthropic_adapter import _forbids_sampling_params
 
     if not _forbids_sampling_params(model):
         if temperature is not None:

@@ -1,0 +1,162 @@
+[
+  {
+    "id": 4168699648,
+    "node_id": "PRR_kwDOPRF1G874eU8A",
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "id": 175728472,
+      "node_id": "BOT_kgDOCnlnWA",
+      "avatar_url": "https://avatars.githubusercontent.com/in/946600?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D",
+      "html_url": "https://github.com/apps/copilot-pull-request-reviewer",
+      "followers_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "Copilot encountered an error and was unable to review this pull request. You can try again by re-requesting a review.",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4168699648",
+    "pull_request_url": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957",
+    "author_association": "CONTRIBUTOR",
+    "_links": {
+      "html": {
+        "href": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4168699648"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957"
+      }
+    },
+    "submitted_at": "2026-04-24T07:28:33Z",
+    "commit_id": "73ba363088faf867c87c843c7e7bc67835a4de25"
+  },
+  {
+    "id": 4473092947,
+    "node_id": "PRR_kwDOPRF1G88AAAABCp37Uw",
+    "user": {
+      "login": "austinpickett",
+      "id": 260188,
+      "node_id": "MDQ6VXNlcjI2MDE4OA==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/260188?u=36bb957aed036a46255f71fb43f237b868cede1c&v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/austinpickett",
+      "html_url": "https://github.com/austinpickett",
+      "followers_url": "https://api.github.com/users/austinpickett/followers",
+      "following_url": "https://api.github.com/users/austinpickett/following{/other_user}",
+      "gists_url": "https://api.github.com/users/austinpickett/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/austinpickett/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/austinpickett/subscriptions",
+      "organizations_url": "https://api.github.com/users/austinpickett/orgs",
+      "repos_url": "https://api.github.com/users/austinpickett/repos",
+      "events_url": "https://api.github.com/users/austinpickett/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/austinpickett/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "## Code Review -- PR #14957\n\n**Verdict: Request Changes** -- one critical issue must be resolved before merge; several items warrant follow-up.\n\n---\n\n### Critical\n\n**scratch/test_proxy.py committed to production**\n\nA bare debug/exploration script with loose top-level print() calls -- zero pytest/unittest structure -- has been committed. It tests built-in Python stdlib behavior (urllib.request.proxy_bypass_environment) that has no connection to any actual change in this PR. This file has no home in the production tree. Must be removed before merge. If the intent is to codify this behaviour, move it to tests/tools/test_proxy_bypass.py with proper pytest test functions.\n\n---\n\n### Warnings\n\n**1. Dead code in test_curses_color_compat.py**\n\nThe file already has a module-level pytest.skip(allow_module_level=True) guard that fires before any of the new code runs. The newly added pytestmark = pytest.mark.skipif(...) and the entire try/except ImportError: class DummyCurses block are unreachable dead code. Clean this up.\n\n**2. run_agent.py verifier methods not wired up in this diff**\n\n_record_file_mutation_result(), _file_mutation_verifier_enabled(), and _format_file_mutation_failure_footer() are added/restored to AIAgent but no call sites in run_agent.py are modified. If these existed before and were accidentally dropped, the PR should note when. If they are new, they need at least one call site or integration test.\n\n**3. approval.py: ~/.hermes/ replacement hardcoded for Windows paths**\n\nIn _rewrite_resolved_hermes_home, the substitution string is always \"~/.hermes/\" (POSIX home-relative) even for the new Windows path branch. On native win32, this is not meaningful -- consider making the replacement Windows-aware.\n\n**4. api_server.py mutates os.environ at server startup**\n\nos.environ[\"IMAGE_SERVE_BASE_URL\"] is set as a process-global side effect after bind. If a test suite starts multiple APIServerAdapter instances, the first one silently wins. Consider an instance attribute and explicit injection into the image tool.\n\n---\n\n### Suggestions\n\n- hermes_cli/config.py: TINKER_API_KEY / WANDB_API_KEY are RL-training keys unrelated to stabilisation scope. Consider a dedicated RL-tools PR.\n- delegate_tool.py per-task api_key: confirm it is masked in any debug logging emitted by _build_child_agent.\n- image_gen.serve_base_url and _maybe_rewrite_image_url are well-structured and defensively guarded.\n\n---\n\n### Looks Good\n\n- cron session_name: threads cleanly through create_job -> _run_job_impl -> cronjob() with schema exposure.\n- Skills/tools cache invalidation: clear_skills_system_prompt_cache(clear_snapshot=True) after save is the right fix for immediate toggle effect.\n- Windows test suite skips in test_search_hidden_dirs.py, test_file_operations.py, test_local_shell_init.py, test_windows_native_support.py are targeted and correct.\n- test_background_review_summary.py import path update follows the refactor correctly.\n\n---\n\nReviewed by Hermes Agent (automated)",
+    "state": "CHANGES_REQUESTED",
+    "html_url": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4473092947",
+    "pull_request_url": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957",
+    "author_association": "COLLABORATOR",
+    "_links": {
+      "html": {
+        "href": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4473092947"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957"
+      }
+    },
+    "submitted_at": "2026-06-11T01:57:53Z",
+    "commit_id": "6081fad5eeefb363dd11b667cc533e9453a588de"
+  },
+  {
+    "id": 4476292662,
+    "node_id": "PRR_kwDOPRF1G88AAAABCs7ONg",
+    "user": {
+      "login": "austinpickett",
+      "id": 260188,
+      "node_id": "MDQ6VXNlcjI2MDE4OA==",
+      "avatar_url": "https://avatars.githubusercontent.com/u/260188?u=36bb957aed036a46255f71fb43f237b868cede1c&v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/austinpickett",
+      "html_url": "https://github.com/austinpickett",
+      "followers_url": "https://api.github.com/users/austinpickett/followers",
+      "following_url": "https://api.github.com/users/austinpickett/following{/other_user}",
+      "gists_url": "https://api.github.com/users/austinpickett/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/austinpickett/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/austinpickett/subscriptions",
+      "organizations_url": "https://api.github.com/users/austinpickett/orgs",
+      "repos_url": "https://api.github.com/users/austinpickett/repos",
+      "events_url": "https://api.github.com/users/austinpickett/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/austinpickett/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "All three blockers from my last review are resolved:\n\n- **`scratch/test_proxy.py`** \u2014 absent from diff \u2713\n- **Dead/unconnected methods** \u2014 removed \u2713  \n- **Duplicate verifier helpers in `run_agent.py`** \u2014 cleaned per commit message \u2713\n\nThe remaining changes are genuine fixes:\n\n- **Chinese think-tag stripping** (`\u601d\u8003`/`\u53cd\u601d`/`\u63a8\u7406`/`\u63a8\u6572`) in both `strip_think_blocks` and the CLI stream filter \u2014 real bug for Chinese-locale models leaking thought blocks\n- **Windows path fixes** in `subdirectory_hints.py` \u2014 `RuntimeError` catch, `posix=os.name!='nt'` on `shlex.split`, and `\\\\` path separator recognition\n- **Image serve URL via `ContextVar`** in `image_generation_tool.py` + `api_server.py` \u2014 correct thread-safe fix for remote API clients that can't access local FS\n- **Cache invalidation** after `hermes tools` skill/tool disable \u2014 happens outside conversations, correct behavior\n- **`--yes` on headless `skills install`** \u2014 prevents interactive prompt in web server context\n- **`session_name` for cron jobs** \u2014 small, well-contained, allows named sessions to resume history across runs\n- **Per-task endpoint creds in `delegate_task`** \u2014 useful, degrades cleanly to parent creds\n\nOne minor nit: the `api_mode` heuristic in `delegate_tool.py` checks hardcoded URL substrings (`api.anthropic.com`, `api.kimi.com/coding`, `chatgpt.com/backend-api/codex`) \u2014 will silently miss future endpoints, but the fallback to parent `api_mode` is safe. Consider a config-driven approach as a follow-up.",
+    "state": "DISMISSED",
+    "html_url": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4476292662",
+    "pull_request_url": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957",
+    "author_association": "COLLABORATOR",
+    "_links": {
+      "html": {
+        "href": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4476292662"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957"
+      }
+    },
+    "submitted_at": "2026-06-11T11:38:44Z",
+    "commit_id": "017e5a1c6cbc45a68e153259e7886af3a4db11a2"
+  },
+  {
+    "id": 4481865856,
+    "node_id": "PRR_kwDOPRF1G88AAAABCyPYgA",
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "id": 175728472,
+      "node_id": "BOT_kgDOCnlnWA",
+      "avatar_url": "https://avatars.githubusercontent.com/in/946600?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D",
+      "html_url": "https://github.com/apps/copilot-pull-request-reviewer",
+      "followers_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "## Pull request overview\n\nCopilot reviewed 54 out of 54 changed files in this pull request and generated 3 comments.\n\n\n\n<details>\n<summary>Comments suppressed due to low confidence (12)</summary>\n\n**tools/image_generation_tool.py:1**\n* `_maybe_rewrite_image_url()` currently rewrites *any* non-URL string when a base URL is present (including relative paths like `out.png` or `images/foo.png`). This can produce incorrect URLs and hide real relative-path semantics. Fix by first confirming the value is an absolute local filesystem path (e.g., `os.path.isabs(...)` for POSIX, drive-letter/UNC detection for Windows, and optionally `~`-prefixed paths after `expanduser()`), and only then rewrite; otherwise return the original string.\n**tools/image_generation_tool.py:1**\n* `_maybe_rewrite_image_url()` currently rewrites *any* non-URL string when a base URL is present (including relative paths like `out.png` or `images/foo.png`). This can produce incorrect URLs and hide real relative-path semantics. Fix by first confirming the value is an absolute local filesystem path (e.g., `os.path.isabs(...)` for POSIX, drive-letter/UNC detection for Windows, and optionally `~`-prefixed paths after `expanduser()`), and only then rewrite; otherwise return the original string.\n**tools/image_generation_tool.py:1**\n* `_maybe_rewrite_image_url()` currently rewrites *any* non-URL string when a base URL is present (including relative paths like `out.png` or `images/foo.png`). This can produce incorrect URLs and hide real relative-path semantics. Fix by first confirming the value is an absolute local filesystem path (e.g., `os.path.isabs(...)` for POSIX, drive-letter/UNC detection for Windows, and optionally `~`-prefixed paths after `expanduser()`), and only then rewrite; otherwise return the original string.\n**tools/cronjob_tools.py:1**\n* `session_name` is passed/stored without normalization, so an empty string can be persisted (and later treated as falsy elsewhere), creating a confusing 'set-but-not-effective' state. Consider normalizing `session_name` similarly to other optional string fields (strip whitespace; treat empty as `None`) on both create and update paths, and document how to clear the field (e.g., `\\\"\\\"` clears vs `null` leaves unchanged).\n**tools/cronjob_tools.py:1**\n* `session_name` is passed/stored without normalization, so an empty string can be persisted (and later treated as falsy elsewhere), creating a confusing 'set-but-not-effective' state. Consider normalizing `session_name` similarly to other optional string fields (strip whitespace; treat empty as `None`) on both create and update paths, and document how to clear the field (e.g., `\\\"\\\"` clears vs `null` leaves unchanged).\n**tools/cronjob_tools.py:1**\n* `session_name` is passed/stored without normalization, so an empty string can be persisted (and later treated as falsy elsewhere), creating a confusing 'set-but-not-effective' state. Consider normalizing `session_name` similarly to other optional string fields (strip whitespace; treat empty as `None`) on both create and update paths, and document how to clear the field (e.g., `\\\"\\\"` clears vs `null` leaves unchanged).\n**tools/cronjob_tools.py:1**\n* `session_name` is passed/stored without normalization, so an empty string can be persisted (and later treated as falsy elsewhere), creating a confusing 'set-but-not-effective' state. Consider normalizing `session_name` similarly to other optional string fields (strip whitespace; treat empty as `None`) on both create and update paths, and document how to clear the field (e.g., `\\\"\\\"` clears vs `null` leaves unchanged).\n**tools/cronjob_tools.py:1**\n* `session_name` is passed/stored without normalization, so an empty string can be persisted (and later treated as falsy elsewhere), creating a confusing 'set-but-not-effective' state. Consider normalizing `session_name` similarly to other optional string fields (strip whitespace; treat empty as `None`) on both create and update paths, and document how to clear the field (e.g., `\\\"\\\"` clears vs `null` leaves unchanged).\n**tools/skills_tool.py:1**\n* Path normalization is repeated in multiple comprehensions via `.replace(\\\"\\\\\\\\\\\", \\\"/\\\")`. For clarity and consistency, consider using `Path(...).as_posix()` (or `PurePosixPath(relative_path)` if you need a pure conversion) in one place, or a small helper to normalize relative paths to `'/'` separators.\n**tools/skills_tool.py:1**\n* Path normalization is repeated in multiple comprehensions via `.replace(\\\"\\\\\\\\\\\", \\\"/\\\")`. For clarity and consistency, consider using `Path(...).as_posix()` (or `PurePosixPath(relative_path)` if you need a pure conversion) in one place, or a small helper to normalize relative paths to `'/'` separators.\n**tools/skills_tool.py:1**\n* Path normalization is repeated in multiple comprehensions via `.replace(\\\"\\\\\\\\\\\", \\\"/\\\")`. For clarity and consistency, consider using `Path(...).as_posix()` (or `PurePosixPath(relative_path)` if you need a pure conversion) in one place, or a small helper to normalize relative paths to `'/'` separators.\n**tools/skills_tool.py:1**\n* Path normalization is repeated in multiple comprehensions via `.replace(\\\"\\\\\\\\\\\", \\\"/\\\")`. For clarity and consistency, consider using `Path(...).as_posix()` (or `PurePosixPath(relative_path)` if you need a pure conversion) in one place, or a small helper to normalize relative paths to `'/'` separators.\n</details>\n\n",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4481865856",
+    "pull_request_url": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957",
+    "author_association": "CONTRIBUTOR",
+    "_links": {
+      "html": {
+        "href": "https://github.com/NousResearch/hermes-agent/pull/14957#pullrequestreview-4481865856"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/NousResearch/hermes-agent/pulls/14957"
+      }
+    },
+    "submitted_at": "2026-06-12T02:16:53Z",
+    "commit_id": "1ab4d3efe8add51a25273f29d399b031a6d3d8c1"
+  }
+]

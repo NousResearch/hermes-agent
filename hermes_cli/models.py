@@ -2414,7 +2414,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # below — bedrock is not expected to appear in that table.
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import bedrock_model_ids_or_none
+            from agent.providers.bedrock_adapter import bedrock_model_ids_or_none
             ids = bedrock_model_ids_or_none()
             if ids is not None:
                 return ids
@@ -2690,7 +2690,7 @@ def _fetch_anthropic_models(
     Returns sorted model IDs or None.
     """
     try:
-        from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
+        from agent.providers.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
     except ImportError:
         return None
 
@@ -2702,7 +2702,7 @@ def _fetch_anthropic_models(
     is_oauth = _is_oauth_token(token)
     if is_oauth:
         headers["Authorization"] = f"Bearer {token}"
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
+        from agent.providers.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
         headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
     else:
         headers["x-api-key"] = token
@@ -4110,7 +4110,7 @@ def validate_requested_model(
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
+            from agent.providers.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
             region = resolve_bedrock_region()
             discovered = discover_bedrock_models(region)
             discovered_ids = {m["id"] for m in discovered}

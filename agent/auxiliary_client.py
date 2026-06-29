@@ -1083,7 +1083,7 @@ class _AnthropicCompletionsAdapter:
         self._is_oauth = is_oauth
 
     def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
         from agent.transports import get_transport
 
         messages = kwargs.get("messages", [])
@@ -1123,7 +1123,7 @@ class _AnthropicCompletionsAdapter:
         # temperature for models that still accept it. build_anthropic_kwargs
         # additionally strips these keys as a safety net — keep both layers.
         if temperature is not None:
-            from agent.anthropic_adapter import _forbids_sampling_params
+            from agent.providers.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
@@ -1271,7 +1271,7 @@ def _maybe_wrap_anthropic(
     if _safe_isinstance(client_obj, CodexAuxiliaryClient):
         return client_obj
     try:
-        from agent.gemini_native_adapter import GeminiNativeClient
+        from agent.providers.gemini_native_adapter import GeminiNativeClient
         if _safe_isinstance(client_obj, GeminiNativeClient):
             return client_obj
     except ImportError:
@@ -1295,7 +1295,7 @@ def _maybe_wrap_anthropic(
         return client_obj
 
     try:
-        from agent.anthropic_adapter import build_anthropic_client
+        from agent.providers.anthropic_adapter import build_anthropic_client
     except ImportError:
         logger.warning(
             "Endpoint %s speaks Anthropic Messages but the anthropic SDK is "
@@ -1608,7 +1608,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             if provider_id == "gemini":
-                from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+                from agent.providers.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
                 if is_native_gemini_base_url(base_url):
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
@@ -1648,7 +1648,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         if provider_id == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+            from agent.providers.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
             if is_native_gemini_base_url(base_url):
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
@@ -2078,7 +2078,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         # LiteLLM proxies, etc.).  Must NEVER be treated as OAuth —
         # Anthropic OAuth claims only apply to api.anthropic.com.
         try:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.providers.anthropic_adapter import build_anthropic_client
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
             logger.warning(
@@ -2282,7 +2282,7 @@ def _try_azure_foundry(
 
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
-        from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+        from agent.providers.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
     except ImportError:
         return None, None
 
@@ -2321,7 +2321,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     except Exception:
         pass
 
-    from agent.anthropic_adapter import _is_oauth_token
+    from agent.providers.anthropic_adapter import _is_oauth_token
     is_oauth = _is_oauth_token(token)
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
@@ -3137,7 +3137,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             _evict_cached_clients(normalized)
             return True
         if normalized == "anthropic":
-            from agent.anthropic_adapter import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
+            from agent.providers.anthropic_adapter import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
 
             creds = read_claude_code_credentials()
             token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None
@@ -3773,7 +3773,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     try:
-        from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
+        from agent.providers.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
         if isinstance(sync_client, GeminiNativeClient):
             return AsyncGeminiNativeClient(sync_client), model
@@ -4202,7 +4202,7 @@ def resolve_provider_client(
                 # branch in _try_custom_endpoint(). See #15033.
                 if entry_api_mode == "anthropic_messages":
                     try:
-                        from agent.anthropic_adapter import build_anthropic_client
+                        from agent.providers.anthropic_adapter import build_anthropic_client
                         real_client = build_anthropic_client(custom_key, custom_base)
                     except ImportError:
                         logger.warning(
@@ -4336,7 +4336,7 @@ def resolve_provider_client(
         final_model = _normalize_resolved_model(model or default_model, provider)
 
         if provider == "gemini":
-            from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+            from agent.providers.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
             if is_native_gemini_base_url(base_url):
                 client = GeminiNativeClient(api_key=api_key, base_url=base_url)
@@ -4445,8 +4445,8 @@ def resolve_provider_client(
         # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
         # boto3's credential chain (IAM roles, SSO, env vars, instance metadata).
         try:
-            from agent.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            from agent.providers.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
+            from agent.providers.anthropic_adapter import build_anthropic_bedrock_client
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
                            "boto3 or anthropic SDK not installed")
@@ -5468,7 +5468,7 @@ def _build_call_kwargs(
     # structured-JSON extraction) don't 400 the moment
     # the aux model is flipped to 4.7.
     if temperature is not None:
-        from agent.anthropic_adapter import _forbids_sampling_params
+        from agent.providers.anthropic_adapter import _forbids_sampling_params
         if _forbids_sampling_params(model):
             temperature = None
 

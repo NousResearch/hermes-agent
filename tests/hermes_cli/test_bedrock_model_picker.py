@@ -316,7 +316,7 @@ class TestBedrockRegionRouting:
 
     def test_env_var_takes_priority_over_botocore_profile(self, monkeypatch):
         """AWS_REGION env var wins over botocore profile region."""
-        from agent.bedrock_adapter import resolve_bedrock_region
+        from agent.providers.bedrock_adapter import resolve_bedrock_region
 
         monkeypatch.setenv("AWS_REGION", "us-west-2")
 

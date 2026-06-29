@@ -1081,7 +1081,7 @@ def _model_flow_azure_foundry(config, current_model=""):
 
     if use_entra:
         try:
-            from agent.azure_identity_adapter import (
+            from agent.providers.azure_identity_adapter import (
                 EntraIdentityConfig,
                 SCOPE_AI_AZURE_DEFAULT,
                 build_token_provider,
@@ -2145,7 +2145,7 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 1. Check for AWS credentials
     try:
-        from agent.bedrock_adapter import (
+        from agent.providers.bedrock_adapter import (
             has_aws_credentials,
             resolve_aws_auth_env_var,
             resolve_bedrock_region,
@@ -2419,7 +2419,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     # errors fall through without blocking.
     if provider_id == "gemini" and existing_key:
         try:
-            from agent.gemini_native_adapter import probe_gemini_tier
+            from agent.providers.gemini_native_adapter import probe_gemini_tier
         except Exception:
             probe_gemini_tier = None
         if probe_gemini_tier is not None:
@@ -2697,7 +2697,7 @@ def _model_flow_anthropic(config, current_model=""):
     existing_key = get_anthropic_key()
     cc_available = False
     try:
-        from agent.anthropic_adapter import (
+        from agent.providers.anthropic_adapter import (
             read_claude_code_credentials,
             is_claude_code_token_valid,
             _is_oauth_token,

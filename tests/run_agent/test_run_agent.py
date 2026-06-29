@@ -1,3 +1,4 @@
+from agent.providers.openai_adapter import is_direct_openai_url, is_azure_openai_url, is_github_copilot_url, max_tokens_param
 """Unit tests for run_agent.py (AIAgent).
 
 Tests cover pure functions, state/structure methods, and conversation loop
@@ -796,7 +797,7 @@ class TestInit:
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
+            patch("agent.providers.anthropic_adapter._anthropic_sdk") as mock_anthropic,
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
@@ -864,7 +865,7 @@ class TestInit:
         with (
             patch("run_agent.get_tool_definitions", return_value=[]),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter._anthropic_sdk"),
+            patch("agent.providers.anthropic_adapter._anthropic_sdk"),
         ):
             a = AIAgent(
                 api_key="test-key-1234567890",
@@ -5628,40 +5629,40 @@ class TestMaxTokensParam:
 
     def test_returns_max_completion_tokens_for_direct_openai(self, agent):
         agent.base_url = "https://api.openai.com/v1"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_completion_tokens": 4096}
 
     def test_returns_max_tokens_for_openrouter(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_tokens": 4096}
 
     def test_returns_max_tokens_for_local(self, agent):
         agent.base_url = "http://localhost:11434/v1"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_tokens": 4096}
 
     def test_not_tricked_by_openai_in_openrouter_url(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1/api.openai.com"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_tokens": 4096}
 
     def test_returns_max_completion_tokens_for_azure(self, agent):
         """Azure OpenAI requires max_completion_tokens for gpt-5.x models."""
         agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_completion_tokens": 4096}
 
     def test_returns_max_completion_tokens_for_github_copilot(self, agent):
         """GitHub Copilot's OpenAI-compatible API rejects max_tokens for newer models."""
         agent.base_url = "https://api.githubcopilot.com"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_completion_tokens": 4096}
 
     def test_returns_max_completion_tokens_for_github_copilot_path(self, agent):
         """Detect Copilot by hostname even when the configured URL includes a path."""
         agent.base_url = "https://api.githubcopilot.com/chat/completions"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_completion_tokens": 4096}
 
     # ── Model-name fallback for non-openai.com endpoints serving newer families ──
@@ -5671,32 +5672,32 @@ class TestMaxTokensParam:
         max_completion_tokens — otherwise the server 400s on max_tokens."""
         agent.base_url = "https://my-gateway.example.com/v1"
         agent.model = "gpt-5.4"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_completion_tokens": 4096}
 
     def test_returns_max_completion_tokens_for_gpt4o_on_openrouter(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "openai/gpt-4o-mini"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_completion_tokens": 4096}
 
     def test_returns_max_completion_tokens_for_o1_on_custom_endpoint(self, agent):
         agent.base_url = "https://custom.example.com/v1"
         agent.model = "o1-preview"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_completion_tokens": 4096}
 
     def test_returns_max_tokens_for_classic_gpt4_on_openrouter(self, agent):
         """Classic gpt-4 (non-omni) still uses max_tokens. Don't over-match."""
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "openai/gpt-4-turbo"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_tokens": 4096}
 
     def test_returns_max_tokens_for_llama_on_local(self, agent):
         agent.base_url = "http://localhost:11434/v1"
         agent.model = "llama3"
-        result = agent._max_tokens_param(4096)
+        result = max_tokens_param(agent.model, 4096, getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""), getattr(agent, "_base_url_lower", ""))
         assert result == {"max_tokens": 4096}
 
 
@@ -5711,9 +5712,9 @@ class TestGpt5ApiModeRouting:
         # Mirror the routing logic from __init__
         if (
             agent.api_mode == "chat_completions"
-            and not agent._is_azure_openai_url()
+            and not is_azure_openai_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_lower", ""))
             and (
-                agent._is_direct_openai_url()
+                is_direct_openai_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""))
                 or agent._provider_model_requires_responses_api(
                     agent.model, provider=agent.provider,
                 )
@@ -5729,9 +5730,9 @@ class TestGpt5ApiModeRouting:
         agent.model = "gpt-5.4-mini"
         if (
             agent.api_mode == "chat_completions"
-            and not agent._is_azure_openai_url()
+            and not is_azure_openai_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_lower", ""))
             and (
-                agent._is_direct_openai_url()
+                is_direct_openai_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""))
                 or agent._provider_model_requires_responses_api(
                     agent.model, provider=agent.provider,
                 )
@@ -5748,9 +5749,9 @@ class TestGpt5ApiModeRouting:
         agent.model = "openai/gpt-5.5"
         if (
             agent.api_mode == "chat_completions"
-            and not agent._is_azure_openai_url()
+            and not is_azure_openai_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_lower", ""))
             and (
-                agent._is_direct_openai_url()
+                is_direct_openai_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_hostname", ""))
                 or agent._provider_model_requires_responses_api(
                     agent.model, provider=agent.provider,
                 )
@@ -5760,12 +5761,12 @@ class TestGpt5ApiModeRouting:
         assert agent.api_mode == "chat_completions"
 
     def test_is_azure_openai_url_detection(self, agent):
-        assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True
-        assert agent._is_azure_openai_url("https://api.openai.com/v1") is False
-        assert agent._is_azure_openai_url("https://openrouter.ai/api/v1") is False
+        assert is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True
+        assert is_azure_openai_url("https://api.openai.com/v1") is False
+        assert is_azure_openai_url("https://openrouter.ai/api/v1") is False
         # Path-embedded azure string should still detect — we're ~substring matching
         agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
-        assert agent._is_azure_openai_url() is True
+        assert is_azure_openai_url(getattr(agent, "base_url", None), getattr(agent, "_base_url_lower", "")) is True
 
 
 # ---------------------------------------------------------------------------
@@ -5976,7 +5977,7 @@ class TestBuildApiKwargsAnthropicMaxTokens:
         agent.max_tokens = 4096
         agent.reasoning_config = None
 
-        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+        with patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build:
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
             agent._build_api_kwargs([{"role": "user", "content": "test"}])
             _, kwargs = mock_build.call_args
@@ -5992,7 +5993,7 @@ class TestBuildApiKwargsAnthropicMaxTokens:
         agent.max_tokens = None
         agent.reasoning_config = None
 
-        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+        with patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build:
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 16384}
             agent._build_api_kwargs([{"role": "user", "content": "test"}])
             call_args = mock_build.call_args
@@ -6018,7 +6019,7 @@ class TestAnthropicImageFallback:
 
         with (
             patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."}))),
-            patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
+            patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
             agent._build_api_kwargs(api_messages)
@@ -6058,7 +6059,7 @@ class TestAnthropicImageFallback:
         mock_vision = AsyncMock(return_value=json.dumps({"success": True, "analysis": "A small test image."}))
         with (
             patch("tools.vision_tools.vision_analyze_tool", new=mock_vision),
-            patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
+            patch("agent.providers.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
             agent._build_api_kwargs(api_messages)
@@ -6081,8 +6082,8 @@ class TestFallbackAnthropicProvider:
 
         with (
             patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token", return_value=None),
         ):
             mock_build.return_value = MagicMock()
             result = agent._try_activate_fallback()
@@ -6104,8 +6105,8 @@ class TestFallbackAnthropicProvider:
 
         with (
             patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=None),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token", return_value=None),
         ):
             agent._try_activate_fallback()
 
@@ -6229,7 +6230,7 @@ class TestAnthropicBaseUrlPassthrough:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.providers.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
             a = AIAgent(
@@ -6248,7 +6249,7 @@ class TestAnthropicBaseUrlPassthrough:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.providers.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
             a = AIAgent(
@@ -6269,7 +6270,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+            patch("agent.providers.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             old_client = MagicMock()
             new_client = MagicMock()
@@ -6289,8 +6290,8 @@ class TestAnthropicCredentialRefresh:
         agent.provider = "anthropic"
 
         with (
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild,
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=new_client) as rebuild,
         ):
             assert agent._try_refresh_anthropic_client_credentials() is True
 
@@ -6305,7 +6306,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-same-token",
@@ -6321,8 +6322,8 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_api_key = "sk-ant-oat01-same-token"
 
         with (
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-same-token"),
-            patch("agent.anthropic_adapter.build_anthropic_client") as rebuild,
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-same-token"),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client") as rebuild,
         ):
             assert agent._try_refresh_anthropic_client_credentials() is False
 
@@ -6333,7 +6334,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
@@ -6362,7 +6363,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
@@ -6391,7 +6392,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
@@ -6418,7 +6419,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
@@ -6445,7 +6446,7 @@ class TestAnthropicCredentialRefresh:
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
             patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.providers.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
                 api_key="sk-ant-oat01-current-token",
@@ -7126,9 +7127,9 @@ class TestOAuthFlagAfterCredentialRefresh:
         agent._is_anthropic_oauth = False
 
         with (
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token",
                   return_value="sk-ant-setup-oauth-token"),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("agent.providers.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
@@ -7145,9 +7146,9 @@ class TestOAuthFlagAfterCredentialRefresh:
         agent._is_anthropic_oauth = True
 
         with (
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token",
                   return_value="sk-ant-api03-new-key"),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("agent.providers.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
         ):
             result = agent._try_refresh_anthropic_client_credentials()
@@ -7172,9 +7173,9 @@ class TestFallbackSetsOAuthFlag:
         with (
             patch("agent.auxiliary_client.resolve_provider_client",
                   return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("agent.providers.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token",
                   return_value=None),
         ):
             result = agent._try_activate_fallback()
@@ -7195,9 +7196,9 @@ class TestFallbackSetsOAuthFlag:
         with (
             patch("agent.auxiliary_client.resolve_provider_client",
                   return_value=(mock_client, None)),
-            patch("agent.anthropic_adapter.build_anthropic_client",
+            patch("agent.providers.anthropic_adapter.build_anthropic_client",
                   return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token",
+            patch("agent.providers.anthropic_adapter.resolve_anthropic_token",
                   return_value=None),
         ):
             result = agent._try_activate_fallback()

@@ -37,7 +37,7 @@ class TestKimiCodingSkipsAnthropicThinking:
         ],
     )
     def test_kimi_coding_endpoint_omits_thinking(self, base_url: str) -> None:
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="kimi-k2.5",
@@ -54,7 +54,7 @@ class TestKimiCodingSkipsAnthropicThinking:
         assert "output_config" not in kwargs
 
     def test_kimi_coding_with_explicit_disabled_also_omits(self) -> None:
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="kimi-k2.5",
@@ -68,7 +68,7 @@ class TestKimiCodingSkipsAnthropicThinking:
 
     def test_non_kimi_third_party_still_gets_thinking(self) -> None:
         """MiniMax and other third-party Anthropic endpoints must retain thinking."""
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="MiniMax-M2.7",
@@ -82,7 +82,7 @@ class TestKimiCodingSkipsAnthropicThinking:
         assert kwargs["thinking"]["type"] == "enabled"
 
     def test_native_anthropic_still_gets_thinking(self) -> None:
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",
@@ -105,7 +105,7 @@ class TestKimiCodingSkipsAnthropicThinking:
         suppression must apply to every Kimi host, not just ``/coding``.
         See #17057.
         """
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="kimi-k2.5",
@@ -136,7 +136,7 @@ class TestKimiCodingSkipsAnthropicThinking:
         self, base_url: str, model: str
     ) -> None:
         """Custom / proxied Kimi endpoints must also strip Anthropic thinking."""
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model=model,
@@ -159,7 +159,7 @@ class TestKimiCodingSkipsAnthropicThinking:
         Guards against over-broad model-family matching — only model names
         starting with a Kimi/Moonshot prefix should trigger suppression.
         """
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="MiniMax-M2.7",
@@ -177,7 +177,7 @@ class TestKimiCodingSkipsAnthropicThinking:
         blocks must survive the third-party signature-stripping pass so
         the upstream's message-history validation passes.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},

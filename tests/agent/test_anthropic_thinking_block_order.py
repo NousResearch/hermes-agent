@@ -36,7 +36,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.transports import get_transport
-from agent.anthropic_adapter import convert_messages_to_anthropic
+from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
 
 def _thinking_block(text: str, signature: str) -> SimpleNamespace:

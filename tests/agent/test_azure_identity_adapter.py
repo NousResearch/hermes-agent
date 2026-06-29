@@ -31,7 +31,7 @@ import pytest
 # about cache invalidation.
 @pytest.fixture(autouse=True)
 def _reset_adapter_cache():
-    from agent.azure_identity_adapter import reset_credential_cache
+    from agent.providers.azure_identity_adapter import reset_credential_cache
     reset_credential_cache()
     yield
     reset_credential_cache()
@@ -60,7 +60,7 @@ class TestEntraScopeConstant:
     """
 
     def test_default_scope_matches_microsoft_documentation(self):
-        from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT
+        from agent.providers.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT
         assert SCOPE_AI_AZURE_DEFAULT == "https://ai.azure.com/.default"
 
 
@@ -74,7 +74,7 @@ class TestMaterializeBearerForHttp:
     callable exactly once and never fall through to display masking."""
 
     def test_callable_is_invoked_and_returns_token(self):
-        from agent.azure_identity_adapter import materialize_bearer_for_http
+        from agent.providers.azure_identity_adapter import materialize_bearer_for_http
 
         invoked = {"count": 0}
 
@@ -86,16 +86,16 @@ class TestMaterializeBearerForHttp:
         assert invoked["count"] == 1
 
     def test_string_passes_through(self):
-        from agent.azure_identity_adapter import materialize_bearer_for_http
+        from agent.providers.azure_identity_adapter import materialize_bearer_for_http
         assert materialize_bearer_for_http("plain-key") == "plain-key"
 
     def test_callable_returning_empty_raises(self):
-        from agent.azure_identity_adapter import materialize_bearer_for_http
+        from agent.providers.azure_identity_adapter import materialize_bearer_for_http
         with pytest.raises(ValueError):
             materialize_bearer_for_http(lambda: "")
 
     def test_empty_string_raises(self):
-        from agent.azure_identity_adapter import materialize_bearer_for_http
+        from agent.providers.azure_identity_adapter import materialize_bearer_for_http
         with pytest.raises(ValueError):
             materialize_bearer_for_http("")
         with pytest.raises(ValueError):
@@ -115,7 +115,7 @@ class TestBuildBearerHttpClient:
 
     def test_returns_httpx_client_with_request_hook(self):
         import httpx
-        from agent.azure_identity_adapter import build_bearer_http_client
+        from agent.providers.azure_identity_adapter import build_bearer_http_client
 
         client = build_bearer_http_client(lambda: "jwt")
         try:
@@ -127,7 +127,7 @@ class TestBuildBearerHttpClient:
 
     def test_hook_overrides_authorization_header(self):
         import httpx
-        from agent.azure_identity_adapter import build_bearer_http_client
+        from agent.providers.azure_identity_adapter import build_bearer_http_client
 
         minted_tokens = []
 
@@ -179,7 +179,7 @@ class TestBuildBearerHttpClient:
         """
         import logging
         import httpx
-        from agent.azure_identity_adapter import build_bearer_http_client
+        from agent.providers.azure_identity_adapter import build_bearer_http_client
 
         def bad_provider():
             return ""  # empty token → materialize_bearer_for_http raises
@@ -208,7 +208,7 @@ class TestBuildBearerHttpClient:
             client.close()
 
     def test_rejects_non_callable_provider(self):
-        from agent.azure_identity_adapter import build_bearer_http_client
+        from agent.providers.azure_identity_adapter import build_bearer_http_client
         with pytest.raises(ValueError):
             build_bearer_http_client(cast(Callable[[], str], "plain-string-not-callable"))
         with pytest.raises(ValueError):
@@ -216,7 +216,7 @@ class TestBuildBearerHttpClient:
 
     def test_forwards_httpx_kwargs(self):
         import httpx
-        from agent.azure_identity_adapter import build_bearer_http_client
+        from agent.providers.azure_identity_adapter import build_bearer_http_client
 
         timeout = httpx.Timeout(60.0, connect=5.0)
         client = build_bearer_http_client(lambda: "jwt", timeout=timeout)
@@ -230,11 +230,11 @@ class TestBuildBearerHttpClient:
 
 class TestIsTokenProvider:
     def test_callable_is_token_provider(self):
-        from agent.azure_identity_adapter import is_token_provider
+        from agent.providers.azure_identity_adapter import is_token_provider
         assert is_token_provider(lambda: "x") is True
 
     def test_string_is_not_token_provider(self):
-        from agent.azure_identity_adapter import is_token_provider
+        from agent.providers.azure_identity_adapter import is_token_provider
         assert is_token_provider("static-key") is False
         # ``str`` instances are technically callable in some edge cases
         # — confirm they're never classified as token providers.
@@ -251,7 +251,7 @@ class TestEntraIdentityConfig:
     must round-trip through dict cleanly and never lose fields."""
 
     def test_to_dict_round_trip(self):
-        from agent.azure_identity_adapter import EntraIdentityConfig
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig
         cfg = EntraIdentityConfig(
             scope="https://ai.azure.com/.default",
             exclude_interactive_browser=False,
@@ -260,7 +260,7 @@ class TestEntraIdentityConfig:
         assert rebuilt == cfg
 
     def test_from_dict_handles_empty_strings(self):
-        from agent.azure_identity_adapter import EntraIdentityConfig
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig
         cfg = EntraIdentityConfig.from_dict({
             "scope": "",
             "client_id": None,
@@ -272,7 +272,7 @@ class TestEntraIdentityConfig:
         """Old config.yaml that still has model.entra.client_id /
         tenant_id / authority should not crash from_dict — those values
         are now read from AZURE_* env vars by azure-identity directly."""
-        from agent.azure_identity_adapter import EntraIdentityConfig
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig
         cfg = EntraIdentityConfig.from_dict({
             "tenant_id": "legacy-tenant",
             "authority": "https://login.partner.microsoftonline.cn",
@@ -284,12 +284,12 @@ class TestEntraIdentityConfig:
         assert not hasattr(cfg, "authority")
 
     def test_constructor_normalizes_empty_scope(self):
-        from agent.azure_identity_adapter import EntraIdentityConfig
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig
         cfg = EntraIdentityConfig(scope="")
         assert cfg.scope.endswith("/.default")
 
     def test_from_dict_default_scope_override(self):
-        from agent.azure_identity_adapter import EntraIdentityConfig
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig
         cfg = EntraIdentityConfig.from_dict(
             {"scope": ""},
             default_scope="https://custom.example/.default",
@@ -298,7 +298,7 @@ class TestEntraIdentityConfig:
 
     def test_dataclass_is_frozen(self):
         # Frozen dataclasses are hashable / safe to pass through caches.
-        from agent.azure_identity_adapter import EntraIdentityConfig
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig
         cfg = EntraIdentityConfig()
         with pytest.raises((AttributeError, Exception)):
             setattr(cfg, "scope", "mutated")
@@ -364,7 +364,7 @@ class TestBuildCredential:
         browser auth. Tenant / authority / service principal config
         flow through the standard ``AZURE_*`` env vars (read by
         azure-identity directly), not Hermes config kwargs."""
-        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig, build_credential
         cred = build_credential(EntraIdentityConfig())
         kwargs = fake_azure_identity.last_credential_kwargs
         # Default config should produce empty kwargs — SDK uses its own
@@ -377,13 +377,13 @@ class TestBuildCredential:
         ``exclude_interactive_browser=False``, the SDK kwarg is set to
         False. Without the opt-in we don't pass the kwarg at all (SDK
         default is True / browser excluded)."""
-        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig, build_credential
         build_credential(EntraIdentityConfig(exclude_interactive_browser=False))
         kwargs = fake_azure_identity.last_credential_kwargs
         assert kwargs["exclude_interactive_browser_credential"] is False
 
     def test_credential_is_cached_per_config(self, fake_azure_identity):
-        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig, build_credential
         cfg = EntraIdentityConfig(scope="s1")
         c1 = build_credential(cfg)
         c2 = build_credential(cfg)
@@ -391,14 +391,14 @@ class TestBuildCredential:
         assert fake_azure_identity.credential_count == 1
 
     def test_distinct_configs_get_distinct_credentials(self, fake_azure_identity):
-        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
+        from agent.providers.azure_identity_adapter import EntraIdentityConfig, build_credential
         c1 = build_credential(EntraIdentityConfig(scope="s1"))
         c2 = build_credential(EntraIdentityConfig(scope="s2"))
         assert c1 is not c2
         assert fake_azure_identity.credential_count == 2
 
     def test_reset_cache_invalidates(self, fake_azure_identity):
-        from agent.azure_identity_adapter import (
+        from agent.providers.azure_identity_adapter import (
             EntraIdentityConfig,
             build_credential,
             reset_credential_cache,
@@ -412,7 +412,7 @@ class TestBuildCredential:
 
 class TestBuildTokenProvider:
     def test_returns_callable_for_scope(self, fake_azure_identity):
-        from agent.azure_identity_adapter import build_token_provider
+        from agent.providers.azure_identity_adapter import build_token_provider
         provider = build_token_provider(scope="https://ai.azure.com/.default")
         assert callable(provider)
         assert provider() == "jwt-for-https://ai.azure.com/.default"
@@ -423,7 +423,7 @@ class TestBuildTokenProvider:
         ``build_token_provider`` uses ``SCOPE_AI_AZURE_DEFAULT`` —
         Microsoft's documented Foundry inference scope. ``base_url`` is
         accepted for back-compat but ignored."""
-        from agent.azure_identity_adapter import (
+        from agent.providers.azure_identity_adapter import (
             SCOPE_AI_AZURE_DEFAULT,
             build_token_provider,
         )
@@ -431,7 +431,7 @@ class TestBuildTokenProvider:
         assert fake_azure_identity.last_scope == SCOPE_AI_AZURE_DEFAULT
 
     def test_explicit_scope_wins_over_base_url(self, fake_azure_identity):
-        from agent.azure_identity_adapter import build_token_provider
+        from agent.providers.azure_identity_adapter import build_token_provider
         build_token_provider(
             scope="https://override.example/.default",
             base_url="https://r.openai.azure.com/openai/v1",
@@ -439,7 +439,7 @@ class TestBuildTokenProvider:
         assert fake_azure_identity.last_scope == "https://override.example/.default"
 
     def test_config_object_wins_over_kwargs(self, fake_azure_identity):
-        from agent.azure_identity_adapter import (
+        from agent.providers.azure_identity_adapter import (
             EntraIdentityConfig,
             build_token_provider,
         )
@@ -546,7 +546,7 @@ class TestHasAzureIdentityCredentials:
         assert result is True
 
     def test_returns_true_on_successful_token_mint(self, fake_azure_identity):
-        from agent.azure_identity_adapter import has_azure_identity_credentials
+        from agent.providers.azure_identity_adapter import has_azure_identity_credentials
         assert has_azure_identity_credentials("https://x/.default", timeout_seconds=0.5) is True
 
     def test_returns_false_when_get_token_raises(self, monkeypatch):
@@ -622,7 +622,7 @@ class TestDescribeActiveCredential:
         assert "lazy" in info["hint"].lower()
 
     def test_reports_env_sources_for_managed_identity(self, fake_azure_identity, monkeypatch):
-        from agent.azure_identity_adapter import describe_active_credential
+        from agent.providers.azure_identity_adapter import describe_active_credential
         monkeypatch.setenv("IDENTITY_ENDPOINT", "http://169.254.169.254")
         info = describe_active_credential(scope="https://x/.default", timeout_seconds=0.5)
         assert info["ok"] is True
@@ -630,14 +630,14 @@ class TestDescribeActiveCredential:
         assert any("ManagedIdentity" in s for s in sources)
 
     def test_reports_env_sources_for_workload_identity(self, fake_azure_identity, monkeypatch):
-        from agent.azure_identity_adapter import describe_active_credential
+        from agent.providers.azure_identity_adapter import describe_active_credential
         monkeypatch.setenv("AZURE_FEDERATED_TOKEN_FILE", "/var/secrets/azure/federated-token")
         info = describe_active_credential(scope="https://x/.default", timeout_seconds=0.5)
         sources = info.get("env_sources") or []
         assert any("WorkloadIdentity" in s for s in sources)
 
     def test_reports_env_sources_for_service_principal(self, fake_azure_identity, monkeypatch):
-        from agent.azure_identity_adapter import describe_active_credential
+        from agent.providers.azure_identity_adapter import describe_active_credential
         monkeypatch.setenv("AZURE_TENANT_ID", "t")
         monkeypatch.setenv("AZURE_CLIENT_ID", "c")
         monkeypatch.setenv("AZURE_CLIENT_SECRET", "s")

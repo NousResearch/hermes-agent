@@ -27,14 +27,14 @@ class AnthropicTransport(ProviderTransport):
         kwargs:
             base_url: Optional[str] — affects thinking signature handling.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.providers.anthropic_adapter import convert_messages_to_anthropic
 
         base_url = kwargs.get("base_url")
         return convert_messages_to_anthropic(messages, base_url=base_url)
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Anthropic input_schema format."""
-        from agent.anthropic_adapter import convert_tools_to_anthropic
+        from agent.providers.anthropic_adapter import convert_tools_to_anthropic
 
         return convert_tools_to_anthropic(tools)
 
@@ -60,7 +60,7 @@ class AnthropicTransport(ProviderTransport):
             fast_mode: bool
             drop_context_1m_beta: bool
         """
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.providers.anthropic_adapter import build_anthropic_kwargs
 
         return build_anthropic_kwargs(
             model=model,
@@ -84,7 +84,7 @@ class AnthropicTransport(ProviderTransport):
         to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
         import json
-        from agent.anthropic_adapter import _to_plain_data, _sanitize_replay_block
+        from agent.providers.anthropic_adapter import _to_plain_data, _sanitize_replay_block
         from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)

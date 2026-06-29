@@ -1798,7 +1798,7 @@ def run_doctor(args):
             return _ConnectivityResult("Anthropic API", [], [])
         try:
             import httpx
-            from agent.anthropic_adapter import (
+            from agent.providers.anthropic_adapter import (
                 _is_oauth_token,
                 _COMMON_BETAS,
                 _OAUTH_ONLY_BETAS,
@@ -1947,7 +1947,7 @@ def run_doctor(args):
 
     def _probe_bedrock() -> _ConnectivityResult:
         try:
-            from agent.bedrock_adapter import (
+            from agent.providers.bedrock_adapter import (
                 has_aws_credentials,
                 resolve_aws_auth_env_var,
                 resolve_bedrock_region,
@@ -2022,7 +2022,7 @@ def run_doctor(args):
             return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
 
         try:
-            from agent.azure_identity_adapter import (
+            from agent.providers.azure_identity_adapter import (
                 EntraIdentityConfig,
                 SCOPE_AI_AZURE_DEFAULT,
                 describe_active_credential,

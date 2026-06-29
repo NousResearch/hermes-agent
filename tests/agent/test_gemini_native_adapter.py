@@ -20,7 +20,7 @@ class DummyResponse:
 
 
 def test_build_native_request_preserves_thought_signature_on_tool_replay():
-    from agent.gemini_native_adapter import build_gemini_request
+    from agent.providers.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=[
@@ -53,7 +53,7 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
 
 
 def test_build_native_request_uses_original_function_name_for_tool_result():
-    from agent.gemini_native_adapter import build_gemini_request
+    from agent.providers.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=[
@@ -86,7 +86,7 @@ def test_build_native_request_uses_original_function_name_for_tool_result():
 
 
 def test_build_native_request_strips_json_schema_only_fields_from_tool_parameters():
-    from agent.gemini_native_adapter import build_gemini_request
+    from agent.providers.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=[{"role": "user", "content": "Hello"}],
@@ -126,7 +126,7 @@ def test_build_native_request_strips_json_schema_only_fields_from_tool_parameter
 
 
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
-    from agent.gemini_native_adapter import translate_gemini_response
+    from agent.providers.gemini_native_adapter import translate_gemini_response
 
     payload = {
         "candidates": [
@@ -156,7 +156,7 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
 
 
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from agent.providers.gemini_native_adapter import GeminiNativeClient
 
     recorded = {}
 
@@ -206,13 +206,13 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     ("tunedModels/my-tune", "tunedModels/my-tune"),
 ])
 def test_bare_gemini_model_id_strips_only_self_prefix(model, expected):
-    from agent.gemini_native_adapter import bare_gemini_model_id
+    from agent.providers.gemini_native_adapter import bare_gemini_model_id
 
     assert bare_gemini_model_id(model) == expected
 
 
 def test_native_client_strips_self_prefix_from_model_url(monkeypatch):
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from agent.providers.gemini_native_adapter import GeminiNativeClient
 
     recorded = {}
 
@@ -238,7 +238,7 @@ def test_native_client_strips_self_prefix_from_model_url(monkeypatch):
 
 
 def test_native_http_error_keeps_status_and_retry_after():
-    from agent.gemini_native_adapter import gemini_http_error
+    from agent.providers.gemini_native_adapter import gemini_http_error
 
     response = DummyResponse(
         status_code=429,
@@ -266,7 +266,7 @@ def test_native_http_error_keeps_status_and_retry_after():
 
 
 def test_native_client_accepts_injected_http_client():
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from agent.providers.gemini_native_adapter import GeminiNativeClient
 
     injected = SimpleNamespace(close=lambda: None)
     client = GeminiNativeClient(api_key="AIza-test", http_client=injected)
@@ -276,7 +276,7 @@ def test_native_client_accepts_injected_http_client():
 def test_native_client_rejects_empty_api_key_with_actionable_message():
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from agent.providers.gemini_native_adapter import GeminiNativeClient
 
     for bad in ("", "   ", None):
         with pytest.raises(RuntimeError) as excinfo:
@@ -288,7 +288,7 @@ def test_native_client_rejects_empty_api_key_with_actionable_message():
 
 @pytest.mark.asyncio
 async def test_async_native_client_streams_without_requiring_async_iterator_from_sync_client():
-    from agent.gemini_native_adapter import AsyncGeminiNativeClient
+    from agent.providers.gemini_native_adapter import AsyncGeminiNativeClient
 
     chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi"), finish_reason=None)])
     sync_stream = iter([chunk])
@@ -316,7 +316,7 @@ async def test_async_native_client_streams_without_requiring_async_iterator_from
 
 
 def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
-    from agent.gemini_native_adapter import translate_stream_event
+    from agent.providers.gemini_native_adapter import translate_stream_event
 
     tool_call_indices = {}
     event = {
@@ -344,7 +344,7 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 
 
 def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
-    from agent.gemini_native_adapter import translate_stream_event
+    from agent.providers.gemini_native_adapter import translate_stream_event
 
     event = {
         "candidates": [
@@ -368,7 +368,7 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
 
 
 def test_system_instruction_includes_role_field_and_stays_out_of_contents():
-    from agent.gemini_native_adapter import build_gemini_request
+    from agent.providers.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=[
@@ -394,7 +394,7 @@ def test_max_tokens_none_defaults_to_gemini_output_ceiling():
     None to mean "unlimited", so the adapter must translate that to the
     published 65,535 ceiling rather than leaving the field unset.
     """
-    from agent.gemini_native_adapter import (
+    from agent.providers.gemini_native_adapter import (
         build_gemini_request,
         GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
     )
@@ -404,7 +404,7 @@ def test_max_tokens_none_defaults_to_gemini_output_ceiling():
 
 
 def test_explicit_max_tokens_is_respected():
-    from agent.gemini_native_adapter import build_gemini_request
+    from agent.providers.gemini_native_adapter import build_gemini_request
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096

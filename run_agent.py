@@ -113,6 +113,9 @@ from agent.process_bootstrap import (
     _SafeWriter,  # noqa: F401  # re-exported for tests that `from run_agent import _SafeWriter`
     _get_proxy_for_base_url,
 )
+from agent.providers.openai_adapter import is_direct_openai_url, is_azure_openai_url, is_github_copilot_url, max_tokens_param
+from agent.providers.openrouter_adapter import is_openrouter_url
+from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
 from agent.iteration_budget import IterationBudget
 
 
@@ -1081,41 +1084,8 @@ class AIAgent:
         from agent.conversation_compression import replay_compression_warning
         replay_compression_warning(self)
 
-    def _is_direct_openai_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets OpenAI's native API."""
-        if base_url is not None:
-            hostname = base_url_hostname(base_url)
-        else:
-            hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
-                getattr(self, "_base_url_lower", "")
-            )
-        return hostname == "api.openai.com"
 
-    def _is_azure_openai_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets Azure OpenAI.
 
-        Azure OpenAI exposes an OpenAI-compatible endpoint at
-        ``{resource}.openai.azure.com/openai/v1`` that accepts the
-        standard ``openai`` Python client.  Unlike api.openai.com it
-        does NOT support the Responses API — gpt-5.x models are served
-        on the regular ``/chat/completions`` path — so routing decisions
-        must treat Azure separately from direct OpenAI.
-        """
-        if base_url is not None:
-            url = str(base_url).lower()
-        else:
-            url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
-
-    def _is_github_copilot_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
-        if base_url is not None:
-            hostname = base_url_hostname(base_url)
-        else:
-            hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
-                getattr(self, "_base_url_lower", "")
-            )
-        return hostname == "api.githubcopilot.com"
 
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
@@ -1255,17 +1225,6 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
-    def _anthropic_prompt_cache_policy(
-        self,
-        *,
-        provider: Optional[str] = None,
-        base_url: Optional[str] = None,
-        api_mode: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> tuple[bool, bool]:
-        """Forwarder — see ``agent.agent_runtime_helpers.anthropic_prompt_cache_policy``."""
-        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
-        return anthropic_prompt_cache_policy(self, provider=provider, base_url=base_url, api_mode=api_mode, model=model)
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -1304,35 +1263,7 @@ class AIAgent:
                 pass
         return AIAgent._model_requires_responses_api(model)
 
-    def _max_tokens_param(self, value: int) -> dict:
-        """Return the correct max tokens kwarg for the current provider.
 
-        OpenAI's newer models (gpt-4o, gpt-4.1, gpt-5+, o-series) require
-        'max_completion_tokens'. Azure OpenAI and GitHub Copilot also require
-        'max_completion_tokens' for those families served via their
-        OpenAI-compatible endpoints. OpenRouter, local models, and older
-        OpenAI models use 'max_tokens'.
-
-        The check is URL-first (api.openai.com / Azure / Copilot all use the
-        new kwarg), then falls back to a model-name check so third-party
-        OpenAI-compatible endpoints fronting those models are recognised —
-        URL-only detection misses that case and silently sends the wrong
-        kwarg, which the upstream model rejects with a 400.
-        """
-        if (
-            self._is_direct_openai_url()
-            or self._is_azure_openai_url()
-            or self._is_github_copilot_url()
-            or model_forces_max_completion_tokens(self.model)
-        ):
-            return {"max_completion_tokens": value}
-        return {"max_tokens": value}
-
-    @staticmethod
-    def _requested_output_cap_from_api_kwargs(api_kwargs: Any) -> Optional[int]:
-        """Extract the outgoing response token cap from a prepared request."""
-        if not isinstance(api_kwargs, dict):
-            return None
         for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
             raw = api_kwargs.get(key)
             try:
@@ -4032,7 +3963,7 @@ class AIAgent:
             return False
 
         try:
-            from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
+            from agent.providers.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
 
             new_token = resolve_anthropic_token()
         except Exception as exc:
@@ -4065,7 +3996,7 @@ class AIAgent:
         # Only treat as OAuth on native Anthropic; third-party endpoints using
         # the Anthropic protocol must not trip OAuth paths (#1739 & third-party
         # identity-injection guard).
-        from agent.anthropic_adapter import _is_oauth_token
+        from agent.providers.anthropic_adapter import _is_oauth_token
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
@@ -4149,7 +4080,7 @@ class AIAgent:
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
         if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+            from agent.providers.anthropic_adapter import build_anthropic_client, _is_oauth_token
 
             try:
                 self._anthropic_client.close()
@@ -4206,7 +4137,7 @@ class AIAgent:
         # Defensive: strip Responses-only kwargs that can leak in under an
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
-        from agent.anthropic_adapter import create_anthropic_message
+        from agent.providers.anthropic_adapter import create_anthropic_message
         return create_anthropic_message(
             self._anthropic_client,
             api_kwargs,
@@ -4228,11 +4159,11 @@ class AIAgent:
         """
         _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
         if getattr(self, "provider", None) == "bedrock":
-            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            from agent.providers.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             self._anthropic_client = build_anthropic_bedrock_client(region)
         else:
-            from agent.anthropic_adapter import build_anthropic_client
+            from agent.providers.anthropic_adapter import build_anthropic_client
             self._anthropic_client = build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
@@ -5420,6 +5351,7 @@ class AIAgent:
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        print("AIAgent.run_conversation CALLED", flush=True)
         from agent.conversation_loop import run_conversation
         return run_conversation(
             self,

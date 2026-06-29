@@ -19,7 +19,7 @@ class TestBedrockContext1MBeta:
 
     def test_common_betas_strips_1m_for_minimax(self):
         """MiniMax bearer-auth endpoints host their own models — strip 1M beta."""
-        from agent.anthropic_adapter import (
+        from agent.providers.anthropic_adapter import (
             _common_betas_for_base_url,
             _CONTEXT_1M_BETA,
         )
@@ -41,7 +41,7 @@ class TestBedrockContext1MBeta:
         This is the load-bearing assertion for the reported bug:
         without this header Bedrock serves Opus 4.6/4.7 with a 200K cap.
         """
-        import agent.anthropic_adapter as adapter
+        import agent.providers.anthropic_adapter as adapter
 
         fake_sdk = MagicMock()
         fake_sdk.AnthropicBedrock = MagicMock()

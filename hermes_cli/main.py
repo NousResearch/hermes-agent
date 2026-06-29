@@ -1391,6 +1391,92 @@ to avoid false-positive reinstalls on every launch.
 """
 
 
+def _tui_relevant_lock_entries(
+    packages: dict, *, root: Path, ws_root: Path
+) -> set[str]:
+    """Return root-lock entries that can affect the TUI launch install.
+
+    Workspace checkouts use one root ``package-lock.json`` for every frontend
+    workspace (``web``, ``apps/*``, ``ui-tui``).  ``npm install --workspace
+    ui-tui`` legitimately actualizes only the selected workspace, its child
+    workspaces, and their dependency graph into npm's hidden lockfile. Entries
+    for unrelated workspaces such as ``apps/bootstrap-installer`` must not force
+    a TUI reinstall on every dashboard launch.
+
+    Follow lockfile package *paths*, not just dependency names. npm can satisfy a
+    dependency with a nested entry (for example
+    ``node_modules/strip-ansi/node_modules/ansi-regex``) even when another
+    version of the same package also exists at ``node_modules/ansi-regex`` for a
+    different workspace. A name-only ``node_modules/<dep>`` lookup would compare
+    the wrong package and reintroduce the false-positive install loop.
+    """
+    if ws_root == root:
+        return set(packages)
+    try:
+        workspace = root.relative_to(ws_root).as_posix()
+    except ValueError:
+        return set(packages)
+
+    relevant: set[str] = {""}
+    queue: list[str] = []
+
+    def add(name: str | None) -> None:
+        if name and name in packages and name not in relevant:
+            relevant.add(name)
+            queue.append(name)
+
+    for name in packages:
+        if name == workspace or name.startswith(f"{workspace}/packages/"):
+            add(name)
+
+    def dependency_names(pkg: dict, *, include_dev: bool) -> set[str]:
+        deps: set[str] = set()
+        keys = ["dependencies", "optionalDependencies", "peerDependencies"]
+        if include_dev:
+            keys.append("devDependencies")
+        for key in keys:
+            raw = pkg.get(key)
+            if isinstance(raw, dict):
+                deps.update(str(dep) for dep in raw)
+        return deps
+
+    def package_parent_dirs(name: str) -> list[str]:
+        parts = name.split("/") if name else []
+        parents: list[str] = []
+        seen: set[str] = set()
+        for idx in range(len(parts), -1, -1):
+            parent = "/".join(parts[:idx])
+            if parent not in seen:
+                seen.add(parent)
+                parents.append(parent)
+        return parents
+
+    def resolve_dependency(dep: str, *, from_entry: str) -> str | None:
+        for parent in package_parent_dirs(from_entry):
+            candidate = (
+                f"{parent}/node_modules/{dep}" if parent else f"node_modules/{dep}"
+            )
+            if candidate in packages:
+                return candidate
+        return None
+
+    while queue:
+        name = queue.pop()
+        pkg = packages.get(name)
+        if not isinstance(pkg, dict):
+            continue
+
+        resolved = pkg.get("resolved")
+        if pkg.get("link") and isinstance(resolved, str):
+            add(resolved)
+
+        include_dev = name == workspace or name.startswith(f"{workspace}/packages/")
+        for dep in dependency_names(pkg, include_dev=include_dev):
+            add(resolve_dependency(dep, from_entry=name))
+
+    return relevant
+
+
 def _workspace_root(dir: Path) -> Path:
     """Return the npm workspace root for *dir*.
 
@@ -1464,15 +1550,17 @@ def _tui_need_npm_install(root: Path) -> bool:
     already match, which used to trigger a spurious "Installing TUI
     dependencies" on every launch.
 
-    For each entry in the root lock's ``packages`` map:
+    For each TUI-relevant entry in the root lock's ``packages`` map:
       - missing from hidden lock → reinstall (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
       - present but with differing fields (excluding npm-written runtime
         annotations like ``ideallyInert``) → reinstall
 
-    Extra entries that exist only in the hidden lock are ignored — stale
-    transitives left over from a removed dependency don't break runtime and
-    we'd rather not force a reinstall for them. Falls back to mtime
+    Non-TUI workspace package entries (``web``, ``apps/*``) are ignored because
+    a scoped ``npm install --workspace ui-tui`` legitimately leaves them out of
+    the hidden lockfile. Extra entries that exist only in the hidden lock are
+    ignored — stale transitives left over from a removed dependency don't break
+    runtime, and we'd rather not force a reinstall for them. Falls back to mtime
     comparison if either lockfile is unparseable.
     """
     # Prebuilt self-contained bundle (nix / packaged release): no lockfile
@@ -1502,10 +1590,24 @@ def _tui_need_npm_install(root: Path) -> bool:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
 
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+    def comparable(name: str, pkg: dict) -> dict:
+        ignored = set(_NPM_LOCK_RUNTIME_KEYS)
+        if ws_root != root and not name.startswith("node_modules/"):
+            ignored.update(
+                {
+                    "dependencies",
+                    "devDependencies",
+                    "optionalDependencies",
+                    "peerDependencies",
+                }
+            )
+        return {k: v for k, v in pkg.items() if k not in ignored}
+
+    relevant_entries = _tui_relevant_lock_entries(wanted, root=root, ws_root=ws_root)
 
     for name, pkg in wanted.items():
+        if name not in relevant_entries:
+            continue
         if not name:
             continue
 
@@ -1517,8 +1619,8 @@ def _tui_need_npm_install(root: Path) -> bool:
                 continue
             return True
 
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
+        if isinstance(installed[name], dict) and comparable(name, pkg) != comparable(
+            name, installed[name]
         ):
             return True
 

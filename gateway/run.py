@@ -15122,7 +15122,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     headers=headers,
                 ) as resp:
                     if resp.status != 200:
-                        error_text = await resp.text()
+                        # Cap proxy error body to prevent oversized upstream
+                        # responses from exhausting memory (#55015).
+                        cl = resp.headers.get("content-length")
+                        if cl and int(cl) > 16 * 1024 * 1024:
+                            error_text = f"[response too large: {cl} bytes]"
+                        else:
+                            error_text = await resp.text()
                         logger.warning(
                             "Proxy error (%d) from %s: %s",
                             resp.status, proxy_url, error_text[:500],

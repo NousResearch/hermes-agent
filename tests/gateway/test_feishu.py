@@ -417,6 +417,76 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_suppresses_runtime_status_messages(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = object()
+
+        with patch.object(adapter, "_feishu_send_with_retry", new_callable=AsyncMock) as mock_send:
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="⏳ Working — 1 min elapsed\nStill processing...",
+                )
+            )
+
+        self.assertTrue(result.success)
+        mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_does_not_suppress_near_miss_working_message(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = object()
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="om_sent"),
+        )
+
+        with patch.object(
+            adapter,
+            "_feishu_send_with_retry",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="⏳ Working — not a runtime heartbeat, please send this",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_sent")
+        mock_send.assert_called_once()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_suppresses_runtime_status_messages(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(update=Mock())))
+        )
+
+        result = asyncio.run(
+            adapter.edit_message(
+                chat_id="oc_chat",
+                message_id="om_runtime_status",
+                content="📦 Preflight compression: preparing context",
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_runtime_status")
+        adapter._client.im.v1.message.update.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

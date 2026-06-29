@@ -164,6 +164,29 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_FEISHU_RUNTIME_NOISE_PREFIXES = (
+    "📦 Preflight compression:",
+    "🗜️ Compacting context",
+    "⚠ Compression summary failed:",
+    "⚠️ Compression summary failed:",
+)
+_FEISHU_RUNTIME_WORKING_RE = re.compile(r"^\s*⏳\s*Working\s+—\s+\d+\s+min\b")
+
+
+def _is_feishu_runtime_noise_message(content: str) -> bool:
+    """Return True for local Hermes runtime status bubbles.
+
+    These status updates are useful in local logs but are too noisy in Feishu
+    groups. The matcher stays deliberately narrow so normal business messages
+    that merely mention these phrases are still delivered.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return False
+    first_line = text.splitlines()[0].strip()
+    if _FEISHU_RUNTIME_WORKING_RE.match(first_line):
+        return True
+    return first_line.startswith(_FEISHU_RUNTIME_NOISE_PREFIXES)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1842,6 +1865,12 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a Feishu message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        if _is_feishu_runtime_noise_message(content):
+            logger.info(
+                "[Feishu] Suppressed runtime status message: %.160s",
+                str(content).replace("\n", " "),
+            )
+            return SendResult(success=True)
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1900,6 +1929,13 @@ class FeishuAdapter(BasePlatformAdapter):
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        if _is_feishu_runtime_noise_message(content):
+            logger.info(
+                "[Feishu] Suppressed runtime status edit for %s: %.160s",
+                message_id,
+                str(content).replace("\n", " "),
+            )
+            return SendResult(success=True, message_id=message_id)
 
         content = self.format_message(content)
         try:

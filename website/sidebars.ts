@@ -63,6 +63,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/tools',
             'user-guide/features/tool-search',
             'user-guide/features/skills',
+            'user-guide/features/proactive-opportunities',
             'user-guide/features/lsp',
             'user-guide/features/curator',
             'user-guide/features/memory',

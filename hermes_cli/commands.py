@@ -193,6 +193,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("suggestions", "Review suggested automations (accept/dismiss)",
                "Tools & Skills", aliases=("suggest",), args_hint="[accept|dismiss N | catalog]",
                subcommands=("accept", "dismiss", "catalog", "clear")),
+    CommandDef("opportunities", "Review proactive learning, role, profile, agent, and automation ideas",
+               "Tools & Skills", aliases=("opps", "opportunity"), args_hint="[enable|scan|seed|accept|dismiss N]",
+               subcommands=("status", "enable", "disable", "scan", "seed", "accept", "dismiss", "clear")),
     CommandDef("blueprint", "Set up an automation from a blueprint template",
                "Tools & Skills", aliases=("bp",), args_hint="[name] [slot=value ...]"),
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
@@ -1158,7 +1161,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - version: low-frequency info command; reached via /hermes version on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

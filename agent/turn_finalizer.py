@@ -460,6 +460,33 @@ def finalize_turn(
         except Exception:
             pass  # Background review is best-effort
 
+    # Opt-in proactive opportunity scan. This is deliberately outside the model
+    # loop and only creates pending proposals; accepting one later submits a
+    # normal user turn (for /learn, bundles, profiles, Kanban, or cron).
+    if final_response and not interrupted:
+        try:
+            from agent.opportunities import maybe_scan_recent_usage, notifications_enabled
+
+            opportunity_result = maybe_scan_recent_usage()
+            created = opportunity_result.get("created") or []
+            if created and notifications_enabled():
+                first = created[0].get("title", "new opportunity")
+                more = len(created) - 1
+                suffix = f" (+{more} more)" if more > 0 else ""
+                message = (
+                    f"Proactive opportunity: {first}{suffix}. "
+                    "Run /opportunities to review."
+                )
+                agent._safe_print(f"  {message}")
+                callback = getattr(agent, "background_review_callback", None)
+                if callback:
+                    try:
+                        callback(message)
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # Proactive opportunities are best-effort
+
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in
     # multi-turn sessions. Shutting down after every turn would kill the

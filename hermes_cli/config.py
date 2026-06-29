@@ -1373,6 +1373,21 @@ DEFAULT_CONFIG = {
         "auto_subscribe_on_create": True,
     },
 
+    # Proactive opportunities — opt-in suggestions that notice repeated work
+    # and propose existing Hermes actions: /learn a skill, create a skill
+    # bundle, build a specialist profile, design a Kanban/swarm topology, or
+    # set up a scheduled automation. Proposals are stored pending until the
+    # user accepts; accepting routes through normal user turns and existing
+    # approval gates. No new model tools and no automatic writes.
+    "proactive": {
+        "enabled": False,
+        "notify": True,
+        "max_pending": 8,
+        "scan_interval_hours": 24,
+        "scan_recent_messages": 120,
+        "min_repeats": 3,
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {

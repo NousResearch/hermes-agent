@@ -11017,6 +11017,9 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "moa",
         "undo",
         "learn",
+        "opportunities",
+        "opps",
+        "opportunity",
     }
 )
 
@@ -11289,6 +11292,26 @@ def _(rid, params: dict) -> dict:
         from agent.learn_prompt import build_learn_prompt
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+
+    if name in {"opportunities", "opps", "opportunity"}:
+        try:
+            from hermes_cli.opportunities_cmd import handle_opportunities_command
+
+            result = handle_opportunities_command(arg, surface="tui")
+        except Exception as exc:
+            return _err(rid, 5030, f"opportunities unavailable: {exc}")
+        seed = getattr(result, "agent_seed", None)
+        if seed:
+            return _ok(
+                rid,
+                {
+                    "type": "send",
+                    "notice": result.text,
+                    "message": seed,
+                },
+            )
+        return _ok(rid, {"type": "exec", "output": result.text})
+
     if name == "moa":
         # /moa is one-shot sugar only: run a single prompt through the default
         # MoA preset, then restore the prior model. To *switch* to a MoA preset

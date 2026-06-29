@@ -1386,6 +1386,28 @@ class CLICommandsMixin:
             output = f"Suggestions command failed: {e}"
         self._console_print(output)
 
+    def _handle_opportunities_command(self, cmd: str):
+        """Handle /opportunities — review proactive learning/role proposals."""
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.opportunities_cmd import handle_opportunities_command
+
+            result = handle_opportunities_command(args)
+        except Exception as exc:
+            self._console_print(f"Opportunities command failed: {exc}")
+            return
+
+        self._console_print(result.text)
+        seed = getattr(result, "agent_seed", None)
+        if seed:
+            self._pending_agent_seed = seed
+
     def _handle_blueprint_command(self, cmd: str):
         """Handle /blueprint — set up an automation from a blueprint template.
 

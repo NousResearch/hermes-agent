@@ -8764,6 +8764,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
 
+        if canonical == "opportunities":
+            _opportunity_result = await self._handle_opportunities_command(event)
+            _opportunity_seed = getattr(_opportunity_result, "agent_seed", None)
+            if _opportunity_seed:
+                _ack = getattr(_opportunity_result, "text", "") or ""
+                if _ack:
+                    try:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            _ack_meta = self._thread_metadata_for_source(source)
+                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+                    except Exception:
+                        logger.debug("opportunity ack send failed", exc_info=True)
+                try:
+                    event.text = _opportunity_seed
+                except Exception:
+                    return getattr(_opportunity_result, "text", "") or None
+            else:
+                return getattr(_opportunity_result, "text", "") or None
+
         if canonical == "blueprint":
             _blueprint_result = await self._handle_blueprint_command(event)
             _blueprint_seed = getattr(_blueprint_result, "agent_seed", None)
@@ -11257,6 +11277,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug("suggestions command failed: %s", e)
             return f"Suggestions command failed: {e}"
+
+    async def _handle_opportunities_command(self, event: MessageEvent):
+        """Handle /opportunities in the gateway.
+
+        Delegates to the shared handler so CLI, TUI, and gateway stay aligned.
+        When accepting an opportunity returns an agent seed, the dispatch site
+        rewrites ``event.text`` and falls through to normal agent processing.
+        """
+        args = (event.get_command_args() or "").strip()
+        try:
+            from hermes_cli.opportunities_cmd import handle_opportunities_command
+
+            return handle_opportunities_command(args, surface="gateway")
+        except Exception as e:
+            logger.debug("opportunities command failed: %s", e)
+            from hermes_cli.opportunities_cmd import OpportunityCommandResult
+
+            return OpportunityCommandResult(f"Opportunities command failed: {e}")
 
     async def _handle_blueprint_command(self, event: MessageEvent):
         """Handle /blueprint in the gateway.

@@ -139,6 +139,38 @@ def test_normalize_codex_response_in_progress_message_still_incomplete():
     assert finish_reason == "incomplete"
 
 
+def test_normalize_codex_response_skips_in_progress_custom_tool_call():
+    """An in_progress ``custom_tool_call`` (freeform/custom-grammar tool) is a
+    partial item with possibly truncated ``input``. It must NOT be appended to
+    ``tool_calls`` and dispatched as a completed ``finish_reason='tool_calls'``
+    turn — it must trigger the Codex incomplete-continuation path, exactly like
+    its ``function_call`` sibling does. Guards parity with the ``function_call``
+    branch, which already ``continue``s on queued/in_progress/incomplete."""
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content="opaque",
+                summary=[SimpleNamespace(text="drafting grammar")],
+            ),
+            SimpleNamespace(
+                type="custom_tool_call",
+                status="in_progress",
+                name="grammar_tool",
+                input='{"partial',
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.tool_calls == []
+
+
 # ---------------------------------------------------------------------------
 # _preflight_codex_api_kwargs — built-in (provider-executed) tools must pass
 # through validation.  Regression guard for the xAI native web_search

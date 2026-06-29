@@ -836,6 +836,64 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Atlas plugin - environment guidance and recall/ask stubs
+# ---------------------------------------------------------------------------
+
+ATLAS_ENVIRONMENT_GUIDANCE = (
+    "You have access to the Atlas knowledge-retrieval tools: "
+    "`atlas_recall` (retrieve relevant facts from the Atlas knowledge base) "
+    "and `atlas_ask` (ask a natural-language question against Atlas). "
+    "Use these tools when the user's request requires factual lookup, "
+    "historical context, or domain knowledge that may reside in Atlas."
+)
+
+
+def atlas_recall(query: str, *, top_k: int = 5) -> str:
+    """Retrieve relevant passages from the Atlas knowledge base.
+
+    Args:
+        query:  Natural-language search query.
+        top_k:  Maximum number of passages to return (default 5).
+
+    Returns:
+        JSON-encoded list of passage dicts, each with keys
+        ``{"id", "text", "score"}``.  Returns an error string on failure.
+    """
+    import json as _json
+
+    try:
+        from plugins.atlas import recall as _atlas_recall_impl  # type: ignore[import]
+
+        results = _atlas_recall_impl(query, top_k=top_k)
+        return _json.dumps(results, ensure_ascii=False)
+    except ImportError:
+        return _json.dumps({"error": "Atlas plugin not installed"})
+    except Exception as exc:  # pragma: no cover
+        return _json.dumps({"error": str(exc)})
+
+
+def atlas_ask(question: str) -> str:
+    """Ask a natural-language question against the Atlas knowledge base.
+
+    Args:
+        question: The question to answer using Atlas.
+
+    Returns:
+        A plain-text answer string, or a JSON error dict on failure.
+    """
+    import json as _json
+
+    try:
+        from plugins.atlas import ask as _atlas_ask_impl  # type: ignore[import]
+
+        answer = _atlas_ask_impl(question)
+        return str(answer)
+    except ImportError:
+        return _json.dumps({"error": "Atlas plugin not installed"})
+    except Exception as exc:  # pragma: no cover
+        return _json.dumps({"error": str(exc)})
+
+# ---------------------------------------------------------------------------
 # OTEL bootstrap - plan 002-E (additive, optional, never crashes the gateway)
 # ---------------------------------------------------------------------------
 # All imports guarded: missing opentelemetry packages are a no-op.
@@ -16418,6 +16476,14 @@ class GatewayRunner:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            # Atlas plugin wiring - ensure atlas_recall and atlas_ask are
+            # always present in valid_tool_names so the agent can invoke them
+            # even when the Atlas plugin registers its schemas dynamically
+            # after the agent was first constructed and cached.
+            for _atlas_tool in ("atlas_recall", "atlas_ask"):
+                if hasattr(agent, "valid_tool_names") and isinstance(agent.valid_tool_names, set):
+                    agent.valid_tool_names.add(_atlas_tool)
 
             # Per-message state - callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.

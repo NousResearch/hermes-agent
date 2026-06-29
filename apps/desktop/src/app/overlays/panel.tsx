@@ -2,12 +2,7 @@ import type { ReactNode } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { SearchField } from '@/components/ui/search-field'
 import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -146,7 +141,17 @@ interface PanelListRowProps {
 // A row is a container (not a <button>) so it can host both the select target
 // and a kebab menu without nesting interactive elements. Hover/active bg lives
 // on the wrapper so the whole row highlights as one.
-export function PanelListRow({ active, dotClassName, icon, lead, menu, meta, onSelect, rowKey, title }: PanelListRowProps) {
+export function PanelListRow({
+  active,
+  dotClassName,
+  icon,
+  lead,
+  menu,
+  meta,
+  onSelect,
+  rowKey,
+  title
+}: PanelListRowProps) {
   return (
     <div
       className={cn(
@@ -162,11 +167,12 @@ export function PanelListRow({ active, dotClassName, icon, lead, menu, meta, onS
         onClick={onSelect}
         type="button"
       >
-        {lead ?? (dotClassName ? (
-          <span aria-hidden="true" className={cn('size-1.5 shrink-0 rounded-full', dotClassName)} />
-        ) : icon ? (
-          <Codicon className="shrink-0 text-muted-foreground/55" name={icon} size="0.85rem" />
-        ) : null)}
+        {lead ??
+          (dotClassName ? (
+            <span aria-hidden="true" className={cn('size-1.5 shrink-0 rounded-full', dotClassName)} />
+          ) : icon ? (
+            <Codicon className="shrink-0 text-muted-foreground/55" name={icon} size="0.85rem" />
+          ) : null)}
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/85">{title}</span>
       </button>
       {meta ? <span className="shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
@@ -321,7 +327,15 @@ export function PanelPill({ children, tone = 'muted' }: { children: ReactNode; t
 
 // Self-describing centered "+" that sits as the LAST item in a PanelList. The
 // label rides aria/title only — no visible text.
-export function PanelAddButton({ icon = 'add', label, onClick }: { icon?: string; label: string; onClick: () => void }) {
+export function PanelAddButton({
+  icon = 'add',
+  label,
+  onClick
+}: {
+  icon?: string
+  label: string
+  onClick: () => void
+}) {
   return (
     <Button
       aria-label={label}

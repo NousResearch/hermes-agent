@@ -295,7 +295,13 @@ function ProfileRow({
   return (
     <PanelListRow
       active={active}
-      lead={<ProfileGlyph color={resolveProfileColor(profile.name, colors)} isDefault={profile.is_default} name={profile.name} />}
+      lead={
+        <ProfileGlyph
+          color={resolveProfileColor(profile.name, colors)}
+          isDefault={profile.is_default}
+          name={profile.name}
+        />
+      }
       menu={menu}
       onSelect={onSelect}
       rowKey={profile.name}
@@ -313,7 +319,12 @@ function ProfileGlyph({ color, isDefault, name }: { color: null | string; isDefa
   }
 
   const hue = color ?? 'var(--ui-text-quaternary)'
-  const initial = name.replace(/[^a-z0-9]/gi, '').charAt(0).toUpperCase() || '?'
+
+  const initial =
+    name
+      .replace(/[^a-z0-9]/gi, '')
+      .charAt(0)
+      .toUpperCase() || '?'
 
   return (
     <span
@@ -366,7 +377,6 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
     </PanelDetail>
   )
 }
-
 
 function SoulEditor({ profileName }: { profileName: string }) {
   const { t } = useI18n()

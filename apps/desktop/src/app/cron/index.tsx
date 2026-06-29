@@ -596,7 +596,6 @@ function CronJobDetail({
   )
 }
 
-
 function formatRunTime(seconds?: null | number): string {
   if (!seconds) {
     return '—'

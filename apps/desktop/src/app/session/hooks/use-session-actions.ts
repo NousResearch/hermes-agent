@@ -685,7 +685,9 @@ export function useSessionActions({
       if (warmHit) {
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
-        const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+
+        const stored =
+          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
         const cachedViewState =
           !cachedState.model && stored?.model != null
@@ -752,7 +754,10 @@ export function useSessionActions({
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
-      const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+
+      const stored =
+        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+
       applyStoredSessionPreviewRuntimeInfo(stored)
 
       if (stored) {

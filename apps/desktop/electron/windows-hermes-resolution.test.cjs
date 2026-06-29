@@ -43,21 +43,13 @@ test('findOnPath tries PATHEXT extensions before the bare (empty) name on Window
 test('Windows bootstrap recovery chooses --update when any real-install signal is present', () => {
   const source = readMain()
   assert.match(source, /const haveRealInstall =/, 'recovery must compute haveRealInstall')
-  assert.match(
-    source,
-    /fileExists\(venvPython\)/,
-    'recovery must accept the venv interpreter as a real-install signal'
-  )
+  assert.match(source, /fileExists\(venvPython\)/, 'recovery must accept the venv interpreter as a real-install signal')
   assert.match(
     source,
     /\.hermes-bootstrap-complete/,
     'recovery must accept the bootstrap-complete marker as a real-install signal'
   )
-  assert.match(
-    source,
-    /updaterArgs = haveRealInstall \? \['--update'/,
-    'updaterArgs must gate on haveRealInstall'
-  )
+  assert.match(source, /updaterArgs = haveRealInstall \? \['--update'/, 'updaterArgs must gate on haveRealInstall')
   // The old too-narrow check (only venv\Scripts\hermes.exe) must not return.
   assert.doesNotMatch(
     source,

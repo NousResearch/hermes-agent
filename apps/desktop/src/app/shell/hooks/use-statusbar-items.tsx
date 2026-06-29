@@ -235,6 +235,7 @@ export function useStatusbarItems({
     const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
 
     const base = copy.backendLabel(backendVersion ?? copy.unknown)
+
     const behindHint =
       !applying && behind > 0 ? ` (+${behind})` : !applying && updateAvailable ? ` (${copy.update})` : ''
 

@@ -1540,10 +1540,7 @@ function dynamicTitle(
     }
 
     const failed =
-      part.isError ||
-      result.success === false ||
-      result.ok === false ||
-      Boolean(firstStringField(result, ['error']))
+      part.isError || result.success === false || result.ok === false || Boolean(firstStringField(result, ['error']))
 
     if (failed) {
       const failAction = translateNow('assistant.tool.actions.failedToOpen')
@@ -1556,10 +1553,7 @@ function dynamicTitle(
 
     const action = verb(translateNow('assistant.tool.actions.opening'), translateNow('assistant.tool.actions.opened'))
 
-    return titledAction(
-      action,
-      translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url))
-    )
+    return titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url)))
   }
 
   if (part.toolName === 'web_search') {

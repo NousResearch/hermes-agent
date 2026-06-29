@@ -68,6 +68,7 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
+_PROXY_ERROR_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -104,6 +105,34 @@ _GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
 def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     """True only for programmatic/local surfaces that must keep raw text."""
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
+
+
+async def _read_proxy_error_text_with_limit(resp: Any) -> str:
+    headers = getattr(resp, "headers", {}) or {}
+    content_length = None
+    try:
+        content_length = int(str(headers.get("content-length", "")).strip())
+    except (TypeError, ValueError):
+        content_length = None
+    if (
+        content_length is not None
+        and content_length > _PROXY_ERROR_RESPONSE_MAX_BYTES
+    ):
+        raise ValueError(
+            f"Proxy error response exceeds {_PROXY_ERROR_RESPONSE_MAX_BYTES} bytes"
+        )
+
+    body = bytearray()
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        if not chunk:
+            continue
+        chunk_bytes = bytes(chunk)
+        if len(body) + len(chunk_bytes) > _PROXY_ERROR_RESPONSE_MAX_BYTES:
+            raise ValueError(
+                f"Proxy error response exceeds {_PROXY_ERROR_RESPONSE_MAX_BYTES} bytes"
+            )
+        body.extend(chunk_bytes)
+    return bytes(body).decode("utf-8", "replace")
 
 
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
@@ -16278,7 +16307,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     headers=headers,
                 ) as resp:
                     if resp.status != 200:
-                        error_text = await resp.text()
+                        try:
+                            error_text = await _read_proxy_error_text_with_limit(resp)
+                        except ValueError as e:
+                            error_text = str(e)
                         logger.warning(
                             "Proxy error (%d) from %s: %s",
                             resp.status, proxy_url, error_text[:500],

@@ -39,17 +39,37 @@ def _make_source(platform=Platform.MATRIX):
 class _FakeSSEResponse:
     """Simulates an aiohttp response with SSE streaming."""
 
-    def __init__(self, status=200, sse_chunks=None, error_text=""):
+    def __init__(
+        self,
+        status=200,
+        sse_chunks=None,
+        error_text="",
+        error_chunks=None,
+        headers=None,
+    ):
         self.status = status
         self._sse_chunks = sse_chunks or []
         self._error_text = error_text
+        self._error_chunks = error_chunks
+        self.headers = headers or {}
         self.content = self
+        self.text_called = False
 
     async def text(self):
+        self.text_called = True
         return self._error_text
 
     async def iter_any(self):
         for chunk in self._sse_chunks:
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+            yield chunk
+
+    async def iter_chunked(self, _size):
+        chunks = self._error_chunks
+        if chunks is None:
+            chunks = [self._error_text.encode("utf-8")]
+        for chunk in chunks:
             if isinstance(chunk, str):
                 chunk = chunk.encode("utf-8")
             yield chunk
@@ -303,6 +323,32 @@ class TestRunAgentViaProxy:
 
         assert "Proxy error (401)" in result["final_response"]
         assert result["api_calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_bounds_http_error_response_body(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        monkeypatch.setattr("gateway.run._PROXY_ERROR_RESPONSE_MAX_BYTES", 8)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(status=502, error_chunks=[b"x" * 9])
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "Proxy error (502)" in result["final_response"]
+        assert "Proxy error response exceeds 8 bytes" in result["final_response"]
+        assert resp.text_called is False
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):

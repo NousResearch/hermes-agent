@@ -585,6 +585,31 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 
 See [the ntfy messaging guide](/user-guide/messaging/ntfy) — particularly the **identity model** section — before deploying with untrusted topics.
 
+### Sendblue (iMessage/SMS/RCS)
+
+Connect Hermes to [Sendblue](https://www.sendblue.com/) as a managed
+iMessage/SMS/RCS channel. See [the Sendblue messaging guide](/user-guide/messaging/sendblue).
+
+| Variable | Description |
+|----------|-------------|
+| `SENDBLUE_API_KEY_ID` | Sendblue API key id. Required. |
+| `SENDBLUE_API_SECRET_KEY` | Sendblue API secret key. Required. |
+| `SENDBLUE_FROM_NUMBER` | Default Sendblue line in E.164 format. Required unless `SENDBLUE_FROM_NUMBERS` is set. |
+| `SENDBLUE_FROM_NUMBERS` | Comma-separated Sendblue line pool for sticky sender selection. |
+| `SENDBLUE_API_BASE_URL` | Sendblue API base URL (default: `https://api.sendblue.com`). |
+| `SENDBLUE_WEBHOOK_SECRET` | Secret configured on the Sendblue receive webhook. Required for inbound gateway mode. |
+| `SENDBLUE_WEBHOOK_HOST` | Webhook bind host (default: `127.0.0.1`). |
+| `SENDBLUE_WEBHOOK_PORT` | Webhook bind port (default: `8650`). |
+| `SENDBLUE_WEBHOOK_PATH` | Webhook path (default: `/sendblue/webhook`). |
+| `SENDBLUE_STATUS_CALLBACK` | Optional per-message status callback URL. |
+| `SENDBLUE_SEAT_ID` | Optional Sendblue seat id for message attribution. |
+| `SENDBLUE_STICKY_STATE_PATH` | JSON file for recipient -> `from_number` stickiness (default: `~/.hermes/sendblue_sticky_senders.json`). |
+| `SENDBLUE_ALLOWED_USERS` | Comma-separated E.164 phone numbers allowed to talk to the bot. |
+| `SENDBLUE_ALLOW_ALL_USERS` | Allow any sender to talk to the bot (dev only). |
+| `SENDBLUE_HOME_CHANNEL` | Default phone number or `group:<id>` for cron / notification delivery. |
+| `SENDBLUE_HOME_CHANNEL_NAME` | Human label for the home channel. |
+| `SENDBLUE_INSECURE_NO_SIGNATURE` | Disable webhook secret validation for local development only. |
+
 ### IRC
 
 Connect Hermes to an IRC server. No external dependencies. See [the IRC messaging guide](/user-guide/messaging/irc).

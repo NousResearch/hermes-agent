@@ -1,0 +1,79 @@
+name: sendblue-platform
+label: Sendblue
+kind: platform
+version: 1.0.0
+description: >
+  Sendblue iMessage/SMS/RCS gateway adapter for Hermes Agent. Runs an
+  aiohttp webhook listener for inbound Sendblue receive events and sends
+  replies through the Sendblue REST API.
+author: hermes-agent
+requires_env:
+  - name: SENDBLUE_API_KEY_ID
+    description: "Sendblue API key id"
+    prompt: "Sendblue API key id"
+    password: true
+  - name: SENDBLUE_API_SECRET_KEY
+    description: "Sendblue API secret key"
+    prompt: "Sendblue API secret key"
+    password: true
+  - name: SENDBLUE_FROM_NUMBER
+    description: "Default Sendblue line in E.164 format"
+    prompt: "Sendblue from number"
+    password: false
+  - name: SENDBLUE_WEBHOOK_SECRET
+    description: "Secret configured on the Sendblue receive webhook"
+    prompt: "Sendblue webhook secret"
+    password: true
+optional_env:
+  - name: SENDBLUE_FROM_NUMBERS
+    description: "Comma-separated Sendblue lines for sticky sender pooling"
+    prompt: "Sendblue from-number pool"
+    password: false
+  - name: SENDBLUE_API_BASE_URL
+    description: "Sendblue API base URL (default: https://api.sendblue.com)"
+    prompt: "Sendblue API base URL"
+    password: false
+  - name: SENDBLUE_WEBHOOK_HOST
+    description: "Webhook bind host (default: 127.0.0.1)"
+    prompt: "Sendblue webhook bind host"
+    password: false
+  - name: SENDBLUE_WEBHOOK_PORT
+    description: "Webhook bind port (default: 8650)"
+    prompt: "Sendblue webhook bind port"
+    password: false
+  - name: SENDBLUE_WEBHOOK_PATH
+    description: "Webhook path (default: /sendblue/webhook)"
+    prompt: "Sendblue webhook path"
+    password: false
+  - name: SENDBLUE_STATUS_CALLBACK
+    description: "Optional per-message status_callback URL"
+    prompt: "Sendblue status callback URL"
+    password: false
+  - name: SENDBLUE_SEAT_ID
+    description: "Optional Sendblue seat id for message attribution"
+    prompt: "Sendblue seat id"
+    password: false
+  - name: SENDBLUE_STICKY_STATE_PATH
+    description: "Optional JSON path for recipient->from_number stickiness"
+    prompt: "Sendblue sticky state path"
+    password: false
+  - name: SENDBLUE_ALLOWED_USERS
+    description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
+    prompt: "Allowed phone numbers"
+    password: false
+  - name: SENDBLUE_ALLOW_ALL_USERS
+    description: "Allow any phone number to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: SENDBLUE_HOME_CHANNEL
+    description: "Default phone number or group:<id> for cron delivery"
+    prompt: "Home channel"
+    password: false
+  - name: SENDBLUE_HOME_CHANNEL_NAME
+    description: "Human label for the home channel"
+    prompt: "Home channel display name"
+    password: false
+  - name: SENDBLUE_INSECURE_NO_SIGNATURE
+    description: "Disable webhook secret validation for local development only"
+    prompt: "Disable webhook validation? (true/false)"
+    password: false

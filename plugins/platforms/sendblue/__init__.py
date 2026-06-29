@@ -1,0 +1,1 @@
+"""Sendblue platform plugin."""

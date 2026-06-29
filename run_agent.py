@@ -3715,7 +3715,103 @@ class AIAgent:
                 exc,
             )
 
+    def _resolve_anthropic_rebuild_key(self):
+        """Re-resolve Anthropic credentials before an in-process client rebuild.
+
+        Mirrors agent_init / switch_model: pool entry, then
+        resolve_anthropic_token() (ANTHROPIC_TOKEN / OAuth refresh), then
+        the in-memory key. Skips OpenAI-wire _client_kwargs entirely.
+        """
+        from agent.azure_identity_adapter import is_token_provider
+
+        existing = getattr(self, "_anthropic_api_key", None) or getattr(self, "api_key", None) or ""
+        if is_token_provider(existing):
+            return existing
+
+        if getattr(self, "provider", None) != "anthropic":
+            return existing if isinstance(existing, str) else ""
+
+        _base = getattr(self, "_anthropic_base_url", "") or ""
+        if "azure.com" in _base:
+            return existing if isinstance(existing, str) else ""
+
+        pool = getattr(self, "_credential_pool", None)
+        if pool is not None:
+            pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+            current_provider = (getattr(self, "provider", "") or "").strip().lower()
+            if not pool_provider or pool_provider == current_provider:
+                try:
+                    entry = pool.current()
+                    if entry is not None:
+                        runtime_key = (
+                            getattr(entry, "runtime_api_key", None)
+                            or getattr(entry, "access_token", "")
+                        )
+                        if isinstance(runtime_key, str) and runtime_key.strip():
+                            return runtime_key.strip()
+                except Exception as exc:
+                    logger.debug("Anthropic pool lookup during rebuild failed: %s", exc)
+
+        try:
+            from agent.anthropic_adapter import resolve_anthropic_token
+
+            resolved = resolve_anthropic_token()
+            if isinstance(resolved, str) and resolved.strip():
+                return resolved.strip()
+        except Exception as exc:
+            logger.debug("Anthropic credential re-resolve failed: %s", exc)
+
+        if isinstance(existing, str) and existing.strip():
+            return existing.strip()
+        return ""
+
+    def _replace_primary_anthropic_client(self, *, reason: str) -> bool:
+        try:
+            effective_key = self._resolve_anthropic_rebuild_key()
+            if not effective_key:
+                logger.warning(
+                    "Failed to rebuild Anthropic client (%s) %s error=no credential",
+                    reason,
+                    self._client_log_context(),
+                )
+                return False
+
+            old_client = getattr(self, "_anthropic_client", None)
+            if old_client is not None:
+                try:
+                    old_client.close()
+                except Exception:
+                    pass
+
+            self._anthropic_api_key = effective_key
+            self.api_key = effective_key
+            if self.provider == "anthropic":
+                from agent.anthropic_adapter import _is_oauth_token
+
+                self._is_anthropic_oauth = (
+                    _is_oauth_token(effective_key)
+                    if isinstance(effective_key, str)
+                    else False
+                )
+            self._rebuild_anthropic_client()
+            logger.info(
+                "Anthropic client rebuilt (%s) %s",
+                reason,
+                self._client_log_context(),
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Failed to rebuild Anthropic client (%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+            return False
+
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        if self.api_mode == "anthropic_messages":
+            return self._replace_primary_anthropic_client(reason=reason)
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:

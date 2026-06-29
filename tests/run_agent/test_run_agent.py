@@ -6264,6 +6264,44 @@ class TestAnthropicBaseUrlPassthrough:
             assert not passed_url or passed_url is None
 
 
+class TestAnthropicStaleStreamRebuild:
+    def test_replace_primary_openai_client_rebuilds_anthropic_not_openai(self):
+        """Stale-stream pool cleanup must not call OpenAI(**empty _client_kwargs)."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            agent = AIAgent(
+                api_key="sk-ant-oat01-stale",
+                api_mode="anthropic_messages",
+                provider="anthropic",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        agent._client_kwargs = {}
+        agent.client = None
+        agent._anthropic_api_key = "sk-ant-oat01-stale"
+        agent._anthropic_client = MagicMock()
+        fresh = MagicMock()
+
+        with (
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-fresh"),
+            patch.object(agent, "_create_openai_client") as mock_openai_create,
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=fresh) as rebuild,
+        ):
+            ok = agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+
+        assert ok is True
+        mock_openai_create.assert_not_called()
+        rebuild.assert_called_once()
+        assert agent._anthropic_api_key == "sk-ant-oat01-fresh"
+        assert agent._anthropic_client is fresh
+
+
 class TestAnthropicCredentialRefresh:
     def test_try_refresh_anthropic_client_credentials_rebuilds_client(self):
         with (
@@ -6773,6 +6811,16 @@ class TestAnthropicInterruptHandler:
         source = inspect.getsource(interruptible_streaming_api_call)
         assert "anthropic_messages" in source, \
             "interruptible_streaming_api_call must handle Anthropic interrupt"
+
+    def test_streaming_stale_path_closes_anthropic_client(self):
+        """Stale-stream recovery must close the in-flight Anthropic client."""
+        import inspect
+        from agent.chat_completion_helpers import interruptible_streaming_api_call
+        source = inspect.getsource(interruptible_streaming_api_call)
+        assert "stale_stream_pool_cleanup" in source
+        assert source.index("_anthropic_client.close()") < source.index(
+            "stale_stream_pool_cleanup"
+        )
 
 
 # ---------------------------------------------------------------------------

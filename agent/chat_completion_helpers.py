@@ -2676,6 +2676,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _reasoning_floor is not None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
+    _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", 2))
+    stream_stale_kills = {"count": 0}
+
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()
@@ -2718,22 +2721,39 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"Reconnecting..."
             )
             try:
-                _close_request_client_once("stale_stream_kill")
+                if agent.api_mode == "anthropic_messages":
+                    # Mirror the non-streaming / interrupt paths: closing the
+                    # in-flight Anthropic client is what unblocks
+                    # ``for event in stream``.  Rebuild-with-re-resolve alone
+                    # leaves the worker thread spinning forever (#stale-stream).
+                    try:
+                        agent._anthropic_client.close()
+                    except Exception:
+                        pass
+                    agent._replace_primary_openai_client(
+                        reason="stale_stream_pool_cleanup",
+                    )
+                else:
+                    _close_request_client_once("stale_stream_kill")
+                    agent._replace_primary_openai_client(
+                        reason="stale_stream_pool_cleanup",
+                    )
             except Exception:
                 pass
-            # Rebuild the primary client too — its connection pool
-            # may hold dead sockets from the same provider outage.
-            if agent.api_mode == "anthropic_messages":
-                try:
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
-                except Exception:
-                    pass
-            else:
-                try:
-                    agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
-                except Exception:
-                    pass
+            # Give the worker thread a moment to notice the closed connection.
+            t.join(timeout=2.0)
+            stream_stale_kills["count"] += 1
+            if (
+                stream_stale_kills["count"] > _max_stream_retries + 1
+                and result["error"] is None
+                and result["response"] is None
+            ):
+                result["error"] = TimeoutError(
+                    f"Streaming API call produced no chunks for "
+                    f"{int(_stale_elapsed)}s after {stream_stale_kills['count']} "
+                    f"reconnect attempt(s) (threshold: {int(_stream_stale_timeout)}s)"
+                )
+                break
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()

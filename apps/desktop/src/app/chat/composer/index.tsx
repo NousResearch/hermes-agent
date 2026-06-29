@@ -60,13 +60,14 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
@@ -88,6 +89,7 @@ import {
 } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useAutoSpeakReplies } from './hooks/use-auto-speak-replies'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
@@ -230,6 +232,7 @@ export function ChatBar({
   const statusItemsBySession = useStore($statusItemsBySession)
   const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
@@ -2021,6 +2024,20 @@ export function ChatBar({
 
   useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
 
+  const handleToggleAutoSpeak = useCallback(() => {
+    void setAutoSpeakReplies(!$autoSpeakReplies.get()).catch(error =>
+      notifyError(error, t.settings.config.autosaveFailed)
+    )
+  }, [t])
+
+  useAutoSpeakReplies({
+    conversationActive: voiceConversationActive,
+    failureLabel: t.assistant.thread.readAloudFailed,
+    markSpoken: consumePendingResponse,
+    pendingReply: pendingResponse,
+    sessionId
+  })
+
   const contextMenu = (
     <ContextMenu
       onInsertText={insertText}
@@ -2038,6 +2055,7 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
+      autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
       canSteer={canSteer}
@@ -2060,6 +2078,7 @@ export function ChatBar({
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
       onSteer={steerDraft}
+      onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
     />

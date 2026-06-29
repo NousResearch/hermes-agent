@@ -768,6 +768,24 @@ def build_anthropic_client(
         # refill for minutes. (#26293)
         "max_retries": 0,
     }
+
+    # Build the SDK's httpx client ourselves so the OS *system* proxy is never
+    # silently applied. The Anthropic SDK's default client uses trust_env=True,
+    # which on macOS/Windows reads the system proxy (via urllib.getproxies()).
+    # That hijacks requests to endpoints the proxy cannot reach (e.g. an
+    # intranet gateway) and surfaces as an opaque APIConnectionError. Mirror the
+    # OpenAI-wire path (_build_keepalive_http_client in run_agent.py): disable
+    # trust_env and route only through hermes's own env-/NO_PROXY-aware
+    # resolver. Explicit HTTP(S)_PROXY env still applies for users who need
+    # egress, and NO_PROXY is honored for hosts that must bypass it.
+    import httpx as _httpx
+    from agent.process_bootstrap import _get_proxy_for_base_url
+    kwargs["http_client"] = _httpx.Client(
+        timeout=kwargs["timeout"],
+        trust_env=False,
+        proxy=_get_proxy_for_base_url(base_url),
+    )
+
     if normalized_base_url:
         # Azure Anthropic endpoints require an ``api-version`` query parameter.
         # Pass it via default_query so the SDK appends it to every request URL

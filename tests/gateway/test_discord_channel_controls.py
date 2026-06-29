@@ -538,6 +538,33 @@ async def test_council_mode_missing_workers_reports_route_gap_not_bare_answer(ad
 
 
 @pytest.mark.asyncio
+async def test_channel_allow_bots_none_only_blocks_top_level_channels(adapter, monkeypatch):
+    """Safer shared-channel config blocks bot chatter in channels but preserves thread handoffs."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_CHANNEL_ALLOW_BOTS", "none")
+
+    bot_user = SimpleNamespace(id=999)
+    adapter._client = SimpleNamespace(user=bot_user)
+    bot_author = SimpleNamespace(id=111, display_name="Boba", name="Boba", bot=True)
+
+    channel_msg = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{bot_user.id}> channel status ping",
+        mentions=[bot_user],
+    )
+    channel_msg.author = bot_author
+    assert adapter._discord_allow_bots_for_message(channel_msg) == "none"
+
+    thread_msg = make_message(
+        channel=FakeThread(channel_id=8000, parent=FakeTextChannel(channel_id=700)),
+        content=f"<@{bot_user.id}> thread handoff ping",
+        mentions=[bot_user],
+    )
+    thread_msg.author = bot_author
+    assert adapter._discord_allow_bots_for_message(thread_msg) == "mentions"
+
+
+@pytest.mark.asyncio
 async def test_council_huddle_suppresses_ambient_worker_chatter(adapter, monkeypatch):
     """Open/closed huddle threads do not wake Pixoid on unmentioned worker messages."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
@@ -1228,6 +1255,28 @@ def test_config_bridges_allow_bots(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_ALLOW_BOTS") == "mentions"
+
+
+def test_config_bridges_channel_allow_bots(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.channel_allow_bots to DISCORD_CHANNEL_ALLOW_BOTS."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "allow_bots": "mentions",
+            "channel_allow_bots": "none",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "")
+    monkeypatch.setenv("DISCORD_CHANNEL_ALLOW_BOTS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_ALLOW_BOTS") == "mentions"
+    assert os.getenv("DISCORD_CHANNEL_ALLOW_BOTS") == "none"
 
 
 def test_config_bridges_allowed_channels(monkeypatch, tmp_path):

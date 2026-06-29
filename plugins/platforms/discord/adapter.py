@@ -1132,7 +1132,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 _self_role_mentions = adapter_self._message_mentions_own_role(message)
                 _explicit_self_mention = adapter_self._message_explicitly_mentions_self(message, _self_role_mentions)
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    allow_bots = adapter_self._discord_allow_bots_for_message(message)
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
@@ -4512,6 +4512,24 @@ class DiscordAdapter(BasePlatformAdapter):
         if bot_role_mentions is None:
             bot_role_mentions = self._message_mentions_own_role(message)
         return bool(bot_role_mentions)
+
+    def _discord_allow_bots_for_message(self, message: Any) -> str:
+        """Return the bot-message policy for this Discord message.
+
+        ``DISCORD_ALLOW_BOTS`` remains the general/thread policy.  Shared
+        top-level channels can be stricter via ``DISCORD_CHANNEL_ALLOW_BOTS`` so
+        bot/status chatter in a channel cannot wake Pixoid unless explicitly
+        enabled.  Threads keep the older policy because thread handoffs are the
+        intended place for bot-to-bot collaboration.
+        """
+        default_policy = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
+        channel = getattr(message, "channel", None)
+        is_dm = isinstance(channel, discord.DMChannel)
+        is_thread = isinstance(channel, discord.Thread)
+        if is_dm or is_thread:
+            return default_policy
+        channel_policy = os.getenv("DISCORD_CHANNEL_ALLOW_BOTS", "").lower().strip()
+        return channel_policy or default_policy
 
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
@@ -8006,6 +8024,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     allow_bots = discord_cfg.get("allow_bots")
     if allow_bots is not None and not os.getenv("DISCORD_ALLOW_BOTS"):
         os.environ["DISCORD_ALLOW_BOTS"] = str(allow_bots).lower()
+    # channel_allow_bots can make top-level shared channels stricter than
+    # threads.  Use "none" to prevent bot/status chatter in channels from
+    # waking the bot while keeping ``allow_bots: mentions`` for thread handoffs.
+    channel_allow_bots = discord_cfg.get("channel_allow_bots")
+    if channel_allow_bots is not None and not os.getenv("DISCORD_CHANNEL_ALLOW_BOTS"):
+        os.environ["DISCORD_CHANNEL_ALLOW_BOTS"] = str(channel_allow_bots).lower()
     crew_aliases = discord_cfg.get("crew_aliases")
     if crew_aliases is not None and not os.getenv("DISCORD_CREW_ALIASES"):
         if isinstance(crew_aliases, list):

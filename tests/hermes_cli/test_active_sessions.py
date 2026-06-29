@@ -12,6 +12,16 @@ from hermes_cli import active_sessions
 def test_resolve_max_concurrent_sessions_values(caplog):
     assert active_sessions.resolve_max_concurrent_sessions({}) is None
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": None}) is None
+    caplog.set_level(logging.WARNING)
+    assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": {}}) is None
+    assert (
+        active_sessions.resolve_max_concurrent_sessions(
+            {"gateway": {"max_concurrent_sessions": {}}}
+        )
+        is None
+    )
+    assert caplog.records == []
+    caplog.clear()
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": 0}) is None
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": -1}) is None
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": "3"}) == 3
@@ -28,7 +38,6 @@ def test_resolve_max_concurrent_sessions_values(caplog):
         == 2
     )
 
-    caplog.set_level(logging.WARNING)
     assert active_sessions.resolve_max_concurrent_sessions({"max_concurrent_sessions": "many"}) is None
     assert any(
         "Ignoring invalid max_concurrent_sessions='many'" in record.message
@@ -76,6 +85,74 @@ def test_active_session_lease_blocks_until_release(tmp_path, monkeypatch):
     assert active_sessions.active_session_registry_snapshot() == []
 
 
+def test_active_session_tracks_lease_even_when_limit_disabled(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="tracked-without-cap",
+        surface="cli",
+        config={},
+    )
+
+    assert message is None
+    assert lease is not None
+    assert [entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
+        "tracked-without-cap"
+    ]
+
+    lease.release()
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
+def test_update_active_session_metadata_keeps_runtime_status_value_free(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="runtime-status",
+        surface="cli",
+        config={},
+    )
+
+    assert message is None
+    assert lease is not None
+
+    updated = active_sessions.update_active_session_metadata(
+        session_id="runtime-status",
+        metadata={
+            "current_tool": "terminal",
+            "activity_kind": "tool_running",
+            "last_activity_ts": 123.0,
+            "unsafe_prompt": "do not persist this prompt text",
+            "current_tool_args": "do not persist command args",
+        },
+    )
+
+    assert updated == 1
+    [entry] = active_sessions.active_session_registry_snapshot()
+    assert entry["session_id"] == "runtime-status"
+    assert entry["metadata"] == {
+        "activity_kind": "tool_running",
+        "current_tool": "terminal",
+        "last_activity_ts": 123.0,
+    }
+    assert "unsafe_prompt" not in str(entry)
+    assert "current_tool_args" not in str(entry)
+
+    active_sessions.update_active_session_metadata(
+        session_id="runtime-status",
+        metadata={"current_tool": None, "activity_kind": "generic"},
+    )
+
+    [entry] = active_sessions.active_session_registry_snapshot()
+    assert entry["metadata"]["activity_kind"] == "generic"
+    assert "current_tool" not in entry["metadata"]
+
+    lease.release()
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
 def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -112,7 +189,6 @@ def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
     ]
     lease.release()
 
-
 def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -138,6 +214,208 @@ def test_transfer_active_session_reanchors_existing_lease(tmp_path, monkeypatch)
     assert snapshot[0]["session_id"] == "session-new"
     assert snapshot[0]["metadata"] == {"live_session_id": "ui-1"}
     lease.release()
+
+
+def test_prune_dead_active_session_leases_finalizes_db_sessions(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "stale",
+                "session_id": "stale-session",
+                "surface": "cli",
+                "pid": 99999999,
+                "started_at": 1,
+                "updated_at": 1,
+            },
+            {
+                "lease_id": "live",
+                "session_id": "live-session",
+                "surface": "cli",
+                "pid": 12345,
+                "started_at": 2,
+                "updated_at": 2,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        active_sessions,
+        "_pid_alive",
+        lambda pid, process_start_time=None: int(pid) == 12345,
+    )
+    calls = []
+
+    class FakeDB:
+        def end_session(self, session_id, reason):
+            calls.append((session_id, reason))
+
+    assert active_sessions.prune_dead_active_session_leases(session_db=FakeDB()) == 1
+    assert calls == [("stale-session", "stale_active_session")]
+    assert [entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
+        "live-session"
+    ]
+
+
+def test_prune_dead_active_session_leases_skips_blank_session_ids(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "blank",
+                "session_id": "  ",
+                "surface": "cli",
+                "pid": 99999999,
+                "started_at": 1,
+                "updated_at": 1,
+            },
+        ],
+    )
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: False)
+    calls = []
+
+    class FakeDB:
+        def end_session(self, session_id, reason):
+            calls.append((session_id, reason))
+
+    assert active_sessions.prune_dead_active_session_leases(session_db=FakeDB()) == 0
+    assert calls == []
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
+def test_prune_dead_active_session_leases_keeps_db_open_when_live_lease_remains(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "dead",
+                "session_id": "same-session",
+                "surface": "cli",
+                "pid": 111,
+                "started_at": 1,
+                "updated_at": 1,
+            },
+            {
+                "lease_id": "live",
+                "session_id": "same-session",
+                "surface": "cli",
+                "pid": 222,
+                "started_at": 2,
+                "updated_at": 2,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        active_sessions,
+        "_pid_alive",
+        lambda pid, process_start_time=None: int(pid) == 222,
+    )
+    calls = []
+
+    class FakeDB:
+        def end_session(self, session_id, reason):
+            calls.append((session_id, reason))
+
+    assert active_sessions.prune_dead_active_session_leases(session_db=FakeDB()) == 0
+    assert calls == []
+    assert [entry["lease_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
+        "live"
+    ]
+
+
+def test_prune_dead_active_session_leases_skips_runtime_activity_and_queued_steer(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "fresh",
+                "session_id": "fresh-session",
+                "surface": "cli",
+                "pid": 111,
+                "started_at": 1,
+                "updated_at": 1,
+                "metadata": {"last_activity_age_seconds": 1},
+            },
+            {
+                "lease_id": "steer",
+                "session_id": "steer-session",
+                "surface": "cli",
+                "pid": 222,
+                "started_at": 2,
+                "updated_at": 2,
+                "metadata": {"pending_steer_count": 1},
+            },
+        ],
+    )
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: False)
+    calls = []
+
+    class FakeDB:
+        def end_session(self, session_id, reason):
+            calls.append((session_id, reason))
+
+    assert active_sessions.prune_dead_active_session_leases(session_db=FakeDB()) == 0
+    assert calls == []
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
+def test_prune_dead_active_session_leases_only_uses_registry_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "dead",
+                "session_id": "registry-session",
+                "surface": "cli",
+                "pid": 99999999,
+                "started_at": 1,
+                "updated_at": 1,
+            },
+        ],
+    )
+    monkeypatch.setattr(active_sessions, "_pid_alive", lambda *_args: False)
+    calls = []
+
+    class FakeDB:
+        def end_session(self, session_id, reason):
+            calls.append((session_id, reason))
+
+        def list_sessions_rich(self):
+            raise AssertionError("DB-wide session scan must not run")
+
+        def maybe_auto_prune_and_vacuum(self, **_kwargs):
+            raise AssertionError("DB prune must not run")
+
+    assert active_sessions.prune_dead_active_session_leases(session_db=FakeDB()) == 1
+    assert calls == [("registry-session", "stale_active_session")]
 
 
 def test_pid_alive_uses_safe_pid_exists_without_signalling(monkeypatch):

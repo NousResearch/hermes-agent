@@ -11,6 +11,10 @@ import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import {
+  getSessionStatusLabels,
+  type SessionStatusLabel
+} from '@/lib/session-status-labels'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
@@ -40,6 +44,13 @@ const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
   [3_600_000, 'ageHour'],
   [60_000, 'ageMin']
 ]
+
+const STATUS_LABEL_CLASS: Record<SessionStatusLabel['tone'], string> = {
+  destructive: 'border-red-500/30 bg-red-500/10 text-red-400',
+  muted: 'border-(--ui-border-subtle) bg-(--ui-control-background) text-(--ui-text-tertiary)',
+  success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+  warning: 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+}
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
@@ -77,6 +88,7 @@ export function SidebarSessionRow({
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
+  const statusLabels = getSessionStatusLabels(session)
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
   // Telegram thread continued here still reads as Telegram.
@@ -218,6 +230,22 @@ export function SidebarSessionRow({
           <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </SidebarRowLabel>
+          {statusLabels.length > 0 && (
+            <span className="flex max-w-[10rem] shrink-0 items-center gap-1 overflow-hidden">
+              {statusLabels.map(status => (
+                <span
+                  className={cn(
+                    'max-w-[7rem] truncate rounded-[4px] border px-1 text-[0.5625rem] leading-4',
+                    STATUS_LABEL_CLASS[status.tone]
+                  )}
+                  key={status.kind}
+                  title={status.title}
+                >
+                  {status.label}
+                </span>
+              ))}
+            </span>
+          )}
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>

@@ -3348,6 +3348,229 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
+def _numeric_epoch_seconds(value: Any) -> Optional[float]:
+    """Return a numeric timestamp only; do not parse free-form activity text."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _safe_count(value: Any) -> Optional[int]:
+    """Coerce a safe non-negative count without carrying source values forward."""
+
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, count)
+
+
+_RUNNING_TOOL_ACTIVITY_KINDS = {"concurrent_tools_running", "tool_running"}
+
+
+def _registry_last_tool_runtime_event(entry: Any) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+    aggregated = str(entry.get("_last_tool_runtime_event") or "").strip()
+    if aggregated in _RUNNING_TOOL_ACTIVITY_KINDS:
+        return aggregated
+    candidates: List[Dict[str, Any]] = [entry]
+    metadata = entry.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.insert(0, metadata)
+    for candidate in candidates:
+        activity_kind = str(candidate.get("activity_kind") or "").strip()
+        current_tool = str(candidate.get("current_tool") or "").strip()
+        if activity_kind in _RUNNING_TOOL_ACTIVITY_KINDS:
+            return activity_kind
+        if current_tool and not activity_kind:
+            return "tool_running"
+    return None
+
+
+def _row_has_monitor_blocked_evidence(row: Dict[str, Any]) -> bool:
+    for key in ("blocked_by_monitor", "monitor_blocked"):
+        value = row.get(key)
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        if isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "y", "on"}:
+            return True
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return True
+    end_reason = str(row.get("end_reason") or "").strip().lower()
+    return end_reason.startswith("monitor_") or "blocked_by_monitor" in end_reason
+
+
+def _active_session_registry_by_session() -> Dict[str, Dict[str, Any]]:
+    """Best-effort read of active-session metadata, keyed by session id."""
+
+    try:
+        from hermes_cli import active_sessions  # type: ignore
+    except Exception:
+        return {}
+
+    snapshot = None
+    for name in (
+        "active_session_registry_snapshot",
+        "read_active_sessions",
+        "list_active_sessions",
+        "get_active_sessions",
+        "snapshot_active_sessions",
+    ):
+        reader = getattr(active_sessions, name, None)
+        if not callable(reader):
+            continue
+        try:
+            snapshot = reader()
+            break
+        except Exception:
+            continue
+    if snapshot is None:
+        return {}
+
+    entries: List[Dict[str, Any]] = []
+    if isinstance(snapshot, dict):
+        sessions = snapshot.get("sessions")
+        if isinstance(sessions, list):
+            entries = [s for s in sessions if isinstance(s, dict)]
+        else:
+            for key, value in snapshot.items():
+                if not isinstance(value, dict):
+                    continue
+                entry = dict(value)
+                entry.setdefault("session_id", key)
+                entries.append(entry)
+    elif isinstance(snapshot, list):
+        entries = [s for s in snapshot if isinstance(s, dict)]
+
+    by_session: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        session_id = entry.get("session_id") or entry.get("sessionId") or entry.get("id")
+        if not session_id:
+            continue
+        key = str(session_id)
+        aggregate = by_session.setdefault(
+            key,
+            {"session_id": key, "_queued_steer_count_candidates": []},
+        )
+        count = _registry_queued_steer_count(entry)
+        if count is not None:
+            aggregate["_queued_steer_count_candidates"].append(count)
+        last_tool_event = _registry_last_tool_runtime_event(entry)
+        if last_tool_event:
+            aggregate["_last_tool_runtime_event"] = last_tool_event
+    return by_session
+
+
+def _registry_queued_steer_count(entry: Any) -> Optional[int]:
+    if not isinstance(entry, dict):
+        return None
+    counts: List[int] = []
+    aggregate_counts = entry.get("_queued_steer_count_candidates")
+    if isinstance(aggregate_counts, list):
+        for value in aggregate_counts:
+            count = _safe_count(value)
+            if count is not None:
+                counts.append(count)
+    candidates: List[Dict[str, Any]] = [entry]
+    metadata = entry.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.insert(0, metadata)
+    for candidate in candidates:
+        for key in ("pending_steer_count", "queued_steer_count"):
+            if key in candidate:
+                count = _safe_count(candidate.get(key))
+                if count is not None:
+                    counts.append(count)
+    if not counts:
+        return None
+    return max(counts)
+
+
+def _attach_session_status_evidence(
+    row: Dict[str, Any],
+    *,
+    now: Optional[float] = None,
+    db: Any = None,
+    registry_by_session: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Attach value-free dashboard status evidence to a session/search row."""
+
+    sources: List[str] = []
+
+    def add_source(source: str) -> None:
+        if source not in sources:
+            sources.append(source)
+
+    now = time.time() if now is None else now
+    row_id = row.get("id")
+    session_id = row.get("session_id") or row_id
+
+    last_activity_age_seconds = None
+    for key in ("last_active", "started_at", "session_started"):
+        timestamp = _numeric_epoch_seconds(row.get(key))
+        if timestamp is None:
+            continue
+        last_activity_age_seconds = max(0, int(now - timestamp))
+        add_source("db_row")
+        break
+    if session_id or row_id:
+        add_source("db_row")
+    if _row_has_monitor_blocked_evidence(row):
+        add_source("blocked_by_monitor")
+
+    tip_id = session_id or row_id
+    lineage_root = row.get("_lineage_root_id") or row.get("lineage_root")
+    if row.get("session_id") and row.get("lineage_root"):
+        tip_id = row.get("session_id")
+        if row.get("session_id") != row.get("lineage_root"):
+            add_source("compression_projection")
+    elif lineage_root:
+        add_source("compression_projection")
+        if db is not None:
+            try:
+                resolved = db.get_compression_tip(lineage_root)
+            except Exception:
+                resolved = None
+            if resolved:
+                tip_id = resolved
+
+    queued_steer_count = 0
+    registry_entry = None
+    if registry_by_session and session_id:
+        registry_entry = registry_by_session.get(str(session_id))
+        if registry_entry is None and row_id:
+            registry_entry = registry_by_session.get(str(row_id))
+    if registry_entry is not None:
+        add_source("active_session_registry")
+    count = _registry_queued_steer_count(registry_entry)
+    if count is not None:
+        queued_steer_count = count
+
+    row["last_tool_runtime_event"] = _registry_last_tool_runtime_event(registry_entry)
+    row["last_activity_age_seconds"] = last_activity_age_seconds
+    row["queued_steer_count"] = queued_steer_count
+    row["compression_tip_session_id"] = tip_id
+    add_source("unavailable")
+    row["status_evidence_source"] = sources or ["unavailable"]
+    return row
+
+
 @app.get("/api/sessions")
 async def get_sessions(
     limit: int = 20,
@@ -3417,10 +3640,17 @@ async def get_sessions(
                 exclude_children=True,
             )
             now = time.time()
+            registry_by_session = _active_session_registry_by_session()
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                )
+                _attach_session_status_evidence(
+                    s,
+                    now=now,
+                    db=db,
+                    registry_by_session=registry_by_session,
                 )
                 if profile_name:
                     s["profile"] = profile_name
@@ -3496,6 +3726,7 @@ def get_profiles_sessions(
     profile_totals: Dict[str, int] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
+    registry_by_session = _active_session_registry_by_session()
     for name, home in targets:
         db_path = Path(home) / "state.db"
         if not db_path.exists():
@@ -3537,6 +3768,12 @@ def get_profiles_sessions(
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
                 s["archived"] = bool(s.get("archived"))
+                _attach_session_status_evidence(
+                    s,
+                    now=now,
+                    db=db,
+                    registry_by_session=registry_by_session,
+                )
                 merged.append(s)
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
@@ -3574,6 +3811,8 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
         db = _open_session_db_for_profile(profile)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
+            now = time.time()
+            registry_by_session = _active_session_registry_by_session()
 
             # Walk parent_session_id to the compression root, memoized so a
             # chain of compression segments only costs one walk. We deliberately
@@ -3658,8 +3897,25 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                 if root in seen or len(seen) >= safe_limit:
                     return
                 payload = dict(payload)
-                payload["session_id"] = lineage_tip(root)
+                tip_session_id = lineage_tip(root)
+                payload["session_id"] = tip_session_id
                 payload["lineage_root"] = root
+                if payload.get("last_active") is None and tip_session_id != raw_sid:
+                    try:
+                        tip_session = db.get_session(tip_session_id)
+                    except Exception:
+                        tip_session = None
+                    if isinstance(tip_session, dict):
+                        if tip_session.get("last_active") is not None:
+                            payload["last_active"] = tip_session.get("last_active")
+                        elif tip_session.get("started_at") is not None:
+                            payload["started_at"] = tip_session.get("started_at")
+                _attach_session_status_evidence(
+                    payload,
+                    now=now,
+                    db=db,
+                    registry_by_session=registry_by_session,
+                )
                 seen[root] = payload
 
             # Direct ID matches first: users often paste a session id from CLI,
@@ -3678,6 +3934,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                         "source": row.get("source"),
                         "model": row.get("model"),
                         "session_started": row.get("started_at"),
+                        "last_active": row.get("last_active"),
                     },
                 )
 
@@ -3708,6 +3965,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                         "source": m.get("source"),
                         "model": m.get("model"),
                         "session_started": m.get("session_started"),
+                        "last_active": m.get("last_active"),
                     },
                 )
             return {"results": list(seen.values())}

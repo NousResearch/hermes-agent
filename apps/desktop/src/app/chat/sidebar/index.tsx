@@ -320,7 +320,12 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     source: result.source ?? null,
     started_at: ts,
     title: null,
-    tool_call_count: 0
+    tool_call_count: 0,
+    last_tool_runtime_event: result.last_tool_runtime_event ?? null,
+    last_activity_age_seconds: result.last_activity_age_seconds ?? null,
+    queued_steer_count: result.queued_steer_count ?? null,
+    compression_tip_session_id: result.compression_tip_session_id ?? null,
+    status_evidence_source: result.status_evidence_source
   }
 }
 

@@ -366,6 +366,12 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Value-free runtime evidence projected by dashboard/session APIs. */
+  last_tool_runtime_event?: null | unknown
+  last_activity_age_seconds?: null | number
+  queued_steer_count?: null | number
+  compression_tip_session_id?: null | string
+  status_evidence_source?: string[]
 }
 
 export interface SessionMessage {
@@ -699,6 +705,11 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  last_tool_runtime_event?: null | unknown
+  last_activity_age_seconds?: null | number
+  queued_steer_count?: null | number
+  compression_tip_session_id?: null | string
+  status_evidence_source?: string[]
 }
 
 export interface SessionSearchResponse {

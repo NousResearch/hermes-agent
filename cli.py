@@ -1133,7 +1133,21 @@ def _finalize_single_query(cli) -> None:
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
-        cli._release_active_session()
+        try:
+            persist_before_close = getattr(cli, "_persist_active_session_before_close", None)
+            if callable(persist_before_close):
+                persist_before_close()
+
+            agent = getattr(cli, "agent", None)
+            session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+            session_db = getattr(cli, "_session_db", None)
+            end_session = getattr(session_db, "end_session", None)
+            if session_id and callable(end_session):
+                end_session(session_id, "cli_close")
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Could not close single-query CLI session in DB: %s", e)
+        finally:
+            cli._release_active_session()
 
 
 def _reset_terminal_input_modes_on_exit() -> None:
@@ -1626,6 +1640,20 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             logger.debug("Orphan compression finalize skipped: %s", _finalize_exc)
 
         cfg = (_load_full_config().get("sessions") or {})
+        try:
+            from hermes_cli.active_sessions import prune_dead_active_session_leases
+
+            finalized = prune_dead_active_session_leases(session_db=session_db)
+            if finalized:
+                logger.info(
+                    "Finalized %d stale active session(s)", finalized
+                )
+        except Exception as _active_finalize_exc:
+            logger.debug(
+                "Stale active-session finalize skipped: %s",
+                _active_finalize_exc,
+            )
+
         if not cfg.get("auto_prune", False):
             return
         session_db.maybe_auto_prune_and_vacuum(

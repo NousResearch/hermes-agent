@@ -1,0 +1,5 @@
+name: anyrouter-provider
+kind: model-provider
+version: 1.0.0
+description: AnyRouter OpenRouter-compatible unified model gateway
+author: AnyRouter

@@ -54,6 +54,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
+    "anyrouter": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("ANYROUTER_API_KEY",),
+        base_url_override="https://anyrouter.dev/api/v1",
+        base_url_env_var="ANYROUTER_BASE_URL",
+    ),
     "nous": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_device_code",

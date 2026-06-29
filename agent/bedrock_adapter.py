@@ -1296,9 +1296,23 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
-    "anthropic.claude-opus-4-6":     200_000,
-    "anthropic.claude-sonnet-4-6":   200_000,
+    # Anthropic Claude models on Bedrock.
+    # NOTE: Opus 4.6+ and Sonnet 4.6 support a 1M context window on Bedrock,
+    # gated behind the ``context-1m-2025-08-07`` beta header which
+    # build_anthropic_bedrock_client() (agent/anthropic_adapter.py) attaches
+    # unconditionally to the AnthropicBedrock client used for the provider
+    # (wired at agent/agent_init.py). These entries must therefore report 1M,
+    # not 200K, or context-usage accounting under-reports the real window (the
+    # client requests 1M on the wire while the meter caps at 200K). Older
+    # 3.x / Sonnet-4 / Haiku models have no 1M support and stay at 200K.
+    # Ordering matters: get_bedrock_context_length() picks the LONGEST matching
+    # substring, so more specific keys (e.g. "claude-opus-4-8") must precede the
+    # bare "claude-opus-4" / "claude-sonnet-4" fallbacks to win for an id like
+    # "us.anthropic.claude-opus-4-8".
+    "anthropic.claude-opus-4-8":     1_000_000,
+    "anthropic.claude-opus-4-7":     1_000_000,
+    "anthropic.claude-opus-4-6":     1_000_000,
+    "anthropic.claude-sonnet-4-6":   1_000_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
     "anthropic.claude-opus-4":       200_000,

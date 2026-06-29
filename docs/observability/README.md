@@ -53,10 +53,13 @@ behavior-affecting hooks:
 | `pre_llm_call` | May return a string or `{"context": "..."}` to inject ephemeral context into the current user message. |
 | `pre_tool_call` | May return `{"action": "block", "message": "..."}` to block a tool before execution. |
 | `transform_tool_result` | May return a replacement tool result string after `post_tool_call`. |
-| `transform_llm_output` | May return a replacement final assistant text string. |
+| `transform_llm_output` | May return a replacement final assistant text string. Legacy post-loop compatibility hook; it cannot retry the model or execute tools in the same turn. |
 
 Telemetry plugins should treat these behavior-affecting returns as optional
-compatibility features, not as observability requirements.
+compatibility features, not as observability requirements. New behavior-changing
+final-draft validation should use `assistant_response` middleware instead of an
+observer hook when it needs structured `pass`, `rewrite`, `retry_with_feedback`,
+`require_tool`, or `block` control flow.
 
 ## Correlation IDs
 

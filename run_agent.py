@@ -4046,7 +4046,16 @@ class AIAgent:
             build_or_headers,
         )
 
-        if base_url_host_matches(base_url, "openrouter.ai"):
+        if (
+            self.provider == "openai-codex"
+            and getattr(self, "api_mode", None) == "codex_responses"
+            and base_url_hostname(base_url) in {"127.0.0.1", "localhost", "::1"}
+        ):
+            from agent.auxiliary_client import _codex_cloudflare_headers
+            self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
+                self._client_kwargs.get("api_key", "")
+            )
+        elif base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)

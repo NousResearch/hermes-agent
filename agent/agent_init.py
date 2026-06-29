@@ -820,7 +820,15 @@ def init_agent(
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
             effective_base = base_url
-            if base_url_host_matches(effective_base, "openrouter.ai"):
+            _effective_host = (urlparse(effective_base).hostname or "").lower()
+            if (
+                agent.provider == "openai-codex"
+                and getattr(agent, "api_mode", "") == "codex_responses"
+                and _effective_host in {"127.0.0.1", "localhost", "::1"}
+            ):
+                from agent.auxiliary_client import _codex_cloudflare_headers
+                client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+            elif base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers
                 client_kwargs["default_headers"] = build_or_headers()
             elif base_url_host_matches(effective_base, "integrate.api.nvidia.com"):

@@ -360,6 +360,9 @@ def _resolve_runtime_from_pool_entry(
     api_mode = "chat_completions"
     if provider == "openai-codex":
         api_mode = "codex_responses"
+        env_base_url = _getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+        if env_base_url:
+            base_url = env_base_url
         base_url = base_url or DEFAULT_CODEX_BASE_URL
     elif provider == "xai-oauth":
         api_mode = "codex_responses"

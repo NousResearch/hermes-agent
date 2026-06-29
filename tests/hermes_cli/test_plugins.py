@@ -23,6 +23,7 @@ from hermes_cli.plugins import (
 )
 from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
+    apply_assistant_response_middleware,
     apply_llm_request_middleware,
     apply_tool_request_middleware,
     run_tool_execution_middleware,
@@ -158,17 +159,134 @@ class TestPluginDiscovery:
 
         llm_result = apply_llm_request_middleware(request)
         tool_result = apply_tool_request_middleware("read_file", args)
+        assistant_result = apply_assistant_response_middleware("final draft")
 
         assert llm_result.payload is request
         assert llm_result.original_payload is request
         assert llm_result.changed is False
         assert llm_result.trace == []
+        assert llm_result.control == {}
         assert tool_result.payload is args
         assert tool_result.original_payload is args
         assert tool_result.changed is False
         assert tool_result.trace == []
+        assert assistant_result.action == "pass"
+        assert assistant_result.response_text == "final draft"
+        assert assistant_result.trace == []
         assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
         assert has_middleware("tool_request") is False
+
+    def test_llm_request_middleware_can_return_turn_control(self, monkeypatch):
+        def middleware(**kwargs):
+            return {
+                "request": {**kwargs["request"], "guarded": True},
+                "control": {"stream_policy": "buffer_until_validated"},
+                "source": "test-plugin",
+                "reason": "risky-turn",
+            }
+
+        manager = types.SimpleNamespace(
+            _middleware={"llm_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_llm_request_middleware({"messages": []})
+
+        assert result.payload == {"messages": [], "guarded": True}
+        assert result.control == {"stream_policy": "buffer_until_validated"}
+        assert result.trace == [{"source": "test-plugin", "reason": "risky-turn"}]
+
+    def test_assistant_response_middleware_first_decisive_action_wins(self, monkeypatch):
+        def pass_middleware(**kwargs):
+            return {"action": "pass", "source": "pass-plugin"}
+
+        def rewrite_middleware(**kwargs):
+            return {
+                "action": "rewrite",
+                "response_text": "safe replacement",
+                "source": "rewrite-plugin",
+                "reason": "validator-rewrite",
+            }
+
+        def block_middleware(**kwargs):
+            return {"action": "block", "message": "too late"}
+
+        callbacks = [pass_middleware, rewrite_middleware, block_middleware]
+        manager = types.SimpleNamespace(
+            _middleware={"assistant_response": callbacks},
+            invoke_middleware=lambda kind, **kwargs: [cb(**kwargs) for cb in callbacks],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_assistant_response_middleware(
+            "unsafe draft",
+            session_id="s1",
+            model="m",
+            validation_attempt=0,
+        )
+
+        assert "assistant_response" in VALID_MIDDLEWARE
+        assert result.action == "rewrite"
+        assert result.response_text == "safe replacement"
+        assert result.trace == [
+            {"source": "pass-plugin"},
+            {"source": "rewrite-plugin", "reason": "validator-rewrite"},
+        ]
+
+    def test_assistant_response_middleware_normalizes_require_tool_calls(self, monkeypatch):
+        def require_tool(**kwargs):
+            return {
+                "action": "require_tool",
+                "tool_calls": [
+                    {
+                        "name": "read_file",
+                        "args": {"path": "README.md"},
+                        "reason": "verify file before reversing",
+                        "read_only": True,
+                    }
+                ],
+                "feedback": "Read the file before changing the answer.",
+                "source": "validator",
+            }
+
+        manager = types.SimpleNamespace(
+            _middleware={"assistant_response": [require_tool]},
+            invoke_middleware=lambda kind, **kwargs: [require_tool(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_assistant_response_middleware("draft")
+
+        assert result.action == "require_tool"
+        assert result.feedback == "Read the file before changing the answer."
+        assert result.tool_calls == [
+            {
+                "name": "read_file",
+                "args": {"path": "README.md"},
+                "reason": "verify file before reversing",
+                "read_only": True,
+            }
+        ]
+
+    def test_assistant_response_rewrite_can_use_message_as_replacement(self, monkeypatch):
+        def rewrite_with_message(**kwargs):
+            return {
+                "action": "rewrite",
+                "message": "replacement from message",
+                "source": "validator",
+            }
+
+        manager = types.SimpleNamespace(
+            _middleware={"assistant_response": [rewrite_with_message]},
+            invoke_middleware=lambda kind, **kwargs: [rewrite_with_message(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = apply_assistant_response_middleware("unsafe draft")
+
+        assert result.action == "rewrite"
+        assert result.response_text == "replacement from message"
 
     def test_request_middleware_changed_tracks_trace_not_deep_equality(self, monkeypatch):
         def same_payload_middleware(**kwargs):

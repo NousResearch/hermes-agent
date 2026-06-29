@@ -27,6 +27,12 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from agent.assistant_response_control import (
+    build_validator_tool_response,
+    make_validator_retry_messages,
+    sanitize_validator_text,
+    should_disable_streaming_for_turn,
+)
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
@@ -586,6 +592,8 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    response_validation_attempts = 0
+    setattr(agent, "_assistant_response_validated", False)
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
@@ -1073,9 +1081,11 @@ def run_conversation(
                     api_kwargs = _llm_request_mw.payload
                     _original_api_kwargs = _llm_request_mw.original_payload
                     _llm_middleware_trace = _llm_request_mw.trace
+                    _llm_middleware_control = getattr(_llm_request_mw, "control", {}) or {}
                 except Exception:
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
+                    _llm_middleware_control = {}
 
                 try:
                     from hermes_cli.plugins import (
@@ -1161,6 +1171,8 @@ def run_conversation(
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
+                    _use_streaming = False
+                elif should_disable_streaming_for_turn(_llm_middleware_control):
                     _use_streaming = False
                 # CopilotACPClient communicates via subprocess stdio and
                 # returns a plain SimpleNamespace — not an iterable
@@ -4751,6 +4763,118 @@ def run_conversation(
                 final_response = agent._strip_think_blocks(final_response).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+
+                try:
+                    from hermes_cli.middleware import apply_assistant_response_middleware
+
+                    validation_decision = apply_assistant_response_middleware(
+                        final_response,
+                        messages=list(messages),
+                        response_message=dict(final_msg),
+                        session_id=agent.session_id or "",
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        validation_attempt=response_validation_attempts,
+                        tools=list(agent.tools or []),
+                        valid_tool_names=sorted(getattr(agent, "valid_tool_names", set())),
+                    )
+                except Exception as _validation_exc:
+                    logger.warning("assistant_response middleware failed: %s", _validation_exc)
+                    validation_decision = None
+
+                if validation_decision is not None and getattr(validation_decision, "trace", None):
+                    setattr(agent, "_assistant_response_validated", True)
+                    try:
+                        _max_validation_attempts = int(
+                            os.getenv("HERMES_ASSISTANT_RESPONSE_VALIDATION_MAX_ATTEMPTS", "2")
+                        )
+                    except Exception:
+                        _max_validation_attempts = 2
+                    if validation_decision.max_retries is not None:
+                        _max_validation_attempts = max(0, validation_decision.max_retries)
+                    _validation_action = validation_decision.action
+
+                    if _validation_action == "rewrite":
+                        final_response = sanitize_validator_text(
+                            validation_decision.response_text
+                            or validation_decision.message
+                            or final_response,
+                            strip_think_blocks=agent._strip_think_blocks,
+                        )
+                        final_msg["content"] = final_response
+                        final_msg["_response_validation_decision"] = "rewrite"
+                    elif _validation_action == "block":
+                        final_response = sanitize_validator_text(
+                            validation_decision.message
+                            or validation_decision.response_text
+                            or "[Assistant Response Validator] The draft was blocked before delivery.",
+                            strip_think_blocks=agent._strip_think_blocks,
+                        )
+                        final_msg["content"] = final_response
+                        final_msg["_response_validation_decision"] = "block"
+                    elif _validation_action in {"retry_with_feedback", "require_tool"}:
+                        rejected_draft = final_response
+                        final_response = None
+                        if response_validation_attempts < _max_validation_attempts:
+                            if _validation_action == "require_tool":
+                                validator_tool_response = build_validator_tool_response(
+                                    validation_decision,
+                                    valid_tool_names=getattr(agent, "valid_tool_names", set()),
+                                    validation_attempt=response_validation_attempts,
+                                )
+                                if validator_tool_response is not None:
+                                    validator_assistant_msg = agent._build_assistant_message(
+                                        validator_tool_response,
+                                        "tool_calls",
+                                    )
+                                    validator_assistant_msg["_response_validation_synthetic"] = True
+                                    validator_assistant_msg["_response_validation_decision"] = "require_tool"
+                                    messages.append(validator_assistant_msg)
+                                    agent._emit_interim_assistant_message(validator_assistant_msg)
+                                    if agent.stream_delta_callback:
+                                        try:
+                                            agent.stream_delta_callback(None)
+                                        except Exception:
+                                            pass
+                                    response_validation_attempts += 1
+                                    agent._execute_tool_calls(
+                                        validator_tool_response,
+                                        messages,
+                                        effective_task_id,
+                                        api_call_count,
+                                    )
+                                    if agent._tool_guardrail_halt_decision is not None:
+                                        decision = agent._tool_guardrail_halt_decision
+                                        _turn_exit_reason = "guardrail_halt"
+                                        final_response = agent._toolguard_controlled_halt_response(decision)
+                                        messages.append({"role": "assistant", "content": final_response})
+                                        break
+                                    agent._session_messages = messages
+                                    continue
+
+                            messages.extend(make_validator_retry_messages(
+                                draft=rejected_draft,
+                                feedback=validation_decision.feedback,
+                                validation_attempt=response_validation_attempts,
+                            ))
+                            response_validation_attempts += 1
+                            agent._session_messages = messages
+                            continue
+
+                        final_response = sanitize_validator_text(
+                            validation_decision.message
+                            or validation_decision.response_text
+                            or "[Assistant Response Validator] The draft could not be validated within the retry limit.",
+                            strip_think_blocks=agent._strip_think_blocks,
+                        )
+                        final_msg["content"] = final_response
+                        final_msg["_response_validation_decision"] = "retry_limit_block"
 
                 # Pop thinking-only prefill and empty-response retry
                 # scaffolding before appending either a final response or a

@@ -329,7 +329,11 @@ def finalize_turn(
                 response_text=final_response,
                 session_id=agent.session_id or "",
                 model=agent.model,
+                provider=agent.provider,
+                base_url=agent.base_url,
+                api_mode=getattr(agent, "api_mode", ""),
                 platform=getattr(agent, "platform", None) or "",
+                assistant_response_validated=bool(getattr(agent, "_assistant_response_validated", False)),
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:

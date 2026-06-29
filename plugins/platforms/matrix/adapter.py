@@ -23,8 +23,14 @@ Environment variables:
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
                                 (alias of matrix.free_response_rooms)
     MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds
-                            in these rooms (whitelist, DMs exempt; alias of
-                            matrix.allowed_rooms)
+                            in these rooms (whitelist, DMs exempt by default;
+                            alias of matrix.allowed_rooms)
+    MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS
+                            When \"true\" (default: false), the MATRIX_ALLOWED_ROOMS
+                            whitelist also applies to DM rooms.  Required for
+                            multi-profile setups where each profile uses a
+                            separate two-member room behind a single Matrix
+                            account.
     MATRIX_IGNORE_USER_PATTERNS Comma-separated regular expressions for appservice /
                                 bridge ghost user IDs to ignore
     MATRIX_PROCESS_NOTICES      Set "true" to process inbound m.notice events
@@ -866,7 +872,8 @@ class MatrixAdapter(BasePlatformAdapter):
             self._free_rooms: Set[str] = {
                 r.strip() for r in str(free_rooms_raw).split(",") if r.strip()
             }
-        # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
+        # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt
+        # by default — enable MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS to override.
         allowed_rooms_raw = config.extra.get("allowed_rooms")
         if allowed_rooms_raw is None:
             allowed_rooms_raw = os.getenv("MATRIX_ALLOWED_ROOMS", "")
@@ -959,6 +966,9 @@ class MatrixAdapter(BasePlatformAdapter):
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
+        self._allowed_rooms_apply_to_dms: bool = os.getenv(
+            "MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS", ""
+        ).lower() in ("true", "1", "yes")
         ignore_patterns_raw = os.getenv("MATRIX_IGNORE_USER_PATTERNS", "")
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in (p.strip() for p in ignore_patterns_raw.split(",") if p.strip()):
@@ -2434,9 +2444,19 @@ class MatrixAdapter(BasePlatformAdapter):
         MATRIX_ALLOWED_ROOMS constrains shared rooms. Matrix DMs are exempt so
         personal chats still work when operators use a room allowlist for
         project rooms.
+
+        When MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS is enabled, the DM exemption is
+        removed so the allowlist applies uniformly to all rooms including
+        two-member profile rooms — required for multi-profile isolation on a
+        single Matrix account.
         """
         if self._is_allowed_matrix_room(room_id):
             return True
+        # When apply-to-dms is enabled, DMs are NOT exempt from the allowlist.
+        # This enables multi-profile isolation where each profile uses a
+        # separate two-member room behind a single Matrix account.
+        if self._allowed_rooms_apply_to_dms:
+            return False
         try:
             return await self._is_dm_room(room_id)
         except Exception as exc:
@@ -3009,6 +3029,20 @@ class MatrixAdapter(BasePlatformAdapter):
             )
             return
 
+        # When MATRIX_ALLOWED_ROOMS_APPLY_TO_DMS is set and the room is not
+        # in the allowlist, skip the invite so unrelated profiles in a
+        # multi-profile setup don't auto-join each other's rooms.
+        if (
+            self._allowed_rooms_apply_to_dms
+            and self._allowed_rooms
+            and room_id not in self._allowed_rooms
+        ):
+            logger.info(
+                "Matrix: ignoring invite to %s — room not in MATRIX_ALLOWED_ROOMS",
+                room_id,
+            )
+            return
+
         logger.info(
             "Matrix: invited to %s — joining (is_direct=%s)",
             room_id,
@@ -3093,6 +3127,18 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         for room_id in invites:
             if room_id in self._joined_rooms:
+                continue
+            # When apply-to-dms is on, don't auto-join rooms outside the allowlist.
+            if (
+                self._allowed_rooms_apply_to_dms
+                and self._allowed_rooms
+                and room_id not in self._allowed_rooms
+            ):
+                logger.info(
+                    "Matrix: skipping pending invite to %s — not in "
+                    "MATRIX_ALLOWED_ROOMS",
+                    room_id,
+                )
                 continue
             logger.info("Matrix: reconciling pending invite for %s", room_id)
             self._schedule_invite_join(str(room_id))

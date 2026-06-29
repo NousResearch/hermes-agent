@@ -314,6 +314,60 @@ class TestOpsEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
+    def test_backup_output_uses_output_flag(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+
+        def fake_spawn_action(subcommand, name):
+            captured["subcommand"] = subcommand
+            captured["name"] = name
+            return FakeProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post(
+            "/api/ops/backup",
+            json={"output": "  /tmp/hermes-test.zip  "},
+        )
+
+        assert r.status_code == 200
+        assert captured == {
+            "subcommand": ["backup", "-o", "/tmp/hermes-test.zip"],
+            "name": "backup",
+        }
+
+    def test_backup_blank_output_uses_default_archive(self, monkeypatch):
+        from pathlib import Path
+
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import get_hermes_home
+
+        captured = {}
+
+        class FakeProc:
+            pid = 12345
+
+        def fake_spawn_action(subcommand, name):
+            captured["subcommand"] = subcommand
+            captured["name"] = name
+            return FakeProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post("/api/ops/backup", json={"output": "   "})
+
+        assert r.status_code == 200
+        archive = Path(r.json()["archive"])
+        assert captured == {
+            "subcommand": ["backup", "-o", str(archive)],
+            "name": "backup",
+        }
+        assert archive.parent == get_hermes_home() / "backups"
+
     def test_hooks_list_reads_config(self):
         from hermes_cli.config import load_config, save_config
 

@@ -36,6 +36,7 @@ class SwarmWorkerSpec:
     skills: list[str] = field(default_factory=list)
     priority: int = 0
     max_runtime_seconds: Optional[int] = None
+    model_override: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,7 @@ def create_swarm(
             workspace_path=workspace_path,
             skills=spec.skills or None,
             max_runtime_seconds=spec.max_runtime_seconds,
+            model_override=spec.model_override,
         )
         worker_ids.append(worker_id)
 
@@ -267,12 +269,24 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
 
 
 def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
-    """Parse CLI ``--worker profile:title[:skill,skill]`` values."""
+    """Parse CLI ``--worker profile:title[:skill,skill][:model]`` values.
+
+    The optional model override is detected by the presence of a ``/``
+    (e.g. ``anthropic/claude-sonnet-4``).  Skills are comma-separated
+    simple names without slashes.
+    """
 
     parts = [p.strip() for p in raw.split(":", 2)]
     if len(parts) < 2:
-        raise ValueError("worker must be profile:title or profile:title:skill,skill")
+        raise ValueError("worker must be profile:title or profile:title:skill,skill or profile:title:skill,skill:provider/model")
     skills: list[str] = []
+    model_override: Optional[str] = None
     if len(parts) == 3 and parts[2]:
-        skills = [s.strip() for s in parts[2].split(",") if s.strip()]
-    return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills)
+        # Detect model overrides (contain '/') vs skills (no '/')
+        third = parts[2].strip()
+        if "/" in third:
+            # Treat the whole third part as a model override string
+            model_override = third
+        else:
+            skills = [s.strip() for s in third.split(",") if s.strip()]
+    return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills, model_override=model_override)

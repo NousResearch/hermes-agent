@@ -378,8 +378,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--worker",
         action="append",
         default=[],
-        metavar="PROFILE:TITLE[:SKILL,SKILL]",
-        help="Parallel worker card (repeatable)",
+        metavar="PROFILE:TITLE[:SKILL,SKILL][:PROVIDER/MODEL]",
+        help="Parallel worker card (repeatable); append :provider/model for per-worker model override",
     )
     p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
     p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")

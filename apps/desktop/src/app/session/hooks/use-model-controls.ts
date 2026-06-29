@@ -1,10 +1,10 @@
 import { type QueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
-import { getGlobalModelInfo } from '@/hermes'
+import { getGlobalModelInfo, getHermesConfigRecord } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider, setCurrentReasoningEffort } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -44,6 +44,26 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     try {
       if ($activeSessionId.get()) {
         return
+      }
+
+      // Seed reasoning effort from config.yaml when no session is active.
+      // This prevents stale session-level overrides stored in localStorage
+      // (hermes.desktop.composer.reasoning-effort) from persisting across app
+      // restarts. The Settings page reads agent.reasoning_effort from
+      // config.yaml, so this keeps the composer and Settings in sync. (#55062)
+      try {
+        const cfg = await getHermesConfigRecord()
+        // Re-check: a session may have become active while we were fetching.
+        if ($activeSessionId.get()) {
+          return
+        }
+        const agent = (cfg.agent ?? {}) as Record<string, unknown>
+        const effort = String(agent.reasoning_effort ?? '').trim().toLowerCase()
+        if (effort) {
+          setCurrentReasoningEffort(effort)
+        }
+      } catch {
+        // Best-effort: keep the last known value rather than blocking model refresh.
       }
 
       if (!force && $currentModel.get()) {

@@ -475,6 +475,7 @@ export interface ModelOptionProvider {
   is_current?: boolean
   key_env?: string
   models?: string[]
+  model_labels?: Record<string, string>
   name: string
   slug: string
   total_models?: number

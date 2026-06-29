@@ -1979,10 +1979,13 @@ def list_authenticated_providers(
             should_probe = bool(api_url) and discover and (
                 bool(api_key) or not has_explicit_models
             )
+            live_labels: dict[str, str] = {}
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
+                    from hermes_cli.models import probe_api_models
+                    probe = probe_api_models(api_key, api_url)
+                    live_models = probe.get("models")
+                    live_labels = probe.get("model_labels") or {}
                     if live_models:
                         models_list = live_models
                 except Exception:
@@ -1994,6 +1997,7 @@ def list_authenticated_providers(
                 "is_current": ep_name == current_provider,
                 "is_user_defined": True,
                 "models": models_list,
+                "model_labels": live_labels,
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
@@ -2225,11 +2229,14 @@ def list_authenticated_providers(
                 and (bool(api_key) or not grp["models"])
                 and grp.get("discover_models", True)
             )
+            live_labels: dict[str, str] = {}
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    from hermes_cli.models import probe_api_models
 
-                    live_models = fetch_api_models(api_key, api_url)
+                    probe = probe_api_models(api_key, api_url)
+                    live_models = probe.get("models")
+                    live_labels = probe.get("model_labels") or {}
                     if live_models:
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)
@@ -2246,6 +2253,7 @@ def list_authenticated_providers(
                 ),
                 "is_user_defined": True,
                 "models": grp["models"],
+                "model_labels": live_labels,
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],

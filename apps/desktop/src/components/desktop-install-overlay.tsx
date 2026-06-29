@@ -264,6 +264,12 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     return () => window.clearInterval(id)
   }, [state.active])
 
+  useEffect(() => {
+    if (!state.active) {
+      setCancelling(false)
+    }
+  }, [state.active])
+
   // Subscribe to bootstrap events + load initial snapshot
   useEffect(() => {
     if (!enabled) {
@@ -519,9 +525,12 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                   setCancelling(true)
 
                   try {
-                    await window.hermesDesktop?.cancelBootstrap?.()
+                    const result = await window.hermesDesktop?.cancelBootstrap?.()
+                    if (!result?.cancelled) {
+                      setCancelling(false)
+                    }
                   } catch {
-                    // ignore -- the failed/cancelled event will surface the result
+                    setCancelling(false)
                   }
                 }}
                 size="sm"

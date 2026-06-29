@@ -3081,6 +3081,8 @@ async function ensureRuntime(backend) {
     // otherwise leave the user staring at the generic 'Preparing' splash).
     // We emit a synthetic manifest with an empty stages list -- the real
     // manifest event will overwrite it once install.ps1 -Manifest returns.
+    bootstrapAbortController = new AbortController()
+
     try {
       broadcastBootstrapEvent({
         type: 'manifest',
@@ -3090,8 +3092,6 @@ async function ensureRuntime(backend) {
     } catch {
       void 0
     }
-
-    bootstrapAbortController = new AbortController()
 
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,

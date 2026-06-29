@@ -34,14 +34,25 @@ the rationale on borderline cases.
 Multi-word bypass
 -----------------
 Patterns use ``(?:\\w+\\s+)*`` between key tokens to prevent attackers
-from inserting filler words (e.g. "ignore all prior instructions" instead
+from inserting filler *words* (e.g. "ignore all prior instructions" instead
 of "ignore all instructions").  This mirrors the fix applied to
 ``skills_guard.py`` in commit 4ea29978.
+
+That filler trick only spans ``\\w``/whitespace, so it is still defeated by
+splicing *non-word* characters between the anchor tokens — punctuation
+("ignore, all previous instructions"), hyphens ("ignore all-prior
+instructions"), markup, or zero-width characters.  To close that gap,
+``scan_for_threats`` matches every pattern against both the raw content
+*and* a normalized copy (NFKC, with runs of non-word/non-space characters
+collapsed to a single space).  The raw pass preserves patterns that depend
+on punctuation (curl ``$VAR`` exfil, ``<!-- -->`` comments, ``.env``); the
+normalized pass restores the canonical token sequence so the anchors fire.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import List, Optional, Tuple
 
 # Each entry: (regex, pattern_id, scope)
@@ -190,6 +201,24 @@ def _compile() -> None:
 _compile()
 
 
+def _normalize_for_matching(content: str) -> str:
+    """Collapse evasion splices so token-sequence patterns can't be split.
+
+    Attackers defeat the ``(?:\\w+\\s+)*`` multi-word filler in the patterns
+    by inserting *non-word* characters between the anchor tokens — e.g.
+    ``ignore, all previous instructions`` or ``ignore all-prior
+    instructions`` — because ``\\w`` matches neither punctuation nor the
+    hyphen and ``\\s`` does not match zero-width characters.  Normalizing to
+    NFKC (folding compatibility/full-width look-alikes) and collapsing every
+    run of non-word, non-space characters to a single space turns those
+    splices back into the canonical token sequence the patterns detect.
+    """
+    normalized = unicodedata.normalize("NFKC", content)
+    # ``[^\w\s]`` also catches the zero-width characters in INVISIBLE_CHARS,
+    # which Python's ``\s`` does not treat as whitespace.
+    return re.sub(r"[^\w\s]+", " ", normalized)
+
+
 def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     """Return a list of matched pattern IDs in ``content`` at the given scope.
 
@@ -211,21 +240,34 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
         return []
 
     findings: List[str] = []
+    seen: set = set()
+
+    def _record(pid: str) -> None:
+        if pid not in seen:
+            seen.add(pid)
+            findings.append(pid)
 
     # Invisible unicode — single pass through the content set, not 17
-    # ``in`` lookups.
+    # ``in`` lookups.  Detected on the raw content so the offending
+    # codepoint is surfaced even though normalization strips it below.
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
-        findings.append(f"invisible_unicode_U+{ord(ch):04X}")
+        _record(f"invisible_unicode_U+{ord(ch):04X}")
 
     # Threat patterns
     patterns = _COMPILED.get(scope)
     if patterns is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
+
+    # Match against the raw content (preserves punctuation-dependent
+    # patterns) and a normalized copy (defeats non-word splicing); union
+    # the results so neither pass can be evaded in isolation.
+    normalized = _normalize_for_matching(content)
+    candidates = [content] if normalized == content else [content, normalized]
     for compiled, pid in patterns:
-        if compiled.search(content):
-            findings.append(pid)
+        if any(compiled.search(candidate) for candidate in candidates):
+            _record(pid)
 
     return findings
 

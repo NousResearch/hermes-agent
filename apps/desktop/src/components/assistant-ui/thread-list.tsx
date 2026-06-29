@@ -16,11 +16,15 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
-  onScrollToBottomRequest,
+  DEFAULT_THREAD_JUMP_STATE,
+  latestAnswerJumpState,
   onThreadEditClose,
   onThreadEditOpen,
+  onThreadJumpRequest,
   resetThreadScroll,
-  setThreadAtBottom
+  setThreadAtBottom,
+  setThreadJumpState,
+  type ThreadJumpTarget
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
@@ -89,6 +93,42 @@ function buildGroups(signature: string): MessageGroup[] {
   return groups
 }
 
+const LATEST_ASSISTANT_SELECTOR = '[data-slot="aui_assistant-message-root"]'
+
+function latestAssistantMessage(viewport: HTMLElement): HTMLElement | null {
+  const messages = viewport.querySelectorAll<HTMLElement>(LATEST_ASSISTANT_SELECTOR)
+
+  return messages.length > 0 ? messages.item(messages.length - 1) : null
+}
+
+function latestAssistantGeometry(viewport: HTMLElement, answer: HTMLElement) {
+  const viewportRect = viewport.getBoundingClientRect()
+  const answerRect = answer.getBoundingClientRect()
+  const rectTop = answerRect.top - viewportRect.top + viewport.scrollTop
+
+  return {
+    answerHeight: answerRect.height || answer.offsetHeight,
+    answerTop: Number.isFinite(rectTop) ? rectTop : answer.offsetTop,
+    clientHeight: viewport.clientHeight,
+    scrollTop: viewport.scrollTop
+  }
+}
+
+function scrollTopForAnswerTarget(viewport: HTMLElement, answer: HTMLElement, target: ThreadJumpTarget): number | null {
+  if (target === 'bottom') {
+    return null
+  }
+
+  const { answerHeight, answerTop } = latestAssistantGeometry(viewport, answer)
+  const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+
+  if (target === 'answer-start') {
+    return Math.max(0, Math.min(answerTop - 16, maxScrollTop))
+  }
+
+  return Math.max(0, Math.min(answerTop + answerHeight - viewport.clientHeight + 16, maxScrollTop))
+}
+
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   clampToComposer,
   components,
@@ -150,11 +190,106 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
     : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
 
+  const updateLatestAnswerJumpState = useCallback(() => {
+    const viewport = scrollRef.current
+
+    if (!viewport) {
+      setThreadJumpState(DEFAULT_THREAD_JUMP_STATE)
+
+      return
+    }
+
+    const latestAnswer = latestAssistantMessage(viewport)
+
+    if (!latestAnswer) {
+      setThreadJumpState(DEFAULT_THREAD_JUMP_STATE)
+
+      return
+    }
+
+    setThreadJumpState(latestAnswerJumpState(latestAssistantGeometry(viewport, latestAnswer)))
+  }, [scrollRef])
+
   useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
   useEffect(() => () => resetThreadScroll(), [])
 
-  // Floating jump button (outside this subtree) → return to the bottom.
-  useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
+  // Keep the floating jump pill synced with the latest assistant answer's
+  // geometry. ResizeObserver catches streaming/layout growth; scroll catches the
+  // top/end flip as the user moves through the answer.
+  useEffect(() => {
+    const viewport = scrollRef.current
+
+    if (!viewport) {
+      setThreadJumpState(DEFAULT_THREAD_JUMP_STATE)
+
+      return
+    }
+
+    let rafId = 0
+
+    const scheduleUpdate = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(updateLatestAnswerJumpState)
+    }
+
+    scheduleUpdate()
+    viewport.addEventListener('scroll', scheduleUpdate, { passive: true })
+
+    let resizeObserver: ResizeObserver | null = null
+
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(scheduleUpdate)
+      resizeObserver.observe(viewport)
+
+      const content = viewport.querySelector<HTMLElement>('[data-slot="aui_thread-content"]')
+
+      if (content) {
+        resizeObserver.observe(content)
+      }
+    }
+
+    return () => {
+      cancelAnimationFrame(rafId)
+      viewport.removeEventListener('scroll', scheduleUpdate)
+      resizeObserver?.disconnect()
+    }
+  }, [messageSignature, renderBudget, scrollRef, updateLatestAnswerJumpState])
+
+  const handleThreadJump = useCallback(
+    (target: ThreadJumpTarget) => {
+      const viewport = scrollRef.current
+
+      if (!viewport || target === 'bottom') {
+        void scrollToBottom()
+
+        return
+      }
+
+      const latestAnswer = latestAssistantMessage(viewport)
+      const scrollTop = latestAnswer ? scrollTopForAnswerTarget(viewport, latestAnswer, target) : null
+
+      if (scrollTop == null) {
+        void scrollToBottom()
+
+        return
+      }
+
+      stopScroll()
+
+      if (typeof viewport.scrollTo === 'function') {
+        viewport.scrollTo({ behavior: 'smooth', top: scrollTop })
+      } else {
+        viewport.scrollTop = scrollTop
+      }
+
+      requestAnimationFrame(updateLatestAnswerJumpState)
+      window.setTimeout(updateLatestAnswerJumpState, 260)
+    },
+    [scrollRef, scrollToBottom, stopScroll, updateLatestAnswerJumpState]
+  )
+
+  // Floating jump button (outside this subtree) → latest answer start/end or bottom.
+  useEffect(() => onThreadJumpRequest(handleThreadJump), [handleThreadJump])
 
   const endEditHold = useCallback(() => {
     scrollRef.current?.removeAttribute('data-editing')

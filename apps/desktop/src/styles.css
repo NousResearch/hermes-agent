@@ -975,6 +975,24 @@ text-* variant utilities. */ .btn-arc {
    prompt doesn't dominate the viewport. The clamp lifts only in the edit
    composer; expanding on read-only :focus-within ran on mousedown (before the
    swap) and fought stick-to-bottom when parked at the bottom. */
+.composer-human-message {
+  border-color: color-mix(in srgb, var(--dt-ring) 28%, var(--ui-stroke-tertiary)) !important;
+  background: color-mix(in srgb, var(--dt-user-bubble) 92%, var(--dt-ring) 8%) !important;
+  box-shadow:
+    inset 0 0.0625rem 0 color-mix(in srgb, #fff 8%, transparent),
+    0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent),
+    0 0.75rem 1.75rem -1.25rem color-mix(in srgb, var(--dt-ring) 24%, transparent);
+}
+
+.composer-human-message:hover,
+.composer-human-message:focus-visible {
+  border-color: color-mix(in srgb, var(--dt-ring) 42%, var(--ui-stroke-secondary)) !important;
+  box-shadow:
+    inset 0 0.0625rem 0 color-mix(in srgb, #fff 10%, transparent),
+    0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 18%, transparent),
+    0 0.875rem 2rem -1.2rem color-mix(in srgb, var(--dt-ring) 30%, transparent);
+}
+
 .sticky-human-clamp {
   cursor: pointer;
   max-height: calc(4 * var(--human-msg-line-height) * var(--conversation-text-font-size) + 0.15rem);

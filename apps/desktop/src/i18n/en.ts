@@ -2011,6 +2011,8 @@ export const en: Translations = {
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
       scrollToBottom: 'Scroll to bottom',
+      answerStart: 'Answer start',
+      answerEnd: 'Answer end',
       stop: 'Stop',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',

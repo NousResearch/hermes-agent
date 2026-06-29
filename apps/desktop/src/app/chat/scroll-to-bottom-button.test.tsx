@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
-import { onScrollToBottomRequest, resetThreadScroll, setThreadAtBottom } from '@/store/thread-scroll'
+import { onScrollToBottomRequest, resetThreadScroll, setThreadAtBottom, setThreadJumpState } from '@/store/thread-scroll'
 
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 
@@ -51,6 +51,15 @@ describe('ScrollToBottomButton', () => {
 
     // Parked at bottom → control hidden, so it can't claim "approval needed".
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('keeps answer navigation label when an approval is pending but still in view', () => {
+    pendingApproval()
+    setThreadJumpState({ target: 'answer-start', visible: true })
+    render(<ScrollToBottomButton />)
+
+    expect(screen.getByRole('button', { name: 'Answer start' })).toBeTruthy()
+    expect(screen.queryByText('Approval needed')).toBeNull()
   })
 
   it('re-arms sticky-bottom on click', () => {

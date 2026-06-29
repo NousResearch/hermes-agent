@@ -2178,6 +2178,8 @@ export const zh: Translations = {
       readAloud: '朗读',
       editMessage: '编辑消息',
       scrollToBottom: '滚动到底部',
+      answerStart: '答案开头',
+      answerEnd: '答案结尾',
       stop: '停止',
       restorePrevious: '恢复上一个检查点',
       restoreCheckpoint: '恢复检查点',

@@ -8,6 +8,17 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
+_ANTHROPIC_MODELS_RESPONSE_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_anthropic_models_payload(resp) -> str:
+    raw = resp.read(_ANTHROPIC_MODELS_RESPONSE_BODY_MAX_BYTES + 1)
+    if len(raw) > _ANTHROPIC_MODELS_RESPONSE_BODY_MAX_BYTES:
+        raise ValueError(
+            "Anthropic models response exceeded "
+            f"{_ANTHROPIC_MODELS_RESPONSE_BODY_MAX_BYTES} bytes"
+        )
+    return raw.decode()
 
 
 class AnthropicProfile(ProviderProfile):
@@ -29,7 +40,7 @@ class AnthropicProfile(ProviderProfile):
             req.add_header("anthropic-version", "2023-06-01")
             req.add_header("Accept", "application/json")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(_read_anthropic_models_payload(resp))
             return [
                 m["id"]
                 for m in data.get("data", [])

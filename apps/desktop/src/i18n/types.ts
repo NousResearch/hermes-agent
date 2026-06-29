@@ -1742,6 +1742,8 @@ export interface Translations {
       notReady: string
       gatewayDisconnected: string
       sendFailed: string
+      responsePendingTitle: string
+      responsePendingMessage: string
       loadingQuestion: string
       other: string
       placeholder: string

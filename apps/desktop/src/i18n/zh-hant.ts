@@ -2138,6 +2138,8 @@ export const zhHant = defineLocale({
       notReady: '澄清請求尚未就緒',
       gatewayDisconnected: 'Hermes 閘道未連線',
       sendFailed: '無法傳送澄清回應',
+      responsePendingTitle: '澄清回應可能仍在處理中',
+      responsePendingMessage: 'Hermes 未能及時確認這次選擇。後端可能仍會收到它，請稍等片刻再重試，以避免重複回應。',
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',

@@ -219,6 +219,40 @@ class TestIsAvailable:
         monkeypatch.setenv("FIRECRAWL_API_URL", "http://localhost:3002")
         assert p.is_available() is True
 
+    def test_firecrawl_config_yaml_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_get_direct_firecrawl_config reads config.yaml when env vars absent."""
+        from unittest.mock import patch
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        _clear_web_env(monkeypatch)
+
+        # Neither env var set → returns None.
+        assert firecrawl_provider._get_direct_firecrawl_config() is None
+
+        # config.yaml provides api_url → returns it.
+        with patch.object(
+            firecrawl_provider, "_read_config_value",
+            side_effect=lambda *p: (
+                "http://localhost:3002" if p == ("web", "firecrawl_api_url") else None
+            ),
+        ):
+            result = firecrawl_provider._get_direct_firecrawl_config()
+            assert result is not None
+            kwargs, cache_key = result
+            assert kwargs["api_url"] == "http://localhost:3002"
+            assert "api_key" not in kwargs
+
+        # Env var takes precedence over config.yaml.
+        monkeypatch.setenv("FIRECRAWL_API_URL", "http://env:9000")
+        with patch.object(
+            firecrawl_provider, "_read_config_value",
+            return_value="http://config:3002",
+        ):
+            result = firecrawl_provider._get_direct_firecrawl_config()
+            assert result is not None
+            kwargs, _ = result
+            assert kwargs["api_url"] == "http://env:9000"
+
     def test_ddgs_always_available_when_package_importable(self) -> None:
         """DDGS is the always-on fallback — no API key required.
 

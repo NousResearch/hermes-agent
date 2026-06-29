@@ -35,12 +35,18 @@ Config keys this provider responds to::
 
 Env vars::
 
-    FIRECRAWL_API_KEY=...            # direct cloud auth
+    FIRECRAWL_API_KEY=***            # direct cloud auth
     FIRECRAWL_API_URL=...            # self-hosted Firecrawl
     FIRECRAWL_GATEWAY_URL=...        # Nous tool-gateway (subscribers)
     TOOL_GATEWAY_DOMAIN=...          # alternate gateway env
     TOOL_GATEWAY_SCHEME=...
-    TOOL_GATEWAY_USER_TOKEN=...
+    TOOL_GATEWAY_USER_TOKEN=***
+
+config.yaml fallbacks (when env vars are absent)::
+
+    web:
+      firecrawl_api_url: ...         # self-hosted Firecrawl URL
+      firecrawl_api_key: ***         # direct cloud auth
 """
 
 from __future__ import annotations
@@ -119,10 +125,34 @@ Firecrawl = _FirecrawlProxy()
 # :func:`_get_firecrawl_client` below.
 
 
+def _read_config_value(*path: str) -> Optional[str]:
+    """Resolve a dotted config key from ``config.yaml``.  Returns None on miss."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        cur: Any = cfg
+        for segment in path:
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(segment)
+        if isinstance(cur, str) and cur.strip():
+            return cur.strip()
+    except Exception:  # noqa: BLE001 — config read is best-effort
+        pass
+    return None
+
+
 def _get_direct_firecrawl_config() -> Optional[tuple]:
     """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
     api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
     api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
+
+    # Fall back to config.yaml when env vars are absent.
+    if not api_url:
+        api_url = (_read_config_value("web", "firecrawl_api_url") or "").rstrip("/")
+    if not api_key:
+        api_key = _read_config_value("web", "firecrawl_api_key") or ""
 
     if not api_key and not api_url:
         return None
@@ -191,8 +221,9 @@ def _raise_web_backend_configuration_error() -> None:
 
     message = (
         "Web tools are not configured. "
-        "Set FIRECRAWL_API_KEY for cloud Firecrawl or set FIRECRAWL_API_URL "
-        "for a self-hosted Firecrawl instance."
+        "Set FIRECRAWL_API_KEY for cloud Firecrawl, set FIRECRAWL_API_URL "
+        "for a self-hosted Firecrawl instance, or add "
+        "web.firecrawl_api_url to config.yaml."
     )
     if _wt.managed_nous_tools_enabled():
         message += (

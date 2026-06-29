@@ -672,7 +672,7 @@ class ContextCompressor(ContextEngine):
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
         super().on_session_start(session_id, **kwargs)
-        self.bind_session_state(kwargs.get("session_db", self._session_db), session_id)
+        self.bind_session_state(kwargs.get("session_db", getattr(self, "_session_db", None)), session_id)
 
     def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
@@ -686,8 +686,8 @@ class ContextCompressor(ContextEngine):
                 "error": self._last_summary_error,
             }
 
-        session_db = self._session_db
-        session_id = self._session_id
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return None
 
@@ -725,8 +725,8 @@ class ContextCompressor(ContextEngine):
         self._summary_failure_cooldown_until = time.monotonic() + cooldown_seconds
         self._last_summary_error = error
 
-        session_db = self._session_db
-        session_id = self._session_id
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return
 
@@ -744,8 +744,8 @@ class ContextCompressor(ContextEngine):
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
 
-        session_db = self._session_db
-        session_id = self._session_id
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return
 

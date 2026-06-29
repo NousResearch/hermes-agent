@@ -3273,6 +3273,78 @@ class TestMatrixReadReceipts:
 # Media normalization
 # ---------------------------------------------------------------------------
 
+class _ChunkedMatrixContent:
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.iter_chunked_sizes = []
+
+    async def iter_chunked(self, size):
+        self.iter_chunked_sizes.append(size)
+        for chunk in self.chunks:
+            yield chunk
+
+
+class _ChunkedMatrixResponse:
+    status = 200
+
+    def __init__(self, chunks, headers=None):
+        self.headers = headers or {}
+        self.content = _ChunkedMatrixContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def raise_for_status(self):
+        return None
+
+
+class _ChunkedMatrixSession:
+    def __init__(self, response):
+        self.response = response
+        self.get_calls = []
+
+    def get(self, *args, **kwargs):
+        self.get_calls.append((args, kwargs))
+        return self.response
+
+
+class _ChunkedMatrixApi:
+    token = "syt_test_token"
+    as_user_id = None
+
+    def __init__(self, response):
+        self.session = _ChunkedMatrixSession(response)
+        self.download_urls = []
+        self.log_done_calls = []
+
+    def get_download_url(self, url, authenticated=False):
+        self.download_urls.append((url, authenticated))
+        return f"https://matrix.example.org/_matrix/media/v3/download/{str(url)[6:]}"
+
+    def log_download_request(self, url, query_params):
+        return 42
+
+    def log_download_request_done(self, url, req_id, duration, status):
+        self.log_done_calls.append((url, req_id, status))
+
+
+class _ChunkedMatrixVersions:
+    def supports(self, _version):
+        return False
+
+
+class _ChunkedMatrixClient:
+    def __init__(self, response):
+        self.api = _ChunkedMatrixApi(response)
+        self.download_media = AsyncMock()
+
+    async def versions(self):
+        return _ChunkedMatrixVersions()
+
+
 class TestMatrixImageOnlyMediaNormalization:
     def setup_method(self):
         self.adapter = _make_adapter()
@@ -3373,6 +3445,50 @@ class TestMatrixImageOnlyMediaNormalization:
 
         assert captured_event is None
         self.adapter._client.download_media.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mxc_media_download_streams_under_cap(self):
+        response = _ChunkedMatrixResponse([b"abc", b"def"])
+        self.adapter._client = _ChunkedMatrixClient(response)
+        self.adapter._max_media_bytes = 10
+
+        data = await self.adapter._download_mxc_media_with_cap("mxc://example/small.png")
+
+        assert data == b"abcdef"
+        assert response.content.iter_chunked_sizes == [65536]
+        self.adapter._client.download_media.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inbound_mxc_media_rejects_oversized_stream_without_fallback(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        response = _ChunkedMatrixResponse([b"12345", b"67890", b"!"])
+        self.adapter._client = _ChunkedMatrixClient(response)
+        self.adapter._max_media_bytes = 10
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$image-stream-big",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "huge.png",
+                "url": "mxc://example/huge.png",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        assert captured_event is None
+        self.adapter._client.download_media.assert_not_called()
+        assert response.content.iter_chunked_sizes == [65536]
 
     @pytest.mark.asyncio
     async def test_external_media_download_rejects_oversized_content_length(self, monkeypatch):

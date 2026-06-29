@@ -139,6 +139,58 @@ _MATRIX_BANG_COMMAND_RE = re.compile(
 )
 
 
+class _MatrixInboundMediaTooLarge(ValueError):
+    """Raised when an inbound Matrix media response exceeds the configured cap."""
+
+
+async def _read_matrix_response_bytes_capped(resp: Any, limit: int) -> bytes:
+    raw_length = None
+    try:
+        headers = getattr(resp, "headers", {}) or {}
+        raw_length = headers.get("Content-Length") or headers.get("content-length")
+    except Exception:
+        raw_length = None
+    if raw_length is not None:
+        try:
+            content_length = int(raw_length)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length > limit:
+            raise _MatrixInboundMediaTooLarge(
+                f"Matrix media response exceeds limit ({content_length} > {limit} bytes)"
+            )
+
+    content = getattr(resp, "content", None)
+    iter_chunked = getattr(content, "iter_chunked", None)
+    if callable(iter_chunked):
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in iter_chunked(65536):
+            data = bytes(chunk)
+            total += len(data)
+            if total > limit:
+                raise _MatrixInboundMediaTooLarge(
+                    f"Matrix media response exceeds limit (> {limit} bytes)"
+                )
+            chunks.append(data)
+        return b"".join(chunks)
+
+    read = getattr(resp, "read", None)
+    if callable(read):
+        try:
+            body = await read(limit + 1)
+        except TypeError:
+            body = await read()
+        body = bytes(body or b"")
+        if len(body) > limit:
+            raise _MatrixInboundMediaTooLarge(
+                f"Matrix media response exceeds limit ({len(body)} > {limit} bytes)"
+            )
+        return body
+
+    raise TypeError("Matrix media response body is not readable")
+
+
 def _resolve_matrix_bang_command(name: str) -> str | None:
     """Resolve a ``!command`` token to a dispatchable Hermes command token.
 
@@ -2768,7 +2820,7 @@ class MatrixAdapter(BasePlatformAdapter):
         } or is_voice_message or is_encrypted_media
         if should_cache_locally and url:
             try:
-                file_bytes = await self._client.download_media(ContentURI(url))
+                file_bytes = await self._download_mxc_media_with_cap(url)
                 if file_bytes is not None:
                     if is_encrypted_media:
                         from mautrix.crypto.attachments import decrypt_attachment
@@ -2846,6 +2898,9 @@ class MatrixAdapter(BasePlatformAdapter):
                             cached_path = cache_document_from_bytes(
                                 file_bytes, filename
                             )
+            except _MatrixInboundMediaTooLarge as e:
+                logger.warning("[Matrix] Rejecting oversized inbound media %s: %s", event_id, e)
+                return
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache media: %s", e)
 
@@ -4057,6 +4112,70 @@ class MatrixAdapter(BasePlatformAdapter):
             return mxc_url
         parts = mxc_url[6:]  # strip mxc://
         return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
+
+    async def _download_mxc_media_with_cap(self, url: str) -> Optional[bytes]:
+        client = self._client
+        api = getattr(client, "api", None)
+        api_type = type(api)
+        has_real_mautrix_api = (
+            api is not None
+            and api_type.__module__ != "unittest.mock"
+            and callable(getattr(api_type, "get_download_url", None))
+            and getattr(api, "session", None) is not None
+        )
+        if not has_real_mautrix_api:
+            data = await client.download_media(ContentURI(url))
+            if data is not None and len(data) > self._max_media_bytes:
+                raise _MatrixInboundMediaTooLarge(
+                    f"Matrix media response exceeds limit ({len(data)} > {self._max_media_bytes} bytes)"
+                )
+            return data
+
+        authenticated = False
+        try:
+            from mautrix.types import SpecVersions
+
+            authenticated = bool((await client.versions()).supports(SpecVersions.V111))
+        except Exception:
+            authenticated = False
+
+        download_url = api.get_download_url(ContentURI(url), authenticated=authenticated)
+        query_params: dict[str, Any] = {"allow_redirect": "true"}
+        headers: dict[str, str] = {}
+        if authenticated:
+            token = str(getattr(api, "token", "") or "")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            as_user_id = getattr(api, "as_user_id", None)
+            if as_user_id:
+                query_params["user_id"] = str(as_user_id)
+
+        req_id = None
+        start = time.monotonic()
+        log_download_request = getattr(api, "log_download_request", None)
+        if callable(log_download_request):
+            req_id = log_download_request(download_url, query_params)
+
+        async with api.session.get(
+            download_url,
+            params=query_params,
+            headers=headers,
+        ) as response:
+            try:
+                response.raise_for_status()
+                return await _read_matrix_response_bytes_capped(
+                    response,
+                    self._max_media_bytes,
+                )
+            finally:
+                log_download_done = getattr(api, "log_download_request_done", None)
+                if callable(log_download_done) and req_id is not None:
+                    log_download_done(
+                        download_url,
+                        req_id,
+                        time.monotonic() - start,
+                        getattr(response, "status", 0),
+                    )
 
     def _markdown_to_html(self, text: str) -> str:
         """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).

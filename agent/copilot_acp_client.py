@@ -74,6 +74,22 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _resolve_process_cwd(process_cwd: str | None = None, acp_cwd: str | None = None) -> str:
+    if process_cwd:
+        return str(Path(process_cwd).resolve())
+    if acp_cwd:
+        candidate = Path(str(acp_cwd)).expanduser()
+        if candidate.is_dir():
+            return str(candidate.resolve())
+    return str(Path(os.getcwd()).resolve())
+
+
+def _resolve_session_cwd(acp_cwd: str | None, process_cwd: str) -> str:
+    if acp_cwd is None or not str(acp_cwd).strip():
+        return process_cwd
+    return str(acp_cwd)
+
+
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
     home = os.environ.get("HOME", "").strip()
@@ -405,6 +421,7 @@ class CopilotACPClient:
         acp_command: str | None = None,
         acp_args: list[str] | None = None,
         acp_cwd: str | None = None,
+        process_cwd: str | None = None,
         command: str | None = None,
         args: list[str] | None = None,
         **_: Any,
@@ -414,7 +431,8 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
-        self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        self._process_cwd = _resolve_process_cwd(process_cwd, acp_cwd)
+        self._acp_cwd = _resolve_session_cwd(acp_cwd, self._process_cwd)
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None
@@ -510,7 +528,7 @@ class CopilotACPClient:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                cwd=self._acp_cwd,
+                cwd=self._process_cwd,
                 env=_build_subprocess_env(),
             )
         except FileNotFoundError as exc:

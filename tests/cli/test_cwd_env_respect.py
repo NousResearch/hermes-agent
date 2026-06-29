@@ -28,6 +28,10 @@ def _resolve_cwd(terminal_config: dict, defaults: dict, env: dict):
         else:
             env["TERMINAL_CWD"] = str(terminal_config["cwd"])
 
+    kanban_workspace = env.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    if kanban_workspace and env.get("_KANBAN_WORKSPACE_EXISTS") == "1":
+        env["TERMINAL_CWD"] = kanban_workspace
+
     return env.get("TERMINAL_CWD", "")
 
 
@@ -97,3 +101,14 @@ class TestGatewayLazyImport:
         d = {"terminal": {"cwd": "/home/user"}}
         result = _resolve_cwd(tc, d, env)
         assert result == "/fake/getcwd"
+
+    def test_kanban_workspace_overrides_local_cli_bridge(self):
+        env = {
+            "TERMINAL_CWD": "/opt/axis",
+            "HERMES_KANBAN_WORKSPACE": "/opt/axis/.worktrees/t_fix",
+            "_KANBAN_WORKSPACE_EXISTS": "1",
+        }
+        tc = {"cwd": "/opt/axis", "env_type": "local"}
+        d = {"terminal": {"cwd": "/opt/axis"}}
+        result = _resolve_cwd(tc, d, env)
+        assert result == "/opt/axis/.worktrees/t_fix"

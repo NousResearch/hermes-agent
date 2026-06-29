@@ -2923,6 +2923,8 @@ class TestSharedBoardPaths:
                 self.pid = 4242
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
 
         task = kb.Task(
             id="t_dispatch_env",
@@ -2936,13 +2938,13 @@ class TestSharedBoardPaths:
             started_at=None,
             completed_at=None,
             workspace_kind="worktree",
-            workspace_path=str(tmp_path / "ws"),
+            workspace_path=str(workspace),
             claim_lock=None,
             claim_expires=None,
             tenant=None,
             branch_name="wt/t_dispatch_env",
         )
-        kb._default_spawn(task, str(tmp_path / "ws"))
+        kb._default_spawn(task, str(workspace))
 
         env = captured["env"]
         assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")

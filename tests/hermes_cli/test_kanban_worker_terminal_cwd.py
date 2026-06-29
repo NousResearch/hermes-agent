@@ -78,12 +78,7 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
 
 
 def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path):
-    """A non-directory workspace must NOT clobber the inherited TERMINAL_CWD.
-
-    file_tools rejects relative / sentinel TERMINAL_CWD values, so writing a
-    meaningless (nonexistent) path would be worse than leaving the inherited
-    one. The guard requires an existing absolute dir.
-    """
+    """A non-directory workspace must fail before worker launch."""
     root = tmp_path / ".hermes"
     (root / "profiles" / "w").mkdir(parents=True)
     (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
@@ -95,7 +90,27 @@ def test_terminal_cwd_not_pinned_for_nonexistent_workspace(monkeypatch, tmp_path
 
     missing = tmp_path / "does-not-exist"
 
-    captured = _capture_spawn_env(kb, monkeypatch, str(missing))
+    try:
+        _capture_spawn_env(kb, monkeypatch, str(missing))
+    except RuntimeError as exc:
+        assert "does not exist" in str(exc)
+    else:
+        raise AssertionError("missing workspace should fail before Popen")
 
-    # Inherited value is preserved (not overwritten with a bogus path).
-    assert captured["env"]["TERMINAL_CWD"] == "/pre/existing/anchor"
+
+def test_terminal_cwd_rejects_relative_workspace(monkeypatch, tmp_path):
+    """Kanban workers must never inherit dispatcher cwd from a relative path."""
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "w").mkdir(parents=True)
+    (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    try:
+        _capture_spawn_env(kb, monkeypatch, "relative-workspace")
+    except RuntimeError as exc:
+        assert "not absolute" in str(exc)
+    else:
+        raise AssertionError("relative workspace should fail before Popen")

@@ -48,6 +48,38 @@ class TestSecureWrite:
         mode = oct(target.stat().st_mode & 0o777)
         assert mode == "0o600"
 
+    def test_preserves_existing_file_owner_after_atomic_replace(self, tmp_path):
+        target = tmp_path / "secret.json"
+        target.write_text("old")
+        st = target.stat()
+
+        with patch("gateway.pairing.os.chown") as chown:
+            _secure_write(target, "new")
+
+        chown.assert_called_once_with(target, st.st_uid, st.st_gid)
+        assert target.read_text() == "new"
+        assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+    def test_uses_parent_owner_for_new_secure_file(self, tmp_path):
+        target = tmp_path / "secret.json"
+        st = tmp_path.stat()
+
+        with patch("gateway.pairing.os.chown") as chown:
+            _secure_write(target, "new")
+
+        chown.assert_called_once_with(target, st.st_uid, st.st_gid)
+        assert target.read_text() == "new"
+        assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+    def test_owner_alignment_failure_does_not_block_secure_write(self, tmp_path):
+        target = tmp_path / "secret.json"
+
+        with patch("gateway.pairing.os.chown", side_effect=OSError):
+            _secure_write(target, "new")
+
+        assert target.read_text() == "new"
+        assert oct(target.stat().st_mode & 0o777) == "0o600"
+
 
 # ---------------------------------------------------------------------------
 # Code generation

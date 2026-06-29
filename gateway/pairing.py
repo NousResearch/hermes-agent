@@ -52,6 +52,26 @@ MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
 
 
+def _owner_group_for_write(path: Path) -> Optional[tuple[int, int]]:
+    """Return the owner/group that should keep access after atomic replace."""
+    try:
+        stat_source = path if path.exists() else path.parent
+        st = stat_source.stat()
+        return st.st_uid, st.st_gid
+    except OSError:
+        return None
+
+
+def _align_owner_group(path: Path, owner_group: Optional[tuple[int, int]]) -> None:
+    """Best-effort owner/group alignment for restrictive 0600 files."""
+    if owner_group is None or not hasattr(os, "chown"):
+        return
+    try:
+        os.chown(path, owner_group[0], owner_group[1])
+    except OSError:
+        pass  # Unsupported platform or insufficient privileges.
+
+
 def _secure_write(path: Path, data: str) -> None:
     """Write data to file with restrictive permissions (owner read/write only).
 
@@ -59,6 +79,7 @@ def _secure_write(path: Path, data: str) -> None:
     complete file or the new one — never a partial write.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    owner_group = _owner_group_for_write(path)
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -66,6 +87,7 @@ def _secure_write(path: Path, data: str) -> None:
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, path)
+        _align_owner_group(path, owner_group)
         try:
             os.chmod(path, 0o600)
         except OSError:

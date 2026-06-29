@@ -975,7 +975,22 @@ class TeamsAdapter(BasePlatformAdapter):
             media_types=media_types,
             message_id=msg_id,
         )
-        await self.handle_message(event)
+
+        # Fire-and-forget: do NOT block the inbound HTTP request on the agent
+        # turn. A turn can take 30-90s, but the Bot Framework expects the webhook
+        # to be acknowledged within ~15s; exceeding that opens its circuit breaker
+        # and delivery can stall for a long time. Acknowledge immediately and run
+        # the (potentially long) turn in a tracked background task.
+        async def _bg_handle() -> None:
+            try:
+                await self.handle_message(event)
+            except Exception:  # noqa: BLE001 — background turn must not crash the loop
+                logger.exception("[teams] background handle_message failed")
+
+        task = asyncio.create_task(_bg_handle())
+        self._bg_tasks = getattr(self, "_bg_tasks", set())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""

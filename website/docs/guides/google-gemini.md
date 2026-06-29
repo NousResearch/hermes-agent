@@ -8,6 +8,10 @@ description: "Use Hermes Agent with Google Gemini — native AI Studio API, API-
 
 Hermes Agent supports Google Gemini as a native provider using the **Google AI Studio / Gemini API** — not the OpenAI-compatible endpoint. This lets Hermes translate its internal OpenAI-shaped message and tool loop into Gemini's native `generateContent` API while preserving tool calling, streaming, multimodal inputs, and Gemini-specific response metadata.
 
+:::info Looking for `google-gemini-cli` / Google OAuth?
+The older `google-gemini-cli` provider (which routed through the Google Code Assist / Gemini CLI backend at `cloudcode-pa.googleapis.com`) has been removed from `hermes model` and `hermes auth` because Google has stopped serving consumer Gemini CLI / Code Assist requests for free and AI Pro / Ultra accounts. If you need Gemini, use the `gemini` provider with a Google AI Studio API key as described in this guide. If you previously had `google-gemini-cli` configured, change `provider: google-gemini-cli` (or any `google-gemini-cli*` alias) to `provider: gemini` in `~/.hermes/config.yaml` and add `GOOGLE_API_KEY` to `~/.hermes/.env`. The 404 / 429 errors users saw from the old provider were a symptom of that backend being shut down, not a quota or model issue.
+:::
+
 ## Prerequisites
 
 - **Google AI Studio API key** — create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)

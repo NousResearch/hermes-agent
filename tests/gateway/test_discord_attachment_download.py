@@ -361,6 +361,56 @@ class TestHandleMessageUsesAuthenticatedRead:
         assert event.media_types == ["image/png"]
 
     @pytest.mark.asyncio
+    async def test_unauthorized_message_does_not_read_attachment(self, monkeypatch):
+        """Gateway auth must run before Discord attachment bytes are read."""
+        adapter = _make_adapter()
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter.handle_message = AsyncMock()
+
+        class Runner:
+            def _is_user_authorized(self, source):
+                return source.user_id == "allowed-user"
+
+            async def handle(self, _event):
+                raise AssertionError("gateway handler should not run")
+
+        adapter._message_handler = Runner().handle
+
+        att = SimpleNamespace(
+            url="https://cdn.discordapp.com/attachments/fake/file.png",
+            filename="file.png",
+            content_type="image/png",
+            size=len(_PNG_BYTES),
+            read=AsyncMock(return_value=_PNG_BYTES),
+        )
+
+        from datetime import datetime, timezone
+
+        class _FakeDMChannel:
+            id = 100
+            name = "dm"
+
+        monkeypatch.setattr(
+            "plugins.platforms.discord.adapter.discord.DMChannel",
+            _FakeDMChannel,
+        )
+        msg = SimpleNamespace(
+            id=1,
+            content="",
+            attachments=[att],
+            mentions=[],
+            reference=None,
+            created_at=datetime.now(timezone.utc),
+            channel=_FakeDMChannel(),
+            author=SimpleNamespace(id=42, display_name="U", name="U"),
+        )
+
+        await adapter._handle_message(msg)
+
+        att.read.assert_not_awaited()
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_native_voice_note_is_classified_as_voice(self, monkeypatch):
         """Discord native voice notes must enter the auto-STT voice path."""
         adapter = _make_adapter()

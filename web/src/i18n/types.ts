@@ -501,6 +501,14 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
+    customTitle: string;
+    customHint: string;
+    customConfigured: string;
+    addCustomKey: string;
+    customKeyName: string;
+    customKeyNamePlaceholder: string;
+    add: string;
+    invalidKeyName: string;
   };
 
   // ── OAuth ──

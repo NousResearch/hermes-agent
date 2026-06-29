@@ -419,7 +419,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             "human_cascade_max_total_chars", 900, env_var="WHATSAPP_HUMAN_CASCADE_MAX_TOTAL_CHARS"
         )
         self._human_cascade_min_total_chars = self._coerce_int_extra(
-            "human_cascade_min_total_chars", 320
+            "human_cascade_min_total_chars", 300
         )
         self._human_cascade_min_lead_chars = self._coerce_int_extra(
             "human_cascade_min_lead_chars", 40
@@ -503,7 +503,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     @staticmethod
     def _has_approval_gate(text: str) -> bool:
         """Return True for explicit approval/control prompts that must stay intact."""
-        return bool(re.search(r"`/(approve|deny|reject|confirm|cancel|stop|new|reset)\b", text, re.IGNORECASE))
+        return bool(
+            re.search(
+                r"`?/(approve|deny|reject|confirm|cancel|stop|new|reset|always)\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
 
     @staticmethod
     def _looks_structured_outbound(text: str) -> bool:
@@ -644,17 +650,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return self.truncate_message(formatted, limit), False
 
         force_cascade = style in {"cascade", "human_cascade", "human-cascade"}
-        if not force_cascade and (
-            (is_group and not self._human_cascade_groups)
-            or self._has_approval_gate(text)
-        ):
+        if self._has_approval_gate(text):
+            return self.truncate_message(formatted, limit), False
+        if not force_cascade and is_group and not self._human_cascade_groups:
             return self.truncate_message(formatted, limit), False
 
-        # Do not reject long prose up front.  If a reply starts as a natural
-        # multi-paragraph chat but grows into a longer answer, still send the
-        # first few clean paragraphs as human-paced bubbles and fold/chunk the
-        # rest later.  Code/approval payloads are guarded above; report/list
-        # tails are merged below so only the prose lead-in cascades.
+        # Keep cascade for moderate DM-shaped replies. Very long answers fall
+        # back to one normal WhatsApp payload so they do not turn into a noisy
+        # multi-notification burst. Code/approval payloads are guarded above;
+        # report/list tails are merged below so only the prose lead-in cascades.
+        max_total = self._human_cascade_max_total_chars
+        if not force_cascade and max_total > 0 and len(text) > max_total:
+            return self.truncate_message(formatted, limit), False
+
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
         if len(paragraphs) < 2:
             return self.truncate_message(formatted, limit), False
@@ -670,13 +678,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not self._should_human_cascade(text, paragraphs, force=force_cascade):
             return self.truncate_message(formatted, limit), False
 
-        merged_tail = False
         if not force_cascade and self._looks_structured_outbound(text):
             merged = self._merge_structured_tail(paragraphs, max_bubbles)
             if merged is None:
                 return self.truncate_message(formatted, limit), False
             paragraphs = merged
-            merged_tail = True
 
         if len(paragraphs) > max_bubbles and not force_cascade:
             # Keep the human cadence without machine-gunning the chat: send the
@@ -686,7 +692,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             head = paragraphs[: max_bubbles - 1]
             tail = "\n\n".join(paragraphs[max_bubbles - 1:]).strip()
             paragraphs = [*head, tail]
-            merged_tail = True
+
+        max_merged = self._human_cascade_max_merged_bubble_chars
+        if not force_cascade and max_merged > 0 and len(paragraphs[-1]) > max_merged:
+            return self.truncate_message(formatted, limit), False
 
         max_bubble = self._human_cascade_max_bubble_chars
         if not force_cascade and max_bubble > 0:

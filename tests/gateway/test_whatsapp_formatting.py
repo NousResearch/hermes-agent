@@ -247,6 +247,8 @@ class TestSendChunking:
     @pytest.mark.asyncio
     async def test_extra_paragraphs_merge_into_final_cascade_bubble(self):
         adapter = _make_adapter()
+        adapter._human_cascade_max_total_chars = 2000
+        adapter._human_cascade_max_merged_bubble_chars = 1200
         responses = []
         for msg_id in ("msg1", "msg2", "msg3"):
             resp = MagicMock(status=200)
@@ -382,6 +384,39 @@ class TestSendChunking:
         assert "Reply `/approve`" in payload["message"]
 
     @pytest.mark.asyncio
+    async def test_approval_gates_ignore_forced_cascade(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = "I can restart the gateway.\n\nReply /always to keep approving restarts.\n\nRisk: brief downtime."
+        await adapter.send("chat1", content, metadata={"delivery_style": "cascade"})
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == content
+
+    @pytest.mark.asyncio
+    async def test_oversized_merged_tail_stays_single(self):
+        adapter = _make_adapter()
+        adapter._human_cascade_max_merged_bubble_chars = 80
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        content = (
+            "First paragraph is substantive enough to be worth a separate WhatsApp bubble."
+            "\n\n"
+            + ("The final merged tail is intentionally too long for the configured tail bubble. " * 3).strip()
+        )
+        await adapter.send("chat1", content)
+
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == content
+
+    @pytest.mark.asyncio
     async def test_substantive_structured_tail_cascades_plain_lead_in_only(self):
         adapter = _make_adapter()
         responses = []
@@ -448,25 +483,22 @@ class TestSendChunking:
         assert payload["message"].startswith("- changed adapter")
 
     @pytest.mark.asyncio
-    async def test_long_briefs_cascade_lead_in_then_chunk_tail(self):
+    async def test_over_max_total_stays_single(self):
         adapter = _make_adapter()
-        responses = []
-        for msg_id in ("msg1", "msg2"):
-            resp = MagicMock(status=200)
-            resp.json = AsyncMock(return_value={"messageId": msg_id})
-            responses.append(_AsyncCM(resp))
-        adapter._http_session.post = MagicMock(side_effect=responses)
+        adapter._human_cascade_max_total_chars = 120
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
         lead = "Here’s the daily brief with enough context to make the first bubble useful before the longer body lands."
-        content = lead + "\n\n" + ("Lots of info here. " * 80)
+        content = lead + "\n\n" + ("Lots of info here. " * 20)
         result = await adapter.send("chat1", content)
 
         assert result.success
-        assert adapter._http_session.post.call_count == 2
-        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
-        assert payloads[0]["message"] == lead
-        assert payloads[1]["message"].startswith("Lots of info here.")
-        assert result.raw_response["human_cascade"] is True
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == content
+        assert result.raw_response["human_cascade"] is False
 
     @pytest.mark.asyncio
     async def test_active_question_before_tail_stays_single(self):

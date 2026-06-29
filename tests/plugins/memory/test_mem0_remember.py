@@ -147,6 +147,35 @@ def test_mem0_remember_is_registry_tool_in_memory_write_toolset():
     )
 
 
+def test_mem0_remember_is_RESIDENT_in_default_parent_tools():
+    """REGRESSION GUARD (2026-06-29): the feature shipped SILENTLY DARK because
+    mem0_remember was registered in toolset 'memory_write' but that toolset was
+    in no enabled meta-toolset, so it never reached the parent's model-visible
+    tools[] — and the fork inherits the parent's tools[], so the model could
+    never SEE the tool no matter what the prompt clause or whitelist said. The
+    'memory_write' + not-in-'memory' assertions above prove the NECESSARY half
+    (won't auto-whitelist); this proves the SUFFICIENT half: with the DEFAULT
+    enabled toolset, mem0_remember is actually present in the built tool
+    definitions. If this fails, the bg-review mem0 write path is dark again.
+    """
+    import os
+    os.environ.setdefault("MEM0_HOST", "http://mem0.test")
+    os.environ.setdefault("MEM0_ADMIN_API_KEY", "admin-key")
+    import tools.mem0_remember_tool  # noqa: F401 (triggers registration)
+    # It must live in the shared core tool list so it's resident in tools[]
+    # for every standing surface (CLI + every messaging gateway share _HERMES_CORE_TOOLS).
+    from toolsets import _HERMES_CORE_TOOLS
+    assert "mem0_remember" in _HERMES_CORE_TOOLS, (
+        "mem0_remember must be in _HERMES_CORE_TOOLS so it is resident in the "
+        "parent's tools[] and inheritable by the background-review fork"
+    )
+    # And it must resolve as resident for the default hermes-cli toolset.
+    from toolsets import resolve_multiple_toolsets
+    assert "mem0_remember" in set(resolve_multiple_toolsets(["hermes-cli"])), (
+        "mem0_remember must resolve into the default hermes-cli toolset (resident)"
+    )
+
+
 def test_fork_whitelist_excludes_mem0_remember_by_default():
     """The review fork builds its whitelist from memory+skills toolsets; the
     memory_write tool must be ABSENT there (denied-not-absent default)."""

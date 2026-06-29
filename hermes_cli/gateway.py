@@ -3679,22 +3679,36 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
+    # Build ProgramArguments array, including --profile when using a named
+    # profile. When gateway-wrapper.sh is present and executable, route launchd
+    # through it so ~/.hermes/.env is sourced into the process environment
+    # (launchd has no native EnvironmentFile) and the preflight stale-gateway
+    # reaper runs before every start. The wrapper execs the python + module args
+    # we pass after it, so --profile etc. are preserved end-to-end. If the
+    # wrapper is ever missing/non-executable, fall back to the direct-python
+    # form so the gateway never fails to start under KeepAlive (self-heal).
+    wrapper_path = PROJECT_ROOT / "gateway-wrapper.sh"
+    use_wrapper = wrapper_path.is_file() and os.access(str(wrapper_path), os.X_OK)
+
+    core_args = [
         f"<string>{python_path}</string>",
         "<string>-m</string>",
         "<string>hermes_cli.main</string>",
     ]
     if profile_arg:
         for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
+            core_args.append(f"<string>{part}</string>")
+    core_args.extend(
         [
             "<string>gateway</string>",
             "<string>run</string>",
             "<string>--replace</string>",
         ]
     )
+    if use_wrapper:
+        prog_args = [f"<string>{wrapper_path}</string>"] + core_args
+    else:
+        prog_args = core_args
     prog_args_xml = "\n        ".join(prog_args)
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>

@@ -24,8 +24,6 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
-import { buildHermesWebSocketUrl, type WebSocketAuthParam } from "@hermes/shared";
-import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -41,31 +39,6 @@ import { normalizeSessionTitle } from "@/lib/chat-title";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
-
-function buildWsUrl(
-  authParam: WebSocketAuthParam,
-  resume: string | null,
-  channel: string,
-  profile: string,
-  fresh: boolean,
-): string {
-  // ``authParam`` is ``["token", <session>]`` in loopback mode and
-  // ``["ticket", <minted>]`` in gated mode. The server-side helper
-  // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
-  const params: Record<string, string> = { channel };
-  if (resume) params.resume = resume;
-  if (fresh) params.fresh = "1";
-  // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
-  // selected profile, so the conversation runs with that profile's model,
-  // skills, memory, and sessions (see web_server._resolve_chat_argv).
-  if (profile) params.profile = profile;
-  return buildHermesWebSocketUrl({
-    authParam,
-    basePath: HERMES_BASE_PATH,
-    params,
-    path: "/api/pty",
-  });
-}
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
@@ -140,7 +113,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
   // In gated (OAuth) mode the server intentionally omits the session token —
-  // the SPA authenticates the WS via a single-use ticket (buildWsAuthParam),
+  // the dashboard API layer authenticates the WS via a single-use ticket,
   // so a missing token there is expected, not an error.
   const [banner, setBanner] = useState<string | null>(() =>
     typeof window !== "undefined" &&
@@ -393,7 +366,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const token = window.__HERMES_SESSION_TOKEN__;
     const gated = !!window.__HERMES_AUTH_REQUIRED__;
     // Banner already initialised above; just bail before wiring xterm/WS.
-    // In gated mode the token is absent by design — buildWsAuthParam() mints
+    // In gated mode the token is absent by design — api.buildWsUrl() mints
     // a WS ticket instead, so don't bail; let the effect reach that path.
     if (!token && !gated) {
       return;
@@ -696,9 +669,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }, delayMs);
     };
     void (async () => {
-      const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile, forceFresh);
+      const params: Record<string, string> = { channel };
+      if (resumeParam) params.resume = resumeParam;
+      if (forceFresh) params.fresh = "1";
+      // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
+      // selected profile, so the conversation runs with that profile's model,
+      // skills, memory, and sessions (see web_server._resolve_chat_argv).
+      if (scopedProfile) params.profile = scopedProfile;
+      const url = await api.buildWsUrl("/api/pty", params);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;

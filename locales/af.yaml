@@ -149,6 +149,15 @@ gateway:
     subscribed_suffix:     "(ingeteken — jy sal in kennis gestel word wanneer {task_id} voltooi of vasval)"
     truncated_suffix:      "… (afgekap; gebruik `hermes kanban …` in jou terminale vir volle uitvoer)"
     no_output:             "(geen uitvoer)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Geen persoonlikhede opgestel in `{path}/config.yaml` nie"

@@ -476,3 +476,28 @@ class TestSignalStreamingPatch:
             content="Hello",
         )
         assert result.message_id is None
+
+
+def test_lone_surrogate_does_not_crash():
+    """Lone surrogates in LLM output must not crash Signal formatting.
+
+    Regression test for #55143: _utf16_len() calls .encode("utf-16-le")
+    which raises UnicodeEncodeError on lone surrogates (U+D800–U+DFFF).
+    """
+    from gateway.platforms.signal_format import markdown_to_signal
+
+    # A string containing a lone surrogate (U+DC00)
+    text_with_surrogate = "Hello \udc00 world"
+    # Should not raise UnicodeEncodeError
+    body, styles = markdown_to_signal(text_with_surrogate)
+    assert "Hello" in body
+    assert "world" in body
+
+
+def test_normal_text_unchanged():
+    """Normal text should pass through without modification."""
+    from gateway.platforms.signal_format import markdown_to_signal
+
+    body, styles = markdown_to_signal("Hello **bold** world")
+    assert "Hello" in body
+    assert "bold" in body

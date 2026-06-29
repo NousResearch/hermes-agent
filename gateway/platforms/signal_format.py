@@ -22,6 +22,11 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE.
     """
 
+    # Sanitize lone surrogates (U+D800–U+DFFF) that can appear in LLM output.
+    # These cause UnicodeEncodeError in .encode("utf-16-le") below.
+    # Replace with U+FFFD (Unicode replacement character).
+    text = text.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
+
     def _utf16_len(s: str) -> int:
         """Length of *s* in UTF-16 code units."""
         return len(s.encode("utf-16-le")) // 2

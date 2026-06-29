@@ -1305,10 +1305,12 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     # not 200K, or context-usage accounting under-reports the real window (the
     # client requests 1M on the wire while the meter caps at 200K). Older
     # 3.x / Sonnet-4 / Haiku models have no 1M support and stay at 200K.
-    # Ordering matters: get_bedrock_context_length() picks the LONGEST matching
-    # substring, so more specific keys (e.g. "claude-opus-4-8") must precede the
-    # bare "claude-opus-4" / "claude-sonnet-4" fallbacks to win for an id like
-    # "us.anthropic.claude-opus-4-8".
+    # Note: get_bedrock_context_length() resolves an id by the LONGEST matching
+    # key (by string length), independent of insertion order — so e.g.
+    # "claude-opus-4-8" wins over the bare "claude-opus-4" for an id like
+    # "us.anthropic.claude-opus-4-8" regardless of where each key sits here.
+    # (Insertion order would only matter for same-length key ties, which we
+    # don't have.) Keys are grouped specific-first purely for readability.
     "anthropic.claude-opus-4-8":     1_000_000,
     "anthropic.claude-opus-4-7":     1_000_000,
     "anthropic.claude-opus-4-6":     1_000_000,

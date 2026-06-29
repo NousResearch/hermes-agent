@@ -495,7 +495,11 @@ class FactRetriever:
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
         params: list = []
-        where_clauses = ["facts_fts MATCH ?"]
+        # Use simple_query() for CJK-aware search when extension is available
+        if self.store._simple_available:
+            where_clauses = ["facts_fts MATCH simple_query(?)"]
+        else:
+            where_clauses = ["facts_fts MATCH ?"]
         params.append(query)
 
         if category:

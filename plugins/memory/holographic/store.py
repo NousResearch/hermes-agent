@@ -46,7 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
 CREATE INDEX IF NOT EXISTS idx_entities_name  ON entities(name);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
-    USING fts5(content, tags, content=facts, content_rowid=fact_id);
+    USING fts5(content, tags, content=facts, content_rowid=fact_id, tokenize="simple");
 
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
@@ -98,6 +98,12 @@ def _clamp_trust(value: float) -> float:
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
+    _SIMPLE_EXT_PATHS = [
+        Path("~/.hermes/libsimple.dylib").expanduser(),
+        Path("~/.hermes/libsimple.so").expanduser(),
+    ]
+    _JIEBA_DICT_PATH = Path("~/.hermes/jieba_dict").expanduser()
+
     def __init__(
         self,
         db_path: "str | Path | None" = None,
@@ -112,6 +118,7 @@ class MemoryStore:
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
         self._hrr_available = hrr._HAS_NUMPY
+        self._simple_available = False
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
@@ -119,11 +126,29 @@ class MemoryStore:
         )
         self._lock = threading.RLock()
         self._conn.row_factory = sqlite3.Row
+        self._load_simple_extension()
         self._init_db()
 
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
+
+    def _load_simple_extension(self) -> None:
+        """Load the simple tokenizer extension for CJK support."""
+        self._conn.enable_load_extension(True)
+        for path in self._SIMPLE_EXT_PATHS:
+            if path.exists():
+                try:
+                    self._conn.load_extension(str(path))
+                    if self._JIEBA_DICT_PATH.is_dir():
+                        self._conn.execute(
+                            f"SELECT jieba_dict('{self._JIEBA_DICT_PATH}')"
+                        )
+                    self._simple_available = True
+                    return
+                except Exception:
+                    pass
+        self._simple_available = False
 
     def _init_db(self) -> None:
         """Create tables, indexes, and triggers if they do not exist. Enable WAL mode."""
@@ -137,7 +162,47 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: rebuild FTS5 with trigram tokenizer for CJK support
+        self._migrate_fts_trigram()
         self._conn.commit()
+
+    def _migrate_fts_trigram(self) -> None:
+        """Rebuild FTS5 table with simple tokenizer for CJK support."""
+        if not self._simple_available:
+            return  # Extension not available, skip migration
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='facts_fts'"
+        ).fetchone()
+        if row is None:
+            return  # FTS5 table doesn't exist yet, will be created by _SCHEMA
+        if "simple" in row[0]:
+            return  # Already using simple tokenizer
+
+        # Drop and recreate with simple tokenizer
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ai")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_ad")
+        self._conn.execute("DROP TRIGGER IF EXISTS facts_au")
+        self._conn.execute("DROP TABLE IF EXISTS facts_fts")
+        self._conn.execute(
+            'CREATE VIRTUAL TABLE facts_fts '
+            'USING fts5(content, tags, content=facts, content_rowid=fact_id, tokenize="simple")'
+        )
+        # Recreate triggers
+        self._conn.execute(
+            "CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN "
+            "INSERT INTO facts_fts(rowid, content, tags) VALUES (new.fact_id, new.content, new.tags); END"
+        )
+        self._conn.execute(
+            "CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN "
+            "INSERT INTO facts_fts(facts_fts, rowid, content, tags) VALUES ('delete', old.fact_id, old.content, old.tags); END"
+        )
+        self._conn.execute(
+            "CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN "
+            "INSERT INTO facts_fts(facts_fts, rowid, content, tags) VALUES ('delete', old.fact_id, old.content, old.tags); "
+            "INSERT INTO facts_fts(rowid, content, tags) VALUES (new.fact_id, new.content, new.tags); END"
+        )
+        # Rebuild index
+        self._conn.execute('INSERT INTO facts_fts(facts_fts) VALUES("rebuild")')
 
     # ------------------------------------------------------------------
     # Public API
@@ -205,6 +270,12 @@ class MemoryStore:
             if not query:
                 return []
 
+            # Use simple_query() for CJK-aware search when extension is available
+            if self._simple_available:
+                fts_expr = "simple_query(?)"
+            else:
+                fts_expr = "?"
+
             params: list = [query, min_trust]
             category_clause = ""
             if category is not None:
@@ -218,7 +289,7 @@ class MemoryStore:
                        f.created_at, f.updated_at
                 FROM facts f
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
-                WHERE facts_fts MATCH ?
+                WHERE facts_fts MATCH {fts_expr}
                   AND f.trust_score >= ?
                   {category_clause}
                 ORDER BY fts.rank, f.trust_score DESC

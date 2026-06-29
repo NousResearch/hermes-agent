@@ -79,7 +79,9 @@ def _trajectory_content_to_str(content: Any) -> str:
     text-only ShareGPT trajectory format expects ``content`` to be a string.
     Joining the text parts here keeps multimodal user/assistant turns from
     crashing (``.strip()``/concatenation on a list) or silently writing a
-    Python list as a record ``value``. Identity for plain strings.
+    Python list as a record ``value``. Identity for plain strings. Parts are
+    joined with newlines to match ``_multimodal_text_summary`` and avoid
+    merging adjacent text segments into one run-on token.
     """
     if isinstance(content, list):
         parts = []
@@ -88,7 +90,7 @@ def _trajectory_content_to_str(content: Any) -> str:
                 parts.append(str(p.get("text", "")))
             else:
                 parts.append(str(p))
-        return "".join(parts)
+        return "\n".join(parts)
     if content is None:
         return ""
     return content if isinstance(content, str) else str(content)

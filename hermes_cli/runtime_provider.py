@@ -172,6 +172,43 @@ def _host_derived_api_key(base_url: str) -> str:
     return (_getenv(env_name, "") or "").strip()
 
 
+def _anthropic_base_url_override_ok(base_url: str) -> bool:
+    """Decide whether a configured ``model.base_url`` may back native Anthropic.
+
+    Native ``provider: anthropic`` resolution honors ``model.base_url`` so users
+    can point at Anthropic-compatible endpoints (official Anthropic/Claude hosts,
+    Azure Foundry, MiniMax/Zhipu/LiteLLM-style ``/anthropic`` proxies, Kimi's
+    ``/coding`` route). But a config can carry a *stale* non-Anthropic URL — e.g.
+    ``provider: anthropic`` left with ``base_url: https://openrouter.ai/api/v1``
+    after a provider switch — which would route Anthropic OAuth/setup-token
+    traffic to an OpenAI-compatible aggregator and 404. Ignore those.
+
+    Returns True only when the URL plausibly speaks the Anthropic Messages
+    protocol; otherwise the caller falls back to ``https://api.anthropic.com``.
+    """
+    candidate = (base_url or "").strip()
+    if not candidate:
+        return False
+
+    hostname = (base_url_hostname(candidate) or "").lower()
+    if not hostname:
+        return False
+
+    # Official Anthropic / Claude hosts.
+    if hostname == "api.anthropic.com" or hostname.endswith(".anthropic.com") or hostname.endswith(".claude.com"):
+        return True
+    # Azure Foundry Anthropic endpoints (handled specially downstream).
+    if hostname.endswith(".azure.com"):
+        return True
+    # Anthropic-compatible proxies conventionally expose the native Messages
+    # protocol under a ``/anthropic`` suffix, and Kimi under ``/coding`` — same
+    # signal _detect_api_mode_for_url() uses to pick anthropic_messages.
+    if _detect_api_mode_for_url(candidate) == "anthropic_messages":
+        return True
+    # Bare api.kimi.com without the /coding path is not an Anthropic endpoint.
+    return False
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -352,6 +389,8 @@ def _resolve_runtime_from_pool_entry(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
@@ -1255,6 +1294,8 @@ def _resolve_explicit_runtime(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
         if not api_key:
@@ -1462,6 +1503,43 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # If provider is "auto" (or unset) but config.yaml has an explicit base_url
+    # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
+    # route through the OpenAI-compatible resolver instead of letting
+    # resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from
+    # the environment and send the request to a cloud API. Fixes #3846.
+    if not explicit_base_url and not explicit_api_key:
+        model_cfg = _get_model_config()
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip()
+        if cfg_base_url and cfg_provider in ("auto", ""):
+            # Check that base_url isn't one of the well-known cloud API roots
+            # (OpenRouter, Anthropic, OpenAI). If it's something else (Ollama,
+            # LM Studio, vLLM, …) we honour it directly. The full detection
+            # logic lives in _resolve_openrouter_runtime; we just skip the
+            # resolve_provider() call so env-var credentials don't shadow it.
+            # Match on HOST, not substring, so a look-alike base_url
+            # (e.g. http://api.anthropic.com.attacker.test/v1, or one whose
+            # path merely contains "openai.com") cannot evade the bypass and
+            # leak a cloud credential. Mirrors the host-gating used for
+            # API-key selection in _resolve_openrouter_runtime.
+            _known_cloud_hosts = (
+                "openrouter.ai",
+                "anthropic.com",
+                "openai.com",
+            )
+            if not any(
+                base_url_host_matches(cfg_base_url, host)
+                for host in _known_cloud_hosts
+            ):
+                runtime = _resolve_openrouter_runtime(
+                    requested_provider=requested_provider,
+                    explicit_api_key=explicit_api_key,
+                    explicit_base_url=explicit_base_url,
+                )
+                runtime["requested_provider"] = requested_provider
+                return runtime
+
     provider = resolve_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,
@@ -1668,6 +1746,8 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = cfg_base_url or "https://api.anthropic.com"
 
         # For Microsoft Foundry endpoints, use ANTHROPIC_API_KEY directly —

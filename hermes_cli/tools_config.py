@@ -1787,6 +1787,32 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         config.setdefault("known_plugin_toolsets", {})
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
 
+    # Reconcile with agent.disabled_toolsets. _get_platform_tools() applies
+    # that list as a final override AFTER reading platform_toolsets.<platform>,
+    # so a toolset listed there stays permanently OFF no matter what this
+    # function writes — the toggle "saves" but silently can't ever take
+    # effect. Blank Slate installs pre-populate this list with ~27 toolsets,
+    # making most of the desktop Toolsets UI unusable for re-enabling
+    # anything (issue #49995).
+    #
+    # Only toolsets the user just explicitly enabled FOR THIS PLATFORM are
+    # cleared from the global disabled list — toolsets the user did not
+    # touch (still unchecked) or that remain disabled on other platforms
+    # are left alone, so agent.disabled_toolsets keeps working as a
+    # cross-platform suppression list for anything not actively re-enabled.
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        disabled_toolsets = agent_cfg.get("disabled_toolsets")
+        if isinstance(disabled_toolsets, list) and disabled_toolsets:
+            newly_enabled = enabled_toolset_keys - preserved_entries
+            if newly_enabled:
+                remaining = [
+                    ts for ts in disabled_toolsets
+                    if str(ts) not in newly_enabled
+                ]
+                if remaining != disabled_toolsets:
+                    agent_cfg["disabled_toolsets"] = remaining
+
     save_config(config)
 
 

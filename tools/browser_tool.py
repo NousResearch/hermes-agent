@@ -221,6 +221,11 @@ _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 # Default timeout for browser commands (seconds)
 DEFAULT_COMMAND_TIMEOUT = 30
 
+# Floor for ``open`` (navigate) — cold daemon + first Chromium launch can exceed
+# the generic command_timeout on slow or library-starved Linux hosts.
+MIN_OPEN_TIMEOUT = 60
+MIN_FIRST_OPEN_TIMEOUT = 120
+
 # Max tokens for snapshot content before summarization
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
@@ -254,6 +259,92 @@ def _get_command_timeout() -> int:
         logger.debug("Could not read command_timeout from config: %s", e)
     _cached_command_timeout = result
     return result
+
+
+def _get_open_command_timeout(*, first_open: bool = False) -> int:
+    """Timeout for agent-browser ``open`` (navigation / daemon cold start)."""
+    base = _get_command_timeout()
+    floor = MIN_FIRST_OPEN_TIMEOUT if first_open else MIN_OPEN_TIMEOUT
+    return max(base, floor)
+
+
+def _needs_chromium_sandbox_bypass() -> bool:
+    """Return True when Chromium needs --no-sandbox to start reliably."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    if _running_in_docker():
+        return True
+    userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+    try:
+        with open(userns_restrict, encoding="utf-8") as f:
+            if f.read().strip() == "1":
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
+    """Best-effort read of agent-browser stdout/stderr temp files."""
+    stdout = stderr = ""
+    for path, slot in ((stdout_path, "stdout"), (stderr_path, "stderr")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read().strip()
+        except OSError:
+            continue
+        if slot == "stdout":
+            stdout = text
+        else:
+            stderr = text
+    return stdout, stderr
+
+
+def _unlink_command_output_files(*paths: str) -> None:
+    for path in paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _format_browser_timeout_error(
+    command: str,
+    timeout: int,
+    stdout: str,
+    stderr: str,
+) -> str:
+    """Build an actionable timeout message from captured daemon output."""
+    parts = [f"Command timed out after {timeout} seconds"]
+    detail = (stderr or stdout or "").strip()
+    if detail:
+        parts.append(detail[:1500])
+
+    combined = f"{stderr}\n{stdout}".lower()
+    hints: list[str] = []
+    if "sandbox" in combined:
+        hints.append(
+            "Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
+            "'--no-sandbox,--disable-dev-shm-usage' in your environment, "
+            "or run: npx agent-browser install --with-deps"
+        )
+    elif command == "open" and _is_local_mode():
+        if _running_in_docker():
+            hints.append(
+                "The browser daemon may still be starting or Chromium may be "
+                "missing. Pull the latest image: "
+                "docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+        else:
+            hints.append(
+                "The browser daemon may still be starting, or Chromium may be "
+                "missing system libraries. Install/repair with: "
+                "npx agent-browser install --with-deps "
+                "(or: npx playwright install --with-deps chromium)"
+            )
+    if hints:
+        parts.extend(hints)
+    return "\n".join(parts)
 
 
 def _get_vision_model() -> Optional[str]:
@@ -1911,7 +2002,15 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
 
 
 
-def _find_agent_browser() -> str:
+def _agent_browser_candidate_present(path: str | None) -> bool:
+    if not path:
+        return False
+    if " " in path and path.split()[0].endswith("npx"):
+        return True
+    return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
+
+
+def _find_agent_browser(*, validate: bool = True) -> str:
     """
     Find the agent-browser CLI executable.
 
@@ -1950,7 +2049,11 @@ def _find_agent_browser() -> str:
 
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
-    if which_result and agent_browser_runnable(which_result):
+    if which_result and (
+        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
+    ):
+        if not validate:
+            return which_result
         _cached_agent_browser = which_result
         _agent_browser_resolved = True
         return which_result
@@ -1960,7 +2063,11 @@ def _find_agent_browser() -> str:
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
-        if which_result and agent_browser_runnable(which_result):
+        if which_result and (
+            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
+        ):
+            if not validate:
+                return which_result
             _cached_agent_browser = which_result
             _agent_browser_resolved = True
             return which_result
@@ -1977,7 +2084,11 @@ def _find_agent_browser() -> str:
     local_bin_dir = repo_root / "node_modules" / ".bin"
     if local_bin_dir.is_dir():
         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
-        if local_which and agent_browser_runnable(local_which):
+        if local_which and (
+            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
+        ):
+            if not validate:
+                return local_which
             _cached_agent_browser = local_which
             _agent_browser_resolved = True
             return _cached_agent_browser
@@ -1987,9 +2098,14 @@ def _find_agent_browser() -> str:
     if not npx_path and extended_path:
         npx_path = shutil.which("npx", path=extended_path)
     if npx_path:
+        if not validate:
+            return "npx agent-browser"
         _cached_agent_browser = "npx agent-browser"
         _agent_browser_resolved = True
         return _cached_agent_browser
+
+    if not validate:
+        raise FileNotFoundError("agent-browser CLI not found")
 
     # Nothing found — try lazy installation before giving up.
     try:
@@ -2082,7 +2198,12 @@ def _run_browser_command(
     # Local mode with no Chromium on disk: fail fast with an actionable
     # message instead of hanging for _command_timeout seconds per call.
     # Skip when engine=lightpanda — LP doesn't need Chromium for navigation.
-    if _is_local_mode() and not _chromium_installed() and _get_browser_engine() != "lightpanda":
+    if (
+        _is_local_mode()
+        and not _chromium_installed()
+        and _get_browser_engine() != "lightpanda"
+        and not _maybe_autoinstall_chromium()
+    ):
         if _running_in_docker():
             hint = (
                 "Chromium browser is missing. You're running in Docker — pull "
@@ -2187,24 +2308,11 @@ def _run_browser_command(
             "AGENT_BROWSER_ARGS" not in browser_env
             and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
         ):
-            _needs_sandbox_bypass = False
-            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                _needs_sandbox_bypass = True
-                logger.debug("browser: running as root — injecting --no-sandbox")
-            else:
-                # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
-                _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-                try:
-                    with open(_userns_restrict, encoding="utf-8") as _f:
-                        if _f.read().strip() == "1":
-                            _needs_sandbox_bypass = True
-                            logger.debug(
-                                "browser: AppArmor userns restrictions detected — "
-                                "injecting --no-sandbox"
-                            )
-                except OSError:
-                    pass
-            if _needs_sandbox_bypass:
+            if _needs_chromium_sandbox_bypass():
+                logger.debug(
+                    "browser: sandbox bypass needed (root/docker/AppArmor userns) — "
+                    "injecting --no-sandbox"
+                )
                 browser_env["AGENT_BROWSER_ARGS"] = (
                     "--no-sandbox,--disable-dev-shm-usage"
                 )
@@ -2252,9 +2360,20 @@ def _run_browser_command(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+            stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+            _unlink_command_output_files(stdout_path, stderr_path)
+            if stderr and stderr.strip():
+                logger.warning(
+                    "browser '%s' stderr after timeout: %s",
+                    command,
+                    stderr.strip()[:500],
+                )
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                            command, timeout, task_id, task_socket_dir)
-            result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
+            result = {
+                "success": False,
+                "error": _format_browser_timeout_error(command, timeout, stdout, stderr),
+            }
             # Fall through to fallback check below
         else:
             with open(stdout_path, "r", encoding="utf-8") as f:
@@ -2554,7 +2673,12 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
-    result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
+    result = _run_browser_command(
+        nav_session_key,
+        "open",
+        [url],
+        timeout=_get_open_command_timeout(first_open=is_first_nav),
+    )
 
     # Remember which session served this nav so snapshot/click/fill/...
     # on the same task_id hit it (critical when hybrid routing has both a
@@ -3365,6 +3489,19 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "eval", [js_code])
 
     if result.get("success"):
+        # ── Private-network guard (sibling of snapshot/vision/eval guards) ──
+        if _eval_ssrf_guard_active(effective_task_id):
+            _blocked_url = _current_page_private_url(effective_task_id)
+            if _blocked_url:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "Blocked: page URL targets a private or internal address "
+                        f"({_blocked_url}). This may have been caused by a "
+                        "JavaScript navigation via browser_console."
+                    ),
+                }, ensure_ascii=False)
+
         data = result.get("data", {})
         raw_result = data.get("result", "[]")
 
@@ -3895,6 +4032,8 @@ def cleanup_all_browsers() -> None:
     _cached_command_timeout = None
     _command_timeout_resolved = False
     _cached_chromium_installed = None
+    global _chromium_autoinstall_attempted
+    _chromium_autoinstall_attempted = False
     _cached_browser_engine = None
     _browser_engine_resolved = False
 
@@ -3997,6 +4136,77 @@ def _chromium_installed() -> bool:
     return False
 
 
+# One-shot per process: a 170MB download that fails (or is slow) must not be
+# retried on every browser call. Reset by _reset_browser_caches() for tests.
+_chromium_autoinstall_attempted = False
+
+
+def _maybe_autoinstall_chromium() -> bool:
+    """Best-effort, gated download of the Chromium *binary* on local cold start.
+
+    Closes the "the PR doesn't actually install the missing browser" gap for
+    the common case — a Chromium binary that was simply never downloaded.
+    Scope is deliberately narrow:
+
+    - Binary only (``agent-browser install``), never ``--with-deps`` — that
+      shells ``apt`` and needs root, so missing *system libraries* stay a user
+      action (the timeout/blocked hints already point there).
+    - Gated by ``security.allow_lazy_installs`` (same opt-out as every other
+      lazy install) and skipped in Docker, where Chromium ships in the image.
+    - Attempted once per process.
+
+    Returns True only when Chromium is present afterwards.
+    """
+    global _chromium_autoinstall_attempted
+    if _chromium_autoinstall_attempted:
+        return _chromium_installed()
+    _chromium_autoinstall_attempted = True
+
+    if _running_in_docker():
+        return False
+
+    from tools.lazy_deps import _allow_lazy_installs
+    if not _allow_lazy_installs():
+        return False
+
+    try:
+        browser_cmd = _find_agent_browser()
+    except FileNotFoundError:
+        return False
+
+    if browser_cmd == "npx agent-browser":
+        install_cmd = [shutil.which("npx") or "npx", "-y", "agent-browser", "install"]
+    else:
+        install_cmd = [browser_cmd, "install"]
+
+    logger.info(
+        "browser: Chromium missing — auto-installing the browser binary "
+        "(one-time ~170MB; disable via security.allow_lazy_installs)"
+    )
+    try:
+        proc = subprocess.run(
+            install_cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=_build_browser_env(),
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("browser: Chromium auto-install failed to start: %s", e)
+        return False
+
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        logger.warning(
+            "browser: Chromium auto-install exited %s: %s", proc.returncode, tail
+        )
+        return False
+
+    global _cached_chromium_installed
+    _cached_chromium_installed = None
+    return _chromium_installed()
+
+
 def _running_in_docker() -> bool:
     """Best-effort detection of whether we're inside a Docker container."""
     if os.path.exists("/.dockerenv"):
@@ -4034,8 +4244,12 @@ def check_browser_requirements() -> bool:
         return True
 
     # The agent-browser CLI is required for local launch and cloud-provider flows.
+    # Tool-schema assembly runs during Desktop startup; do not execute
+    # ``agent-browser --version`` here, because Windows .cmd shims route through
+    # cmd.exe and can flash a console before the user invokes any browser tool.
+    # Actual browser execution paths still validate the candidate before use.
     try:
-        browser_cmd = _find_agent_browser()
+        browser_cmd = _find_agent_browser(validate=False)
     except FileNotFoundError:
         return False
 

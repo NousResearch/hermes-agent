@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1394,6 +1395,7 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
@@ -1403,6 +1405,7 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_returns_none_on_failure(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
@@ -1424,12 +1427,41 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_used_when_proc_returns_empty(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: b"")
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="python hermes_cli/main.py gateway run\n"),
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+    def test_windows_skips_ps_fallback_and_uses_psutil(self, monkeypatch):
+        monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        ps_calls = []
+        monkeypatch.setattr(
+            status.subprocess,
+            "run",
+            lambda args, **kwargs: ps_calls.append((args, kwargs)) or SimpleNamespace(returncode=0, stdout="ps should not run\n"),
+        )
+
+        class _Proc:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
+
+        monkeypatch.setitem(
+            sys.modules,
+            "psutil",
+            SimpleNamespace(Process=_Proc),
+        )
+
+        result = status._read_process_cmdline(12345)
+
+        assert result == "pythonw.exe -m hermes_cli.main gateway run"
+        assert ps_calls == []
 
 
 class TestCorruptStatusFiles:

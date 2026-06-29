@@ -377,6 +377,13 @@ const DEFAULT_UPDATE_BRANCH = 'main'
 const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
+// Startup readiness is different from normal API calls: after a rebuild or
+// cold Windows launch, the dashboard can bind its port before /api/status is
+// responsive. Keep the overall boot window generous, but make each probe short
+// so one slow request does not consume a third of the whole startup budget.
+const BACKEND_READY_TIMEOUT_MS = 90_000
+const BACKEND_READY_PROBE_TIMEOUT_MS = 2_000
+const BACKEND_READY_POLL_MS = 500
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
 // (version-skew crash -> backend exits instantly -> renderer keeps hitting
 // Retry) appends the full bootstrap transcript every attempt and grows without
@@ -3839,17 +3846,20 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+async function waitForHermes(baseUrl, token, options = {}) {
+  const timeoutMs = options.timeoutMs ?? BACKEND_READY_TIMEOUT_MS
+  const probeTimeoutMs = options.probeTimeoutMs ?? BACKEND_READY_PROBE_TIMEOUT_MS
+  const pollMs = options.pollMs ?? BACKEND_READY_POLL_MS
+  const deadline = Date.now() + timeoutMs
   let lastError = null
 
   while (Date.now() < deadline) {
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: probeTimeoutMs })
       return
     } catch (error) {
       lastError = error
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, pollMs))
     }
   }
 

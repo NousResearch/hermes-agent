@@ -522,7 +522,15 @@ def test_oauth_catalog_marks_external_providers_not_disconnectable():
     assert providers["claude-code"]["disconnectable"] is False
     assert providers["claude-code"]["disconnect_hint"]
     cmd = providers["claude-code"]["disconnect_command"]
-    assert cmd and ".claude/.credentials.json" in cmd
+    # Windows must surface a PowerShell-native delete; POSIX keeps the legacy
+    # form. Both forms should reference the .claude credentials path.
+    if sys.platform == "win32":
+        assert cmd is not None
+        assert "rm -f" not in cmd
+        assert "powershell" in cmd.lower()
+        assert ".claude" in cmd
+    else:
+        assert cmd and ".claude/.credentials.json" in cmd
 
 
 def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):

@@ -3146,6 +3146,28 @@ def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
     return f"{name} ({category})" if category else name
 
 
+# Collapses repeated identical ElevenLabs voice-list failures (the desktop
+# re-polls on every settings open/focus) to a single log line. Re-arms on
+# success or when the error signature changes, so a real new failure is seen.
+_voice_list_last_error: Optional[str] = None
+
+
+def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
+    """Return True if ``signature`` is new and should be logged now.
+
+    Passing ``None`` clears the latch (call on success). Idempotent per
+    signature: the same error logs once until it changes.
+    """
+    global _voice_list_last_error
+    if signature is None:
+        _voice_list_last_error = None
+        return False
+    if signature == _voice_list_last_error:
+        return False
+    _voice_list_last_error = signature
+    return True
+
+
 @app.get("/api/audio/elevenlabs/voices")
 async def get_elevenlabs_voices():
     """Return ElevenLabs voices when an API key is configured.
@@ -3173,9 +3195,27 @@ async def get_elevenlabs_voices():
                 return json.loads(response.read().decode("utf-8"))
 
         payload = await loop.run_in_executor(None, _fetch)
-    except Exception as exc:
-        _log.warning("ElevenLabs voice list failed: %s", exc)
+    except urllib.error.HTTPError as exc:
+        # An auth failure (bad/expired/scoped key) is a persistent,
+        # user-fixable state, not a transient blip — the desktop polls this on
+        # every settings open/focus, so a per-poll WARNING floods the log
+        # (#voice-list-401-spam). Treat 401/403 as "integration unavailable":
+        # report it to the UI with a 200 and log at most once until the error
+        # signature changes (see _voice_list_error_logged_once).
+        if exc.code in (401, 403):
+            if _voice_list_error_logged_once(f"http-{exc.code}"):
+                _log.info(
+                    "ElevenLabs voices unavailable: %s — check ELEVENLABS_API_KEY", exc
+                )
+            return {"available": False, "voices": [], "error": "unauthorized"}
+        if _voice_list_error_logged_once(f"http-{exc.code}"):
+            _log.warning("ElevenLabs voice list failed: %s", exc)
         raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices")
+    except Exception as exc:
+        if _voice_list_error_logged_once(str(exc)):
+            _log.warning("ElevenLabs voice list failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices")
+    _voice_list_error_logged_once(None)  # success — re-arm logging for next failure
 
     voices = []
     for voice in payload.get("voices") or []:

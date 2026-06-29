@@ -130,7 +130,9 @@ def _config_default_interface_early() -> str:
             import yaml as _yaml_iface
 
             with open(cfg_path, encoding="utf-8") as _f:
-                raw = _yaml_iface.safe_load(_f) or {}
+                raw = _yaml_iface.load(
+                    _f, Loader=getattr(_yaml_iface, "CSafeLoader", None) or _yaml_iface.SafeLoader
+                ) or {}
             disp = raw.get("display", {})
             if isinstance(disp, dict):
                 iface = disp.get("interface")
@@ -531,7 +533,9 @@ try:
     _cfg_path = get_hermes_home() / "config.yaml"
     if _cfg_path.exists():
         with open(_cfg_path, encoding="utf-8") as _f:
-            _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+            _early_cfg_raw = _yaml_early.load(
+                _f, Loader=getattr(_yaml_early, "CSafeLoader", None) or _yaml_early.SafeLoader
+            ) or {}
         # Managed scope: overlay administrator-pinned values so a managed
         # security.redact_secrets / network.force_ipv4 wins here too. This early
         # bridge reads config.yaml directly (before load_config is usable), so
@@ -824,6 +828,8 @@ def _has_any_provider_configured() -> bool:
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
                     continue
+                if line.startswith("export "):
+                    line = line[7:]
                 key, _, val = line.partition("=")
                 val = val.strip().strip("'\"")
                 if key.strip() in provider_env_vars and val:
@@ -11143,13 +11149,19 @@ def cmd_profile(args):
         remove = getattr(args, "remove", False)
         custom_name = getattr(args, "alias_name", None)
 
-        from hermes_cli.profiles import profile_exists
+        from hermes_cli.profiles import profile_exists, validate_alias_name
 
         if not profile_exists(name):
             print(f"Error: Profile '{name}' does not exist.")
             sys.exit(1)
 
         alias_name = custom_name or name
+
+        try:
+            validate_alias_name(alias_name)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
         if remove:
             if remove_wrapper_script(alias_name):

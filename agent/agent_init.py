@@ -836,6 +836,13 @@ def init_agent(
                 client_kwargs["default_headers"] = {
                     "User-Agent": "claude-code/0.1.0",
                 }
+            elif base_url_host_matches(effective_base, "opencode.ai"):
+                try:
+                    from hermes_cli import __version__ as _ver
+                    _ua = f"hermes-agent/{_ver}"
+                except Exception:
+                    _ua = "hermes-agent"
+                client_kwargs["default_headers"] = {"User-Agent": _ua}
             elif base_url_host_matches(effective_base, "portal.qwen.ai"):
                 client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
             elif base_url_host_matches(effective_base, "chatgpt.com"):

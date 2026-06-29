@@ -1615,6 +1615,12 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            elif base_url_host_matches(base_url, "opencode.ai"):
+                try:
+                    from hermes_cli import __version__ as _ver
+                    extra["default_headers"] = {"User-Agent": f"hermes-agent/{_ver}"}
+                except Exception:
+                    extra["default_headers"] = {"User-Agent": "hermes-agent"}
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 

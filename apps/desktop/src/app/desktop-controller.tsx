@@ -129,6 +129,7 @@ import { ReviewPane } from './right-sidebar/review'
 import { $terminalTakeover } from './right-sidebar/store'
 import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
 import { PersistentTerminal } from './right-sidebar/terminal/persistent'
+import { closeActiveTerminal, isTerminalFocused } from './right-sidebar/terminal/terminals'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
@@ -389,11 +390,25 @@ export function DesktopController() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!$filePreviewTarget.get() && !$previewTarget.get()) {
+      if (event.altKey || event.shiftKey || event.key.toLowerCase() !== 'w' || (!event.metaKey && !event.ctrlKey)) {
         return
       }
 
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
+      // Terminal focused: ⌘W closes the active terminal. Ctrl+W is left untouched
+      // for the shell's werase, and nothing else may steal ⌘/Ctrl+W from a
+      // focused terminal (so it never closes a preview tab out from under it).
+      if (isTerminalFocused()) {
+        if (event.metaKey && !event.ctrlKey) {
+          event.preventDefault()
+          event.stopPropagation()
+          closeActiveTerminal()
+        }
+
+        return
+      }
+
+      // Otherwise ⌘/Ctrl+W closes the active preview tab when one is open.
+      if ($filePreviewTarget.get() || $previewTarget.get()) {
         event.preventDefault()
         event.stopPropagation()
         closeActiveRightRailTab()

@@ -95,6 +95,12 @@ export function closeActiveTerminal(): void {
   }
 }
 
+/** True while an in-app terminal's xterm holds focus (its helper textarea is the
+ *  active element) — lets ⌘W close the focused terminal without a ref dance. */
+export function isTerminalFocused(): boolean {
+  return document.activeElement?.classList.contains('xterm-helper-textarea') ?? false
+}
+
 export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 

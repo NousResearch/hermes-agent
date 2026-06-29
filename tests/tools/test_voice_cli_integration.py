@@ -178,63 +178,144 @@ class TestVoiceStateLock:
 class TestStreamingTTSActivation:
     """Verify streaming TTS uses lazy imports to check availability."""
 
-    def test_activates_when_elevenlabs_and_sounddevice_available(self):
-        """use_streaming_tts should be True when provider is elevenlabs
-        and both lazy imports succeed."""
+    def test_activates_when_elevenlabs_streaming_enabled(self):
+        """use_streaming_tts True when tts.elevenlabs.streaming=True and deps ok."""
         use_streaming_tts = False
-        try:
-            from tools.tts_tool import (
-                _load_tts_config as _load_tts_cfg,
-                _get_provider as _get_prov,
-                _import_elevenlabs,
-                _import_sounddevice,
-            )
-            assert callable(_import_elevenlabs)
-            assert callable(_import_sounddevice)
-        except ImportError:
-            pytest.skip("tools.tts_tool not available")
-
-        with patch("tools.tts_tool._load_tts_config") as mock_cfg, \
+        with patch("tools.tts_tool._load_tts_config",
+                   return_value={"provider": "elevenlabs",
+                                 "elevenlabs": {"streaming": True}}), \
              patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs") as mock_el, \
-             patch("tools.tts_tool._import_sounddevice") as mock_sd:
-            mock_cfg.return_value = {"provider": "elevenlabs"}
-            mock_el.return_value = MagicMock()
-            mock_sd.return_value = MagicMock()
-
-            from tools.tts_tool import (
-                _load_tts_config as load_cfg,
-                _get_provider as get_prov,
-                _import_elevenlabs as import_el,
-                _import_sounddevice as import_sd,
-            )
-            cfg = load_cfg()
-            if get_prov(cfg) == "elevenlabs":
-                import_el()
-                import_sd()
-                use_streaming_tts = True
-
-        assert use_streaming_tts is True
-
-    def test_does_not_activate_when_elevenlabs_missing(self):
-        """use_streaming_tts stays False when elevenlabs import fails."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
-             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError("no elevenlabs")):
+             patch("tools.tts_tool._probe_streaming_deps") as mock_probe, \
+             patch("tools.tts_tool._import_sounddevice"):
             try:
                 from tools.tts_tool import (
                     _load_tts_config as load_cfg,
                     _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
+                    _probe_streaming_deps as probe,
                     _import_sounddevice as import_sd,
                 )
                 cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
+                provider = get_prov(cfg)
+                prov_cfg = cfg.get(provider, {}) or {}
+                if prov_cfg.get("streaming", False):
                     import_sd()
+                    probe(provider)
                     use_streaming_tts = True
-            except (ImportError, OSError):
+            except (ImportError, OSError, ValueError):
+                pass
+
+        assert use_streaming_tts is True
+        mock_probe.assert_called_once_with("elevenlabs")
+
+    def test_activates_when_openai_streaming_enabled(self):
+        """use_streaming_tts True when tts.openai.streaming=True."""
+        use_streaming_tts = False
+        with patch("tools.tts_tool._load_tts_config",
+                   return_value={"provider": "openai",
+                                 "openai": {"streaming": True}}), \
+             patch("tools.tts_tool._get_provider", return_value="openai"), \
+             patch("tools.tts_tool._probe_streaming_deps") as mock_probe, \
+             patch("tools.tts_tool._import_sounddevice"):
+            try:
+                from tools.tts_tool import (
+                    _load_tts_config as load_cfg,
+                    _get_provider as get_prov,
+                    _probe_streaming_deps as probe,
+                    _import_sounddevice as import_sd,
+                )
+                cfg = load_cfg()
+                provider = get_prov(cfg)
+                prov_cfg = cfg.get(provider, {}) or {}
+                if prov_cfg.get("streaming", False):
+                    import_sd()
+                    probe(provider)
+                    use_streaming_tts = True
+            except (ImportError, OSError, ValueError):
+                pass
+
+        assert use_streaming_tts is True
+        mock_probe.assert_called_once_with("openai")
+
+    def test_activates_when_edge_streaming_enabled(self):
+        """use_streaming_tts True when tts.edge.streaming=True and miniaudio present."""
+        use_streaming_tts = False
+        with patch("tools.tts_tool._load_tts_config",
+                   return_value={"provider": "edge",
+                                 "edge": {"streaming": True}}), \
+             patch("tools.tts_tool._get_provider", return_value="edge"), \
+             patch("tools.tts_tool._probe_streaming_deps") as mock_probe, \
+             patch("tools.tts_tool._import_sounddevice"):
+            try:
+                from tools.tts_tool import (
+                    _load_tts_config as load_cfg,
+                    _get_provider as get_prov,
+                    _probe_streaming_deps as probe,
+                    _import_sounddevice as import_sd,
+                )
+                cfg = load_cfg()
+                provider = get_prov(cfg)
+                prov_cfg = cfg.get(provider, {}) or {}
+                if prov_cfg.get("streaming", False):
+                    import_sd()
+                    probe(provider)
+                    use_streaming_tts = True
+            except (ImportError, OSError, ValueError):
+                pass
+
+        assert use_streaming_tts is True
+        mock_probe.assert_called_once_with("edge")
+
+    def test_does_not_activate_when_streaming_disabled(self):
+        """use_streaming_tts stays False when tts.<provider>.streaming=False."""
+        use_streaming_tts = False
+        with patch("tools.tts_tool._load_tts_config",
+                   return_value={"provider": "edge",
+                                 "edge": {"streaming": False}}), \
+             patch("tools.tts_tool._get_provider", return_value="edge"):
+            try:
+                from tools.tts_tool import (
+                    _load_tts_config as load_cfg,
+                    _get_provider as get_prov,
+                    _probe_streaming_deps as probe,
+                    _import_sounddevice as import_sd,
+                )
+                cfg = load_cfg()
+                provider = get_prov(cfg)
+                prov_cfg = cfg.get(provider, {}) or {}
+                if prov_cfg.get("streaming", False):
+                    import_sd()
+                    probe(provider)
+                    use_streaming_tts = True
+            except (ImportError, OSError, ValueError):
+                pass
+
+        assert use_streaming_tts is False
+
+    def test_does_not_activate_when_probe_fails(self):
+        """use_streaming_tts stays False when _probe_streaming_deps raises."""
+        use_streaming_tts = False
+        with patch("tools.tts_tool._load_tts_config",
+                   return_value={"provider": "elevenlabs",
+                                 "elevenlabs": {"streaming": True}}), \
+             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
+             patch("tools.tts_tool._probe_streaming_deps",
+                   side_effect=ImportError("elevenlabs not installed")), \
+             patch("tools.tts_tool._import_sounddevice"):
+            try:
+                from tools.tts_tool import (
+                    _load_tts_config as load_cfg,
+                    _get_provider as get_prov,
+                    _probe_streaming_deps as probe,
+                    _import_sounddevice as import_sd,
+                )
+                cfg = load_cfg()
+                provider = get_prov(cfg)
+                prov_cfg = cfg.get(provider, {}) or {}
+                if prov_cfg.get("streaming", False):
+                    import_sd()
+                    probe(provider)
+                    use_streaming_tts = True
+            except (ImportError, OSError, ValueError):
                 pass
 
         assert use_streaming_tts is False
@@ -242,45 +323,27 @@ class TestStreamingTTSActivation:
     def test_does_not_activate_when_sounddevice_missing(self):
         """use_streaming_tts stays False when sounddevice import fails."""
         use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
+        with patch("tools.tts_tool._load_tts_config",
+                   return_value={"provider": "elevenlabs",
+                                 "elevenlabs": {"streaming": True}}), \
              patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
-             patch("tools.tts_tool._import_sounddevice", side_effect=OSError("no PortAudio")):
+             patch("tools.tts_tool._import_sounddevice",
+                   side_effect=OSError("no PortAudio")):
             try:
                 from tools.tts_tool import (
                     _load_tts_config as load_cfg,
                     _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
+                    _probe_streaming_deps as probe,
                     _import_sounddevice as import_sd,
                 )
                 cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
+                provider = get_prov(cfg)
+                prov_cfg = cfg.get(provider, {}) or {}
+                if prov_cfg.get("streaming", False):
                     import_sd()
+                    probe(provider)
                     use_streaming_tts = True
-            except (ImportError, OSError):
-                pass
-
-        assert use_streaming_tts is False
-
-    def test_does_not_activate_for_non_elevenlabs_provider(self):
-        """use_streaming_tts stays False when provider is not elevenlabs."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "edge"}), \
-             patch("tools.tts_tool._get_provider", return_value="edge"):
-            try:
-                from tools.tts_tool import (
-                    _load_tts_config as load_cfg,
-                    _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
-                    _import_sounddevice as import_sd,
-                )
-                cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
-                    import_sd()
-                    use_streaming_tts = True
-            except (ImportError, OSError):
+            except (ImportError, OSError, ValueError):
                 pass
 
         assert use_streaming_tts is False

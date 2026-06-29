@@ -227,8 +227,8 @@ class TTSProvider(abc.ABC):
     ) -> Iterator[bytes]:
         """Stream synthesized audio bytes.
 
-        Optional. Providers that don't support streaming raise
-        :class:`NotImplementedError` (the default) and the dispatcher
+        Providers that don't support streaming raise
+        :class:`NotImplementedError` (the default) and the caller
         falls back to :meth:`synthesize` + read-whole-file.
 
         Args mirror :meth:`synthesize`. Default ``format`` is ``opus``

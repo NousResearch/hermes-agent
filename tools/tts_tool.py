@@ -49,7 +49,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Iterator, Optional
 from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -971,6 +971,60 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     return output_path
 
 
+def _stream_edge(
+    text: str,
+    *,
+    voice: Optional[str] = None,
+    speed: Optional[float] = None,
+    **extra: Any,
+) -> Iterator[bytes]:
+    """Stream synthesized audio bytes from Microsoft Edge TTS.
+
+    Yields raw MP3 chunks from ``edge_tts.Communicate(text, ...).stream()``,
+    filtered to ``{"type": "audio"}`` events. No API key required.
+    Mirrors the synthesize() config surface.
+    """
+    _edge_tts = _import_edge_tts()
+
+    tts_config = extra.pop("tts_config", None) or {}
+    edge_config = (
+        tts_config.get("edge", {}) if isinstance(tts_config, dict) else {}
+    )
+    if voice is None:
+        voice = edge_config.get("voice") or DEFAULT_EDGE_VOICE
+    if speed is None:
+        raw_speed = edge_config.get("speed", tts_config.get("speed", 1.0))
+        speed = float(raw_speed) if raw_speed is not None else 1.0
+    else:
+        speed = float(speed)
+
+    kwargs: Dict[str, Any] = {"voice": voice}
+    if speed != 1.0:
+        pct = round((speed - 1.0) * 100)
+        kwargs["rate"] = f"{pct:+d}%"
+
+    # edge_tts only exposes an async API; bridge to a sync iterator by
+    # driving a private event loop one __anext__ at a time. Each tick
+    # yields control back to the caller so the consumer can stream bytes
+    # to disk/network without buffering the whole audio.
+    communicate = _edge_tts.Communicate(text, **kwargs)
+    agen = communicate.stream()
+    loop = asyncio.new_event_loop()
+    try:
+        while True:
+            try:
+                event = loop.run_until_complete(agen.__anext__())
+            except StopAsyncIteration:
+                break
+            if event.get("type") == "audio":
+                data = event.get("data")
+                if data:
+                    yield data
+    finally:
+        loop.run_until_complete(agen.aclose())
+        loop.close()
+
+
 # ===========================================================================
 # Provider: ElevenLabs (premium)
 # ===========================================================================
@@ -1133,6 +1187,85 @@ def _generate_openai_tts(
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+def _stream_openai(
+    text: str,
+    *,
+    voice: Optional[str] = None,
+    model: Optional[str] = None,
+    speed: Optional[float] = None,
+    format: str = "opus",
+    **extra: Any,
+) -> Iterator[bytes]:
+    """Stream synthesized audio bytes from OpenAI TTS.
+
+    Yields raw response bytes via ``response.iter_bytes()``. The OpenAI
+    Python SDK returns an ``HttpxBinaryResponseContent`` from
+    ``audio.speech.create()`` whose body can be read incrementally.
+
+    Note: this is **not** low-latency streaming. The OpenAI TTS endpoint
+    generates the full audio server-side before sending the first byte,
+    so the first chunk arrives only after the entire clip is ready.
+    The chunked read here only saves client-side memory by avoiding a
+    single full-body buffer — it does not improve first-audio latency
+    the way ``_stream_edge`` does.
+
+    Mirrors the synthesize() config surface: ``tts.openai.model`` /
+    ``voice`` / ``speed`` / ``base_url`` and ``tts.use_gateway``.
+    """
+    api_key, base_url = _resolve_openai_audio_client_config()
+
+    tts_config = extra.pop("tts_config", None) or {}
+    oai_config = (
+        tts_config.get("openai", {}) if isinstance(tts_config, dict) else {}
+    )
+    if model is None:
+        model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
+    if voice is None:
+        voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
+    base_url = oai_config.get("base_url", base_url)
+    if speed is None:
+        raw_speed = oai_config.get("speed", tts_config.get("speed", 1.0))
+        speed = float(raw_speed) if raw_speed is not None else 1.0
+    else:
+        speed = float(speed)
+
+    fmt = (format or "opus").lower()
+    if fmt in ("ogg", "opus"):
+        response_format = "opus"
+    elif fmt == "pcm":
+        response_format = "pcm"
+    elif fmt == "wav":
+        response_format = "wav"
+    else:
+        response_format = "mp3"
+
+    OpenAIClient = _import_openai_client()
+    client = None
+    try:
+        client = OpenAIClient(api_key=api_key, base_url=base_url)
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": response_format,
+            "extra_headers": {"x-idempotency-key": str(uuid.uuid4())},
+        }
+        if speed != 1.0:
+            create_kwargs["speed"] = max(0.25, min(4.0, speed))
+        response = client.audio.speech.create(**create_kwargs)
+        for chunk in response.iter_bytes(chunk_size=4096):
+            if chunk:
+                yield chunk
+    finally:
+        if client is not None:
+            try:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
 
 
 # ===========================================================================
@@ -2749,14 +2882,181 @@ def _strip_markdown_for_tts(text: str) -> str:
     return text.strip()
 
 
+# ---------------------------------------------------------------------------
+# Real-time PCM chunk iteration (multi-provider)
+# ---------------------------------------------------------------------------
+
+
+class _MP3StreamableSource:
+    """read() mixin: pull bytes from a chunked MP3 iterator with cross-chunk buffering.
+
+    miniaudio's decoder calls ``read(num_bytes)`` repeatedly; we buffer
+    leftover bytes between calls because MP3 frame boundaries won't align
+    with read requests.
+
+    Used as a base for a runtime-defined subclass inside
+    :func:`_decode_edge_mp3_to_pcm` that also inherits
+    :class:`miniaudio.StreamableSource`. Kept module-level so the read()
+    buffering logic can be unit-tested in isolation.
+    """
+
+    def __init__(self, mp3_iter):
+        self._iter = iter(mp3_iter)
+        self._buf = b""
+        self._exhausted = False
+
+    def read(self, num_bytes: int) -> bytes:
+        while len(self._buf) < num_bytes and not self._exhausted:
+            try:
+                self._buf += next(self._iter)
+            except StopIteration:
+                self._exhausted = True
+                break
+        result, self._buf = self._buf[:num_bytes], self._buf[num_bytes:]
+        return result
+
+
+def _decode_edge_mp3_to_pcm(mp3_iter) -> Iterator[bytes]:
+    """Stream-decode MP3 chunks into 24kHz int16 mono PCM using miniaudio.
+
+    Wraps *mp3_iter* in a StreamableSource so miniaudio's decoder pulls
+    bytes on demand — chunks are decoded as they arrive rather than
+    buffered into a full file (low first-audio latency).
+    """
+    import miniaudio
+
+    # Define the subclass via a real ``class`` statement (not type()) so
+    # ABCMeta correctly recognizes _MP3StreamableSource.read as the
+    # implementation of StreamableSource's abstract read(). Base order
+    # matters: mixin first so MRO finds the concrete read() before the
+    # abstract one declared on miniaudio.StreamableSource.
+    class _StreamableMP3Source(_MP3StreamableSource, miniaudio.StreamableSource):
+        pass
+
+    source = _StreamableMP3Source(mp3_iter)
+    pcm_stream = miniaudio.stream_any(
+        source,
+        source_format=miniaudio.FileFormat.MP3,
+        output_format=miniaudio.SampleFormat.SIGNED16,
+        sample_rate=24000,
+        nchannels=1,
+    )
+    for chunk in pcm_stream:
+        if chunk:
+            yield bytes(chunk)
+
+
+def _iter_pcm_chunks(text: str, provider: str, tts_config: Dict[str, Any]) -> Iterator[bytes]:
+    """Yield raw int16 LE 24kHz mono PCM chunks for direct sounddevice write.
+
+    Dispatch by *provider*:
+
+    - ``elevenlabs`` — SDK ``convert(output_format="pcm_24000")``
+    - ``openai``     — :func:`_stream_openai` with ``format="pcm"``
+    - ``edge``       — :func:`_stream_edge` (MP3) → :func:`_decode_edge_mp3_to_pcm`
+    """
+    if provider == "elevenlabs":
+        api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
+        if not api_key:
+            raise ValueError("ELEVENLABS_API_KEY not set for streaming TTS")
+        el_config = tts_config.get("elevenlabs", {})
+        voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
+        model_id = el_config.get(
+            "streaming_model_id",
+            el_config.get("model_id", DEFAULT_ELEVENLABS_STREAMING_MODEL_ID),
+        )
+        ElevenLabs = _import_elevenlabs()
+        client = ElevenLabs(api_key=api_key)
+        yield from client.text_to_speech.convert(
+            text=text,
+            voice_id=voice_id,
+            model_id=model_id,
+            output_format="pcm_24000",
+        )
+    elif provider == "openai":
+        yield from _stream_openai(text, format="pcm", tts_config=tts_config)
+    elif provider == "edge":
+        mp3_iter = _stream_edge(text, tts_config=tts_config)
+        yield from _decode_edge_mp3_to_pcm(mp3_iter)
+    else:
+        raise ValueError(f"unknown streaming TTS provider: {provider!r}")
+
+
+def _probe_streaming_deps(provider: str) -> None:
+    """Verify SDK + credentials for *provider* are present; raise if not.
+
+    Called once at startup so the user sees a clean warning before the
+    first sentence, rather than a per-sentence exception inside the
+    speak loop.
+    """
+    if provider == "elevenlabs":
+        _import_elevenlabs()
+        if not (get_env_value("ELEVENLABS_API_KEY") or ""):
+            raise ValueError("ELEVENLABS_API_KEY not set")
+    elif provider == "openai":
+        _import_openai_client()
+        _resolve_openai_audio_client_config()
+    elif provider == "edge":
+        _import_edge_tts()
+        try:
+            import miniaudio  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                f"miniaudio package required for edge streaming playback: {exc}"
+            )
+    else:
+        raise ValueError(f"unsupported streaming provider: {provider!r}")
+
+
+def suppress_token_streaming_for_voice(agent, *, use_streaming_tts: bool):
+    """Suppress ``agent.stream_delta_callback`` for the duration of a voice turn.
+
+    Voice streaming TTS renders text sentence-by-sentence via
+    ``display_callback``. If ``stream_delta_callback`` is also live, the
+    agent invokes both callbacks per token (see ``run_agent.py``) and
+    the user sees two ``⚕ Hermes`` boxes with the same content.
+
+    This helper clears ``stream_delta_callback`` when voice streaming is
+    active and returns a callable to restore the original value at turn
+    end. Returns ``None`` when no suppression was applied, so callers
+    can simply do::
+
+        restore = suppress_token_streaming_for_voice(agent, use_streaming_tts=flag)
+        try:
+            ...
+        finally:
+            if restore:
+                restore()
+    """
+    if not use_streaming_tts or agent is None:
+        return None
+    saved = getattr(agent, "stream_delta_callback", None)
+    if saved is None:
+        return None
+    agent.stream_delta_callback = None
+    restored = [False]
+
+    def _restore():
+        if restored[0]:
+            return
+        restored[0] = True
+        try:
+            agent.stream_delta_callback = saved
+        except Exception:
+            pass
+
+    return _restore
+
+
 def stream_tts_to_speaker(
     text_queue: queue.Queue,
     stop_event: threading.Event,
     tts_done_event: threading.Event,
     display_callback: Optional[Callable[[str], None]] = None,
+    provider: str = "elevenlabs",
 ):
     """Consume text deltas from *text_queue*, buffer them into sentences,
-    and stream each sentence through ElevenLabs TTS to the speaker in
+    and stream each sentence through *provider* TTS to the speaker in
     real-time.
 
     Protocol:
@@ -2769,52 +3069,32 @@ def stream_tts_to_speaker(
     tts_done_event.clear()
 
     try:
-        # --- TTS client setup (optional -- display_callback works without it) ---
-        client = None
-        output_stream = None
-        voice_id = DEFAULT_ELEVENLABS_VOICE_ID
-        model_id = DEFAULT_ELEVENLABS_STREAMING_MODEL_ID
-
         tts_config = _load_tts_config()
-        el_config = tts_config.get("elevenlabs") or {}
-        voice_id = el_config.get("voice_id", voice_id)
-        model_id = el_config.get("streaming_model_id",
-                                 el_config.get("model_id", model_id))
-        # Per-sentence cap for the streaming path. Look up the cap against
-        # the *streaming* model_id (defaults to eleven_flash_v2_5 = 40k chars),
-        # not the sync model_id. A user override
-        # (tts.elevenlabs.max_text_length) still wins.
-        stream_max_len = _resolve_max_text_length(
-            "elevenlabs",
-            {**tts_config, "elevenlabs": {**el_config, "model_id": model_id}},
-        )
+        stream_max_len = _resolve_max_text_length(provider, tts_config)
 
-        api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
-        if not api_key:
-            logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
-        else:
+        # --- output setup (optional — display works without audio) ---
+        output_stream = None
+        audio_enabled = False
+        try:
+            sd = _import_sounddevice()
+            output_stream = sd.OutputStream(
+                samplerate=24000, channels=1, dtype="int16",
+            )
+            output_stream.start()
+            audio_enabled = True
+        except (ImportError, OSError) as exc:
+            logger.debug("sounddevice not available: %s", exc)
+        except Exception as exc:
+            logger.warning("sounddevice OutputStream failed: %s", exc)
+
+        if audio_enabled:
             try:
-                ElevenLabs = _import_elevenlabs()
-                client = ElevenLabs(api_key=api_key)
-            except ImportError:
-                logger.warning("elevenlabs package not installed; streaming TTS disabled")
-
-            # Open a single sounddevice output stream for the lifetime of
-            # this function.  ElevenLabs pcm_24000 produces signed 16-bit
-            # little-endian mono PCM at 24 kHz.
-            if client is not None:
-                try:
-                    sd = _import_sounddevice()
-                    output_stream = sd.OutputStream(
-                        samplerate=24000, channels=1, dtype="int16",
-                    )
-                    output_stream.start()
-                except (ImportError, OSError) as exc:
-                    logger.debug("sounddevice not available: %s", exc)
-                    output_stream = None
-                except Exception as exc:
-                    logger.warning("sounddevice OutputStream failed: %s", exc)
-                    output_stream = None
+                _probe_streaming_deps(provider)
+            except (ImportError, ValueError) as exc:
+                logger.warning(
+                    "Streaming TTS disabled for provider %r: %s", provider, exc,
+                )
+                audio_enabled = False
 
         sentence_buf = ""
         min_sentence_len = 20
@@ -2840,28 +3120,20 @@ def stream_tts_to_speaker(
             # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # Skip audio generation if no TTS client available
-            if client is None:
+            if not audio_enabled:
                 return
-            # Truncate very long sentences (ElevenLabs streaming path)
             if len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
             try:
-                audio_iter = client.text_to_speech.convert(
-                    text=cleaned,
-                    voice_id=voice_id,
-                    model_id=model_id,
-                    output_format="pcm_24000",
-                )
+                audio_iter = _iter_pcm_chunks(cleaned, provider, tts_config)
                 if output_stream is not None:
+                    import numpy as _np
                     for chunk in audio_iter:
                         if stop_event.is_set():
                             break
-                        import numpy as _np
                         audio_array = _np.frombuffer(chunk, dtype=_np.int16)
                         output_stream.write(audio_array.reshape(-1, 1))
                 else:
-                    # Fallback: write chunks to temp file and play via system player
                     _play_via_tempfile(audio_iter, stop_event)
             except Exception as exc:
                 logger.warning("Streaming TTS sentence failed: %s", exc)

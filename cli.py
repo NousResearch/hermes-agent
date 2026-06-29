@@ -11761,10 +11761,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._reasoning_shown_this_turn = False
 
             # --- Streaming TTS setup ---
-            # When ElevenLabs is the TTS provider and sounddevice is available,
-            # we stream audio sentence-by-sentence as the agent generates tokens
-            # instead of waiting for the full response.
+            # When the configured TTS provider has tts.<provider>.streaming
+            # enabled and sounddevice + provider SDK are available, we stream
+            # audio sentence-by-sentence as the agent generates tokens instead
+            # of waiting for the full response.
             use_streaming_tts = False
+            _streaming_provider = None
             _streaming_box_opened = False
             text_queue = None
             tts_thread = None
@@ -11776,17 +11778,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     from tools.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
                         _get_provider as _get_prov,
-                        _import_elevenlabs,
+                        _probe_streaming_deps,
                         _import_sounddevice,
                         stream_tts_to_speaker,
                     )
                     _tts_cfg = _load_tts_cfg()
-                    if _get_prov(_tts_cfg) == "elevenlabs":
-                        # Verify both ElevenLabs SDK and audio output are available
-                        _import_elevenlabs()
+                    _streaming_provider = _get_prov(_tts_cfg)
+                    _prov_cfg = _tts_cfg.get(_streaming_provider, {}) or {}
+                    if _prov_cfg.get("streaming", False):
+                        # Verify audio output + provider SDK/credentials
                         _import_sounddevice()
+                        _probe_streaming_deps(_streaming_provider)
                         use_streaming_tts = True
-                except (ImportError, OSError):
+                except (ImportError, OSError, ValueError):
                     pass
                 except Exception:
                     pass
@@ -11811,7 +11815,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 tts_thread = threading.Thread(
                     target=stream_tts_to_speaker,
                     args=(text_queue, stop_event, self._voice_tts_done),
-                    kwargs={"display_callback": display_callback},
+                    kwargs={
+                        "display_callback": display_callback,
+                        "provider": _streaming_provider,
+                    },
                     daemon=True,
                 )
                 tts_thread.start()
@@ -11881,6 +11888,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._pending_moa_config = None
                 if _moa_cfg is None:
                     _moa_cfg = None
+                # Voice streaming renders text sentence-by-sentence via
+                # display_callback; suppress token-level rendering to
+                # avoid two boxes showing the same content.
+                from tools.tts_tool import suppress_token_streaming_for_voice
+                _restore_token_streaming = suppress_token_streaming_for_voice(
+                    self.agent, use_streaming_tts=use_streaming_tts,
+                )
                 # Model/skill notes and voice instructions are API-local. Keep
                 # the original staged input as the durable transcript value so a
                 # close-path marker follows the same dict into turn setup rather
@@ -11923,6 +11937,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 finally:
                     if _one_turn_model_restore:
                         self._restore_model_runtime_snapshot(_one_turn_model_restore)
+                    # Restore token-level stream rendering that was suppressed
+                    # for voice streaming playback (avoid double-box display).
+                    if _restore_token_streaming is not None:
+                        _restore_token_streaming()
                     # Surface any credit notices queued during the turn (cold-start
                     # seed / per-turn capture) now that the response is done — printing
                     # at this boundary paints cleanly above the prompt instead of being

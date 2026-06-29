@@ -1,5 +1,7 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import json
+import re
 
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
@@ -427,6 +429,27 @@ class TestBuildToolComplete:
         assert "Read README.md" in text
         assert "```\n1|hello\n2|world\n```" in text
         assert result.raw_output is None
+
+    def test_read_file_fence_longer_than_internal_backtick_run(self):
+        # File content with a 4-backtick run: the outer Markdown fence must be
+        # strictly longer than the longest consecutive backtick run, else Zed/ACP
+        # closes the code block early and the rest renders as broken markdown.
+        content = "value = " + ("`" * 4)
+        result = build_tool_complete(
+            "tc-fence",
+            "read_file",
+            json.dumps({"content": content}),
+        )
+        text = result.content[0].content.text
+        # The fenced payload follows a "Read <path>" header; find the opening
+        # fence (first line that begins with a backtick run).
+        opening_fence = next(
+            line for line in text.splitlines() if line.startswith("`")
+        )
+        opening_fence_backticks = len(opening_fence) - len(opening_fence.lstrip("`"))
+        longest_run = max(len(m) for m in re.findall(r"`+", content))
+        assert longest_run == 4
+        assert opening_fence_backticks > longest_run
 
     def test_build_tool_complete_for_search_files_formats_matches(self):
         result = build_tool_complete(

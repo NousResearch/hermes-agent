@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -248,7 +249,7 @@ def _truncate_text(text: str, limit: int = 5000) -> str:
 
 def _fenced_text(text: str, language: str = "") -> str:
     """Return a Markdown fence that cannot be broken by backticks in text."""
-    longest = max((len(run) for run in text.split("`")[1::2]), default=0)
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
     fence = "`" * max(3, longest + 1)
     return f"{fence}{language}\n{text}\n{fence}"
 

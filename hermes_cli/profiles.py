@@ -767,26 +767,55 @@ def write_profile_meta(
 # CRUD operations
 # ---------------------------------------------------------------------------
 
-def list_profiles() -> List[ProfileInfo]:
-    """Return info for all profiles, including the default."""
+def list_profiles(
+    *,
+    include_model: bool = True,
+    include_distribution: bool = True,
+    include_description: bool = True,
+    include_gateway_status: bool = True,
+    include_skill_count: bool = True,
+    include_alias: bool = True,
+    include_env: bool = True,
+) -> List[ProfileInfo]:
+    """Return info for all profiles, including the default.
+
+    Callers that only need profile names and directories should disable the
+    optional fields. Some of them cross expensive boundaries per profile:
+    ``include_skill_count`` walks the whole skills tree, ``include_gateway_status``
+    reads gateway runtime state, and the metadata flags parse YAML files.
+    """
     profiles = []
     wrapper_dir = _get_wrapper_dir()
 
     # Default profile
     default_home = _get_default_hermes_home()
     if default_home.is_dir():
-        model, provider = _read_config_model(default_home)
-        dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
-        meta = read_profile_meta(default_home)
+        model, provider = (
+            _read_config_model(default_home) if include_model else (None, None)
+        )
+        dist_name, dist_version, dist_source = (
+            _read_distribution_meta(default_home)
+            if include_distribution
+            else (None, None, None)
+        )
+        meta = (
+            read_profile_meta(default_home)
+            if include_description
+            else {"description": "", "description_auto": False}
+        )
         profiles.append(ProfileInfo(
             name="default",
             path=default_home,
             is_default=True,
-            gateway_running=_check_gateway_running(default_home),
+            gateway_running=(
+                _check_gateway_running(default_home)
+                if include_gateway_status
+                else False
+            ),
             model=model,
             provider=provider,
-            has_env=(default_home / ".env").exists(),
-            skill_count=_count_skills(default_home),
+            has_env=(default_home / ".env").exists() if include_env else False,
+            skill_count=_count_skills(default_home) if include_skill_count else 0,
             distribution_name=dist_name,
             distribution_version=dist_version,
             distribution_source=dist_source,
@@ -805,24 +834,36 @@ def list_profiles() -> List[ProfileInfo]:
                 continue  # already added as the built-in default above
             if not _PROFILE_ID_RE.match(name):
                 continue
-            model, provider = _read_config_model(entry)
-            alias_name = find_alias_for_profile(name)
+            model, provider = (
+                _read_config_model(entry) if include_model else (None, None)
+            )
+            alias_name = find_alias_for_profile(name) if include_alias else None
             if alias_name:
                 is_windows = sys.platform == "win32"
                 alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
             else:
                 alias_path = None
-            dist_name, dist_version, dist_source = _read_distribution_meta(entry)
-            meta = read_profile_meta(entry)
+            dist_name, dist_version, dist_source = (
+                _read_distribution_meta(entry)
+                if include_distribution
+                else (None, None, None)
+            )
+            meta = (
+                read_profile_meta(entry)
+                if include_description
+                else {"description": "", "description_auto": False}
+            )
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
+                gateway_running=(
+                    _check_gateway_running(entry) if include_gateway_status else False
+                ),
                 model=model,
                 provider=provider,
-                has_env=(entry / ".env").exists(),
-                skill_count=_count_skills(entry),
+                has_env=(entry / ".env").exists() if include_env else False,
+                skill_count=_count_skills(entry) if include_skill_count else 0,
                 alias_path=alias_path if (alias_path and alias_path.exists()) else None,
                 alias_name=alias_name,
                 distribution_name=dist_name,

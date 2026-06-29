@@ -2315,7 +2315,16 @@ def run_doctor(args):
         from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
         import re as _re
 
-        named_profiles = [p for p in list_profiles() if not p.is_default]
+        named_profiles = [
+            p for p in list_profiles(
+                include_distribution=False,
+                include_description=False,
+                include_skill_count=False,
+                include_alias=False,
+                include_env=False,
+            )
+            if not p.is_default
+        ]
         if named_profiles:
             _section("Profiles")
             check_ok(f"{len(named_profiles)} profile(s) found")

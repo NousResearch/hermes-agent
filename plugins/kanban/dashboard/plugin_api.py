@@ -2123,7 +2123,12 @@ def list_profile_roster():
     """
     try:
         from hermes_cli import profiles as profiles_mod
-        profiles = profiles_mod.list_profiles()
+        profiles = profiles_mod.list_profiles(
+            include_distribution=False,
+            include_gateway_status=False,
+            include_alias=False,
+            include_env=False,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"failed to list profiles: {exc}")
     return {

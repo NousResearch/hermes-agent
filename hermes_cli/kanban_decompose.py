@@ -224,7 +224,14 @@ def _build_roster() -> tuple[list[dict], set[str]]:
     roster: list[dict] = []
     valid: set[str] = set()
     try:
-        all_profiles = profiles_mod.list_profiles()
+        all_profiles = profiles_mod.list_profiles(
+            include_model=False,
+            include_distribution=False,
+            include_gateway_status=False,
+            include_skill_count=False,
+            include_alias=False,
+            include_env=False,
+        )
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return roster, valid

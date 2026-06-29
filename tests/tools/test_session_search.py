@@ -534,7 +534,11 @@ class TestCrossProfileRead:
         from hermes_cli import profiles as profiles_mod
         Info = namedtuple("Info", "name path")
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
-        monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda **_kwargs: [Info("asdf", other_home)],
+        )
 
         # `db` (current profile) lacks s_far; no profile passed → scan finds it.
         result = json.loads(session_search(session_id="s_far", db=db))

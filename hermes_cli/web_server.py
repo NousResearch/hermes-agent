@@ -3463,7 +3463,15 @@ async def get_profiles_sessions(
         targets.append((name, home))
     else:
         try:
-            infos = profiles_mod.list_profiles()
+            infos = profiles_mod.list_profiles(
+                include_model=False,
+                include_distribution=False,
+                include_description=False,
+                include_gateway_status=False,
+                include_skill_count=False,
+                include_alias=False,
+                include_env=False,
+            )
             targets = [(info.name, info.path) for info in infos]
         except Exception:
             _log.exception("GET /api/profiles/sessions: list_profiles failed")

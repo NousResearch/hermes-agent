@@ -625,7 +625,15 @@ def find_profile_gateway_processes(
         return processes
 
     seen: set[int] = set()
-    for profile in list_profiles():
+    for profile in list_profiles(
+        include_model=False,
+        include_distribution=False,
+        include_description=False,
+        include_gateway_status=False,
+        include_skill_count=False,
+        include_alias=False,
+        include_env=False,
+    ):
         try:
             pid = get_running_pid(profile.path / "gateway.pid", cleanup_stale=False)
         except Exception:
@@ -1388,7 +1396,14 @@ def _gateway_list() -> None:
         print("Unable to list profiles.")
         return
 
-    profiles = list_profiles()
+    profiles = list_profiles(
+        include_model=False,
+        include_distribution=False,
+        include_description=False,
+        include_skill_count=False,
+        include_alias=False,
+        include_env=False,
+    )
     if not profiles:
         print("No profiles found.")
         return

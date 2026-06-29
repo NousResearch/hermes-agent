@@ -166,7 +166,15 @@ def cmd_sync(args) -> None:
     """
     try:
         from hermes_cli.profiles import list_profiles
-        profiles = list_profiles()
+        profiles = list_profiles(
+            include_model=False,
+            include_distribution=False,
+            include_description=False,
+            include_gateway_status=False,
+            include_skill_count=False,
+            include_alias=False,
+            include_env=False,
+        )
     except Exception as e:
         print(f"  Could not list profiles: {e}\n")
         return
@@ -211,7 +219,15 @@ def sync_honcho_profiles_quiet() -> int:
     """
     try:
         from hermes_cli.profiles import list_profiles
-        profiles = list_profiles()
+        profiles = list_profiles(
+            include_model=False,
+            include_distribution=False,
+            include_description=False,
+            include_gateway_status=False,
+            include_skill_count=False,
+            include_alias=False,
+            include_env=False,
+        )
     except Exception:
         return 0
 
@@ -996,7 +1012,15 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     """
     try:
         from hermes_cli.profiles import list_profiles
-        profiles = list_profiles()
+        profiles = list_profiles(
+            include_model=False,
+            include_distribution=False,
+            include_description=False,
+            include_gateway_status=False,
+            include_skill_count=False,
+            include_alias=False,
+            include_env=False,
+        )
     except Exception:
         return [(_active_profile_name(), _host_key(), {})]
 

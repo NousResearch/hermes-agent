@@ -620,6 +620,45 @@ class TestListProfiles:
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
 
+    def test_can_skip_expensive_detail_fields(self, profile_env):
+        create_profile("alpha", no_alias=True)
+
+        with patch("hermes_cli.profiles._read_config_model") as read_config, \
+             patch("hermes_cli.profiles._read_distribution_meta") as read_dist, \
+             patch("hermes_cli.profiles.read_profile_meta") as read_meta, \
+             patch("hermes_cli.profiles._check_gateway_running") as check_gateway, \
+             patch("hermes_cli.profiles._count_skills") as count_skills, \
+             patch("hermes_cli.profiles.find_alias_for_profile") as find_alias:
+            profiles = list_profiles(
+                include_model=False,
+                include_distribution=False,
+                include_description=False,
+                include_gateway_status=False,
+                include_skill_count=False,
+                include_alias=False,
+                include_env=False,
+            )
+
+        names = [p.name for p in profiles]
+        assert names == ["default", "alpha"]
+        for profile in profiles:
+            assert profile.model is None
+            assert profile.provider is None
+            assert profile.has_env is False
+            assert profile.distribution_name is None
+            assert profile.description == ""
+            assert profile.description_auto is False
+            assert profile.gateway_running is False
+            assert profile.skill_count == 0
+            assert profile.alias_name is None
+            assert profile.alias_path is None
+        read_config.assert_not_called()
+        read_dist.assert_not_called()
+        read_meta.assert_not_called()
+        check_gateway.assert_not_called()
+        count_skills.assert_not_called()
+        find_alias.assert_not_called()
+
 
 # ===================================================================
 # TestActiveProfile

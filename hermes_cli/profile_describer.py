@@ -291,7 +291,14 @@ def list_describable_profiles(*, missing_only: bool = True) -> list[str]:
     description. ``missing_only=False`` returns every profile.
     """
     out: list[str] = []
-    for p in profiles_mod.list_profiles():
+    for p in profiles_mod.list_profiles(
+        include_model=False,
+        include_distribution=False,
+        include_gateway_status=False,
+        include_skill_count=False,
+        include_alias=False,
+        include_env=False,
+    ):
         if missing_only and (p.description or "").strip() and not p.description_auto:
             continue
         out.append(p.name)

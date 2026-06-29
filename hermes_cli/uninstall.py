@@ -436,7 +436,16 @@ def _discover_named_profiles():
     except Exception:
         return []
     try:
-        return [p for p in list_profiles() if not getattr(p, "is_default", False)]
+        return [
+            p for p in list_profiles(
+                include_model=False,
+                include_distribution=False,
+                include_description=False,
+                include_skill_count=False,
+                include_env=False,
+            )
+            if not getattr(p, "is_default", False)
+        ]
     except Exception as e:
         log_warn(f"Could not enumerate profiles: {e}")
         return []

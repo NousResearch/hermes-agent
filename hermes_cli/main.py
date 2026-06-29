@@ -9752,7 +9752,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 seed_profile_skills,
             )
 
-            all_profiles = list_profiles()
+            all_profiles = list_profiles(
+                include_model=False,
+                include_distribution=False,
+                include_description=False,
+                include_gateway_status=False,
+                include_skill_count=False,
+                include_alias=False,
+                include_env=False,
+            )
             if all_profiles:
                 print()
                 print("→ Syncing bundled skills to all profiles...")

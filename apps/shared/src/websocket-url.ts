@@ -31,10 +31,7 @@ export function isGatewayReauthRequired(error: unknown): error is GatewayReauthR
   )
 }
 
-export async function resolveGatewayWsUrl(
-  deps: ResolveGatewayWsUrlDeps,
-  conn: GatewayWsConnection
-): Promise<string> {
+export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: GatewayWsConnection): Promise<string> {
   const mint = deps.getGatewayWsUrl
   const profile = conn.profile ?? null
 

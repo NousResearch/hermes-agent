@@ -2468,7 +2468,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             return live
     if normalized in ("openai", "openai-api"):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if api_key:
+        try:
+            from hermes_cli.auth import is_source_suppressed as _is_suppressed
+            _key_suppressed = _is_suppressed("openai-api", "env:OPENAI_API_KEY")
+        except Exception:
+            _key_suppressed = False
+        if api_key and not _key_suppressed:
             base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
             base = base_raw or "https://api.openai.com/v1"
             # Custom OpenAI-compatible endpoints (proxies, gateways, self-hosted)

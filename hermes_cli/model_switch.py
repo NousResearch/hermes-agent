@@ -1715,8 +1715,13 @@ def list_authenticated_providers(
             if not isinstance(env_vars, list):
                 continue
 
-        # Check if any env var is set
-        has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Check if any non-suppressed env var is set
+        from hermes_cli.auth import is_source_suppressed as _is_src_suppressed
+        has_creds = any(
+            os.environ.get(ev)
+            for ev in env_vars
+            if not _is_src_suppressed(hermes_id, f"env:{ev}")
+        )
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
@@ -1800,10 +1805,15 @@ def list_authenticated_providers(
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
+            from hermes_cli.auth import is_source_suppressed as _is_src_suppressed2
             for _key in (pid, hermes_slug):
                 pcfg = _auth_registry.get(_key)
                 if pcfg and pcfg.api_key_env_vars:
-                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                    if any(
+                        os.environ.get(ev)
+                        for ev in pcfg.api_key_env_vars
+                        if not _is_src_suppressed2(hermes_slug, f"env:{ev}")
+                    ):
                         has_creds = True
                         break
         # Check auth store and credential pool for non-env-var credentials.
@@ -1951,7 +1961,12 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            from hermes_cli.auth import is_source_suppressed as _is_src_suppressed3
+            _cp_has_creds = any(
+                os.environ.get(ev)
+                for ev in _cp_config.api_key_env_vars
+                if not _is_src_suppressed3(_cp.slug, f"env:{ev}")
+            )
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

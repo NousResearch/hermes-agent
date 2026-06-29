@@ -126,6 +126,8 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Bind mem_dir at creation to prevent cross-profile path drift (issue #54937).
+        self._mem_dir = get_memory_dir()
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -242,9 +244,10 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        # Use bound _mem_dir instead of re-resolving HERMES_HOME, which can
+        # change mid-process in single-process multi-profile WebUI (issue #54937).
+        mem_dir = self._mem_dir
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"

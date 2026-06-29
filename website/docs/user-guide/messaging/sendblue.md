@@ -175,7 +175,7 @@ cronjob(
 Or target a recipient explicitly:
 
 ```bash
-hermes send sendblue:+15559876543 "Done."
+hermes send --to sendblue:+15559876543 "Done."
 ```
 
 Group replies use `group:<id>` chat ids. The adapter uses Sendblue's

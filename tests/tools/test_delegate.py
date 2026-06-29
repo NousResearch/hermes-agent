@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from run_agent import AIAgent
+
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -69,12 +71,14 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
+        self.assertIn("skills", props)
         self.assertIn("toolsets", props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+        self.assertIn("skills", props["tasks"]["items"]["properties"])
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
@@ -142,6 +146,62 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+
+class TestDelegateSkills(unittest.TestCase):
+    @patch("agent.skill_commands.build_preloaded_skills_prompt")
+    @patch("run_agent.AIAgent")
+    def test_build_child_agent_appends_canonical_skill_prompt(
+        self, MockAgent, mock_build_preloaded_skills_prompt
+    ):
+        mock_build_preloaded_skills_prompt.return_value = (
+            "SKILL PROMPT BLOCK",
+            ["hermes-agent"],
+            [],
+        )
+        parent = _make_mock_parent(depth=0)
+        MockAgent.return_value = MagicMock()
+
+        _build_child_agent(
+            task_index=0,
+            goal="Use the loaded skill",
+            context="child context",
+            skills=["hermes-agent"],
+            toolsets=None,
+            model=None,
+            max_iterations=10,
+            parent_agent=parent,
+            task_count=1,
+        )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIn("Use the loaded skill", kwargs["ephemeral_system_prompt"])
+        self.assertIn("SKILL PROMPT BLOCK", kwargs["ephemeral_system_prompt"])
+        mock_build_preloaded_skills_prompt.assert_called_once_with(
+            ["hermes-agent"], task_id=None
+        )
+
+    @patch("agent.skill_commands.build_preloaded_skills_prompt")
+    def test_delegate_task_fails_when_preloaded_skill_missing(
+        self, mock_build_preloaded_skills_prompt
+    ):
+        mock_build_preloaded_skills_prompt.return_value = (
+            "",
+            [],
+            ["missing-skill"],
+        )
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                goal="Use the loaded skill",
+                skills=["missing-skill"],
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("missing-skill", result["error"])
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -2077,6 +2137,23 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
+
+    def test_skills_forwarded(self):
+        """The agent-loop dispatch helper must pass through top-level skills."""
+        parent = object.__new__(AIAgent)
+        with patch("tools.delegate_tool.delegate_task", return_value='{"ok":true}') as mock_delegate:
+            result = AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "test",
+                    "skills": ["hermes-agent", "git-workflow-maintenance"],
+                },
+            )
+
+        self.assertEqual(result, '{"ok":true}')
+        _, kwargs = mock_delegate.call_args
+        self.assertEqual(kwargs["skills"], ["hermes-agent", "git-workflow-maintenance"])
+        self.assertIs(kwargs["parent_agent"], parent)
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")

@@ -663,6 +663,30 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+def _build_delegate_skills_prompt(skill_identifiers: Optional[List[str]]) -> str:
+    """Resolve delegated skills through the canonical preload pipeline.
+
+    Delegate subagents should load skills the same way normal CLI preloads do,
+    not through a delegate-specific filesystem scan. Missing skills are treated
+    as a hard error for parity with other preloaded-skill entrypoints.
+    """
+    if not skill_identifiers:
+        return ""
+
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    prompt_text, _loaded_names, missing = build_preloaded_skills_prompt(
+        skill_identifiers, task_id=None
+    )
+    if missing:
+        missing_list = ", ".join(missing)
+        raise ValueError(
+            f"Unknown skill(s): {missing_list}. Delegated skill preloading fails "
+            "closed when any requested skill cannot be resolved."
+        )
+    return prompt_text
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
@@ -1047,6 +1071,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    skills: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1135,6 +1160,9 @@ def _build_child_agent(
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
     )
+    skills_prompt = _build_delegate_skills_prompt(skills)
+    if skills_prompt:
+        child_prompt = f"{child_prompt}\n\n{skills_prompt}"
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -2124,6 +2152,7 @@ def _recover_tasks_from_json_string(
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
+    skills: Optional[List[str]] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
@@ -2137,8 +2166,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, skills, toolsets, role)
+      - Batch:  provide tasks array [{goal, context, skills, toolsets, role}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2232,7 +2261,13 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "skills": skills,
+                "toolsets": toolsets,
+                "role": top_role,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2277,6 +2312,7 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
+                skills=t.get("skills") if "skills" in t else skills,
                 toolsets=t.get("toolsets") or toolsets,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
@@ -2299,6 +2335,8 @@ def delegate_task(
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
+    except ValueError as exc:
+        return tool_error(str(exc))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -3110,6 +3148,11 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional skill names to preload.",
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3119,6 +3162,11 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
+                        },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional skill names for this specific task to preload.",
                         },
                         "toolsets": {
                             "type": "array",
@@ -3223,6 +3271,7 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
+        skills=args.get("skills"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),

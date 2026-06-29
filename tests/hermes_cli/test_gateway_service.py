@@ -431,6 +431,14 @@ class TestGeneratedSystemdUnits:
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
+        # ExecStopPost reaps any process the gateway didn't clean up itself,
+        # so long-lived helpers (e.g. adb) can't be left orphaned in the
+        # cgroup and block Restart=always — issue #37454.
+        assert "ExecStopPost=" in unit
+        assert "-m gateway.cgroup_cleanup" in unit
+        # KillMode=mixed is preserved so the gateway still reaps its own
+        # tool-call children before systemd SIGKILLs the cgroup — #8202.
+        assert "KillMode=mixed" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: "/home/test/.nvm/versions/node/v24.14.0/bin/node" if cmd == "node" else None)
@@ -493,6 +501,14 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
+        # ExecStopPost reaps any process the gateway didn't clean up itself,
+        # so long-lived helpers (e.g. adb) can't be left orphaned in the
+        # cgroup and block Restart=always — issue #37454.
+        assert "ExecStopPost=" in unit
+        assert "-m gateway.cgroup_cleanup" in unit
+        # KillMode=mixed is preserved so the gateway still reaps its own
+        # tool-call children before systemd SIGKILLs the cgroup — #8202.
+        assert "KillMode=mixed" in unit
 
 
 class TestGatewayStopCleanup:
@@ -599,6 +615,8 @@ class TestLaunchdServiceRecovery:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        # Not running inside the gateway tree → direct bootout/bootstrap path.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
 
         gateway_cli.launchd_install()
 
@@ -608,6 +626,110 @@ class TestLaunchdServiceRecovery:
         # The calls list includes launchctl print probes from _launchd_domain()
         # before the bootout/bootstrap calls. Filter to only bootout/bootstrap.
         service_calls = [c for c in calls if "bootout" in c or "bootstrap" in c]
+        assert service_calls[:2] == [
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+        ]
+
+    def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
+        """#43842: when the refresh runs inside the gateway's own process tree,
+        a direct bootout would kill this CLI before bootstrap. The reload must
+        be delegated to a detached helper instead."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        # Pretend the gateway is running and that we ARE inside its tree.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == 4242
+        )
+
+        run_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            run_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+            return SimpleNamespace(pid=9999)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        # The new plist was written.
+        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        # No DIRECT bootout/bootstrap ran (those would kill us mid-sequence).
+        assert not [c for c in run_calls if "bootout" in c or "bootstrap" in c]
+        # Exactly one detached helper was spawned, in a new session, and it
+        # performs both bootout and bootstrap.
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert kwargs.get("start_new_session") is True
+        script = cmd[-1]
+        assert "bootout" in script and "bootstrap" in script
+        assert str(plist_path) in script
+
+    def test_refresh_uses_direct_reload_when_not_inside_gateway_tree(self, tmp_path, monkeypatch):
+        """Normal CLI-initiated refresh (outside the service tree) keeps the
+        direct synchronous bootout/bootstrap path."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        # Gateway running, but we are NOT inside its tree.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: False
+        )
+
+        run_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            run_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        popen_calls = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "Popen",
+            lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=1),
+        )
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        # No detached helper — direct path taken.
+        assert not popen_calls
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        service_calls = [c for c in run_calls if "bootout" in c or "bootstrap" in c]
         assert service_calls[:2] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
@@ -668,7 +790,7 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch, capsys):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
@@ -693,6 +815,12 @@ class TestLaunchdServiceRecovery:
             ("term", 321, False),
             ["launchctl", "kickstart", "-k", target],
         ]
+        # The drain can silently hold for the full budget (180s default); the
+        # desktop updater streams this output as its only progress feedback,
+        # so the stop must be announced BEFORE the wait (#44515).
+        out = capsys.readouterr().out
+        assert "draining in-flight runs" in out
+        assert "up to 12s" in out
 
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []
@@ -881,6 +1009,8 @@ class TestLaunchdServiceRecovery:
 
         assert spawned == [True]
         assert "background process" in capsys.readouterr().out.lower()
+        # Verify the unsupported marker was written so status can explain why
+        assert gateway_cli._launchd_unsupported_marker_exists()
 
     def test_launchd_install_falls_back_to_detached_on_bootstrap_5(self, tmp_path, monkeypatch, capsys):
         """macOS bootstrap error 5 should spawn a detached gateway, not crash."""
@@ -916,6 +1046,7 @@ class TestLaunchdServiceRecovery:
 
         assert spawned == [True]
         assert "Service installed and loaded" not in capsys.readouterr().out
+        assert gateway_cli._launchd_unsupported_marker_exists()
 
     def test_launchd_restart_falls_back_to_detached_on_error_5(self, monkeypatch, capsys):
         """kickstart -k error 5 (domain unmanageable) should relaunch detached."""
@@ -944,6 +1075,47 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert spawned == [True]
+        assert gateway_cli._launchd_unsupported_marker_exists()
+
+    def test_launchd_restart_boots_out_stale_registration_before_bootstrap(
+        self, tmp_path, monkeypatch
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True
+        )
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    3, cmd, stderr="Could not find service"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
 
     def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
         """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""
@@ -970,6 +1142,177 @@ class TestLaunchdServiceRecovery:
         assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "nohup hermes gateway run" in out
+        # Marker is still written so status knows launchd is unavailable
+        assert gateway_cli._launchd_unsupported_marker_exists()
+
+    # ── PID parsing ──────────────────────────────────────────────────────
+
+    def test_parse_launchd_pid_from_list_output_with_pid(self):
+        output = '{\n    "PID" = 12345;\n    "Label" = "ai.hermes.gateway";\n}'
+        assert gateway_cli._parse_launchd_pid_from_list_output(output) == 12345
+
+    def test_parse_launchd_pid_from_list_output_without_pid(self):
+        output = '{\n    "Label" = "ai.hermes.gateway";\n    "OnDemand" = true;\n}'
+        assert gateway_cli._parse_launchd_pid_from_list_output(output) is None
+
+    def test_parse_launchd_pid_from_list_output_empty(self):
+        assert gateway_cli._parse_launchd_pid_from_list_output("") is None
+
+    def test_parse_launchd_pid_from_list_output_unquoted_pid(self):
+        """Older macOS versions may output PID without quotes."""
+        output = "{\n    PID = 99999;\n}"
+        assert gateway_cli._parse_launchd_pid_from_list_output(output) == 99999
+
+    def test_parse_launchd_pid_from_list_output_negative_pid_returns_none(self):
+        """PID = -1 (recently-crashed service sentinel) must return None."""
+        output = '{\n    "PID" = -1;\n    "Label" = "ai.hermes.gateway";\n}'
+        assert gateway_cli._parse_launchd_pid_from_list_output(output) is None
+
+    # ── Probe requires PID ───────────────────────────────────────────────
+
+    def test_probe_launchd_service_running_false_without_pid_in_output(self, tmp_path, monkeypatch):
+        """launchctl list returns 0 but no PID → not actually running."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout='{\n    "Label" = "ai.hermes.gateway";\n}',
+                stderr="",
+            ),
+        )
+        assert gateway_cli._probe_launchd_service_running() is False
+
+    def test_probe_launchd_service_running_true_with_pid_in_output(self, tmp_path, monkeypatch):
+        """launchctl list returns 0 with PID → actually running."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout='{\n    "PID" = 55555;\n    "Label" = "ai.hermes.gateway";\n}',
+                stderr="",
+            ),
+        )
+        assert gateway_cli._probe_launchd_service_running() is True
+
+    # ── Unsupport marker lifecycle ───────────────────────────────────────
+
+    def test_launchd_unsupported_marker_write_and_clear(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        assert not gateway_cli._launchd_unsupported_marker_exists()
+        gateway_cli._write_launchd_unsupported_marker()
+        assert gateway_cli._launchd_unsupported_marker_exists()
+        gateway_cli._clear_launchd_unsupported_marker()
+        assert not gateway_cli._launchd_unsupported_marker_exists()
+
+    def test_launchd_start_clears_unsupported_marker_on_bootstrap_success(self, tmp_path, monkeypatch, capsys):
+        """When bootstrap succeeds (OS update fixes the issue), clear the marker."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        # Pre-seed the marker as if a previous fallback wrote it
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        # Bypass the temp-home service write guard (added on main after PR #42567)
+        monkeypatch.setattr(gateway_cli, "_refuse_temp_home_service_write", lambda d, k: False)
+        gateway_cli._write_launchd_unsupported_marker()
+        assert gateway_cli._launchd_unsupported_marker_exists()
+
+        # Simulate a bootstrap that succeeds
+        def fake_run(cmd, check=False, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_install(force=True)
+
+        assert "Service installed and loaded" in capsys.readouterr().out
+        assert not gateway_cli._launchd_unsupported_marker_exists()
+
+    # ── launchd_status with active supervision ───────────────────────────
+
+    def test_launchd_status_reports_supervised_when_pid_present(self, tmp_path, monkeypatch, capsys):
+        """When launchd is actively supervising, report it clearly."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='{\n    "PID" = 77777;\n    "Label" = "ai.hermes.gateway";\n}',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        # No fallback PID — when launchd supervises, get_running_pid returns
+        # the same PID; launchd_status deduplicates it.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 77777)
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "supervised by launchd" in out
+        assert "Auto-start at login" in out
+
+    def test_launchd_status_reports_fallback_when_unsupported_and_pid_running(self, tmp_path, monkeypatch, capsys):
+        """When the unsupported marker exists and a fallback PID is running."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='{\n    "Label" = "ai.hermes.gateway";\n    "OnDemand" = true;\n}',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: 88888)
+        # Pre-seed the unsupported marker
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        gateway_cli._write_launchd_unsupported_marker()
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "cannot manage the gateway on this macos version" in out.lower()
+        assert "Detached fallback process is running" in out
+        assert "PID 88888" in out
+        assert "NOT available" in out
+
+    def test_launchd_status_reports_fallback_unavailable_when_unsupported_no_pid(self, tmp_path, monkeypatch, capsys):
+        """Unsupported marker exists but no fallback process is running."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, check=False, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='{\n    "Label" = "ai.hermes.gateway";\n    "OnDemand" = true;\n}',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=False: None)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        gateway_cli._write_launchd_unsupported_marker()
+
+        gateway_cli.launchd_status()
+
+        out = capsys.readouterr().out
+        assert "cannot manage the gateway on this macos version" in out.lower()
+        assert "No fallback process is running" in out
+        assert "NOT available" in out
 
 
 class TestLaunchdDomainDetection:

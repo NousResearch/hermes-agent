@@ -103,7 +103,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, SecretStr
+    from pydantic import BaseModel, SecretStr, ValidationInfo, field_validator
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -119,7 +119,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel, SecretStr
+        from pydantic import BaseModel, SecretStr, ValidationInfo, field_validator
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -1507,6 +1507,46 @@ def _apply_main_model_assignment(
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
     model_cfg.pop("context_length", None)
     return model_cfg
+
+
+# ─── Fallback provider chain ──────────────────────────────────────────────
+
+
+class FallbackProviderEntry(BaseModel):
+    """Single fallback provider entry persisted to config.yaml."""
+
+    provider: str
+    model: str
+    base_url: Optional[str] = None
+    api_mode: Optional[str] = None
+
+    @field_validator("provider", "model", mode="before")
+    @classmethod
+    def _trim_required(cls, value: Any, info: ValidationInfo) -> str:
+        if value is None:
+            raise ValueError(f"fallback {info.field_name} is required")
+        if not isinstance(value, str):
+            raise ValueError(f"fallback {info.field_name} must be a string")
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError(f"fallback {info.field_name} is required")
+        return trimmed
+
+    @field_validator("base_url", "api_mode", mode="before")
+    @classmethod
+    def _trim_optional(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("fallback optional fields must be strings")
+        return value.strip() or None
+
+
+class FallbackProvidersUpdate(BaseModel):
+    """Payload for PUT /api/model/fallbacks."""
+
+    fallbacks: List[FallbackProviderEntry]
+    profile: Optional[str] = None
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -6569,6 +6609,42 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     except Exception:
         _log.exception("PUT /api/model/moa failed")
         raise HTTPException(status_code=500, detail="Failed to save MoA config")
+
+
+@app.get("/api/model/fallbacks")
+def get_model_fallbacks(profile: Optional[str] = None):
+    """Return the configured fallback provider chain."""
+    try:
+        from hermes_cli.fallback_cmd import read_chain
+
+        with _profile_scope(profile):
+            cfg = load_config()
+            return {"fallbacks": read_chain(cfg)}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/model/fallbacks failed")
+        raise HTTPException(status_code=500, detail="Failed to read fallback providers")
+
+
+@app.put("/api/model/fallbacks")
+def set_model_fallbacks(body: FallbackProvidersUpdate, profile: Optional[str] = None):
+    """Persist fallback providers in config.yaml order."""
+    cleaned = [entry.model_dump(exclude_none=True) for entry in body.fallbacks]
+
+    try:
+        from hermes_cli.fallback_cmd import write_chain
+
+        with _profile_scope(body.profile or profile):
+            cfg = load_config()
+            write_chain(cfg, cleaned)
+            save_config(cfg)
+        return {"ok": True, "fallbacks": cleaned}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/fallbacks failed")
+        raise HTTPException(status_code=500, detail="Failed to save fallback providers")
 
 
 @app.post("/api/model/set")

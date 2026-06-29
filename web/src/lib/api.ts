@@ -80,6 +80,8 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  "/api/model/configured",
+  "/api/model/fallback",
 ];
 
 function withManagementProfile(url: string): string {
@@ -503,6 +505,14 @@ export const api = {
     fetchJSON<AuxiliaryModelsResponse>(
       appendProfileParam("/api/model/auxiliary", profile),
     ),
+  getConfiguredModels: () =>
+    fetchJSON<FallbacksResponse>("/api/model/fallbacks"),
+  setFallbackChain: (fallbacks: FallbackEntry[]) =>
+    fetchJSON<SetFallbacksResponse>("/api/model/fallbacks", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fallbacks }),
+    }),
   getMoaModels: () => fetchJSON<MoaConfigResponse>("/api/model/moa"),
   saveMoaModels: (body: MoaConfigResponse) =>
     fetchJSON<MoaConfigResponse & { ok: boolean }>("/api/model/moa", {
@@ -2301,6 +2311,23 @@ export interface ModelOptionProvider {
   source?: string;
   warning?: string;
   authenticated?: boolean;
+}
+
+export interface FallbackEntry {
+  provider: string;
+  model: string;
+  base_url?: string;
+  api_mode?: string;
+}
+
+/** Response type for GET /api/model/fallbacks */
+export interface FallbacksResponse {
+  fallbacks: FallbackEntry[];
+}
+
+export interface SetFallbacksResponse {
+  ok: boolean;
+  fallbacks: FallbackEntry[];
 }
 
 export interface ModelOptionsResponse {

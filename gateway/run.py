@@ -6386,7 +6386,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
-        
+
+        # systemd-notify: announce READY=1 + spawn the WATCHDOG heartbeat.
+        # No-op when $NOTIFY_SOCKET is unset (i.e. when the unit is the
+        # default Type=simple). Adopting Type=notify + WatchdogSec= in the
+        # unit lets systemd detect HANGS that Restart=on-failure can't see
+        # (process is up but stuck — heartbeat stops → systemd kills via
+        # Restart=on-watchdog). Strictly opt-in via the unit-file change.
+        try:
+            from gateway import systemd_notify
+        except Exception:  # pragma: no cover — defensive against import races
+            systemd_notify = None  # type: ignore[assignment]
+        if systemd_notify is not None and systemd_notify.is_available():
+            if systemd_notify.notify_ready():
+                logger.info("systemd-notify: READY=1 sent")
+            if systemd_notify.watchdog_usec() is not None:
+                _watchdog_task = asyncio.create_task(
+                    systemd_notify.watchdog_heartbeat_task()
+                )
+                self._background_tasks.add(_watchdog_task)
+                _watchdog_task.add_done_callback(self._background_tasks.discard)
+
         # Build initial channel directory for send_message name resolution
         try:
             from gateway.channel_directory import build_channel_directory
@@ -7198,6 +7218,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self._running = False
             self._draining = True
+
+            # systemd-notify: announce STOPPING=1 so a Type=notify unit
+            # transitions cleanly from active to deactivating in systemd's
+            # eyes. No-op when not under Type=notify. Belt-and-braces with
+            # the platform-level shutdown notifications below — this one is
+            # for systemd, not the user.
+            try:
+                from gateway import systemd_notify as _sd
+                if _sd.is_available():
+                    _sd.notify_stopping()
+            except Exception:  # pragma: no cover — defensive
+                pass
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.

@@ -94,6 +94,8 @@ _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
 _ACCEPTED_INPUT_MIME = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp"}
 )
+_CODEX_ERROR_BODY_MAX_BYTES = 1024 * 1024
+_CODEX_ERROR_PREVIEW_CHARS = 500
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +362,37 @@ def _iter_sse_json(response: Any):
         yield payload
 
 
+def _codex_error_response_preview(response: Any) -> str:
+    """Read a bounded preview from a streamed Codex error response."""
+    chunks: List[bytes] = []
+    total = 0
+    limit = _CODEX_ERROR_BODY_MAX_BYTES
+
+    for chunk in response.iter_bytes():
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8", errors="replace")
+        if not isinstance(chunk, (bytes, bytearray)) or not chunk:
+            continue
+        remaining = limit + 1 - total
+        if remaining <= 0:
+            break
+        piece = bytes(chunk[:remaining])
+        chunks.append(piece)
+        total += len(piece)
+        if total > limit:
+            break
+
+    raw = b"".join(chunks)
+    truncated = len(raw) > limit
+    if truncated:
+        raw = raw[:limit]
+
+    preview = raw.decode("utf-8", errors="replace")[:_CODEX_ERROR_PREVIEW_CHARS]
+    if truncated:
+        preview += f" ... [truncated after {limit} bytes]"
+    return preview
+
+
 def _collect_image_b64(
     token: str,
     *,
@@ -392,8 +425,7 @@ def _collect_image_b64(
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
-                exc.response.read()
-                body = exc.response.text[:500]
+                body = _codex_error_response_preview(exc.response)
                 raise RuntimeError(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
                 ) from exc

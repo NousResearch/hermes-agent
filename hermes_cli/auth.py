@@ -112,6 +112,7 @@ XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:access"
 XAI_OAUTH_DEVICE_CODE_URL = f"{XAI_OAUTH_ISSUER}/oauth2/device/code"
+XAI_OAUTH_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 # xAI/Grok OAuth access tokens are intentionally short-lived (about 6h in
 # current SuperGrok flows). A two-minute refresh window is too narrow for
 # gateway/cron workloads that may only touch the provider every 30 minutes,
@@ -4138,6 +4139,44 @@ def _xai_validate_inference_base_url(value: str, *, fallback: str) -> str:
     return candidate
 
 
+def _read_xai_oauth_response_text(
+    response: httpx.Response,
+    *,
+    operation: str,
+    code: str,
+) -> str:
+    headers = getattr(response, "headers", {}) or {}
+    content_length = None
+    try:
+        content_length = int(str(headers.get("content-length", "")).strip())
+    except (TypeError, ValueError):
+        content_length = None
+    if content_length is not None and content_length > XAI_OAUTH_RESPONSE_MAX_BYTES:
+        raise AuthError(
+            f"{operation} response exceeds {XAI_OAUTH_RESPONSE_MAX_BYTES} bytes.",
+            provider="xai-oauth",
+            code=code,
+        )
+
+    try:
+        chunks = response.iter_bytes(chunk_size=64 * 1024)
+    except TypeError:
+        chunks = response.iter_bytes()
+
+    body = bytearray()
+    for chunk in chunks:
+        if not chunk:
+            continue
+        if len(body) + len(chunk) > XAI_OAUTH_RESPONSE_MAX_BYTES:
+            raise AuthError(
+                f"{operation} response exceeds {XAI_OAUTH_RESPONSE_MAX_BYTES} bytes.",
+                provider="xai-oauth",
+                code=code,
+            )
+        body.extend(chunk)
+    return bytes(body).decode("utf-8", "replace")
+
+
 def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
     try:
         response = httpx.get(
@@ -4211,7 +4250,8 @@ def refresh_xai_oauth_pure(
     _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
-        response = client.post(
+        with client.stream(
+            "POST",
             endpoint,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
@@ -4219,9 +4259,15 @@ def refresh_xai_oauth_pure(
                 "client_id": XAI_OAUTH_CLIENT_ID,
                 "refresh_token": refresh_token,
             },
-        )
-    if response.status_code != 200:
-        detail = response.text.strip()
+        ) as response:
+            status_code = response.status_code
+            response_text = _read_xai_oauth_response_text(
+                response,
+                operation="xAI token refresh",
+                code="xai_refresh_failed",
+            )
+    if status_code != 200:
+        detail = response_text.strip()
         # ``403`` from xAI's token endpoint is almost always a tier /
         # entitlement gate (the OAuth grant exists but the account isn't
         # on the allowlist for API access).  Re-running ``hermes model``
@@ -4249,10 +4295,10 @@ def refresh_xai_oauth_pure(
             + (f" Response: {detail}" if detail else ""),
             provider="xai-oauth",
             code="xai_refresh_failed",
-            relogin_required=(response.status_code in {400, 401}),
+            relogin_required=(status_code in {400, 401}),
         )
     try:
-        payload = response.json()
+        payload = json.loads(response_text)
     except Exception as exc:
         raise AuthError(
             f"xAI token refresh returned invalid JSON: {exc}",
@@ -6903,20 +6949,57 @@ def _xai_oauth_poll_device_token(
     deadline = time.monotonic() + max(1, int(expires_in))
     current_interval = max(1, int(poll_interval))
     while time.monotonic() < deadline:
-        response = client.post(
-            token_endpoint,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "client_id": XAI_OAUTH_CLIENT_ID,
-                "device_code": device_code,
-            },
-        )
-        if response.status_code == 200:
-            payload = response.json()
+        try:
+            with client.stream(
+                "POST",
+                token_endpoint,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "client_id": XAI_OAUTH_CLIENT_ID,
+                    "device_code": device_code,
+                },
+            ) as response:
+                status_code = response.status_code
+                response_text = _read_xai_oauth_response_text(
+                    response,
+                    operation="xAI device-code token polling",
+                    code="xai_device_token_failed",
+                )
+        except Exception as exc:
+            if isinstance(exc, AuthError):
+                raise
+            raise AuthError(
+                f"xAI device-code token polling failed: {exc}",
+                provider="xai-oauth",
+                code="xai_device_token_failed",
+            ) from exc
+
+        try:
+            payload = json.loads(response_text) if response_text.strip() else {}
+        except Exception:
+            if status_code != 200:
+                raise AuthError(
+                    "xAI device-code token polling returned a non-JSON error response.",
+                    provider="xai-oauth",
+                    code="xai_device_token_failed",
+                )
+            raise AuthError(
+                "xAI device-code token response was not valid JSON.",
+                provider="xai-oauth",
+                code="xai_device_token_invalid",
+            )
+
+        if status_code == 200:
+            if not isinstance(payload, dict):
+                raise AuthError(
+                    "xAI device-code token response was not a JSON object.",
+                    provider="xai-oauth",
+                    code="xai_device_token_invalid",
+                )
             if not payload.get("access_token"):
                 raise AuthError(
                     "xAI device-code token response did not include an access_token.",
@@ -6931,16 +7014,13 @@ def _xai_oauth_poll_device_token(
                 )
             return payload
 
-        try:
-            error_payload = response.json()
-        except Exception:
-            response.raise_for_status()
+        if not isinstance(payload, dict):
             raise AuthError(
-                "xAI device-code token polling returned a non-JSON error response.",
+                "xAI device-code token polling returned a non-object error response.",
                 provider="xai-oauth",
                 code="xai_device_token_failed",
             )
-        error_code = str(error_payload.get("error") or "")
+        error_code = str(payload.get("error") or "")
         if error_code == "authorization_pending":
             time.sleep(current_interval)
             continue
@@ -6949,9 +7029,9 @@ def _xai_oauth_poll_device_token(
             time.sleep(current_interval)
             continue
         description = (
-            error_payload.get("error_description")
-            or error_payload.get("error")
-            or response.text
+            payload.get("error_description")
+            or payload.get("error")
+            or response_text
         )
         raise AuthError(
             f"xAI device-code token polling failed: {description}",

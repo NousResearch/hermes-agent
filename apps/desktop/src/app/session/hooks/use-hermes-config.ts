@@ -12,6 +12,7 @@ import {
   setCurrentServiceTier,
   setIntroPersonality
 } from '@/store/session'
+import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
@@ -65,6 +66,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
+      applyAutoSpeakFromConfig(config)
     } catch {
       // Config is nice-to-have; chat still works without it.
     }

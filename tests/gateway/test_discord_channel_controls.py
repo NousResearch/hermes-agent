@@ -614,6 +614,119 @@ async def test_dms_unaffected_by_ignored_channels(adapter, monkeypatch):
 
 
 
+
+
+def _append_worker_reply(thread, *, worker_id: int, name: str, content: str):
+    author = SimpleNamespace(id=worker_id, display_name=name, name=name, bot=True)
+    msg = SimpleNamespace(
+        id=9200 + len(thread._history_messages),
+        content=content,
+        clean_content=content,
+        author=author,
+    )
+    thread._history_messages.append(msg)
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_council_closes_as_soon_as_all_workers_replied(adapter):
+    """All-replied path closes without waiting for the full timeout."""
+    origin = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=origin)
+    workers = [{"name": "Boba", "id": "111"}, {"name": "Quill", "id": "222"}]
+    _append_worker_reply(huddle, worker_id=111, name="Boba", content="Boba: yes")
+    _append_worker_reply(huddle, worker_id=222, name="Quill", content="Quill: yes")
+
+    await adapter._run_council_synthesis_after_wait(
+        origin_message=make_message(channel=origin, content="crew: test", mentions=[]),
+        huddle_thread=huddle,
+        request_text="crew: test",
+        wait_seconds=999,
+        route_id="discord-council-all-replied",
+        workers=workers,
+    )
+
+    assert "All invited workers replied" in huddle.sent_messages[-1]
+    record = adapter._council_route_records.get("discord-council-all-replied")
+    assert record["close_reason"] == "all_replied"
+    assert record["actual_responder_ids"] == ["111", "222"]
+    assert record["missing_worker_ids"] == []
+    event = adapter.handle_message.await_args.args[0]
+    assert "close_reason=all_replied" in event.text
+    assert "missing_worker_ids=[]" in event.text
+
+
+@pytest.mark.asyncio
+async def test_council_timeout_records_partial_missing_workers(adapter):
+    """Timeout path records contributors and missing workers explicitly."""
+    origin = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=origin)
+    workers = [{"name": "Boba", "id": "111"}, {"name": "Quill", "id": "222"}]
+    _append_worker_reply(huddle, worker_id=111, name="Boba", content="Boba: yes")
+
+    await adapter._run_council_synthesis_after_wait(
+        origin_message=make_message(channel=origin, content="crew: test", mentions=[]),
+        huddle_thread=huddle,
+        request_text="crew: test",
+        wait_seconds=0,
+        route_id="discord-council-partial-timeout",
+        workers=workers,
+    )
+
+    assert "Timeout reached" in huddle.sent_messages[-1]
+    record = adapter._council_route_records.get("discord-council-partial-timeout")
+    assert record["close_reason"] == "timeout"
+    assert record["actual_responder_ids"] == ["111"]
+    assert record["missing_worker_ids"] == ["222"]
+
+
+@pytest.mark.asyncio
+async def test_council_timeout_records_no_replies(adapter):
+    """No-reply timeout keeps every invited worker in missing_worker_ids."""
+    origin = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=origin)
+    workers = [{"name": "Boba", "id": "111"}, {"name": "Quill", "id": "222"}]
+
+    await adapter._run_council_synthesis_after_wait(
+        origin_message=make_message(channel=origin, content="crew: test", mentions=[]),
+        huddle_thread=huddle,
+        request_text="crew: test",
+        wait_seconds=0,
+        route_id="discord-council-no-reply-timeout",
+        workers=workers,
+    )
+
+    record = adapter._council_route_records.get("discord-council-no-reply-timeout")
+    assert record["close_reason"] == "timeout"
+    assert record["actual_responder_ids"] == []
+    assert record["missing_worker_ids"] == ["111", "222"]
+
+
+@pytest.mark.asyncio
+async def test_late_worker_reply_after_close_does_not_reopen_huddle(adapter, monkeypatch):
+    """Late worker messages after close stay silent and do not alter route state."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    parent = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._council_huddle_threads[str(huddle.id)] = "closed"
+    adapter._council_route_records.upsert(
+        "discord-council-late",
+        status="closed",
+        huddle_thread_id=str(huddle.id),
+        worker_ids=["111"],
+        actual_responder_ids=[],
+        missing_worker_ids=["111"],
+    )
+    worker_author = SimpleNamespace(id=111, display_name="Boba", name="Boba", bot=True)
+    message = make_message(channel=huddle, content="late worker reply", mentions=[])
+    message.author = worker_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert adapter._council_huddle_threads[str(huddle.id)] == "closed"
+    assert adapter._council_route_records.get("discord-council-late")["status"] == "closed"
+
 # ── council replay regressions ────────────────────────────────────────
 
 

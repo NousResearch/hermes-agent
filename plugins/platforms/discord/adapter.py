@@ -4770,6 +4770,35 @@ class DiscordAdapter(BasePlatformAdapter):
         transcript, _responders = await self._collect_council_transcript_and_responders(thread, limit, [])
         return transcript
 
+    async def _wait_for_council_replies_or_timeout(
+        self,
+        thread: Any,
+        workers: list[dict[str, str]],
+        wait_seconds: float,
+    ) -> tuple[str, list[str], str]:
+        """Collect until every invited worker replies once, or timeout expires."""
+        worker_ids = [str(worker.get("id") or "") for worker in workers if str(worker.get("id") or "")]
+        expected = set(worker_ids)
+        deadline = asyncio.get_running_loop().time() + max(0.0, wait_seconds)
+        transcript = "(No worker replies captured.)"
+        actual_responder_ids: list[str] = []
+        close_reason = "timeout"
+        while True:
+            transcript, actual_responder_ids = await self._collect_council_transcript_and_responders(
+                thread,
+                self._discord_council_history_limit(),
+                workers,
+            )
+            if expected and expected.issubset(set(actual_responder_ids)):
+                close_reason = "all_replied"
+                break
+            remaining = deadline - asyncio.get_running_loop().time()
+            if wait_seconds <= 0 or remaining <= 0:
+                close_reason = "timeout"
+                break
+            await asyncio.sleep(min(2.0, remaining))
+        return transcript, actual_responder_ids, close_reason
+
     async def _run_council_synthesis_after_wait(
         self,
         *,
@@ -4782,17 +4811,19 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> None:
         thread_id = str(getattr(huddle_thread, "id", ""))
         try:
-            if wait_seconds > 0:
-                await asyncio.sleep(wait_seconds)
-            transcript, actual_responder_ids = await self._collect_council_transcript_and_responders(
+            transcript, actual_responder_ids, close_reason = await self._wait_for_council_replies_or_timeout(
                 huddle_thread,
-                self._discord_council_history_limit(),
                 workers,
+                wait_seconds,
             )
             worker_ids = [str(worker.get("id") or "") for worker in workers if str(worker.get("id") or "")]
             missing_worker_ids = [wid for wid in worker_ids if wid not in set(actual_responder_ids)]
+            if close_reason == "all_replied":
+                close_detail = "All invited workers replied."
+            else:
+                close_detail = "Timeout reached before every invited worker replied."
             close_text = (
-                f"Huddle closed. Route: `{route_id}`. I have enough for this round. "
+                f"Huddle closed. Route: `{route_id}`. {close_detail} "
                 "Workers, stop here unless this thread is reopened or you are tagged directly."
             )
             with suppress(Exception):
@@ -4826,6 +4857,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._council_route_records.upsert(
                 route_id,
                 status="closed",
+                close_reason=close_reason,
                 actual_responder_ids=actual_responder_ids,
                 missing_worker_ids=missing_worker_ids,
                 closed_at=datetime.now(timezone.utc).isoformat(),
@@ -4838,6 +4870,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     f"Huddle: {huddle_ref}\n\n"
                     "Huddle transcript:\n"
                     f"{transcript}\n\n"
+                    f"Council contribution status: close_reason={close_reason}; "
+                    f"actual_responder_ids={actual_responder_ids}; "
+                    f"missing_worker_ids={missing_worker_ids}.\n\n"
                     "Now answer the original user with one concise final answer. "
                     "Do not continue the huddle unless the user explicitly asks. "
                     "Mention that the huddle is closed if relevant."

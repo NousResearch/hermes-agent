@@ -1964,6 +1964,24 @@ export const ja = defineLocale({
       turnRunning: '実行中',
       currentTurnElapsed: '現在のターン経過時間',
       contextUsage: 'コンテキスト使用状況',
+      contextUsagePanel: {
+        categories: {
+          conversation: '会話',
+          mcp: 'MCP',
+          memory: 'メモリ',
+          rules: 'ルール',
+          skills: 'スキル',
+          subagent_definitions: 'サブエージェント定義',
+          system_prompt: 'システムプロンプト',
+          tool_definitions: 'ツール定義'
+        },
+        empty: 'コンテキストデータはまだありません',
+        loading: '内訳を読み込み中…',
+        percentFull: percent => `${percent}% 使用中`,
+        title: 'コンテキスト使用状況',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: 'コンテキスト使用状況の内訳を開く',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',

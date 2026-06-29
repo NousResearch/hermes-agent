@@ -4969,6 +4969,15 @@ def resolve_provider_client(
             _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
+            # Check for native Gemini endpoint before creating standard OpenAI client
+            try:
+                from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+                if is_native_gemini_base_url(custom_base):
+                    sync = GeminiNativeClient(api_key=custom_key, base_url=custom_base)
+                    return (_to_async_client(sync, final_model, is_vision=is_vision) if async_mode
+                            else (sync, final_model))
+            except ImportError:
+                pass
             client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

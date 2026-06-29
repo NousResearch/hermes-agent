@@ -3391,6 +3391,7 @@ const TITLE_USER_AGENT =
 const TITLE_ERROR_RE =
   /\b(access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
 const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
+const TITLE_REPLACEMENT_CHAR = String.fromCharCode(0xfffd)
 
 // Tier-2 renderer fallback config. Only invoked when curl came back empty or
 // matched TITLE_ERROR_RE — keeps cold/CDN-cached pages on the cheap path.
@@ -3579,7 +3580,8 @@ function fetchHtmlTitleWithRenderer(rawUrl) {
 
 // Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
 // moment...") so they don't get cached as the resolved title.
-const usableTitle = value => (value && !TITLE_ERROR_RE.test(value) ? value : '')
+const usableTitle = value =>
+  value && !TITLE_ERROR_RE.test(value) && !value.includes(TITLE_REPLACEMENT_CHAR) ? value : ''
 
 function fetchLinkTitle(rawUrl) {
   const url = String(rawUrl || '').trim()

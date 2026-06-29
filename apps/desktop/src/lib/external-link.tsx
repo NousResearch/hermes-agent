@@ -24,6 +24,7 @@ const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/
 
 const ERROR_TITLE_RE =
   /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
+const REPLACEMENT_CHAR = String.fromCharCode(0xfffd)
 
 export function normalizeExternalUrl(value: string): string {
   const trimmed = value.trim()
@@ -121,6 +122,12 @@ export function isTitleFetchable(value: string): boolean {
   return Boolean(url && /^https?:$/.test(url.protocol) && !LOCAL_HOST_RE.test(url.host))
 }
 
+function usableLinkTitle(value: string): string {
+  const clean = value.replace(/\s+/g, ' ').trim()
+
+  return clean && !ERROR_TITLE_RE.test(clean) && !clean.includes(REPLACEMENT_CHAR) ? clean : ''
+}
+
 export function fetchLinkTitle(url: string): Promise<string> {
   const normalizedUrl = normalizeExternalUrl(url)
   const key = titleCacheKey(normalizedUrl)
@@ -148,8 +155,7 @@ export function fetchLinkTitle(url: string): Promise<string> {
   }
 
   const promise = bridge(normalizedUrl)
-    .then(value => (value || '').replace(/\s+/g, ' ').trim())
-    .then(clean => (clean && !ERROR_TITLE_RE.test(clean) ? clean : ''))
+    .then(value => usableLinkTitle(value || ''))
     .catch(() => '')
     .then(safe => {
       titleCache.set(key, safe)

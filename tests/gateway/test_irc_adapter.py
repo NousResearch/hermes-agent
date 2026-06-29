@@ -436,8 +436,20 @@ class TestIRCAdapterMarkdown:
 
     def test_strip_code_block(self):
         result = IRCAdapter._strip_markdown("```py\nprint(1)\n```")
-        assert "`" not in result
+        # Assert the fence markers themselves are gone (rather than all backticks,
+        # which can be legitimate content inside a fenced block) and the body is
+        # preserved.
+        assert "```" not in result
         assert "print(1)" in result
+
+    def test_strip_code_block_nonword_info_string(self):
+        # Info strings with non-word characters (c++, shell-session, text/plain)
+        # must be fully consumed — a \w* class stops at the first non-word char and
+        # leaks the remainder of the tag (e.g. "++" from "c++") into IRC output.
+        result = IRCAdapter._strip_markdown("```c++\nint x = 1;\n```")
+        assert "```" not in result
+        assert "++" not in result
+        assert result.strip() == "int x = 1;"
 
     def test_strip_link(self):
         result = IRCAdapter._strip_markdown("[click here](https://example.com)")

@@ -345,8 +345,11 @@ class IRCAdapter(BasePlatformAdapter):
         text = re.sub(r"\*(.+?)\*", r"\1", text)
         text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
         # Code blocks: ```...``` → content (must come BEFORE inline code so the
-        # non-greedy inline regex doesn't consume the fence backticks first)
-        text = re.sub(r"```\w*\n?", "", text)
+        # non-greedy inline regex doesn't consume the fence backticks first).
+        # Use [^\n]* (not \w*) for the info string so fences with non-word info
+        # strings (c++, shell-session, text/plain) are fully consumed instead of
+        # leaving stray tag characters in IRC output.
+        text = re.sub(r"```[^\n]*\n?", "", text)
         # Inline code: `text` → text
         text = re.sub(r"`(.+?)`", r"\1", text)
         # Images: ![alt](url) → url  (must come BEFORE links)

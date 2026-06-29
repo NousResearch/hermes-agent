@@ -50,13 +50,12 @@ class IterationBudget:
 
     @property
     def used(self) -> int:
-        with self._lock:
-            return self._used
+        # Plain int read is atomic under CPython's GIL; no lock needed.
+        return self._used
 
     @property
     def remaining(self) -> int:
-        with self._lock:
-            return max(0, self.max_total - self._used)
+        return max(0, self.max_total - self._used)
 
 
 __all__ = ["IterationBudget"]

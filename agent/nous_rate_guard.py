@@ -108,6 +108,16 @@ def record_nous_rate_limit(
         state_dir = os.path.dirname(path)
         os.makedirs(state_dir, exist_ok=True)
 
+        # Skip the write if an existing state file already covers this reset time
+        # (within 5 seconds). Under a 429 storm every retry calls this function;
+        # deduplicating avoids hammering the filesystem hundreds of times/minute.
+        try:
+            existing = json.loads(open(path, encoding="utf-8").read())
+            if abs(existing.get("reset_at", 0) - reset_at) < 5.0:
+                return
+        except Exception:
+            pass  # Missing or unreadable file — proceed with write.
+
         state = {
             "reset_at": reset_at,
             "recorded_at": now,

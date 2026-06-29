@@ -1191,6 +1191,13 @@ _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 _SKILLS_SNAPSHOT_VERSION = 1
 
+# Manifest check TTL: re-stat skill files at most once every 30 seconds.
+# The manifest walk is O(number of skill files) and dominates cold snapshot
+# loads. Caching avoids repeated filesystem stats on every gateway request.
+_MANIFEST_CACHE_TTL = 30.0
+_manifest_cache: "tuple[float, dict] | None" = None
+_manifest_cache_lock = threading.Lock()
+
 
 def _skills_prompt_snapshot_path() -> Path:
     return get_hermes_home() / ".skills_prompt_snapshot.json"
@@ -1198,8 +1205,11 @@ def _skills_prompt_snapshot_path() -> Path:
 
 def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
     """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
+    global _manifest_cache
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
+    with _manifest_cache_lock:
+        _manifest_cache = None
     if clear_snapshot:
         try:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)
@@ -1220,6 +1230,20 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
+def _get_cached_manifest(skills_dir: Path) -> dict[str, list[int]]:
+    """Return a manifest, recomputing at most once per _MANIFEST_CACHE_TTL seconds."""
+    global _manifest_cache
+    import time as _time
+    now = _time.monotonic()
+    with _manifest_cache_lock:
+        if _manifest_cache is not None and now - _manifest_cache[0] < _MANIFEST_CACHE_TTL:
+            return _manifest_cache[1]
+    manifest = _build_skills_manifest(skills_dir)
+    with _manifest_cache_lock:
+        _manifest_cache = (now, manifest)
+    return manifest
+
+
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     """Load the disk snapshot if it exists and its manifest still matches."""
     snapshot_path = _skills_prompt_snapshot_path()
@@ -1233,7 +1257,7 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
         return None
-    if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
+    if snapshot.get("manifest") != _get_cached_manifest(skills_dir):
         return None
     return snapshot
 

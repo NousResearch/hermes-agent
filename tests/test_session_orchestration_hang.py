@@ -79,6 +79,9 @@ class FakeAdapter(AgentAdapter):
     def resume(self, handle: SessionHandle, prompt: str) -> None:
         raise NotImplementedError
 
+    def terminate(self, handle: SessionHandle) -> None:
+        raise NotImplementedError
+
 
 class FakeCapture:
     """Fake tmux_capture returning fixed text."""

@@ -82,6 +82,9 @@ def _minimal_adapter(caps: Capabilities) -> AgentAdapter:
         def resume(self, handle: SessionHandle, prompt: str) -> None:
             raise NotImplementedError
 
+        def terminate(self, handle: SessionHandle) -> None:
+            raise NotImplementedError
+
     return _StubAdapter()
 
 
@@ -137,6 +140,9 @@ class HealthyAdapter(AgentAdapter):
     def resume(self, handle: SessionHandle, prompt: str) -> None:
         raise NotImplementedError
 
+    def terminate(self, handle: SessionHandle) -> None:
+        raise NotImplementedError
+
 
 class WrongCapAdapter(AgentAdapter):
     """Declares has_hooks=True but its binary --help has no '--hook' flag."""
@@ -156,6 +162,9 @@ class WrongCapAdapter(AgentAdapter):
     def resume(self, handle: SessionHandle, prompt: str) -> None:
         raise NotImplementedError
 
+    def terminate(self, handle: SessionHandle) -> None:
+        raise NotImplementedError
+
 
 class MissingBinAdapter(AgentAdapter):
     """Declares has_hooks=True; binary is not on PATH at all."""
@@ -173,6 +182,9 @@ class MissingBinAdapter(AgentAdapter):
         raise NotImplementedError
 
     def resume(self, handle: SessionHandle, prompt: str) -> None:
+        raise NotImplementedError
+
+    def terminate(self, handle: SessionHandle) -> None:
         raise NotImplementedError
 
 
@@ -323,6 +335,9 @@ class TestVerifyAdapters:
             def resume(self, handle: SessionHandle, prompt: str) -> None:
                 raise NotImplementedError
 
+            def terminate(self, handle: SessionHandle) -> None:
+                raise NotImplementedError
+
         adapters: dict[str, AgentAdapter] = {"unknown": UnknownAdapter()}
         with caplog.at_level(logging.WARNING, logger="session_orchestration.adapters.verify"):
             result = verify_adapters(adapters, probe_runner=FakeProbeRunner(), probe_specs={})
@@ -346,6 +361,9 @@ class TestVerifyAdapters:
                 raise NotImplementedError
 
             def resume(self, handle: SessionHandle, prompt: str) -> None:
+                raise NotImplementedError
+
+            def terminate(self, handle: SessionHandle) -> None:
                 raise NotImplementedError
 
         specs = {"BrokenAdapter": AdapterProbeSpec(binary="bin")}

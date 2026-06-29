@@ -524,3 +524,98 @@ async def handle_spawn_command(
         lines.append("(No project thread — reply will route by task_id)")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# /so-stop and /so-restart command handlers
+# ---------------------------------------------------------------------------
+
+
+def _parse_task_id(args_text: str) -> Optional[str]:
+    """Extract ``task_id=<value>`` from ``args_text``, or return ``None``."""
+    for token in args_text.split():
+        if token.startswith("task_id="):
+            value = token.partition("=")[2].strip()
+            return value if value else None
+    return None
+
+
+def handle_stop_command(
+    event,
+    args_text: str,
+    *,
+    config=None,
+    registry: Optional[SessionOrchestrationRegistry] = None,
+) -> str:
+    """Handle a ``/so-stop`` gateway command.
+
+    Parses a ``task_id=<id>`` argument from ``args_text``, enqueues a
+    terminate intent (``restart=False``), and returns a confirmation string.
+    Returns an error string (does not raise) when ``task_id`` is absent.
+
+    Parameters
+    ----------
+    event:
+        The gateway ``MessageEvent`` (present for interface symmetry with
+        ``handle_spawn_command``; not used directly).
+    args_text:
+        Everything after ``/so-stop`` in the message.
+    config:
+        Hermes config dict (reserved for future gating; not used today).
+    registry:
+        Override the registry (injected in tests).  When ``None``, a
+        default ``SessionOrchestrationRegistry()`` is created.
+    """
+    task_id = _parse_task_id(args_text)
+    if not task_id:
+        return (
+            "Usage: /so-stop task_id=<id>\n"
+            "Missing required argument: task_id"
+        )
+
+    _registry = registry if registry is not None else SessionOrchestrationRegistry()
+    _registry.enqueue_terminate(task_id, restart=False)
+    logger.info("so-stop: enqueued terminate task_id=%s restart=False", task_id)
+    return f"Stop requested for task `{task_id}`. The watcher will kill the session at its next tick."
+
+
+def handle_restart_command(
+    event,
+    args_text: str,
+    *,
+    config=None,
+    registry: Optional[SessionOrchestrationRegistry] = None,
+) -> str:
+    """Handle a ``/so-restart`` gateway command.
+
+    Parses a ``task_id=<id>`` argument from ``args_text``, enqueues a
+    terminate intent (``restart=True``), and returns a confirmation string.
+    Returns an error string (does not raise) when ``task_id`` is absent.
+
+    Parameters
+    ----------
+    event:
+        The gateway ``MessageEvent`` (present for interface symmetry with
+        ``handle_spawn_command``; not used directly).
+    args_text:
+        Everything after ``/so-restart`` in the message.
+    config:
+        Hermes config dict (reserved for future gating; not used today).
+    registry:
+        Override the registry (injected in tests).  When ``None``, a
+        default ``SessionOrchestrationRegistry()`` is created.
+    """
+    task_id = _parse_task_id(args_text)
+    if not task_id:
+        return (
+            "Usage: /so-restart task_id=<id>\n"
+            "Missing required argument: task_id"
+        )
+
+    _registry = registry if registry is not None else SessionOrchestrationRegistry()
+    _registry.enqueue_terminate(task_id, restart=True)
+    logger.info("so-restart: enqueued terminate task_id=%s restart=True", task_id)
+    return (
+        f"Restart requested for task `{task_id}`. "
+        "The watcher will kill and re-spawn the session at its next tick."
+    )

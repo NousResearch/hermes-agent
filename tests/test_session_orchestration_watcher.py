@@ -67,6 +67,9 @@ class FakeAdapter(AgentAdapter):
         self.detect_calls.append(handle)
         return self._lifecycle
 
+    def terminate(self, handle: SessionHandle) -> None:
+        raise NotImplementedError
+
     def resume(self, handle: SessionHandle, prompt: str) -> None:
         raise NotImplementedError
 

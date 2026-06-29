@@ -89,6 +89,9 @@ class _FakeAdapter(AgentAdapter):
     def resume(self, handle: SessionHandle, prompt: str) -> None:
         self.resume_calls.append(prompt)
 
+    def terminate(self, handle: SessionHandle) -> None:
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------------------------
 # 1. Basic happy-path

@@ -37,6 +37,8 @@ from session_orchestration.spawn import (
     parse_spawn_args,
     spawn_session,
     handle_spawn_command,
+    handle_stop_command,
+    handle_restart_command,
 )
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
 
@@ -91,6 +93,9 @@ class _FakeAdapter(AgentAdapter):
 
     def resume(self, handle: SessionHandle, prompt: str) -> None:
         self.resume_calls.append(prompt)
+
+    def terminate(self, handle: SessionHandle) -> None:
+        pass  # safe no-op in tests
 
 
 class _FakeRelay:
@@ -562,3 +567,177 @@ def test_handle_spawn_command_integration(db_path):
     assert len(all_rows) == 1
     assert all_rows[0]["source"] == "spawn"
     assert all_rows[0]["agent"] == "claude"
+
+
+# ---------------------------------------------------------------------------
+# T006 — enqueue_terminate: queue contract
+# ---------------------------------------------------------------------------
+
+
+def test_enqueue_terminate_inserts_row_with_kind_terminate(registry):
+    """enqueue_terminate inserts a queue row with intent='terminate'."""
+    registry.enqueue_terminate("task-abc", restart=False)
+
+    conn = registry._connect()
+    rows = conn.execute(
+        "SELECT * FROM session_orchestration_queue WHERE task_id = 'task-abc'"
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    row = dict(rows[0])
+    assert row["intent"] == "terminate"
+
+
+def test_enqueue_terminate_payload_restart_false(registry):
+    """enqueue_terminate with restart=False writes payload.restart=False."""
+    import json
+    registry.enqueue_terminate("task-stop", restart=False)
+
+    conn = registry._connect()
+    rows = conn.execute(
+        "SELECT payload FROM session_orchestration_queue WHERE task_id = 'task-stop'"
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["payload"])
+    assert payload["restart"] is False
+
+
+def test_enqueue_terminate_payload_restart_true(registry):
+    """enqueue_terminate with restart=True writes payload.restart=True."""
+    import json
+    registry.enqueue_terminate("task-restart", restart=True)
+
+    conn = registry._connect()
+    rows = conn.execute(
+        "SELECT payload FROM session_orchestration_queue WHERE task_id = 'task-restart'"
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["payload"])
+    assert payload["restart"] is True
+
+
+def test_apply_intent_terminate_does_not_raise(registry):
+    """_apply_intent must not raise when draining a terminate intent."""
+    import json
+    intent = {
+        "id": 1,
+        "task_id": "task-xyz",
+        "intent": "terminate",
+        "payload": json.dumps({"restart": False}),
+    }
+    # Must complete without raising
+    registry._apply_intent(intent)
+
+
+# ---------------------------------------------------------------------------
+# T006 — handle_stop_command
+# ---------------------------------------------------------------------------
+
+
+def test_handle_stop_command_returns_confirmation(registry):
+    """handle_stop_command with valid task_id returns non-empty string."""
+    event = MagicMock()
+    result = handle_stop_command(event, "task_id=task-123", registry=registry)
+
+    assert result
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+def test_handle_stop_command_enqueues_terminate_restart_false(registry):
+    """handle_stop_command calls enqueue_terminate with restart=False."""
+    import json
+    event = MagicMock()
+    handle_stop_command(event, "task_id=task-stop-x", registry=registry)
+
+    conn = registry._connect()
+    rows = conn.execute(
+        "SELECT intent, payload FROM session_orchestration_queue "
+        "WHERE task_id = 'task-stop-x'"
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["intent"] == "terminate"
+    payload = json.loads(rows[0]["payload"])
+    assert payload["restart"] is False
+
+
+def test_handle_stop_command_missing_task_id_returns_error_not_raises(registry):
+    """handle_stop_command returns an error string when task_id is absent."""
+    event = MagicMock()
+    result = handle_stop_command(event, "", registry=registry)
+
+    assert isinstance(result, str)
+    assert "task_id" in result.lower()
+
+    # No queue row should have been written
+    conn = registry._connect()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM session_orchestration_queue"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_handle_stop_command_missing_task_id_does_not_raise_on_garbage(registry):
+    """handle_stop_command returns error string (not raise) for garbage input."""
+    event = MagicMock()
+    result = handle_stop_command(event, "foo bar baz", registry=registry)
+
+    assert isinstance(result, str)
+    assert result  # non-empty error
+
+
+# ---------------------------------------------------------------------------
+# T006 — handle_restart_command
+# ---------------------------------------------------------------------------
+
+
+def test_handle_restart_command_enqueues_terminate_restart_true(registry):
+    """handle_restart_command calls enqueue_terminate with restart=True."""
+    import json
+    event = MagicMock()
+    handle_restart_command(event, "task_id=task-restart-y", registry=registry)
+
+    conn = registry._connect()
+    rows = conn.execute(
+        "SELECT intent, payload FROM session_orchestration_queue "
+        "WHERE task_id = 'task-restart-y'"
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["intent"] == "terminate"
+    payload = json.loads(rows[0]["payload"])
+    assert payload["restart"] is True
+
+
+def test_handle_restart_command_returns_confirmation(registry):
+    """handle_restart_command with valid task_id returns non-empty string."""
+    event = MagicMock()
+    result = handle_restart_command(event, "task_id=task-789", registry=registry)
+
+    assert result
+    assert isinstance(result, str)
+
+
+def test_handle_restart_command_missing_task_id_returns_error_not_raises(registry):
+    """handle_restart_command returns an error string when task_id is absent."""
+    event = MagicMock()
+    result = handle_restart_command(event, "", registry=registry)
+
+    assert isinstance(result, str)
+    assert "task_id" in result.lower()
+
+    conn = registry._connect()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM session_orchestration_queue"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 0

@@ -42,9 +42,10 @@ the lock is auto-reclaimed via the ``lock_ts`` column.
 
 Queue intent kinds
 ------------------
-  ``adopt``   — register a session spawned externally (webhook path).
-  ``drive``   — queue a message to relay to the agent's tmux session.
-  ``update``  — set arbitrary fields on an existing row (cron applies them).
+  ``adopt``      — register a session spawned externally (webhook path).
+  ``drive``      — queue a message to relay to the agent's tmux session.
+  ``update``     — set arbitrary fields on an existing row (cron applies them).
+  ``terminate``  — kill the tmux process and mark the row terminal (watcher applies).
 """
 
 from __future__ import annotations
@@ -477,6 +478,13 @@ class SessionOrchestrationRegistry:
 
         ``update``
             Set arbitrary ``payload`` columns on the named ``task_id``.
+
+        ``terminate``
+            Kill the tmux process and mark the session terminal.  The full
+            application (``adapter.terminate()`` + state update) is the
+            watcher's job (level 2).  Payload shape: ``{"restart": bool}``.
+            Recognised here to avoid an unknown-kind warning in the log; the
+            watcher is the actual consumer.
         """
         kind = intent.get("intent", "")
         import json as _json
@@ -538,6 +546,19 @@ class SessionOrchestrationRegistry:
                     )
                 self._write(_do)
 
+        elif kind == "terminate":
+            # Full application (adapter.terminate + state update) is the
+            # watcher's responsibility (level 2).  Log at debug so the watcher
+            # can verify the intent was received; do not crash or warn here.
+            task_id = intent.get("task_id") or payload.get("task_id")
+            restart = payload.get("restart", False)
+            logger.debug(
+                "registry._apply_intent: terminate queued for task_id=%s restart=%s "
+                "(watcher will apply)",
+                task_id,
+                restart,
+            )
+
         else:
             logger.warning("registry._apply_intent: unknown intent kind %r", kind)
 
@@ -562,7 +583,7 @@ class SessionOrchestrationRegistry:
         Parameters
         ----------
         intent:
-            One of ``"adopt"``, ``"drive"``, ``"update"``.
+            One of ``"adopt"``, ``"drive"``, ``"update"``, ``"terminate"``.
         task_id:
             Target registry row (required for ``drive``/``update``; optional
             for ``adopt`` when the task_id is inside ``payload``).
@@ -584,6 +605,27 @@ class SessionOrchestrationRegistry:
             )
 
         self._write(_do)
+
+    def enqueue_terminate(self, task_id: str, *, restart: bool = False) -> None:
+        """Queue a terminate intent for ``task_id``.
+
+        Safe to call from any thread or process.  The cron watcher drains
+        the intent and applies it (kill tmux + mark terminal) at its next tick.
+
+        Parameters
+        ----------
+        task_id:
+            Target registry row to terminate.
+        restart:
+            When ``True`` the watcher will re-spawn the session after killing
+            it (``/so-restart`` path).  When ``False`` the session is stopped
+            permanently (``/so-stop`` path).
+        """
+        self.enqueue_intent(
+            "terminate",
+            task_id=task_id,
+            payload={"restart": restart},
+        )
 
     # ------------------------------------------------------------------
     # Per-session lock (cron watcher + relay)

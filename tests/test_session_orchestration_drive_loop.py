@@ -70,6 +70,9 @@ class _FakeAdapter(AgentAdapter):
     def resume(self, handle: SessionHandle, message: str) -> None:
         self.resume_calls.append(message)
 
+    def terminate(self, handle: SessionHandle) -> None:
+        raise NotImplementedError
+
 
 def _make_event(text: str, thread_id: Optional[str] = None) -> MagicMock:
     """Build a minimal fake MessageEvent."""

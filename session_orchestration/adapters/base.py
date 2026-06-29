@@ -133,3 +133,17 @@ class AgentAdapter(ABC):
         prompt:
             The prompt to inject after clearing.
         """
+
+    @abstractmethod
+    def terminate(self, handle: SessionHandle) -> None:
+        """Kill the agent's tmux process.
+
+        Must be safe to call on an already-dead session (``check=False``
+        on tmux kill).  Concrete impls live in the claude-code and omp
+        adapters (T003/T004).
+
+        Parameters
+        ----------
+        handle:
+            The ``SessionHandle`` for the session to kill.
+        """

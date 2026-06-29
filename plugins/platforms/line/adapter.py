@@ -276,6 +276,17 @@ def verify_line_signature(body: bytes, signature: str, channel_secret: str) -> b
     return hmac.compare_digest(expected, signature)
 
 
+async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from an aiohttp request body."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload too large")
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Cache state machine — slow-LLM postback flow
 # ---------------------------------------------------------------------------
@@ -869,12 +880,12 @@ class LineAdapter(BasePlatformAdapter):
         # Body cap defends against memory-exhaustion via crafted Content-Length
         # (aiohttp's client_max_size only applies to certain body modes).
         try:
-            body = await request.read()
+            body = await _read_limited_request_body(request, WEBHOOK_BODY_MAX_BYTES)
+        except ValueError:
+            return web.Response(status=413, text="payload too large")
         except Exception as exc:
             logger.debug("LINE: read failed: %s", exc)
             return web.Response(status=400, text="bad request")
-        if len(body) > WEBHOOK_BODY_MAX_BYTES:
-            return web.Response(status=413, text="payload too large")
 
         signature = request.headers.get("X-Line-Signature", "")
         if not verify_line_signature(body, signature, self.channel_secret):

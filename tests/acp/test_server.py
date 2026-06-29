@@ -1439,6 +1439,28 @@ class TestPrompt:
 
         assert resp.stop_reason == "cancelled"
 
+    @pytest.mark.asyncio
+    async def test_prompt_cancelled_turn_does_not_drain_queued_prompts(self, agent):
+        """ACP cancel should not auto-run queued work after the current turn stops."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.queued_prompts.append("then run tests")
+        seen_messages = []
+
+        def mock_run(user_message, *args, **kwargs):
+            seen_messages.append(user_message)
+            state.cancel_event.set()
+            return {"final_response": "interrupted", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        prompt = [TextContentBlock(type="text", text="start long task")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "cancelled"
+        assert seen_messages == ["start long task"]
+        assert state.queued_prompts == ["then run tests"]
+
 
 # ---------------------------------------------------------------------------
 # on_connect

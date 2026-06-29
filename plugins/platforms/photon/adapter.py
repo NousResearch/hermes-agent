@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -683,11 +684,12 @@ class PhotonAdapter(BasePlatformAdapter):
                 payload, name, mime, force_audio=is_voice
             )
             if cached:
+                cached_path, cached_mime = cached
                 return (
                     "(voice)" if is_voice else "(attachment)",
                     mtype,
-                    [cached],
-                    [mime or ("audio/mp4" if is_voice else "application/octet-stream")],
+                    [cached_path],
+                    [cached_mime or mime or ("audio/mp4" if is_voice else "application/octet-stream")],
                 )
             label = "voice" if is_voice else "attachment"
             duration = payload.get("duration")
@@ -1619,13 +1621,49 @@ _AUDIO_EXT_BY_MIME = {
 }
 
 
+_HEIC_IMAGE_MIMES = {"image/heic", "image/heif"}
+
+
+def _convert_heic_to_jpeg_bytes(raw: bytes, name: str) -> Optional[bytes]:
+    """Best-effort macOS HEIC/HEIF conversion for inbound iMessage photos.
+
+    Hermes vision tooling cannot reliably consume HEIC directly. On macOS,
+    ``sips`` is available without adding a dependency, so convert to JPEG before
+    caching as image media. Fail closed: if conversion is unavailable or fails,
+    the caller keeps the original bytes as a document rather than dropping them.
+    """
+    sips = shutil.which("sips")
+    if not sips:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-photon-heic-") as tmp:
+            in_path = Path(tmp) / (Path(name).name or "inbound.heic")
+            out_path = Path(tmp) / "converted.jpg"
+            in_path.write_bytes(raw)
+            subprocess.run(  # noqa: S603 - fixed binary path from shutil.which
+                [sips, "-s", "format", "jpeg", str(in_path), "--out", str(out_path)],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=True,
+            )
+            converted = out_path.read_bytes()
+    except Exception as exc:
+        logger.warning("[photon] failed to convert inbound HEIC %s: %s", name, exc)
+        return None
+    if not converted.startswith(b"\xff\xd8\xff"):
+        logger.warning("[photon] sips converted HEIC %s but output was not JPEG", name)
+        return None
+    return converted
+
+
 def _cache_inbound_attachment(
     content: Dict[str, Any],
     name: str,
     mime: str,
     *,
     force_audio: bool = False,
-) -> Optional[str]:
+) -> Optional[tuple[str, str]]:
     """Decode a base64-inlined inbound attachment and cache it locally.
 
     The sidecar inlines the attachment bytes as ``content["data"]`` (base64).
@@ -1655,20 +1693,25 @@ def _cache_inbound_attachment(
     suffix = Path(name).suffix if name else ""
     try:
         if mime.startswith("image/"):
+            if mime in _HEIC_IMAGE_MIMES:
+                converted = _convert_heic_to_jpeg_bytes(raw, name)
+                if converted:
+                    return cache_image_from_bytes(converted, ".jpg"), "image/jpeg"
             ext = suffix or _IMAGE_EXT_BY_MIME.get(mime, ".jpg")
             try:
-                return cache_image_from_bytes(raw, ext)
+                return cache_image_from_bytes(raw, ext), mime or "image/jpeg"
             except ValueError:
-                # Bytes don't look like a supported image (e.g. HEIC magic) —
-                # still deliver them as a document rather than dropping them.
-                return cache_document_from_bytes(raw, name)
+                # Bytes don't look like a supported image (e.g. HEIC magic when
+                # conversion is unavailable) — still deliver them as a document
+                # rather than dropping them.
+                return cache_document_from_bytes(raw, name), mime or "application/octet-stream"
         if force_audio or mime.startswith("audio/"):
             ext = suffix or _AUDIO_EXT_BY_MIME.get(
                 mime, ".m4a" if force_audio else ".mp3"
             )
-            return cache_audio_from_bytes(raw, ext)
+            return cache_audio_from_bytes(raw, ext), mime or ("audio/mp4" if force_audio else "audio/mpeg")
         # Video, application/*, and everything else → document cache.
-        return cache_document_from_bytes(raw, name)
+        return cache_document_from_bytes(raw, name), mime or "application/octet-stream"
     except Exception as exc:
         logger.warning("[photon] failed to cache inbound attachment %s: %s", name, exc)
         return None

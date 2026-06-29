@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -163,6 +164,56 @@ async def test_dispatch_attachment_downloads_image(
     try:
         assert cached.is_file()
         assert cached.read_bytes() == raw
+        assert ev.text == "(attachment)"
+    finally:
+        cached.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_heic_attachment_converts_to_jpeg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inline HEIC iMessage images are converted to JPEG before routing to vision."""
+    from plugins.platforms.photon import adapter as photon_adapter
+
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    heic_raw = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32
+    jpeg_raw = b"\xff\xd8\xff\xe0" + b"converted" + b"\xff\xd9"
+
+    def fake_which(binary: str) -> str | None:
+        return "/usr/bin/sips" if binary == "sips" else None
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        assert cmd[:3] == ["/usr/bin/sips", "-s", "format"]
+        output_path = Path(cmd[-1])
+        output_path.write_bytes(jpeg_raw)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(photon_adapter.shutil, "which", fake_which)
+    monkeypatch.setattr(photon_adapter.subprocess, "run", fake_run)
+
+    event = _attachment_event(
+        {
+            "name": "IMG_4127.HEIC",
+            "mimeType": "image/heic",
+            "size": len(heic_raw),
+            "data": base64.b64encode(heic_raw).decode("ascii"),
+            "encoding": "base64",
+        }
+    )
+    await adapter._dispatch_inbound(event)
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev.message_type == MessageType.PHOTO
+    assert ev.media_types == ["image/jpeg"]
+    assert len(ev.media_urls) == 1
+    cached = Path(ev.media_urls[0])
+    try:
+        assert cached.suffix == ".jpg"
+        assert cached.is_file()
+        assert cached.read_bytes() == jpeg_raw
         assert ev.text == "(attachment)"
     finally:
         cached.unlink(missing_ok=True)

@@ -27,6 +27,7 @@ the same Converse API integration in TypeScript via ``@aws-sdk/client-bedrock``.
 Requires: ``boto3`` (optional dependency — only needed when using the Bedrock provider).
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -59,6 +60,34 @@ _bedrock_control_client_cache: Dict[str, Any] = {}
 
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
+_BEDROCK_TOOL_NAME_MAX_LENGTH = 64
+_BEDROCK_TOOL_NAME_HASH_LENGTH = 10
+_BEDROCK_TOOL_NAME_ALIASES: Dict[str, str] = {}
+_BEDROCK_TOOL_NAME_REVERSE_ALIASES: Dict[str, str] = {}
+
+
+def _bedrock_wire_tool_name(name: str) -> str:
+    """Return a Bedrock-safe tool name and remember how to restore it."""
+    if not name or len(name) <= _BEDROCK_TOOL_NAME_MAX_LENGTH:
+        return name
+
+    cached = _BEDROCK_TOOL_NAME_ALIASES.get(name)
+    if cached:
+        return cached
+
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:_BEDROCK_TOOL_NAME_HASH_LENGTH]
+    stem_length = _BEDROCK_TOOL_NAME_MAX_LENGTH - len(digest) - 1
+    stem = re.sub(r"[^A-Za-z0-9_]", "_", name[:stem_length]).rstrip("_") or "tool"
+    alias = f"{stem}_{digest}"
+
+    _BEDROCK_TOOL_NAME_ALIASES[name] = alias
+    _BEDROCK_TOOL_NAME_REVERSE_ALIASES[alias] = name
+    return alias
+
+
+def _restore_bedrock_tool_name(name: str) -> str:
+    """Restore a provider-local Bedrock tool alias to the Hermes tool name."""
+    return _BEDROCK_TOOL_NAME_REVERSE_ALIASES.get(name, name)
 
 
 def _require_boto3():
@@ -482,7 +511,7 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
         parameters = fn.get("parameters", {"type": "object", "properties": {}})
         result.append({
             "toolSpec": {
-                "name": name,
+                "name": _bedrock_wire_tool_name(name),
                 "description": description,
                 "inputSchema": {"json": parameters},
             }
@@ -620,7 +649,7 @@ def convert_messages_to_converse(
                 content_blocks.append({
                     "toolUse": {
                         "toolUseId": tc.get("id", ""),
-                        "name": fn.get("name", ""),
+                        "name": _bedrock_wire_tool_name(fn.get("name", "")),
                         "input": args_dict,
                     }
                 })
@@ -714,7 +743,7 @@ def normalize_converse_response(response: Dict) -> SimpleNamespace:
                 id=tu.get("toolUseId", ""),
                 type="function",
                 function=SimpleNamespace(
-                    name=tu.get("name", ""),
+                    name=_restore_bedrock_tool_name(tu.get("name", "")),
                     arguments=json.dumps(tu.get("input", {})),
                 ),
             ))
@@ -828,7 +857,7 @@ def stream_converse_with_callbacks(
                     current_text_buffer = []
                 current_tool = {
                     "toolUseId": start["toolUse"].get("toolUseId", ""),
-                    "name": start["toolUse"].get("name", ""),
+                    "name": _restore_bedrock_tool_name(start["toolUse"].get("name", "")),
                     "input_json": "",
                 }
                 if on_tool_start:

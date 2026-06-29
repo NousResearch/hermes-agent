@@ -96,6 +96,37 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_create_session_enriches_null_metadata_on_conflict(self, db):
+        """Gateway creates a bare row first; the agent's later create_session
+        must backfill model/model_config/system_prompt without clobbering the
+        gateway's source/user_id/chat_id. Regression for NULL gateway metadata
+        (sessions with NULL billing_provider/model)."""
+        # Gateway bare row (source + user_id only), before the agent exists.
+        db.create_session("s1", source="telegram", user_id="u1", chat_id="c1")
+        bare = db.get_session("s1")
+        assert bare["model"] is None
+        # Agent enriches — passes source="cli" but real metadata.
+        db.create_session(
+            "s1", source="cli", model="claude-opus-4-6",
+            model_config={"max_iterations": 90}, system_prompt="SYS",
+        )
+        enriched = db.get_session("s1")
+        assert enriched["model"] == "claude-opus-4-6"
+        assert enriched["system_prompt"] == "SYS"
+        # Gateway-owned fields preserved (NOT clobbered by source="cli").
+        assert enriched["source"] == "telegram"
+        assert enriched["user_id"] == "u1"
+        assert enriched["chat_id"] == "c1"
+
+    def test_create_session_does_not_overwrite_existing_metadata(self, db):
+        """A later bare write (source='unknown', model=...) must not overwrite
+        a model/source an earlier writer already set."""
+        db.create_session("s1", source="cli", model="real-model")
+        db.create_session("s1", source="unknown", model="should-not-win")
+        session = db.get_session("s1")
+        assert session["model"] == "real-model"
+        assert session["source"] == "cli"
+
     def test_update_session_cwd_persists_git_branch(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_session_cwd("s1", "/work/repo", git_branch="pets-feature")

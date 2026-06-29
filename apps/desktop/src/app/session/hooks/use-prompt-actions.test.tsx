@@ -271,6 +271,118 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     expect(renderedText).toContain('⊙ Goal set. Starting now.')
     expect(renderedText).not.toContain('/goal: no output')
   })
+
+  it('submits skill directives returned directly by slash.exec', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+    const skillMessage = 'Use this skill to investigate the bug.'
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'skill',
+          name: 'hermes-agent-dev',
+          message: skillMessage
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/hermes-agent-dev investigate this bug')
+
+    expect(calls.map(c => c.method)).toEqual(['slash.exec', 'prompt.submit'])
+    expect(calls[0]?.params).toEqual({
+      command: 'hermes-agent-dev investigate this bug',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(calls[1]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: skillMessage
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('⚡ loading skill: hermes-agent-dev')
+  })
+
+  it('falls back to command.dispatch for skill directives from older slash.exec backends', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+    const skillMessage = 'Use this legacy skill payload.'
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        throw new Error('skill command: use command.dispatch')
+      }
+
+      if (method === 'command.dispatch') {
+        return {
+          type: 'skill',
+          name: 'hermes-agent-dev',
+          message: skillMessage
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/hermes-agent-dev investigate this bug')
+
+    expect(calls.map(c => c.method)).toEqual(['slash.exec', 'command.dispatch', 'prompt.submit'])
+    expect(calls[1]?.params).toEqual({
+      arg: 'investigate this bug',
+      name: 'hermes-agent-dev',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(calls[2]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: skillMessage
+    })
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain('⚡ loading skill: hermes-agent-dev')
+  })
 })
 
 describe('usePromptActions desktop slash pickers', () => {

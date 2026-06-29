@@ -11099,7 +11099,7 @@ def _(rid, params: dict) -> dict:
 
         skill_count = 0
         try:
-            from agent.skill_commands import scan_skill_commands
+            from agent.skill_commands import get_skill_commands
 
             for k, info in sorted(scan_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
@@ -12415,17 +12415,6 @@ def _(rid, params: dict) -> dict:
                 "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
             )
 
-    try:
-        from agent.skill_commands import get_skill_commands
-
-        _cmd_key = f"/{_cmd_base}"
-        if _cmd_key in get_skill_commands():
-            return _err(
-                rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
-            )
-    except Exception:
-        pass
-
     plugin_handler = None
     resolve_plugin_command_result = None
     if _cmd_base:
@@ -12447,6 +12436,21 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 
+    try:
+        from agent.skill_commands import get_skill_commands
+
+        _cmd_key = f"/{_cmd_base}"
+        if _cmd_key in get_skill_commands():
+            return _methods["command.dispatch"](
+                rid,
+                {
+                    "name": _cmd_base,
+                    "arg": _cmd_arg,
+                    "session_id": params.get("session_id", ""),
+                },
+            )
+    except Exception:
+        pass
     worker = session.get("slash_worker")
     if not worker:
         try:

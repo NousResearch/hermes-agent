@@ -747,6 +747,40 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })
 
+  it('handles skill payloads returned directly by slash.exec', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/hermes-agent-dev investigate this bug')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+    })
+    expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: 'hermes-agent-dev investigate this bug',
+      session_id: 'sid-abc'
+    })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+  })
+
   it('handles command.dispatch payloads returned directly by slash.exec', async () => {
     patchUiState({ sid: 'sid-abc' })
 

@@ -1244,26 +1244,35 @@ def test_cli_exec_allowed(server, argv):
 # ── slash.exec skill command interception ────────────────────────────
 
 
-def test_slash_exec_rejects_skill_commands(server):
-    """slash.exec must reject skill commands so the TUI falls through to command.dispatch."""
+def test_slash_exec_routes_skill_commands_to_dispatch(server):
+    """slash.exec routes skill commands through command.dispatch directly."""
     # Register a mock session
     sid = "test-session"
     server._sessions[sid] = {"session_key": sid, "agent": None}
 
     # Mock scan_skill_commands to return a known skill
     fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
+    fake_msg = "Loaded skill content here"
 
-    with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills):
+    with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills), \
+         patch("agent.skill_commands.scan_skill_commands", return_value=fake_skills), \
+         patch("agent.skill_commands.build_skill_invocation_message", return_value=fake_msg) as build_msg:
         resp = server.handle_request({
             "id": "r1",
             "method": "slash.exec",
-            "params": {"command": "hermes-agent-dev", "session_id": sid},
+            "params": {"command": "hermes-agent-dev investigate this bug", "session_id": sid},
         })
 
-    # Should return an error so the TUI's .catch() fires command.dispatch
-    assert "error" in resp
-    assert resp["error"]["code"] == 4018
-    assert "skill command" in resp["error"]["message"]
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["name"] == "hermes-agent-dev"
+    assert result["message"] == fake_msg
+    build_msg.assert_called_once_with(
+        "/hermes-agent-dev",
+        "investigate this bug",
+        task_id=sid,
+    )
 
 
 def test_slash_exec_handles_plugin_commands_in_live_gateway(server):

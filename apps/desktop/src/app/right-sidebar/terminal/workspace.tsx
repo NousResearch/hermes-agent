@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 
 import { $backgroundStatusBySession } from '@/store/composer-status'
 
-import { syncAgentTerminalSnapshot } from './agent-terminal-stream'
+import { seedAgentTerminalCommand, syncAgentTerminalSnapshot } from './agent-terminal-stream'
 import { setActiveTerminalId } from './buffer'
 import { AgentTerminalInstance, TerminalInstance } from './instance'
 import { $activeTerminalId, $terminals, ensureAgentTerminal } from './terminals'
@@ -38,6 +38,7 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
     for (const list of Object.values(background)) {
       for (const item of list) {
         ensureAgentTerminal(item.id, item.title)
+        seedAgentTerminalCommand(item.id, item.title)
         syncAgentTerminalSnapshot(item.id, item.output ?? '')
       }
     }

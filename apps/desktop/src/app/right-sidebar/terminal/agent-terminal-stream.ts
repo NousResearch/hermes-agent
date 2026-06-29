@@ -8,6 +8,9 @@ type Writer = (chunk: string) => void
 
 const writers = new Map<string, Writer>()
 const backlog = new Map<string, string>()
+const commandHeaders = new Map<string, string>()
+const lastSnapshots = new Map<string, string>()
+const seededCommands = new Set<string>()
 
 const MAX_BACKLOG = 256_000
 
@@ -41,6 +44,21 @@ export function writeAgentTerminalChunk(procId: string, chunk: string): void {
   writers.get(procId)?.(chunk)
 }
 
+/** Seed the tab with the command immediately, so an agent terminal never opens
+ *  as an empty void while stdout is still pending or not yet observed. */
+export function seedAgentTerminalCommand(procId: string, command: string): void {
+  const trimmed = command.trim()
+
+  if (!procId || !trimmed || seededCommands.has(procId)) {
+    return
+  }
+
+  seededCommands.add(procId)
+  const header = `$ ${trimmed}\r\n`
+  commandHeaders.set(procId, header)
+  writeAgentTerminalChunk(procId, header)
+}
+
 /** Ingest a full output snapshot from process.list/status-stack. This is the
  *  fallback for older/not-yet-restarted gateways and a seed for tabs opened
  *  after output already exists. If it extends our current backlog, append only
@@ -51,18 +69,32 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
   }
 
   const current = backlog.get(procId) ?? ''
+  const header = commandHeaders.get(procId) ?? ''
+  const body = header && current.startsWith(header) ? current.slice(header.length) : current
+  const previous = lastSnapshots.get(procId) ?? ''
 
-  if (output === current) {
+  if (output === previous || output === body || body.endsWith(output)) {
+    lastSnapshots.set(procId, output)
+
     return
   }
 
-  if (output.startsWith(current)) {
-    writeAgentTerminalChunk(procId, output.slice(current.length))
+  if (output.startsWith(previous)) {
+    writeAgentTerminalChunk(procId, output.slice(previous.length))
+    lastSnapshots.set(procId, output)
 
     return
   }
 
-  const next = output.length > MAX_BACKLOG ? output.slice(-MAX_BACKLOG) : output
+  if (output.startsWith(body)) {
+    writeAgentTerminalChunk(procId, output.slice(body.length))
+    lastSnapshots.set(procId, output)
+
+    return
+  }
+
+  const next = `${header}${output}`.slice(-MAX_BACKLOG)
+  lastSnapshots.set(procId, output)
   backlog.set(procId, next)
   writers.get(procId)?.(`\x1bc${next}`)
 }

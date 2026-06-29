@@ -4,6 +4,8 @@ import { $currentCwd } from '@/store/session'
 
 import { setTerminalTakeover } from '../store'
 
+import { seedAgentTerminalCommand } from './agent-terminal-stream'
+
 /** One in-app terminal tab. `id` is the renderer-side handle (distinct from the
  *  PTY session id the main process mints); each instance owns its own shell. */
 export interface TerminalEntry {
@@ -73,6 +75,7 @@ export function ensureAgentTerminal(procId: string, title: string): string | nul
  *  the user had closed it. Opens the pane. */
 export function openAgentTerminal(procId: string, title: string): void {
   surfacedProcs.add(procId)
+  seedAgentTerminalCommand(procId, title)
   let id = findByProc(procId)?.id
 
   if (!id) {

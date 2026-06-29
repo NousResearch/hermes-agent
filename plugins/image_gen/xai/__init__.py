@@ -26,8 +26,10 @@ import requests
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
+    ImageGenResponseTooLarge,
     error_response,
     normalize_reference_images,
+    read_response_body_with_limit,
     resolve_aspect_ratio,
     save_b64_image,
     save_url_image,
@@ -282,8 +284,19 @@ class XAIImageGenProvider(ImageGenProvider):
                 headers=headers,
                 json=payload,
                 timeout=120,
+                stream=True,
             )
+            read_response_body_with_limit(response)
             response.raise_for_status()
+        except ImageGenResponseTooLarge as exc:
+            return error_response(
+                error=f"xAI image generation response too large: {exc}",
+                error_type="invalid_response",
+                provider=provider_name,
+                model=model_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
         except requests.HTTPError as exc:
             response = exc.response
             status = response.status_code if response is not None else 0

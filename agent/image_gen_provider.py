@@ -54,6 +54,8 @@ logger = logging.getLogger(__name__)
 
 VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
+IMAGE_GEN_RESPONSE_BODY_LIMIT_BYTES = 40 * 1024 * 1024
+_IMAGE_GEN_RESPONSE_CHUNK_BYTES = 64 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +243,7 @@ def save_b64_image(
     *,
     prefix: str = "image",
     extension: str = "png",
+    max_bytes: int = 25 * 1024 * 1024,
 ) -> Path:
     """Decode base64 image data and write it under ``$HERMES_HOME/cache/images/``.
 
@@ -249,6 +252,11 @@ def save_b64_image(
     Filename format: ``<prefix>_<YYYYMMDD_HHMMSS>_<short-uuid>.<ext>``.
     """
     raw = base64.b64decode(b64_data)
+    if len(raw) > max_bytes:
+        raise ValueError(
+            f"Inline image exceeds {max_bytes} bytes "
+            f"({max_bytes // (1024 * 1024)}MB cap); refusing to cache."
+        )
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     short = uuid.uuid4().hex[:8]
     path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
@@ -267,6 +275,74 @@ _URL_IMAGE_CONTENT_TYPES = {
     "image/webp": "webp",
     "image/gif": "gif",
 }
+
+
+class ImageGenResponseTooLarge(ValueError):
+    """Raised when a provider JSON response exceeds the image-gen body cap."""
+
+
+def read_response_body_with_limit(
+    response: Any,
+    *,
+    max_bytes: Optional[int] = None,
+) -> Any:
+    """Read a streamed ``requests`` response without buffering unbounded bodies.
+
+    Image-generation APIs may return inline base64 image data, so the cap is
+    intentionally larger than ordinary provider JSON limits while still
+    preventing an unbounded provider or proxy response from exhausting memory.
+    Non-``requests.Response`` test doubles are returned unchanged.
+    """
+    import requests
+
+    limit = IMAGE_GEN_RESPONSE_BODY_LIMIT_BYTES if max_bytes is None else max_bytes
+    if not isinstance(response, requests.Response):
+        return response
+
+    content = getattr(response, "_content", None)
+    if isinstance(content, (bytes, bytearray)):
+        if len(content) > limit:
+            response.close()
+            raise ImageGenResponseTooLarge(
+                f"response body exceeds {limit} bytes"
+            )
+        response._content_consumed = True
+        return response
+
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            declared_size = int(declared)
+        except ValueError:
+            pass
+        else:
+            if declared_size > limit:
+                response.close()
+                raise ImageGenResponseTooLarge(
+                    f"response body exceeds {limit} bytes"
+                )
+
+    chunks: List[bytes] = []
+    total = 0
+    try:
+        for chunk in response.iter_content(
+            chunk_size=_IMAGE_GEN_RESPONSE_CHUNK_BYTES
+        ):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > limit:
+                raise ImageGenResponseTooLarge(
+                    f"response body exceeds {limit} bytes"
+                )
+            chunks.append(chunk)
+    except Exception:
+        response.close()
+        raise
+
+    response._content = b"".join(chunks)
+    response._content_consumed = True
+    return response
 
 
 def save_url_image(

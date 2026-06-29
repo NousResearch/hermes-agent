@@ -819,11 +819,12 @@ class GatewaySlashCommandsMixin:
         return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
-        """Handle ``/platform list|pause|resume [name]`` — surface and
-        manually control failed/paused gateway adapters.
+        """Handle ``/platform list|reload|pause|resume [name]`` — surface and
+        manually control gateway adapters.
 
         Examples:
             ``/platform list``           — show connected + failed/paused platforms
+            ``/platform reload``         — apply config.yaml platform changes without a restart
             ``/platform pause whatsapp`` — stop the reconnect watcher hammering whatsapp
             ``/platform resume whatsapp`` — re-queue a paused platform for retry
         """
@@ -869,6 +870,27 @@ class GatewaySlashCommandsMixin:
                 lines.append("Failed/paused: (none)")
             return "\n".join(lines)
 
+        if action == "reload":
+            report = await self._reload_platforms_from_config()
+            lines = ["**Platform reload**"]
+            labels = [
+                ("connected", "Connected"),
+                ("reconnected", "Reconnected (config changed)"),
+                ("disconnected", "Disconnected"),
+                ("failed", "Failed"),
+                ("unchanged", "Unchanged"),
+            ]
+            for key, label in labels:
+                vals = report.get(key) or []
+                if vals:
+                    lines.append(f"{label}: " + ", ".join(sorted(vals)))
+            if not any(report.get(k) for k in ("connected", "reconnected", "disconnected", "failed")):
+                if report.get("unchanged"):
+                    lines.append("No changes — all enabled platforms already up to date.")
+                else:
+                    lines.append("No messaging platforms enabled.")
+            return "\n".join(lines)
+
         if action in {"pause", "resume"}:
             if not target:
                 return f"Usage: /platform {action} <name>"
@@ -905,8 +927,9 @@ class GatewaySlashCommandsMixin:
             return f"✓ {platform.value} resumed — retrying on next watcher tick."
 
         return (
-            "Usage: /platform <list|pause|resume> [name]\n"
+            "Usage: /platform <list|reload|pause|resume> [name]\n"
             "  /platform list — show platform status\n"
+            "  /platform reload — apply config.yaml platform changes without a restart\n"
             "  /platform pause <name> — stop retrying a failing platform\n"
             "  /platform resume <name> — re-queue a paused platform"
         )

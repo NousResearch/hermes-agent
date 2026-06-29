@@ -4265,6 +4265,176 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         logger.info("%s resumed — retrying on next watcher tick", platform.value)
         return True
 
+    def _queue_failed_platform(self, platform, platform_config) -> None:
+        """Queue a platform for the reconnect watcher, mirroring the startup
+        path's retry entry so an adapter that failed to connect during a
+        reload self-heals once the underlying problem is fixed.
+        """
+        self._failed_platforms[platform] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() + 30,
+        }
+
+    async def _bring_up_platform_adapter(self, platform, platform_config) -> bool:
+        """Create, wire and connect a single platform adapter, installing it on
+        ``self.adapters`` on success.  Mirrors the startup connect path: on a
+        retryable failure the platform is queued for the reconnect watcher.
+        Returns True only when the adapter connected.
+        """
+        adapter = self._create_adapter(platform, platform_config)
+        if not adapter:
+            logger.warning("Platform reload: no adapter available for %s", platform.value)
+            return False
+
+        adapter.set_message_handler(self._handle_message)
+        adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+        adapter.set_session_store(self.session_store)
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        adapter._busy_text_mode = self._busy_text_mode
+
+        self._update_platform_runtime_status(
+            platform.value, platform_state="connecting",
+            error_code=None, error_message=None,
+        )
+        try:
+            success = await self._connect_adapter_with_timeout(adapter, platform)
+        except Exception as e:
+            logger.error("Platform reload: %s connect error: %s", platform.value, e)
+            await self._safe_adapter_disconnect(adapter, platform)
+            self._queue_failed_platform(platform, platform_config)
+            self._update_platform_runtime_status(
+                platform.value, platform_state="retrying",
+                error_code=None, error_message=str(e),
+            )
+            return False
+
+        if success:
+            self.adapters[platform] = adapter
+            self._sync_voice_mode_state_to_adapter(adapter)
+            self._failed_platforms.pop(platform, None)
+            self._update_platform_runtime_status(
+                platform.value, platform_state="connected",
+                error_code=None, error_message=None,
+            )
+            logger.info("✓ %s connected via reload", platform.value)
+            return True
+
+        # connect() returned False — clean up partial resources, then either
+        # drop a non-retryable failure or queue a retryable one.
+        await self._safe_adapter_disconnect(adapter, platform)
+        if adapter.has_fatal_error and not adapter.fatal_error_retryable:
+            self._update_platform_runtime_status(
+                platform.value, platform_state="fatal",
+                error_code=adapter.fatal_error_code,
+                error_message=adapter.fatal_error_message,
+            )
+        else:
+            self._queue_failed_platform(platform, platform_config)
+            self._update_platform_runtime_status(
+                platform.value, platform_state="retrying",
+                error_code=adapter.fatal_error_code if adapter.has_fatal_error else None,
+                error_message=(
+                    adapter.fatal_error_message
+                    if adapter.has_fatal_error
+                    else "failed to connect"
+                ),
+            )
+        logger.warning("✗ %s failed to connect via reload", platform.value)
+        return False
+
+    async def _reload_platforms_from_config(self) -> Dict[str, List[str]]:
+        """Re-read platform config and apply the diff against running adapters
+        without restarting the gateway.
+
+        Newly-enabled platforms are connected, platforms that were disabled or
+        removed are disconnected, and platforms whose ``PlatformConfig`` changed
+        are reconnected with the new settings.  Unchanged connected platforms
+        are left untouched, so in-flight agent turns on them are never
+        interrupted.  ``delivery_router.adapters`` and the channel directory are
+        refreshed once after the diff is applied.
+
+        Returns a report dict with ``connected``/``reconnected``/
+        ``disconnected``/``unchanged``/``failed`` lists of platform value
+        strings for the caller to surface to the operator.
+        """
+        from gateway.config import load_gateway_config
+
+        report: Dict[str, List[str]] = {
+            "connected": [],
+            "reconnected": [],
+            "disconnected": [],
+            "unchanged": [],
+            "failed": [],
+        }
+
+        try:
+            new_config = load_gateway_config()
+        except Exception as e:
+            logger.error("Platform reload: failed to re-read config: %s", e)
+            report["failed"].append(f"config: {e}")
+            return report
+
+        desired = {
+            platform: cfg
+            for platform, cfg in new_config.platforms.items()
+            if cfg.enabled
+        }
+
+        # Disconnect platforms that are no longer enabled (disabled or removed).
+        for platform in list(self.adapters.keys()):
+            if platform not in desired:
+                adapter = self.adapters.pop(platform, None)
+                if adapter is not None:
+                    await self._safe_adapter_disconnect(adapter, platform)
+                self._update_platform_runtime_status(
+                    platform.value, platform_state="disconnected",
+                    error_code=None, error_message=None,
+                )
+                report["disconnected"].append(platform.value)
+        # Drop disabled platforms from the retry queue too, so the reconnect
+        # watcher stops trying to bring them back.
+        for platform in list(getattr(self, "_failed_platforms", {}).keys()):
+            if platform not in desired:
+                self._failed_platforms.pop(platform, None)
+                if platform.value not in report["disconnected"]:
+                    report["disconnected"].append(platform.value)
+
+        # Connect newly-enabled platforms and reconnect those whose config
+        # changed.  Leave unchanged connected platforms alone.
+        for platform, platform_config in desired.items():
+            existing = self.adapters.get(platform)
+            if existing is not None:
+                if existing.config == platform_config:
+                    report["unchanged"].append(platform.value)
+                    continue
+                # Config changed — drop the old adapter before reconnecting.
+                self.adapters.pop(platform, None)
+                await self._safe_adapter_disconnect(existing, platform)
+                outcome = "reconnected"
+            else:
+                outcome = "connected"
+
+            if await self._bring_up_platform_adapter(platform, platform_config):
+                report[outcome].append(platform.value)
+            else:
+                report["failed"].append(platform.value)
+
+        # Refresh runtime routing + channel directory once after the diff.
+        # Update the platforms map in place so the shared config object (also
+        # held by delivery_router) reflects the reloaded platform config
+        # without disturbing unrelated runtime config.
+        self.config.platforms = new_config.platforms
+        self.delivery_router.adapters = self.adapters
+        try:
+            from gateway.channel_directory import build_channel_directory
+            await build_channel_directory(self.adapters)
+        except Exception as e:
+            logger.debug("Platform reload: channel directory rebuild failed: %s", e)
+
+        return report
+
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.

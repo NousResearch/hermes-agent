@@ -134,6 +134,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "clinepass": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.cline.bot/api/v1",
+        base_url_env_var="CLINE_BASE_URL",
+    ),
     "alibaba": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
@@ -300,6 +305,10 @@ ALIASES: Dict[str, str] = {
 
     # deepseek
     "deep-seek": "deepseek",
+
+    # clinepass
+    "cline-pass": "clinepass",
+    "cline": "clinepass",
 
     # alibaba
     "dashscope": "alibaba",

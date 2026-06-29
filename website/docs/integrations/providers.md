@@ -38,6 +38,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
+| **ClinePass** | `CLINE_API_KEY` in `~/.hermes/.env` (provider: `clinepass`, aliases: `cline-pass`, `cline`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
@@ -315,6 +316,30 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### ClinePass
+
+[ClinePass](https://cline.bot/cline-pass) is a subscription that serves curated open-weight coding models (GLM, Kimi, DeepSeek, MiniMax, MiMo, Qwen) over an OpenAI-compatible API. Model IDs are namespaced as `cline-pass/<model>`.
+
+```bash
+# Use any available model
+hermes chat --provider clinepass --model cline-pass/glm-5.2
+# Requires: CLINE_API_KEY in ~/.hermes/.env
+
+# Short aliases
+hermes chat --provider cline --model cline-pass/qwen3.7-max
+```
+
+Or set it permanently in `config.yaml`, with no endpoint needed since the provider is first-class:
+```yaml
+model:
+  provider: "clinepass"
+  default: "cline-pass/glm-5.2"
+```
+
+Get your API key from your ClinePass account at [cline.bot/cline-pass](https://cline.bot/cline-pass). The base URL can be overridden with `CLINE_BASE_URL`. The curated `fallback_models` list tracks the published catalog and is what the model picker offers.
+
+ClinePass's gateway wraps non-streaming responses in a `{"data": ...}` envelope rather than returning the completion at the top level, so the client unwraps it transparently for this provider; streaming responses are standard and pass through unchanged.
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 

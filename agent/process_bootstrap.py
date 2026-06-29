@@ -172,10 +172,22 @@ def build_keepalive_http_client(
             sock_opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30))
 
         proxy = _get_proxy_for_base_url(base_url)
-        transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
+        from agent.clinepass_transport import (
+            build_clinepass_transport,
+            is_clinepass_base_url,
+        )
+        if is_clinepass_base_url(base_url):
+            # ClinePass wraps non-streaming responses in a {data, success}
+            # envelope; unwrap it so the OpenAI SDK sees top-level choices.
+            transport = build_clinepass_transport(
+                async_mode=async_mode, socket_options=sock_opts
+            )
+        else:
+            transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
+            transport = transport_cls(socket_options=sock_opts)
         return client_cls(
-            transport=transport_cls(socket_options=sock_opts),
+            transport=transport,
             proxy=proxy,
         )
     except Exception:

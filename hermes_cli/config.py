@@ -3280,6 +3280,20 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
     },
+    "CLINE_API_KEY": {
+        "description": "ClinePass API key for curated open-weight coding models (provider: clinepass)",
+        "prompt": "ClinePass API Key",
+        "url": "https://cline.bot/cline-pass",
+        "password": True,
+        "category": "provider",
+    },
+    "CLINE_BASE_URL": {
+        "description": "Custom ClinePass API base URL (advanced)",
+        "prompt": "ClinePass Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
+    },
     "DASHSCOPE_API_KEY": {
         "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
         "prompt": "DashScope API Key",

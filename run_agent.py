@@ -3673,8 +3673,20 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            from agent.clinepass_transport import (
+                build_clinepass_transport,
+                is_clinepass_base_url,
+            )
+            if is_clinepass_base_url(base_url):
+                # ClinePass wraps non-streaming responses in a {data, success}
+                # envelope; unwrap it so the OpenAI SDK sees top-level choices.
+                _transport = build_clinepass_transport(
+                    async_mode=False, socket_options=_sock_opts
+                )
+            else:
+                _transport = _httpx.HTTPTransport(socket_options=_sock_opts)
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                transport=_transport,
                 proxy=_proxy,
             )
         except Exception:

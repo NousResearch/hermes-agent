@@ -1,0 +1,5 @@
+name: clinepass-provider
+kind: model-provider
+version: 1.0.0
+description: ClinePass curated open-weight coding models (OpenAI-compatible API)
+author: Adolanium

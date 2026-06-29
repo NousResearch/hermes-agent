@@ -48,7 +48,7 @@ def _resolve_requests_verify() -> bool | str:
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
-    "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
+    "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita", "clinepass",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -68,6 +68,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal", "novita-ai", "novitaai",
+    "cline-pass", "cline",
 })
 
 
@@ -444,6 +445,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi",
     "api.novita.ai": "novita",
+    "api.cline.bot": "clinepass",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }

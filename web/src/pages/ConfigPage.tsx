@@ -243,11 +243,12 @@ export default function ConfigPage() {
   const searchMatchedFields = useMemo(() => {
     if (!isSearching || !schema) return [];
     return Object.entries(schema).filter(([key, s]) => {
-      const label = key.split(".").pop() ?? key;
-      const humanLabel = label.replace(/_/g, " ");
+      const rawLabel = key.split(".").pop() ?? key;
+      const fallbackLabel = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      const label = typeof s.label === "string" && s.label.trim() ? s.label : fallbackLabel;
       return (
         key.toLowerCase().includes(lowerSearch) ||
-        humanLabel.toLowerCase().includes(lowerSearch) ||
+        label.toLowerCase().includes(lowerSearch) ||
         String(s.category ?? "")
           .toLowerCase()
           .includes(lowerSearch) ||

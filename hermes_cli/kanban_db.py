@@ -5912,6 +5912,36 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _respawn_guard_enabled(name: str, *, default: bool = False) -> bool:
+    """Return whether a named respawn guard is enabled.
+
+    Unknown/missing guards default to ``default`` for backward compatibility.
+    If config loading fails, prefer the historical guard-on behavior rather
+    than silently weakening anti-storm protection.
+    """
+
+    key = str(name or "").strip()
+    if not key:
+        return bool(default)
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        respawn_guard_cfg = (
+            kanban_cfg.get("respawn_guard", {}) if isinstance(kanban_cfg, dict) else {}
+        )
+        value = (
+            respawn_guard_cfg.get(key, default)
+            if isinstance(respawn_guard_cfg, dict)
+            else default
+        )
+        return bool(value)
+    except Exception:
+        return bool(default)
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
@@ -6795,6 +6825,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        Controlled by ``kanban.respawn_guard.active_pr``.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -6861,13 +6892,14 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    if _respawn_guard_enabled("active_pr", default=True):
+        pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

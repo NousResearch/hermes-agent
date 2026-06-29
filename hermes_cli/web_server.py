@@ -622,6 +622,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    "kanban.respawn_guard.active_pr": {
+        "type": "boolean",
+        "label": "Active PR respawn guard",
+        "description": "Skip re-spawning ready tasks that already have a recent GitHub PR comment",
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",

@@ -1,11 +1,10 @@
 """Native Anthropic provider profile."""
 
-import json
 import logging
 import urllib.request
 
 from providers import register_provider
-from providers.base import ProviderProfile
+from providers.base import ProviderProfile, _read_json_capped
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,7 @@ class AnthropicProfile(ProviderProfile):
             req.add_header("anthropic-version", "2023-06-01")
             req.add_header("Accept", "application/json")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = _read_json_capped(resp)
             return [
                 m["id"]
                 for m in data.get("data", [])

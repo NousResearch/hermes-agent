@@ -20,6 +20,57 @@ logger = logging.getLogger(__name__)
 # Sentinel for "omit temperature entirely" (Kimi: server manages it)
 OMIT_TEMPERATURE = object()
 
+# Upper bound on a provider model-catalog response body (issue #54735).
+# Model lists are normally tens-to-hundreds of KB; 16 MiB is generous
+# headroom while still failing closed against a malicious / compromised /
+# misconfigured endpoint that streams an arbitrarily large body during model
+# discovery (model picker, provider probing, live-list refresh). Oversized
+# responses are rejected and callers fall back to the static model list.
+_MAX_MODELS_RESPONSE_BYTES = 16 * 1024 * 1024
+
+
+def _read_json_capped(resp, max_bytes: int | None = None):
+    """Read and JSON-parse an HTTP response body with a hard size cap.
+
+    Two-layer guard so a bad endpoint cannot exhaust memory:
+      1. Reject up front if the declared ``Content-Length`` exceeds the cap.
+      2. Read at most ``max_bytes + 1`` bytes and reject if the body actually
+         ran past the cap (covers a missing or lying Content-Length on a
+         streamed response).
+
+    Raises ``ValueError`` on oversize so the caller's existing
+    ``except Exception: return None`` path falls back to the static list.
+
+    ``max_bytes`` defaults to the module-level ``_MAX_MODELS_RESPONSE_BYTES``
+    (read at call time, so the cap can be lowered in tests).
+    """
+    import json
+
+    if max_bytes is None:
+        max_bytes = _MAX_MODELS_RESPONSE_BYTES
+
+    declared = resp.headers.get("Content-Length") if hasattr(resp, "headers") else None
+    if declared is not None:
+        try:
+            if int(declared) > max_bytes:
+                raise ValueError(
+                    f"model catalog response too large: Content-Length={declared} "
+                    f"> {max_bytes}"
+                )
+        except (TypeError, ValueError) as exc:
+            # A non-integer Content-Length is itself suspect — only re-raise
+            # our own oversize signal; ignore an unparseable header and fall
+            # through to the bounded read below.
+            if "too large" in str(exc):
+                raise
+
+    raw = resp.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(
+            f"model catalog response too large: body exceeded {max_bytes} bytes"
+        )
+    return json.loads(raw.decode())
+
 
 def _profile_user_agent() -> str:
     """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
@@ -193,7 +244,6 @@ class ProviderProfile:
                 return None
             url = effective_base.rstrip("/") + "/models"
 
-        import json
         import urllib.request
 
         req = urllib.request.Request(url)
@@ -209,7 +259,7 @@ class ProviderProfile:
 
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                data = _read_json_capped(resp)
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
         except Exception as exc:

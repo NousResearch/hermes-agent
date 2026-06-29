@@ -12,7 +12,7 @@ import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
 
-import { makeTerminalReader, setActiveTerminalReader } from './buffer'
+import { makeTerminalReader, registerTerminalReader } from './buffer'
 import {
   isAddSelectionShortcut,
   resolveSurfaceColor,
@@ -20,6 +20,7 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
+import { closeTerminal } from './terminals'
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
 
@@ -132,8 +133,14 @@ function stripInitialPromptGap(data: string) {
 }
 
 interface UseTerminalSessionOptions {
+  /** Renderer-side terminal id (the tab handle), used to key the agent reader. */
+  id: string
   cwd: string
+  /** Only the active tab is visible, owns the agent reader, and runs injections. */
+  active: boolean
   onAddSelectionToChat: (text: string, label?: string) => void
+  /** Reports the resolved shell name once the PTY is live (for the tab label). */
+  onShell?: (shell: string) => void
 }
 
 // Bind the palette to the live skin surface so the terminal blends with the app
@@ -232,7 +239,7 @@ function quotePathForShell(path: string, shellName: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`
 }
 
-export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSessionOptions) {
+export function useTerminalSession({ id, cwd, active, onAddSelectionToChat, onShell }: UseTerminalSessionOptions) {
   // Key off renderedMode (the painted surface type), not resolvedMode (the
   // clicked switch) — a skin can keep a light surface in "dark" mode, and we
   // must match the surface or the ANSI palette inverts against it. themeName
@@ -253,6 +260,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
   const onAddSelectionToChatRef = useRef(onAddSelectionToChat)
+  const onShellRef = useRef(onShell)
+  // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
+  // last fit is stale by the time it's shown again.
+  const fitRef = useRef<(() => void) | null>(null)
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
@@ -260,7 +271,8 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
-  }, [onAddSelectionToChat])
+    onShellRef.current = onShell
+  }, [onAddSelectionToChat, onShell])
 
   // Live selection at call time. A redraw-heavy TUI (spinners, clocks) outruns
   // onSelectionChange, so trust xterm directly — fall back to the native
@@ -367,10 +379,6 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(new WebLinksAddon())
     term.unicode.activeVersion = '11'
-
-    // Let the GUI chat agent read this pane via the `read_terminal` tool: the
-    // gateway's terminal.read.request handler serializes the buffer through this.
-    setActiveTerminalReader(makeTerminalReader(term))
 
     const onDragOver = (e: DragEvent) => {
       if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
@@ -500,6 +508,8 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       }
     }
 
+    fitRef.current = fitAndResize
+
     // Coalesce ResizeObserver bursts through rAF — running fit.fit()
     // synchronously while sibling panes are mid-transition (e.g. file browser
     // collapsing to 0px) crashes the WebGL renderer mid texture-atlas rebuild.
@@ -569,6 +579,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
           lastSentSize = { cols: term.cols, rows: term.rows }
           shellNameRef.current = session.shell || 'shell'
           setShellName(session.shell || 'shell')
+          onShellRef.current?.(session.shell || 'shell')
 
           const initial = term.hasSelection() ? term.getSelection() : ''
           selectionRef.current = initial
@@ -578,9 +589,13 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
           cleanup.push(
             terminalApi.onData(session.id, armedWrite),
-            terminalApi.onExit(session.id, ({ code, signal }) => {
-              setStatus('closed')
-              term.write(`\r\n[terminal exited${signal ? `: ${signal}` : code !== null ? `: ${code}` : ''}]\r\n`)
+            terminalApi.onExit(session.id, () => {
+              // Shell exited (`exit` / Ctrl-D / crash) — drop the tab like a real
+              // terminal. closeTerminal hides the pane when it's the last one;
+              // skip if we're already tearing down (cleanup disposes the PTY).
+              if (!disposed) {
+                closeTerminal(id)
+              }
             })
           )
 
@@ -638,7 +653,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     return () => {
       disposed = true
       cleanup.forEach(run => run())
-      setActiveTerminalReader(null)
+      fitRef.current = null
 
       const id = sessionIdRef.current
       sessionIdRef.current = null
@@ -654,7 +669,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       selectionRef.current = ''
       selectionLabelRef.current = ''
     }
-  }, [addSelectionToChat, cwd])
+    // `id` is stable for the instance's life (keyed by tab id), so listing it
+    // doesn't re-create the shell — it just satisfies the deps check for the
+    // closeTerminal(id) call in onExit.
+  }, [addSelectionToChat, cwd, id])
 
   useEffect(() => {
     const term = termRef.current
@@ -677,27 +695,56 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     return () => cancelAnimationFrame(raf)
   }, [activeTheme, themeName])
 
-  // Flush a queued command (e.g. a provider-disconnect) into the live session.
-  // Only active while open; the subscribe fires immediately, so a command set
-  // before this pane mounted runs as soon as the session is ready. Clearing the
-  // atom after writing stops a later remount from replaying a stale command.
+  // Expose this terminal's buffer to the agent's `read_terminal` tool, keyed by
+  // id. The tab selection (setActiveTerminalId) decides which one it reads, so
+  // every live terminal stays registered regardless of visibility.
   useEffect(() => {
     if (status !== 'open') {
       return
     }
 
-    return $terminalInjection.subscribe(command => {
-      const id = sessionIdRef.current
+    const term = termRef.current
 
-      if (!command || !id) {
+    return term ? registerTerminalReader(id, makeTerminalReader(term)) : undefined
+  }, [id, status])
+
+  // On (re)activation the host went display:none→visible: focus it and refit so
+  // a stale 0×0 fit from while it was hidden doesn't strand the prompt.
+  useEffect(() => {
+    if (!active || status !== 'open') {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => {
+      fitRef.current?.()
+      termRef.current?.focus()
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [active, status])
+
+  // Flush a queued command (e.g. a provider-disconnect) into the live session.
+  // Only the active tab runs it (so a broadcast doesn't fan out to every shell);
+  // the subscribe fires immediately, so a command set before this pane mounted
+  // runs as soon as the session is ready. Cleared after writing so a later
+  // remount can't replay a stale command.
+  useEffect(() => {
+    if (!active || status !== 'open') {
+      return
+    }
+
+    return $terminalInjection.subscribe(command => {
+      const sessionId = sessionIdRef.current
+
+      if (!command || !sessionId) {
         return
       }
 
-      void window.hermesDesktop?.terminal?.write(id, `${command}\r`)
+      void window.hermesDesktop?.terminal?.write(sessionId, `${command}\r`)
       $terminalInjection.set(null)
       termRef.current?.focus()
     })
-  }, [status])
+  }, [active, status])
 
   return {
     addSelectionToChat,

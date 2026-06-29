@@ -127,7 +127,8 @@ import { FileActionDialogs } from './right-sidebar/file-actions'
 import { RemoteFolderPicker } from './right-sidebar/files/remote-picker'
 import { ReviewPane } from './right-sidebar/review'
 import { $terminalTakeover } from './right-sidebar/store'
-import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
+import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
+import { PersistentTerminal } from './right-sidebar/terminal/persistent'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
@@ -1096,11 +1097,13 @@ export function DesktopController() {
     />
   )
 
-  // One PTY-backed terminal mounted forever; <TerminalSlot /> placeholders decide
-  // where it shows. Lives in main's stacking context (not the root overlay layer)
-  // so pane resize handles still paint above it. Toggling never rebuilds the shell.
+  // The persistent xterm layer (one host per terminal tab), CSS-overlaid onto the
+  // pane's <TerminalSlot />. Lives in main's stacking context (not the root overlay
+  // layer) so pane resize handles still paint above it. Terminals own their state
+  // (incl. a snapshotted cwd) independent of the session, so switching sessions
+  // never rebuilds or closes them; toggling the pane never rebuilds the shells.
   const mainOverlays = (
-    <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+    <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
   )
 
   const overlays = (
@@ -1331,7 +1334,7 @@ export function DesktopController() {
           terminalAsRow ? 'border-l border-(--ui-stroke-secondary) pt-0' : 'pt-(--titlebar-height)'
         )}
       >
-        <TerminalSlot />
+        <TerminalPaneChrome />
       </div>
     </Pane>
   )

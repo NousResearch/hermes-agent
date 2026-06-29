@@ -120,3 +120,16 @@ sessions:
 memory:
   provider: atlas
   retention_days: 90
+
+# Storage — S3-backed profile/session storage for the SaaS/cloud image
+# (Plan age737h-245, phase A). Bucket name and prefix are injected via
+# HERMES_S3_BUCKET / HERMES_S3_PREFIX env vars in the Fargate task def.
+# Region falls back to AWS_REGION. Credentials are resolved by boto3 via
+# the task IAM role (same as Bedrock — no extra secret wiring needed).
+storage:
+  backend: s3
+  s3:
+    bucket: ''          # populated via HERMES_S3_BUCKET env var at runtime
+    prefix: hermes/
+    region: ''          # populated via AWS_REGION env var at runtime
+    sse: aws:kms        # server-side encryption — required for compliance

@@ -496,14 +496,18 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
     Also works for external skill dirs configured via skills.external_dirs.
     """
-    # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
-    dirs_to_check = [SKILLS_DIR]
+    # Use get_local_skills_dir() to respect OpenClaw isolation.
+    # Falls back to SKILLS_DIR only when skill_utils is unavailable.
+    dirs_to_check: List[Path] = []
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_local_skills_dir
+
+        local_dir = get_local_skills_dir()
+        if local_dir is not None:
+            dirs_to_check.append(local_dir)
         dirs_to_check.extend(get_external_skills_dirs())
     except ImportError:
-        pass  # skill_utils unavailable; fall back to SKILLS_DIR only
+        dirs_to_check.append(SKILLS_DIR)
     for skills_dir in dirs_to_check:
         try:
             rel_path = skill_path.relative_to(skills_dir)
@@ -700,18 +704,10 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         from agent.skill_utils import get_local_skills_dir
 
         local_dir = get_local_skills_dir()
-        if local_dir is None:
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": "No Hermes skills found. The configured skills directory belongs to OpenClaw and was skipped.",
-                },
-                ensure_ascii=False,
-            )
+        local_skipped = local_dir is None
 
-        if not SKILLS_DIR.exists():
+        # Only auto-create the local skills directory when we own it.
+        if not local_skipped and not SKILLS_DIR.exists():
             SKILLS_DIR.mkdir(parents=True, exist_ok=True)
             return json.dumps(
                 {
@@ -723,16 +719,23 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Find all skills
+        # Find all skills — _find_all_skills() handles local_dir is None
+        # correctly by scanning only external dirs.
         all_skills = _find_all_skills()
 
         if not all_skills:
+            message = (
+                "No Hermes skills found. The configured skills directory belongs"
+                " to OpenClaw and was skipped."
+                if local_skipped
+                else "No skills found in skills/ directory."
+            )
             return json.dumps(
                 {
                     "success": True,
                     "skills": [],
                     "categories": [],
-                    "message": "No skills found in skills/ directory.",
+                    "message": message,
                 },
                 ensure_ascii=False,
             )

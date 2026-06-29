@@ -332,7 +332,12 @@ def _is_openclaw_owned(path: Path) -> bool:
 
     Checks two conditions:
     1. Path component contains ".openclaw" (covers 90% of cases)
-    2. Directory or its parents contain an OpenClaw config marker file
+    2. Directory or its immediate parents (up to home) contain
+       an OpenClaw config marker file
+
+    The parent walk is bounded at ``Path.home()`` — the check is
+    meant to catch ``HERMES_HOME`` mispointed at ``~/.openclaw``,
+    not arbitrary distant ancestors.
     """
     resolved = Path(path).expanduser().resolve()
 
@@ -340,34 +345,63 @@ def _is_openclaw_owned(path: Path) -> bool:
     if any(part.lower() == ".openclaw" for part in resolved.parts):
         return True
 
-    # Check 2: directory or parents contain config marker
+    # Check 2: directory or parents contain config marker.
+    # Bound the walk at Path.home() to prevent false positives
+    # from unrelated marker files far up the tree.
+    home = Path.home()
     for parent in (resolved, *resolved.parents):
         if any((parent / m).exists() for m in _OPENCLAW_HOME_MARKERS):
             return True
+        if parent == home:
+            break
     return False
 
 
+# Cache for _openclaw_allowed(), keyed by (config_path_str, mtime_ns).
+# Re-parsing config.yaml on every call (~8 call sites) is wasteful when
+# the file hasn't changed.
+_allow_cache: Tuple[str, int, bool] | None = None
+
+
 def _openclaw_allowed() -> bool:
-    """Check if OpenClaw skills are explicitly allowed via env var or config."""
-    # Check env var first (fast path)
+    """Check if OpenClaw skills are explicitly allowed via env var or config.
+
+    Cached per-config-mtime so config.yaml edits mid-run are picked up
+    without re-parsing the file on every call.
+    """
+    global _allow_cache
+
+    # Check env var first (fast path — no file I/O)
     if os.getenv("HERMES_ALLOW_OPENCLAW_SKILLS", "").lower() in ("1", "true", "yes", "on"):
         return True
 
-    # Check config file
     config_path = get_config_path()
     if not config_path.exists():
         return False
+
+    # Mtime-keyed cache: stat() is ~2 µs, YAML parse is ~85 ms.
+    try:
+        mtime = config_path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    cache_key = (str(config_path), mtime)
+    if _allow_cache and (_allow_cache[0], _allow_cache[1]) == cache_key:
+        return _allow_cache[2]
+
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
     except Exception:
+        _allow_cache = (*cache_key, False)
         return False
     if not isinstance(parsed, dict):
+        _allow_cache = (*cache_key, False)
         return False
     skills_cfg = parsed.get("skills")
     if not isinstance(skills_cfg, dict):
+        _allow_cache = (*cache_key, False)
         return False
     # Support multiple config keys for backward compatibility
-    return any(
+    result = any(
         str(skills_cfg.get(key, "")).lower() in ("1", "true", "yes", "on")
         for key in (
             "allow_openclaw_external_dirs",
@@ -375,6 +409,8 @@ def _openclaw_allowed() -> bool:
             "allow_foreign_app_skills",
         )
     )
+    _allow_cache = (*cache_key, result)
+    return result
 
 
 def get_local_skills_dir() -> Path | None:

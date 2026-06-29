@@ -1432,32 +1432,47 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
-                response = await client.get(
-                    video_url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "video/*,*/*;q=0.8",
-                    },
+                temp_destination = destination.with_name(
+                    f"{destination.name}.{uuid.uuid4().hex}.part"
                 )
-                response.raise_for_status()
+                try:
+                    async with client.stream(
+                        "GET",
+                        video_url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept": "video/*,*/*;q=0.8",
+                        },
+                    ) as response:
+                        response.raise_for_status()
 
-                cl = response.headers.get("content-length")
-                if cl and int(cl) > _MAX_VIDEO_BASE64_BYTES:
-                    raise ValueError(
-                        f"Video too large ({int(cl)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
-                    )
+                        cl = response.headers.get("content-length")
+                        if cl and int(cl) > _MAX_VIDEO_BASE64_BYTES:
+                            raise ValueError(
+                                f"Video too large ({int(cl)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
+                            )
 
-                final_url = str(response.url)
-                blocked = check_website_access(final_url)
-                if blocked:
-                    raise PermissionError(blocked["message"])
+                        final_url = str(response.url)
+                        blocked = check_website_access(final_url)
+                        if blocked:
+                            raise PermissionError(blocked["message"])
 
-                body = response.content
-                if len(body) > _MAX_VIDEO_BASE64_BYTES:
-                    raise ValueError(
-                        f"Video too large ({len(body)} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
-                    )
-                destination.write_bytes(body)
+                        downloaded = 0
+                        with temp_destination.open("wb") as fh:
+                            async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                                if not chunk:
+                                    continue
+                                downloaded += len(chunk)
+                                if downloaded > _MAX_VIDEO_BASE64_BYTES:
+                                    raise ValueError(
+                                        f"Video too large ({downloaded} bytes, max {_MAX_VIDEO_BASE64_BYTES})"
+                                    )
+                                fh.write(chunk)
+                    temp_destination.replace(destination)
+                except Exception:
+                    with contextlib.suppress(OSError):
+                        temp_destination.unlink()
+                    raise
 
             return destination
         except Exception as e:

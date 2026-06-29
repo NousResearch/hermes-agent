@@ -108,18 +108,25 @@ def _run(
     turn_exit_reason="unknown",
     interrupted=False,
     failed=False,
+    pending_tool=True,
 ):
-    messages = [
-        {"role": "user", "content": "do a thing"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "function": {"name": "read_file", "arguments": "{}"}}
-            ],
-        },
-        {"role": "tool", "tool_call_id": "c1", "content": "file contents"},
-    ]
+    if pending_tool:
+        messages = [
+            {"role": "user", "content": "do a thing"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "function": {"name": "read_file", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "file contents"},
+        ]
+    else:
+        messages = [
+            {"role": "user", "content": "do a thing"},
+            {"role": "assistant", "content": final_response or "done"},
+        ]
     return finalize_turn(
         agent,
         final_response=final_response,
@@ -180,6 +187,7 @@ def test_text_response_on_last_allowed_call_is_completed():
         final_response="final report",
         api_call_count=agent.max_iterations,
         turn_exit_reason="text_response(finish_reason=stop)",
+        pending_tool=False,
     )
     assert result["final_response"] == "final report"
     assert result["completed"] is True

@@ -201,7 +201,10 @@ def finalize_turn(
     # Determine if conversation completed successfully
     completed = (
         final_response is not None
-        and api_call_count < agent.max_iterations
+        and (
+            api_call_count < agent.max_iterations
+            or str(_turn_exit_reason).startswith("text_response")
+        )
         and not failed
     )
 

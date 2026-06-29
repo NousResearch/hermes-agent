@@ -23,9 +23,20 @@ import subprocess
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+
+try:
+    import fcntl as _fcntl
+except Exception:
+    _fcntl = None  # type: ignore[invalid-assignment]
+
+try:
+    import msvcrt as _msvcrt
+except Exception:
+    _msvcrt = None  # type: ignore[invalid-assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -4541,54 +4552,161 @@ _COMMENTED_SECTIONS = """
 """
 
 
+def get_config_lock_path() -> Path:
+    """Return the path to the config write-lock file."""
+    return get_config_path().parent / (get_config_path().name + ".lock")
+
+
+def _acquire_config_lock(lock_file, exclusive: bool) -> None:
+    """Acquire an OS-level file lock on *lock_file* (an open file object).
+
+    Uses ``fcntl.flock`` on POSIX and a byte-range lock via ``msvcrt`` on
+    Windows.  Falls back silently when neither is available (e.g. NFS without
+    lockd, or exotic platforms) so callers are never hard-blocked.
+    """
+    if _fcntl is not None:
+        op = _fcntl.LOCK_EX if exclusive else _fcntl.LOCK_SH
+        try:
+            _fcntl.flock(lock_file.fileno(), op)
+        except OSError:
+            pass
+    elif _msvcrt is not None and exclusive:
+        try:
+            lock_file.seek(0)
+            _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_NBLCK, 1)
+        except OSError:
+            pass
+
+
+def _release_config_lock(lock_file) -> None:
+    """Release the OS-level file lock held on *lock_file*."""
+    if _fcntl is not None:
+        try:
+            _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_UN)
+        except OSError:
+            pass
+    elif _msvcrt is not None:
+        try:
+            lock_file.seek(0)
+            _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+
+
+@contextmanager
+def config_write_lock():
+    """Exclusive interprocess lock around config.yaml writes.
+
+    Hold this while writing config.yaml **and** its seal so no external
+    process (e.g. the Config Integrity Watchdog) can observe an intermediate
+    state where the file has changed but the seal has not yet been updated.
+
+    Usage::
+
+        with config_write_lock():
+            # write config, update seal
+
+    Falls back gracefully when OS-level locking is unavailable.
+    """
+    lock_path = get_config_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_path, "a+", encoding="utf-8")  # noqa: WPS515 — intentional keep-open
+    try:
+        _acquire_config_lock(lock_file, exclusive=True)
+        yield
+    finally:
+        _release_config_lock(lock_file)
+        lock_file.close()
+
+
+@contextmanager
+def config_read_lock():
+    """Shared interprocess lock for reading config.yaml + seal atomically.
+
+    Multiple readers can hold this concurrently; it blocks while
+    :func:`config_write_lock` is held by a writer.  Use this in the Config
+    Integrity Watchdog before calling :func:`verify_config_integrity` to
+    ensure you never observe an in-flight write.
+
+    Usage::
+
+        with config_read_lock():
+            ok, current, sealed = verify_config_integrity()
+    """
+    lock_path = get_config_lock_path()
+    if not lock_path.parent.exists():
+        yield
+        return
+    if not lock_path.exists():
+        lock_path.touch()
+    lock_file = open(lock_path, "r", encoding="utf-8")
+    try:
+        _acquire_config_lock(lock_file, exclusive=False)
+        yield
+    finally:
+        _release_config_lock(lock_file)
+        lock_file.close()
+
+
+def _write_config_to_disk(config: Dict[str, Any]) -> None:
+    """Perform the actual disk write + seal for config.yaml.
+
+    **Must be called while holding both _CONFIG_LOCK (thread) and
+    config_write_lock (interprocess).**  Extracted so that
+    :func:`restore_config` can call this directly without re-acquiring the
+    interprocess lock (which is not reentrant on POSIX).
+    """
+    from utils import atomic_yaml_write
+
+    ensure_hermes_home()
+    config_path = get_config_path()
+    current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    normalized = current_normalized
+    raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
+    if raw_existing:
+        normalized = _preserve_env_ref_templates(
+            normalized,
+            raw_existing,
+            _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+        )
+
+    parts = []
+    sec = normalized.get("security", {})
+    if not sec or sec.get("redact_secrets") is None:
+        parts.append(_SECURITY_COMMENT)
+    fb = normalized.get("fallback_model", {})
+    fb_is_valid = False
+    if isinstance(fb, list):
+        fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
+    elif isinstance(fb, dict):
+        fb_is_valid = bool(fb.get("provider") and fb.get("model"))
+    if not fb_is_valid:
+        parts.append(_FALLBACK_COMMENT)
+
+    atomic_yaml_write(
+        config_path,
+        normalized,
+        extra_content="".join(parts) if parts else None,
+    )
+    _secure_file(config_path)
+    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+    try:
+        seal_config()
+    except OSError:
+        pass
+
+
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
             return
-        from utils import atomic_yaml_write
 
-        ensure_hermes_home()
-        config_path = get_config_path()
-        current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-        normalized = current_normalized
-        raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
-        if raw_existing:
-            normalized = _preserve_env_ref_templates(
-                normalized,
-                raw_existing,
-                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
-            )
-
-        # Build optional commented-out sections for features that are off by
-        # default or only relevant when explicitly configured.
-        parts = []
-        sec = normalized.get("security", {})
-        if not sec or sec.get("redact_secrets") is None:
-            parts.append(_SECURITY_COMMENT)
-        fb = normalized.get("fallback_model", {})
-        fb_is_valid = False
-        if isinstance(fb, list):
-            fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
-        elif isinstance(fb, dict):
-            fb_is_valid = bool(fb.get("provider") and fb.get("model"))
-        if not fb_is_valid:
-            parts.append(_FALLBACK_COMMENT)
-
-        atomic_yaml_write(
-            config_path,
-            normalized,
-            extra_content="".join(parts) if parts else None,
-        )
-        _secure_file(config_path)
-        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
         # Keep the integrity seal in sync so authorised saves (e.g. model
         # scanner, /model command) don't trigger the Config Integrity Watchdog.
-        try:
-            seal_config()
-        except OSError:
-            pass
+        with config_write_lock():
+            _write_config_to_disk(config)
 
 
 def get_config_seal_path() -> Path:
@@ -4611,12 +4729,21 @@ def seal_config() -> str:
     return digest
 
 
-def verify_config_integrity() -> tuple[bool, str, str]:
+def verify_config_integrity(*, locked: bool = False) -> tuple[bool, str, str]:
     """Check whether config.yaml matches its integrity seal.
 
-    Returns (ok, current_digest, sealed_digest).
-    ok is True when the file matches the seal (or no seal exists yet).
+    Returns ``(ok, current_digest, sealed_digest)``.
+    ``ok`` is True when the file matches the seal (or no seal exists yet).
+
+    Args:
+        locked: When True, acquire :func:`config_read_lock` before reading
+            config and seal files.  Use this from external processes (e.g. the
+            Config Integrity Watchdog) to prevent observing an in-flight write.
     """
+    if locked:
+        with config_read_lock():
+            return verify_config_integrity(locked=False)
+
     config_path = get_config_path()
     seal_path = get_config_seal_path()
     if not config_path.exists():
@@ -4626,6 +4753,53 @@ def verify_config_integrity() -> tuple[bool, str, str]:
         return True, current, ""
     sealed = seal_path.read_text(encoding="utf-8").strip()
     return current == sealed, current, sealed
+
+
+def restore_config(content: "str | dict[str, Any]", *, reason: str = "") -> Path:
+    """Safely restore config.yaml from a known-good state.
+
+    Acquires the exclusive write lock, backs up the current config, then
+    writes *content* through :func:`save_config` (which re-seals atomically).
+    Replaces raw file manipulation in external restore scripts such as
+    ``restore_deepseek_config.py``.
+
+    Args:
+        content: New config as a YAML string or a dict.  Dicts are written
+            directly; strings are parsed then written to normalise formatting.
+        reason: Short label appended to the backup filename for traceability.
+
+    Returns:
+        Path to the backup of the previous config.
+
+    Raises:
+        OSError: If the backup or write fails.
+    """
+    import datetime
+
+    config_path = get_config_path()
+    suffix = f"pre-restore-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    if reason:
+        suffix = f"{suffix}-{reason}"
+    backup_path = config_path.with_name(f"{config_path.name}.{suffix}")
+
+    with _CONFIG_LOCK:
+        with config_write_lock():
+            if config_path.exists():
+                import shutil
+                shutil.copy2(config_path, backup_path)
+                _secure_file(backup_path)
+
+            if isinstance(content, str):
+                import yaml as _yaml
+                data = _yaml.safe_load(content) or {}
+            else:
+                data = content
+
+            # Call the lock-free write helper directly: we already hold both
+            # _CONFIG_LOCK (thread) and config_write_lock (interprocess) above.
+            _write_config_to_disk(data)
+
+    return backup_path
 
 
 def load_env() -> Dict[str, str]:

@@ -475,12 +475,25 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             session = _ensure_tab(task_id, browser_url)
             data = {"ok": True, "url": browser_url}
         else:
-            # Navigate existing tab
-            data = _post(
-                f"/tabs/{session['tab_id']}/navigate",
-                {"userId": session["user_id"], "url": browser_url},
-                timeout=60,
-            )
+            # Navigate existing tab — recover from stale tab 404
+            try:
+                data = _post(
+                    f"/tabs/{session['tab_id']}/navigate",
+                    {"userId": session["user_id"], "url": browser_url},
+                    timeout=60,
+                )
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    logger.warning(
+                        "Camofox tab %s returned 404 — tab was garbage collected. "
+                        "Creating a fresh tab.",
+                        session["tab_id"],
+                    )
+                    session["tab_id"] = None
+                    session = _ensure_tab(task_id, browser_url)
+                    data = {"ok": True, "url": browser_url}
+                else:
+                    raise
         result = {
             "success": True,
             "url": data.get("url", browser_url),

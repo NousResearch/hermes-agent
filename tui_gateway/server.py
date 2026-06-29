@@ -1369,8 +1369,25 @@ def _terminal_task_cwd(session: dict | None) -> str:
     point at nonsense.  Non-local terminal backends are different: their cwd is
     inside the target environment, so an SSH path like /home/user/workspace may
     not exist on the local macOS host but is still the correct execution cwd.
+
+    When ``TERMINAL_ENV`` is unset (dashboard/TUI process) the config's
+    ``terminal.backend`` is consulted as a fallback so the non-local cwd
+    resolution path is taken even when the dashboard entrypoint did not call
+    ``apply_terminal_config_to_env`` on its own ``os.environ``.
     """
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if not backend or backend == "local":
+        # Fall back to config when TERMINAL_ENV is unset (dashboard/TUI process
+        # never calls apply_terminal_config_to_env on os.environ).
+        try:
+            terminal_cfg = _load_cfg().get("terminal", {})
+            if isinstance(terminal_cfg, dict):
+                cfg_backend = str(terminal_cfg.get("backend") or "").strip().lower()
+                if cfg_backend and cfg_backend != "local":
+                    backend = cfg_backend
+        except Exception:
+            pass
+
     if backend and backend != "local":
         raw = os.environ.get("TERMINAL_CWD", "").strip()
         if not raw:

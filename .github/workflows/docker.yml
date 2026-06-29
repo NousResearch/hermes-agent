@@ -172,15 +172,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build once, load into the local daemon for testing, then push
-      # by digest below. Reads AND writes the registry-backed cache so the
-      # push reuses layers from this build and the next build starts warm.
-      #
-      # Registry cache (type=registry on ghcr.io) is used instead of the gha
-      # cache that previously broke here: its credential is the job-lifetime
-      # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
-      # token failure mode cannot recur.
+      # PR validation only needs a runnable local image for the docker tests.
+      # Skip cache export on pull_request runs: fork-triggered workflow tokens
+      # can read the shared ghcr cache but may not write organization package
+      # blobs, which turns a successful build into a red CI job during export.
+      - name: Build image (arm64, PR validation)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE_NAME }}:test
+          build-args: |
+            HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
+
+      # Push/release builds still read AND write the registry-backed cache so
+      # the publish step reuses layers from this build and the next release
+      # starts warm. The job-lifetime GITHUB_TOKEN avoids the old gha SAS-token
+      # expiry problem on slow cold-cache arm64 runs.
       - name: Build image (arm64, cached publish)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .

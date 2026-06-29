@@ -261,6 +261,7 @@ def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> 
             "- Record the answer/status as durable case state before any requester closeout.",
             "- Notify the source/requester thread at most once, with only the actionable delta.",
             "- Record `route_back.sent` only after a real delivery receipt/message_id.",
+            "- Muncho must not send route-backs by DM. Use only public approved Discord channels/threads; if no approved public target is available, record/report `route_back.blocked`.",
             "- If a resolver asks you to forward/notify the requester, either actually notify the source/requester thread and record `route_back.sent`, or record/report `route_back.blocked` with the blocker. A reply like 'noted', 'marked', or 'for forwarding' is not a terminal outcome.",
             "- A `route_back.required` or `route_back.intent.created` tool result is not completion. Keep working in the same turn until there is a `route_back.sent` receipt or `route_back.blocked` blocker.",
             "- Never answer the resolver with only 'noted/marked for forwarding' after a concrete forward request; that leaves the requester uninformed.",

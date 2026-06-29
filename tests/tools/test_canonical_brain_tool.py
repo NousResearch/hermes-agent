@@ -20,6 +20,71 @@ def test_route_back_sent_requires_receipt_message_id():
     assert "requires receipt.message_id" in data["error"]
 
 
+@pytest.mark.parametrize(
+    "target_ref",
+    [
+        {"id": "1521098105041191104", "dm_channel_id": "1521098105041191104"},
+        {"id": "plamenka", "recipient_id": "1282940574533423125"},
+        {"id": "plamenka", "lane": "plamenka_direct_dm"},
+        {"id": "plamenka", "role": "plamenka_direct_dm"},
+        {"id": "plamenka", "channel_type": "dm"},
+    ],
+)
+def test_route_back_blocks_dm_targets_before_helper(monkeypatch, target_ref):
+    called = {"helper": False}
+
+    def boom():
+        called["helper"] = True
+        raise AssertionError("helper must not be loaded after forbidden DM target")
+
+    monkeypatch.setattr(cbt, "_load_helper", boom)
+    out = cbt.route_back_tool(
+        case_id="case:test",
+        target_ref=target_ref,
+        message_summary="forward this to Plamenka",
+        source_refs={"platform": "discord", "message_id": "m1"},
+        mode="queue_intent",
+    )
+    data = json.loads(out)
+
+    assert "forbids direct-message/DM targets" in data["error"]
+    assert called["helper"] is False
+
+
+def test_route_back_sent_blocks_dm_receipt_before_helper(monkeypatch):
+    called = {"helper": False}
+
+    def boom():
+        called["helper"] = True
+        raise AssertionError("helper must not be loaded after forbidden DM receipt")
+
+    monkeypatch.setattr(cbt, "_load_helper", boom)
+    out = cbt.canonical_event_append_tool(
+        event_type="route_back.sent",
+        case_id="case:test",
+        summary="DM receipt must not be accepted",
+        source_refs={"platform": "discord", "message_id": "m1"},
+        payload={
+            "route_back": {
+                "target_ref": {"id": "1521098105041191104"},
+                "receipt": {
+                    "message_id": "delivered-1",
+                    "dm_channel_id": "1521098105041191104",
+                    "recipient_id": "1282940574533423125",
+                },
+            },
+            "receipt": {
+                "message_id": "delivered-1",
+                "dm_channel_id": "1521098105041191104",
+            },
+        },
+    )
+    data = json.loads(out)
+
+    assert "route_back.sent forbids direct-message/DM delivery receipts" in data["error"]
+    assert called["helper"] is False
+
+
 @pytest.mark.parametrize("mode", ["record_required_only", "queue_intent"])
 def test_route_back_pending_modes_return_non_terminal_guard(monkeypatch, mode):
     fake = _FakeHelper()

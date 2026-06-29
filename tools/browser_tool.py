@@ -1431,6 +1431,31 @@ def _clear_network_response_history(task_id: str) -> None:
         logger.debug("Could not clear browser network responses: %s", exc)
 
 
+def _block_browser_network_violation(
+    nav_session_key: str,
+    network_violation: Tuple[str, str, str],
+) -> str:
+    """Navigate away and return a blocked response for an observed unsafe peer."""
+    reason, remote_ip, observed_url = network_violation
+    try:
+        import urllib.parse
+
+        observed_host = urllib.parse.urlsplit(observed_url).hostname or "<unknown>"
+    except Exception:
+        observed_host = "<invalid>"
+    logger.warning(
+        "Blocked browser navigation after CDP reported %s peer %s for host %s",
+        reason,
+        remote_ip,
+        observed_host,
+    )
+    _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
+    return json.dumps({
+        "success": False,
+        "error": f"Blocked: browser connected to a {reason}",
+    })
+
+
 def _socket_safe_tmpdir() -> str:
     """Return a short temp directory path suitable for Unix domain sockets.
 
@@ -2928,18 +2953,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                 allow_private_networks=auto_local_this_nav or _allow_private_urls(),
             )
         if network_violation is not None:
-            reason, remote_ip, observed_url = network_violation
-            logger.warning(
-                "Blocked browser navigation after CDP reported %s peer %s for %s",
-                reason,
-                remote_ip,
-                observed_url,
-            )
-            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
-            return json.dumps({
-                "success": False,
-                "error": f"Blocked: browser connected to a {reason}",
-            })
+            return _block_browser_network_violation(nav_session_key, network_violation)
 
         response = {
             "success": True,
@@ -2997,6 +3011,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     _copy_fallback_warning(response, snap_result)
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
+
+        network_violation = None
+        if not _is_local_backend():
+            network_violation = _recent_unsafe_network_response(
+                nav_session_key,
+                nav_started_at,
+                allow_private_networks=auto_local_this_nav or _allow_private_urls(),
+            )
+        if network_violation is not None:
+            return _block_browser_network_violation(nav_session_key, network_violation)
 
         return json.dumps(response, ensure_ascii=False)
     else:

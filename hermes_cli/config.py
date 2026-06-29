@@ -1339,6 +1339,33 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "loop_detection": {
+        "enabled": True,                # default ON: stop the model when it falls into a repetition loop
+        "window_chars": 4000,
+        "consecutive_line_threshold": 6,
+        "tail_check_min_len": 64,
+        "tail_max_period": 64,
+        "tail_min_repeats": 5,
+        "ngram_size": 48,
+        "distinct_ngram_ratio_threshold": 0.15,
+        "entropy_threshold": 2.5,
+        "block_min_lines": 8,                  # paragraph/plan-cycling loop detection
+        "block_repeat_ratio_threshold": 0.5,   # trip if <=50% of substantial lines are distinct
+        "allowed_min_len": 12,
+        "check_every_bytes": 1024,
+        "relax_in_code_fence": True,
+        "use_zlib_ratio": False,
+        "zlib_ratio_threshold": 0.10,
+        "max_retries": 2,
+    },
+
+    "larp_detection": {
+        "enabled": False,               # OPT-IN: flag when the model claims an action it didn't perform
+        "judge_tier_enabled": False,    # opt-in: extra LLM check for ambiguous outcome claims
+        "max_reprompts": 2,
+        "exempt_toolsets": [],          # add tool-name tokens (e.g. "memory","todo") to make detection stricter
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio

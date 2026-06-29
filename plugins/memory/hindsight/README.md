@@ -86,7 +86,9 @@ Example:
     "recall": {
       "include_global": true,
       "global_bank_id": "global-user",
-      "global_types": ["observation"]
+      "global_types": ["observation"],
+      "global_tags": ["scope:global"],
+      "global_tags_match": "any"
     },
     "rules": [
       {
@@ -106,7 +108,7 @@ Example:
 
 Supported route predicates in this provider are `workspace_path_prefix`, `workspace`, `profile`, `platform`, and `user`. A route matches only when all configured predicates match. `workspace_path_prefix` uses longest-prefix precedence so nested projects choose the most specific route. `strategy: "first_match"` selects the best match; any other strategy currently keeps all matching routes.
 
-Global recall (`bank_routing.recall.include_global`) is recall-only by default so project conversations do not automatically retain into personal/global memory. To retain into a global bank, configure an explicit retain-enabled route.
+Global recall (`bank_routing.recall.include_global`) is recall-only by default so project conversations do not automatically retain into personal/global memory. To retain into a global bank, configure an explicit retain-enabled route. Global recall routes can set `global_tags`, `global_tags_match`, and `global_types`; these do not inherit route/project tags unless explicitly configured.
 
 ### Recall
 

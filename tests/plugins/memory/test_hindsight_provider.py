@@ -1921,6 +1921,73 @@ class TestBankRouting:
         assert routes[0].recall_tags_match == "all_strict"
         assert routes[0].recall_types == ["observation"]
 
+    def test_route_resolution_normalizes_route_string_recall_types_and_bool_strings(self):
+        config = {
+            "recall_types": "observation",
+            "bank_routing": {
+                "rules": [
+                    {
+                        "name": "project",
+                        "bank_id": "project-bank",
+                        "recall": "false",
+                        "retain": "false",
+                        "recall_types": "world, experience",
+                    }
+                ]
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="global-user",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        assert routes[0].recall is False
+        assert routes[0].retain is False
+        assert routes[0].recall_types == ["world", "experience"]
+
+    def test_route_resolution_supports_global_recall_tags_and_bool_strings(self):
+        config = {
+            "recall_types": "observation",
+            "bank_routing": {
+                "recall": {
+                    "include_global": True,
+                    "global_bank_id": "global-user",
+                    "global_retain": "false",
+                    "global_tags": "scope:global,source:hermes",
+                    "global_tags_match": "all_strict",
+                    "global_types": "observation,world",
+                },
+                "rules": [{"name": "project", "bank_id": "project-bank"}],
+            },
+        }
+
+        routes = _resolve_hindsight_routes(
+            config,
+            fallback_bank_id="fallback-bank",
+            bank_id_template="",
+            profile="default",
+            workspace="hermes",
+            workspace_path="/repo/project",
+            platform="cli",
+            user="",
+            session="s1",
+        )
+
+        global_route = routes[1]
+        assert global_route.bank_id == "global-user"
+        assert global_route.retain is False
+        assert global_route.recall_tags == ["scope:global", "source:hermes"]
+        assert global_route.recall_tags_match == "all_strict"
+        assert global_route.recall_types == ["observation", "world"]
+
 
 # ---------------------------------------------------------------------------
 # Availability tests

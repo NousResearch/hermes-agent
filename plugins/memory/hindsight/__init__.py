@@ -638,6 +638,35 @@ def _merge_tags(*values: Any) -> list[str]:
     return merged
 
 
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _normalize_recall_types(value: Any, default: list[str] | None = None) -> list[str]:
+    fallback = list(default or ["observation"])
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        parsed = [t.strip() for t in value.split(",") if t.strip()]
+        return parsed or fallback
+    if isinstance(value, (list, tuple)):
+        parsed = [str(t).strip() for t in value if str(t).strip()]
+        return parsed or fallback
+    return fallback
+
+
 def _route_matches(rule: dict[str, Any], *, profile: str, workspace: str,
                    workspace_path: str, platform: str, user: str) -> bool:
     prefix = str(rule.get("workspace_path_prefix") or "").rstrip("/")
@@ -681,13 +710,7 @@ def _resolve_hindsight_routes(
     default_retain_tags = _normalize_retain_tags(config.get("retain_tags"))
     default_recall_tags = _normalize_retain_tags(config.get("recall_tags"))
     default_recall_tags_match = str(config.get("recall_tags_match") or "any")
-    configured_recall_types = config.get("recall_types")
-    if configured_recall_types is None:
-        default_recall_types = ["observation"]
-    elif isinstance(configured_recall_types, str):
-        default_recall_types = [t.strip() for t in configured_recall_types.split(",") if t.strip()]
-    else:
-        default_recall_types = list(configured_recall_types) or ["observation"]
+    default_recall_types = _normalize_recall_types(config.get("recall_types"))
     routing = config.get("bank_routing")
     if not isinstance(routing, dict):
         return [
@@ -719,12 +742,12 @@ def _resolve_hindsight_routes(
         routes.append(HindsightBankRoute(
             name=str(rule.get("name") or bank_id),
             bank_id=_sanitize_bank_segment(bank_id),
-            recall=bool(rule.get("recall", True)),
-            retain=bool(rule.get("retain", True)),
+            recall=_config_bool(rule.get("recall"), True),
+            retain=_config_bool(rule.get("retain"), True),
             retain_tags=_merge_tags(default_retain_tags, rule.get("retain_tags")),
             recall_tags=_merge_tags(default_recall_tags, rule.get("recall_tags")),
             recall_tags_match=str(rule.get("recall_tags_match") or default_recall_tags_match),
-            recall_types=list(recall_types) if isinstance(recall_types, list) else default_recall_types,
+            recall_types=_normalize_recall_types(recall_types, default_recall_types),
         ))
 
     if not routes and routing.get("include_fallback", True):
@@ -737,7 +760,8 @@ def _resolve_hindsight_routes(
             recall_types=default_recall_types,
         ))
 
-    recall_cfg = routing.get("recall") if isinstance(routing.get("recall"), dict) else {}
+    raw_recall_cfg = routing.get("recall")
+    recall_cfg: dict[str, Any] = raw_recall_cfg if isinstance(raw_recall_cfg, dict) else {}
     if recall_cfg.get("include_global"):
         global_bank = str(recall_cfg.get("global_bank_id") or fallback_bank).strip()
         if global_bank and all(route.bank_id != _sanitize_bank_segment(global_bank) for route in routes):
@@ -746,8 +770,10 @@ def _resolve_hindsight_routes(
                 name=str(recall_cfg.get("global_name") or "global"),
                 bank_id=_sanitize_bank_segment(global_bank),
                 recall=True,
-                retain=bool(recall_cfg.get("global_retain", False)),
-                recall_types=list(global_types) if isinstance(global_types, list) else None,
+                retain=_config_bool(recall_cfg.get("global_retain"), False),
+                recall_tags=_normalize_retain_tags(recall_cfg.get("global_tags")),
+                recall_tags_match=str(recall_cfg.get("global_tags_match") or "any"),
+                recall_types=_normalize_recall_types(global_types, default_recall_types),
             ))
     return routes
 

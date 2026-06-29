@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,7 @@ def push_turn_change(
     *,
     feed_channel_id: Optional[str] = None,
     token: Optional[str] = None,
+    summarize_fn: Optional[Callable[[str], str]] = None,
 ) -> bool:
     """Push a turn-change notification to the feed channel + task thread.
 
@@ -150,6 +151,14 @@ def push_turn_change(
         Override the configured feed channel id (used in tests).
     token:
         Override the Discord bot token (used in tests).
+    summarize_fn:
+        Optional callable ``(question: str) -> str``.  When ``new_state``
+        is ``"WAITING_USER"`` and ``row["last_question"]`` is non-empty,
+        this function is called with the raw question string and its return
+        value is embedded in the message.  When ``None`` (the default), the
+        raw question is formatted as a readable blockquote inline note.
+        Never called for non-WAITING_USER transitions or when last_question
+        is absent/empty.
 
     Returns True if at least one message was posted, False otherwise.
     """
@@ -186,6 +195,15 @@ def push_turn_change(
     )
     if thread_id:
         message += f" | <#{thread_id}>"
+
+    # Append the needs_input question when transitioning to WAITING_USER
+    if new_state == "WAITING_USER":
+        question = row.get("last_question") or ""
+        if question:
+            question_text = (
+                summarize_fn(question) if summarize_fn is not None else f"Question: {question}"
+            )
+            message += f"\n> {question_text}"
 
     posted = False
 

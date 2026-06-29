@@ -263,3 +263,125 @@ class TestClearLastNotified:
         feed_mod._last_notified["task-x"] = "WAITING_USER"
         clear_last_notified("task-x")
         assert "task-x" not in feed_mod._last_notified
+
+
+# ---------------------------------------------------------------------------
+# T012 — summarize_fn / last_question tests
+# ---------------------------------------------------------------------------
+
+
+class TestPushTurnChangeSummarizeFn:
+    """Tests for the summarize_fn / last_question feature (T012)."""
+
+    def _row_with_question(self, question: str) -> Dict[str, Any]:
+        row = _make_row(task_id="t-q01", thread_id="thread-q01")
+        row["last_question"] = question
+        return row
+
+    def test_push_turn_change_waiting_user_includes_question(self):
+        """WAITING_USER + last_question: message contains the question text."""
+        tracker = _FakePostTracker()
+        row = self._row_with_question("What should the output format be?")
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            result = push_turn_change(
+                "t-q01",
+                row,
+                new_state="WAITING_USER",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-q01",
+            )
+
+        assert result is True
+        # Both feed and thread messages should contain the question
+        for _, content in tracker.calls:
+            assert "What should the output format be?" in content, (
+                f"question not found in message: {content!r}"
+            )
+        # Must be a readable blockquote, not a raw JSON dump
+        for _, content in tracker.calls:
+            assert content.count("{") == 0, "message must not contain raw JSON braces"
+
+    def test_push_turn_change_summarize_fn_called(self):
+        """When summarize_fn is provided it is called with last_question and its result is embedded."""
+        tracker = _FakePostTracker()
+        question_received: list = []
+
+        def fake_summarize(q: str) -> str:
+            question_received.append(q)
+            return "SUMMARY"
+
+        row = self._row_with_question("Should I use tabs or spaces?")
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-q01",
+                row,
+                new_state="WAITING_USER",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-q01",
+                summarize_fn=fake_summarize,
+            )
+
+        # fn must have been called exactly once with the question string
+        assert question_received == ["Should I use tabs or spaces?"], (
+            f"summarize_fn not called correctly; got calls: {question_received}"
+        )
+        # Both posted messages must contain the fn's return value
+        for _, content in tracker.calls:
+            assert "SUMMARY" in content, f"summary not in message: {content!r}"
+
+    def test_push_turn_change_no_question_no_summarize_fn_call(self):
+        """When last_question is absent/empty, summarize_fn is NOT called."""
+        tracker = _FakePostTracker()
+        fn_calls: list = []
+
+        def recording_fn(q: str) -> str:
+            fn_calls.append(q)
+            return "SHOULD_NOT_APPEAR"
+
+        # Row with no last_question key
+        row = _make_row(task_id="t-q02", thread_id="thread-q02")
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            result = push_turn_change(
+                "t-q02",
+                row,
+                new_state="WAITING_USER",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-q02",
+                summarize_fn=recording_fn,
+            )
+
+        assert fn_calls == [], f"summarize_fn must not be called when no question; got: {fn_calls}"
+        # Post still succeeds (no question note appended, but message is valid)
+        assert result is True
+        for _, content in tracker.calls:
+            assert "SHOULD_NOT_APPEAR" not in content
+
+    def test_push_turn_change_non_waiting_state_no_summarize_fn_call(self):
+        """When new_state != WAITING_USER, summarize_fn is NOT called even if last_question present."""
+        tracker = _FakePostTracker()
+        fn_calls: list = []
+
+        def recording_fn(q: str) -> str:
+            fn_calls.append(q)
+            return "SHOULD_NOT_APPEAR"
+
+        row = self._row_with_question("Is this a good stopping point?")
+
+        with patch.object(feed_mod, "_post_discord_message", tracker):
+            push_turn_change(
+                "t-q01",
+                row,
+                new_state="PAUSED_HANDOFF",
+                old_state="RUNNING",
+                feed_channel_id="feed-ch-q01",
+                summarize_fn=recording_fn,
+            )
+
+        assert fn_calls == [], (
+            f"summarize_fn must not be called for non-WAITING_USER state; got: {fn_calls}"
+        )
+        for _, content in tracker.calls:
+            assert "SHOULD_NOT_APPEAR" not in content

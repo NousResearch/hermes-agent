@@ -9682,6 +9682,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+            # Evict the cached agent so the fresh session does not inherit the
+            # previous conversation's context_compressor._previous_summary —
+            # the cache is keyed on the stable session_key, so an auto-reset
+            # otherwise reuses the old agent and leaks prior history into new
+            # compaction summaries. Mirrors /reset and the compression-exhausted
+            # path (#9893). Covers daily/idle/suspended auto-reset.
+            self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
         
         # Emit session:start for new or auto-reset sessions
@@ -9785,11 +9792,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # was_auto_reset is already consumed in the cleanup block above
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
-
-            # Evict cached agent to prevent stale context_compressor._previous_summary
-            # from leaking into the new session after auto-reset (daily/idle/suspended).
-            # Follow-up to #9893 which only handled compression_exhausted case.
-            self._evict_cached_agent(session_key)
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.

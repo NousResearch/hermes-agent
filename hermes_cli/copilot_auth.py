@@ -43,6 +43,17 @@ COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 # Polling constants
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
+_COPILOT_AUTH_JSON_BODY_MAX_BYTES = 1024 * 1024
+
+
+def _read_copilot_json_response(resp, *, label: str) -> dict:
+    body = resp.read(_COPILOT_AUTH_JSON_BODY_MAX_BYTES + 1)
+    if len(body) > _COPILOT_AUTH_JSON_BODY_MAX_BYTES:
+        raise ValueError(
+            f"Copilot {label} response exceeded "
+            f"{_COPILOT_AUTH_JSON_BODY_MAX_BYTES} bytes"
+        )
+    return json.loads(body.decode())
 
 
 def validate_copilot_token(token: str) -> tuple[bool, str]:
@@ -193,7 +204,7 @@ def copilot_device_code_login(
 
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            device_data = json.loads(resp.read().decode())
+            device_data = _read_copilot_json_response(resp, label="device code")
     except Exception as exc:
         logger.error("Failed to initiate device authorization: %s", exc)
         print(f"  ✗ Failed to start device authorization: {exc}")
@@ -239,7 +250,7 @@ def copilot_device_code_login(
 
         try:
             with urllib.request.urlopen(poll_req, timeout=10) as resp:
-                result = json.loads(resp.read().decode())
+                result = _read_copilot_json_response(resp, label="device code poll")
         except Exception:
             print(".", end="", flush=True)
             continue
@@ -334,7 +345,7 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
+            data = _read_copilot_json_response(resp, label="token exchange")
     except Exception as exc:
         raise ValueError(f"Copilot token exchange failed: {exc}") from exc
 

@@ -97,6 +97,25 @@ class TestExchangeCopilotToken:
         with pytest.raises(ValueError, match="network error"):
             exchange_copilot_token("gho_test123")
 
+    @patch("urllib.request.urlopen")
+    def test_response_body_size_limit(self, mock_urlopen, monkeypatch):
+        from hermes_cli.copilot_auth import exchange_copilot_token
+
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth._COPILOT_AUTH_JSON_BODY_MAX_BYTES",
+            8,
+        )
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"x" * 9
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        with pytest.raises(ValueError, match="token exchange response exceeded 8 bytes"):
+            exchange_copilot_token("gho_test123")
+
+        mock_resp.read.assert_called_once_with(9)
+
 
 class TestGetCopilotApiToken:
     """Tests for get_copilot_api_token() — the fallback wrapper."""

@@ -1352,11 +1352,19 @@ _PORT_BINDING_PLATFORM_VALUES = frozenset({
     "webhook",
     "api_server",
     "msgraph_webhook",
-    "feishu",
     "wecom_callback",
     "bluebubbles",
     "sms",
 })
+
+
+def _secondary_profile_platform_binds_port(platform: Any, config: Any) -> bool:
+    """Return True when a secondary-profile adapter would bind a local port."""
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "feishu":
+        extra = getattr(config, "extra", {}) or {}
+        return str(extra.get("connection_mode") or "websocket").strip().lower() == "webhook"
+    return platform_value in _PORT_BINDING_PLATFORM_VALUES
 
 
 class MultiplexConfigError(RuntimeError):
@@ -7612,17 +7620,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # default profile's listener already serves every profile via the
             # /p/<profile>/ prefix, so a second bind can only collide. This is a
             # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
-                raise MultiplexConfigError(
-                    f"Profile '{profile_name}' enables the port-binding platform "
-                    f"'{platform.value}', but gateway.multiplex_profiles is on. The "
-                    f"default profile owns the single shared HTTP listener and "
-                    f"serves every profile through the /p/{profile_name}/ URL "
-                    f"prefix — a secondary profile cannot bind its own port. "
-                    f"Remove platforms.{platform.value} from profile "
-                    f"'{profile_name}'s config.yaml (configure it only on the "
-                    f"default profile)."
+            if _secondary_profile_platform_binds_port(platform, platform_config):
+                logger.warning(
+                    "Profile '%s' enables the port-binding platform '%s', but "
+                    "gateway.multiplex_profiles is on. The default profile owns "
+                    "the shared listener and serves this profile through the "
+                    "/p/%s/ URL prefix, so the secondary adapter will be skipped.",
+                    profile_name,
+                    platform.value,
+                    profile_name,
                 )
+                continue
             with _profile_runtime_scope(profile_home):
                 adapter = self._create_adapter(platform, platform_config)
             if not adapter:
@@ -7691,7 +7699,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         we don't attempt conflict detection for it).
         """
         token = None
-        for attr in ("token", "bot_token", "_token", "api_token", "_bot_token"):
+        for attr in ("token", "bot_token", "_token", "api_token", "_bot_token", "app_id", "_app_id"):
             val = getattr(adapter, attr, None)
             if isinstance(val, str) and val.strip():
                 token = val.strip()

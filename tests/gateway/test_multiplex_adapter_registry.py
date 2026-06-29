@@ -78,12 +78,11 @@ class TestProfileMessageHandler:
         assert seen["profile"] == "writer"
 
 
-class TestPortBindingHardError:
-    """A secondary profile enabling a port-binding platform aborts startup."""
+class TestPortBindingSecondaryProfiles:
+    """Secondary profiles skip listener adapters but can run Feishu websocket."""
 
     @pytest.mark.asyncio
-    async def test_secondary_webhook_raises(self, monkeypatch):
-        from gateway.run import MultiplexConfigError
+    async def test_secondary_webhook_is_skipped(self, monkeypatch):
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -99,10 +98,8 @@ class TestPortBindingHardError:
             "gateway.config.load_gateway_config", lambda: reviewer_cfg
         )
 
-        with pytest.raises(MultiplexConfigError) as ei:
-            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
-        assert "webhook" in str(ei.value)
-        assert "reviewer" in str(ei.value)
+        connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert connected == 0
 
     @pytest.mark.asyncio
     async def test_secondary_non_binding_platform_ok(self, monkeypatch):
@@ -130,7 +127,24 @@ class TestPortBindingHardError:
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES
         # Every adapter that binds a TCP port must be in the guard set.
-        for p in ("webhook", "api_server", "msgraph_webhook", "feishu",
+        for p in ("webhook", "api_server", "msgraph_webhook",
                   "wecom_callback", "bluebubbles", "sms"):
             assert p in _PORT_BINDING_PLATFORM_VALUES
 
+    def test_feishu_websocket_is_not_port_binding(self):
+        from gateway.config import Platform, PlatformConfig
+        from gateway.run import _secondary_profile_platform_binds_port
+
+        assert not _secondary_profile_platform_binds_port(
+            Platform.FEISHU,
+            PlatformConfig(enabled=True, extra={"connection_mode": "websocket"}),
+        )
+
+    def test_feishu_webhook_is_port_binding(self):
+        from gateway.config import Platform, PlatformConfig
+        from gateway.run import _secondary_profile_platform_binds_port
+
+        assert _secondary_profile_platform_binds_port(
+            Platform.FEISHU,
+            PlatformConfig(enabled=True, extra={"connection_mode": "webhook"}),
+        )

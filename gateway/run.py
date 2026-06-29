@@ -4050,6 +4050,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     queued_events.pop(session_key, None)
         return removed
 
+    async def _notify_adapter_message_accepted(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        phase: str = "active",
+    ) -> None:
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        if platform is None:
+            return
+        adapter = self.adapters.get(platform)
+        if adapter is None:
+            return
+        hook = getattr(adapter, "on_gateway_message_accepted", None)
+        if not callable(hook):
+            return
+        try:
+            result = hook(event, session_key, phase=phase)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Adapter accepted-message hook failed", exc_info=True)
+
+    @staticmethod
+    def _apply_streaming_preview_hook(
+        adapter: Any,
+        *,
+        metadata: Optional[Dict[str, Any]],
+        cursor: str,
+        buffer_only: bool,
+    ) -> tuple[Optional[Dict[str, Any]], str, bool]:
+        hook = getattr(adapter, "prepare_streaming_preview", None)
+        if not callable(hook):
+            return metadata, cursor, buffer_only
+        try:
+            overrides = hook(metadata=metadata, cursor=cursor, buffer_only=buffer_only)
+        except Exception:
+            logger.debug("Adapter streaming-preview hook failed", exc_info=True)
+            return metadata, cursor, buffer_only
+        if not isinstance(overrides, dict):
+            return metadata, cursor, buffer_only
+        if isinstance(overrides.get("metadata"), dict):
+            metadata = overrides["metadata"]
+        if "cursor" in overrides:
+            cursor = str(overrides.get("cursor") or "")
+        if "buffer_only" in overrides:
+            buffer_only = bool(overrides.get("buffer_only"))
+        return metadata, cursor, buffer_only
+
     def _goal_still_active_for_session(self, session_id: str) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""
         if not session_id:
@@ -4697,6 +4747,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True  # handled (silently dropped); do not fall through
 
+        await self._notify_adapter_message_accepted(event, session_key, phase="busy")
+
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
             adapter = self.adapters.get(event.source.platform)
@@ -4747,9 +4799,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
+        delivery_intent = str(getattr(event, "delivery_intent", "") or "").strip().lower()
+        if delivery_intent == "queue":
+            effective_mode = "queue"
+        elif delivery_intent == "interrupt":
+            effective_mode = "interrupt"
+
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
-            event.message_type == MessageType.TEXT
+            not delivery_intent
+            and event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
@@ -4813,7 +4872,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
         if not steered:
-            self._queue_or_replace_pending_event(session_key, event)
+            if delivery_intent == "interrupt":
+                adapter._pending_messages[session_key] = event
+            else:
+                self._queue_or_replace_pending_event(session_key, event)
+            queue_changed = getattr(adapter, "_on_runtime_queue_changed", None)
+            if callable(queue_changed):
+                try:
+                    await queue_changed(session_key)
+                except Exception:
+                    logger.debug("Runtime queue-change hook failed", exc_info=True)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -4948,6 +5016,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to send busy-ack: %s", e)
 
         return True
+
+    async def _handle_runtime_control_signal(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        signal: str,
+    ) -> bool:
+        """Handle trusted platform runtime controls without user-text dispatch."""
+        source = event.source
+        adapter = self.adapters.get(source.platform) if source else None
+        if not source or not session_key:
+            return False
+
+        if signal in {"interrupt", "stop_and_drop"}:
+            if signal == "stop_and_drop":
+                if adapter is not None and hasattr(adapter, "_pending_messages"):
+                    adapter._pending_messages.pop(session_key, None)
+                queued_events = getattr(self, "_queued_events", None)
+                if isinstance(queued_events, dict):
+                    queued_events.pop(session_key, None)
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_STOP,
+                invalidation_reason=f"runtime_control_{signal}",
+                discard_pending=signal == "stop_and_drop",
+            )
+            return True
+
+        if signal == "new_session":
+            if adapter is not None and hasattr(adapter, "_pending_messages"):
+                adapter._pending_messages.pop(session_key, None)
+            queued_events = getattr(self, "_queued_events", None)
+            if isinstance(queued_events, dict):
+                queued_events.pop(session_key, None)
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_RESET,
+                invalidation_reason="runtime_control_new_session",
+            )
+            await self._handle_reset_command(event)
+            return True
+
+        return False
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
@@ -6199,6 +6312,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
+            if hasattr(adapter, "set_runtime_control_handler"):
+                adapter.set_runtime_control_handler(self._handle_runtime_control_signal)
+            if hasattr(adapter, "set_queue_depth_provider"):
+                adapter.set_queue_depth_provider(
+                    lambda session_key, _adapter=adapter: self._queue_depth(
+                        session_key,
+                        adapter=_adapter,
+                    )
+                )
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -7001,6 +7123,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
+                    if hasattr(adapter, "set_runtime_control_handler"):
+                        adapter.set_runtime_control_handler(self._handle_runtime_control_signal)
+                    if hasattr(adapter, "set_queue_depth_provider"):
+                        adapter.set_queue_depth_provider(
+                            lambda session_key, _adapter=adapter: self._queue_depth(
+                                session_key,
+                                adapter=_adapter,
+                            )
+                        )
 
                     # Reconnect after an outage: preserve the platform's
                     # server-side update queue so messages sent while the bot
@@ -7654,6 +7785,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
+            if hasattr(adapter, "set_runtime_control_handler"):
+                adapter.set_runtime_control_handler(self._handle_runtime_control_signal)
+            if hasattr(adapter, "set_queue_depth_provider"):
+                adapter.set_queue_depth_provider(
+                    lambda session_key, _adapter=adapter: self._queue_depth(
+                        session_key,
+                        adapter=_adapter,
+                    )
+                )
 
             try:
                 with _profile_runtime_scope(profile_home):
@@ -7988,6 +8128,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        await self._notify_adapter_message_accepted(event, _quick_key)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -15041,6 +15182,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""
                         _buffer_only = True
+                    _stream_metadata, _effective_cursor, _buffer_only = self._apply_streaming_preview_hook(
+                        _adapter,
+                        metadata=_thread_metadata,
+                        cursor=_effective_cursor,
+                        buffer_only=_buffer_only,
+                    )
                     # Fresh-final applies to Telegram only — other
                     # platforms either edit in place cheaply (Discord,
                     # Slack) or don't have the timestamp-on-edit
@@ -15063,7 +15210,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         adapter=_adapter,
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
-                        metadata=_thread_metadata,
+                        metadata=_stream_metadata,
                         on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=event_message_id,
                     )
@@ -16231,6 +16378,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if source.platform == Platform.MATRIX:
                             _effective_cursor = ""
                             _buffer_only = True
+                        _stream_metadata, _effective_cursor, _buffer_only = self._apply_streaming_preview_hook(
+                            _adapter,
+                            metadata=_status_thread_metadata,
+                            cursor=_effective_cursor,
+                            buffer_only=_buffer_only,
+                        )
                         # Fresh-final applies to Telegram only — other
                         # platforms either edit in place cheaply or don't
                         # have the edit-timestamp-stays-stale problem.
@@ -16253,7 +16406,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata=_status_thread_metadata,
+                            metadata=_stream_metadata,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None

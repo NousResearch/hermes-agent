@@ -1691,6 +1691,10 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Optional platform-level routing preference for messages that arrive while
+    # a turn is already running. Supported values are "queue" and "interrupt".
+    delivery_intent: Optional[str] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -2229,6 +2233,8 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        self._runtime_control_handler: Optional[Callable[[MessageEvent, str, str], Awaitable[bool]]] = None
+        self._queue_depth_provider: Optional[Callable[[str], int]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2660,6 +2666,17 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_runtime_control_handler(
+        self,
+        handler: Optional[Callable[[MessageEvent, str, str], Awaitable[bool]]],
+    ) -> None:
+        """Set an optional handler for trusted platform runtime controls."""
+        self._runtime_control_handler = handler
+
+    def set_queue_depth_provider(self, provider: Optional[Callable[[str], int]]) -> None:
+        """Set an optional queue-depth provider owned by the gateway runner."""
+        self._queue_depth_provider = provider
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -3752,6 +3769,15 @@ class BasePlatformAdapter(ABC):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
+    async def on_gateway_message_accepted(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        phase: str = "active",
+    ) -> None:
+        """Hook called after the gateway accepts an authorized inbound event."""
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 
@@ -3764,6 +3790,16 @@ class BasePlatformAdapter(ABC):
             await hook(*args, **kwargs)
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+
+    def prepare_streaming_preview(
+        self,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+        cursor: str = "",
+        buffer_only: bool = False,
+    ) -> dict[str, Any]:
+        """Allow adapters to adjust stream-consumer metadata/config."""
+        return {}
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -4583,7 +4619,19 @@ class BasePlatformAdapter(ABC):
                 typing_task,
             )
         
+        processing_started = False
         try:
+            runtime_start = getattr(self, "_on_runtime_turn_start", None)
+            if callable(runtime_start):
+                try:
+                    await runtime_start(event, session_key)
+                except Exception:
+                    logger.debug(
+                        "[%s] Runtime turn start hook failed",
+                        self.name,
+                        exc_info=True,
+                    )
+            processing_started = True
             await self._run_processing_hook("on_processing_start", event)
 
             # Call the handler (this can take a while with tool calls)
@@ -4936,9 +4984,31 @@ class BasePlatformAdapter(ABC):
             outcome = ProcessingOutcome.CANCELLED
             if current_task is None or current_task not in self._expected_cancelled_tasks:
                 outcome = ProcessingOutcome.FAILURE
+            runtime_complete = getattr(self, "_on_runtime_turn_complete", None)
+            if processing_started and callable(runtime_complete):
+                try:
+                    await runtime_complete(event, session_key, outcome)
+                except Exception:
+                    logger.debug(
+                        "[%s] Runtime turn completion hook failed",
+                        self.name,
+                        exc_info=True,
+                    )
+                processing_started = False
             await self._run_processing_hook("on_processing_complete", event, outcome)
             raise
         except Exception as e:
+            runtime_complete = getattr(self, "_on_runtime_turn_complete", None)
+            if processing_started and callable(runtime_complete):
+                try:
+                    await runtime_complete(event, session_key, ProcessingOutcome.FAILURE)
+                except Exception:
+                    logger.debug(
+                        "[%s] Runtime turn completion hook failed",
+                        self.name,
+                        exc_info=True,
+                    )
+                processing_started = False
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
@@ -4965,6 +5035,27 @@ class BasePlatformAdapter(ABC):
             # callbacks may perform platform I/O; a stuck callback must not
             # leave the typing refresh task running indefinitely.
             await _stop_typing_task()
+            runtime_complete = getattr(self, "_on_runtime_turn_complete", None)
+            if processing_started and callable(runtime_complete):
+                try:
+                    await runtime_complete(event, session_key, ProcessingOutcome.SUCCESS)
+                except Exception:
+                    logger.debug(
+                        "[%s] Runtime turn completion hook failed",
+                        self.name,
+                        exc_info=True,
+                    )
+                processing_started = False
+            runtime_queue_changed = getattr(self, "_on_runtime_queue_changed", None)
+            if callable(runtime_queue_changed):
+                try:
+                    await runtime_queue_changed(session_key)
+                except Exception:
+                    logger.debug(
+                        "[%s] Runtime queue-change hook failed",
+                        self.name,
+                        exc_info=True,
+                    )
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #

@@ -778,6 +778,15 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return hmac.compare_digest(generic_sig, expected)
 
+        # Asana: X-Hook-Signature = <hex HMAC-SHA256 of raw body>
+        # Secret is established during the Asana webhook handshake (X-Hook-Secret).
+        asana_sig = request.headers.get("X-Hook-Signature", "")
+        if asana_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(asana_sig, expected)
+
         # No recognised signature header but secret is configured → reject
         logger.debug(
             "[webhook] Secret configured but no signature header found"

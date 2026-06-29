@@ -717,8 +717,9 @@ def init_agent(
 
                 if is_token_provider(effective_key):
                     print("🔑 Using credentials: Microsoft Entra ID")
-                elif isinstance(effective_key, str) and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                elif isinstance(effective_key, str) and effective_key.strip():
+                    credential_kind = "Bearer/OAuth token" if agent._is_anthropic_oauth else "API key"
+                    print(f"🔑 Using credentials: {credential_kind}")
     elif agent.provider == "moa":
         from agent.moa_loop import MoAClient
         agent.api_mode = "chat_completions"

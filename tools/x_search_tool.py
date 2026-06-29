@@ -59,7 +59,7 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_X_SEARCH_MODEL = "grok-4.20-reasoning"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
-MAX_HANDLES = 10
+MAX_HANDLES = 20
 
 
 # ---------------------------------------------------------------------------
@@ -470,12 +470,12 @@ X_SEARCH_SCHEMA = {
             "allowed_x_handles": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of X handles to include exclusively (max 10).",
+                "description": "Optional list of X handles to include exclusively (max 20).",
             },
             "excluded_x_handles": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of X handles to exclude (max 10).",
+                "description": "Optional list of X handles to exclude (max 20).",
             },
             "from_date": {
                 "type": "string",

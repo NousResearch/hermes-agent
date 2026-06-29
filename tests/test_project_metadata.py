@@ -11,6 +11,13 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
+def _load_project_dependencies():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    return project["dependencies"]
+
+
 def _load_package_data():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
@@ -87,6 +94,20 @@ def test_lazy_installable_extras_excluded_from_all():
             f"Remove it from [all] in pyproject.toml — it lazy-installs "
             f"at first use. Found in [all]: {offending}"
         )
+
+
+def test_core_dependencies_are_exact_pinned():
+    deps = _load_project_dependencies()
+    ranged = []
+    for dep in deps:
+        requirement = dep.split(";", 1)[0].strip()
+        if "==" not in requirement:
+            ranged.append(dep)
+
+    assert not ranged, (
+        "Core pyproject dependencies must use exact == pins; move optional "
+        f"or ranged deps to extras/lazy install paths. Found: {ranged}"
+    )
 
 
 def _exact_pins(specs):

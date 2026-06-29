@@ -33,6 +33,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -94,6 +95,8 @@ DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+LOCAL_STT_COMMAND_HEALTH_TIMEOUT_SECONDS = 10
+LOCAL_STT_COMMAND_HEALTH_TTL_SECONDS = 300
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -111,6 +114,7 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+_local_command_health_cache: Dict[str, tuple[float, Optional[str]]] = {}
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -161,6 +165,87 @@ def _find_whisper_binary() -> Optional[str]:
     return _find_binary("whisper")
 
 
+def _compact_command_output(
+    stdout: Optional[str] = None,
+    stderr: Optional[str] = None,
+    *,
+    max_lines: int = 8,
+    max_chars: int = 900,
+) -> str:
+    """Return a short, user-safe summary of command output."""
+    chunks = []
+    for label, value in (("stderr", stderr), ("stdout", stdout)):
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        text = (value or "").strip()
+        if not text:
+            continue
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            continue
+        snippet = "\n".join(lines[-max_lines:])
+        chunks.append(f"{label}: {snippet}")
+    detail = "; ".join(chunks).strip()
+    if not detail:
+        detail = "no command output"
+    if len(detail) > max_chars:
+        detail = detail[: max_chars - 1].rstrip() + "…"
+    return detail
+
+
+def _local_command_probe_cache_key(binary_path: str) -> str:
+    """Return a cache key that changes when a Homebrew symlink target changes."""
+    try:
+        resolved = os.path.realpath(binary_path)
+        stat = os.stat(resolved)
+        return f"{binary_path}|{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
+    except OSError:
+        return f"{binary_path}|missing"
+
+
+def _check_auto_whisper_command(binary_path: str) -> Optional[str]:
+    """Return None when the auto-discovered whisper CLI imports cleanly.
+
+    Homebrew can leave ``/opt/homebrew/bin/whisper`` present but unusable after
+    dependency churn, for example when PyTorch is linked against a protobuf
+    dylib that was upgraded away. ``whisper --help`` imports the same Python
+    package stack without touching user audio, so it is a cheap preflight for
+    the local-command STT path.
+    """
+    cache_key = _local_command_probe_cache_key(binary_path)
+    now = time.monotonic()
+    cached = _local_command_health_cache.get(cache_key)
+    if cached and now - cached[0] < LOCAL_STT_COMMAND_HEALTH_TTL_SECONDS:
+        return cached[1]
+
+    error: Optional[str] = None
+    try:
+        proc = subprocess.run(
+            [binary_path, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=LOCAL_STT_COMMAND_HEALTH_TIMEOUT_SECONDS,
+            stdin=subprocess.DEVNULL,
+        )
+        if proc.returncode != 0:
+            detail = _compact_command_output(proc.stdout, proc.stderr)
+            error = f"whisper --help exited with code {proc.returncode}: {detail}"
+    except subprocess.TimeoutExpired as exc:
+        detail = _compact_command_output(
+            getattr(exc, "output", None),
+            getattr(exc, "stderr", None),
+        )
+        error = (
+            f"whisper --help timed out after "
+            f"{LOCAL_STT_COMMAND_HEALTH_TIMEOUT_SECONDS}s: {detail}"
+        )
+    except OSError as exc:
+        error = f"whisper command is not executable: {exc}"
+
+    _local_command_health_cache[cache_key] = (now, error)
+    return error
+
+
 def _get_local_command_template() -> Optional[str]:
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
@@ -177,7 +262,19 @@ def _get_local_command_template() -> Optional[str]:
 
 
 def _has_local_command() -> bool:
-    return _get_local_command_template() is not None
+    configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
+    if configured:
+        return True
+
+    whisper_binary = _find_whisper_binary()
+    if not whisper_binary:
+        return False
+
+    health_error = _check_auto_whisper_command(whisper_binary)
+    if health_error:
+        logger.warning("Auto-discovered local STT command is unavailable: %s", health_error)
+        return False
+    return True
 
 
 def _normalize_local_model(model_name: Optional[str]) -> str:
@@ -1211,6 +1308,21 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             ),
         }
 
+    if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
+        whisper_binary = _find_whisper_binary()
+        if whisper_binary:
+            health_error = _check_auto_whisper_command(whisper_binary)
+            if health_error:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": (
+                        "Local STT command is installed but failed its startup "
+                        f"check: {health_error}"
+                    ),
+                    "provider": "local_command",
+                }
+
     # Language: config.yaml (stt.local.language) > env var > "en" default.
     language = (
         _load_stt_config().get("local", {}).get("language")
@@ -1262,10 +1374,27 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             "transcript": "",
             "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template, missing placeholder: {e}",
         }
+    except subprocess.TimeoutExpired as e:
+        details = _compact_command_output(
+            getattr(e, "output", None),
+            getattr(e, "stderr", None),
+        )
+        logger.error("Local STT command timed out for %s: %s", file_path, details)
+        return {
+            "success": False,
+            "transcript": "",
+            "provider": "local_command",
+            "error": f"Local STT command timed out after 300s: {details}",
+        }
     except subprocess.CalledProcessError as e:
-        details = e.stderr.strip() or e.stdout.strip() or str(e)
+        details = _compact_command_output(e.stdout, e.stderr)
         logger.error("Local STT command failed for %s: %s", file_path, details)
-        return {"success": False, "transcript": "", "error": f"Local STT failed: {details}"}
+        return {
+            "success": False,
+            "transcript": "",
+            "provider": "local_command",
+            "error": f"Local STT failed: {details}",
+        }
     except Exception as e:
         logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}

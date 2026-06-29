@@ -97,6 +97,57 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
     assert result["error"] == "allowed_x_handles and excluded_x_handles cannot be used together"
 
 
+def test_x_search_allows_twenty_handle_filters(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    captured = {}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"output_text": "ok", "citations": []})
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    handles = [f"user{i}" for i in range(20)]
+    result = json.loads(
+        x_search_tool(
+            query="latest buyer intent",
+            allowed_x_handles=handles,
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["json"]["tools"][0]["allowed_x_handles"] == handles
+
+
+def test_x_search_schema_documents_twenty_handle_limit():
+    from tools.x_search_tool import X_SEARCH_SCHEMA
+
+    properties = X_SEARCH_SCHEMA["parameters"]["properties"]
+    assert "(max 20)" in properties["allowed_x_handles"]["description"]
+    assert "(max 20)" in properties["excluded_x_handles"]["description"]
+
+
+def test_x_search_rejects_more_than_twenty_handle_filters(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    def _fake_post(*args, **kwargs):
+        raise AssertionError("x_search should fail before making an HTTP request")
+
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setattr("requests.post", _fake_post)
+
+    result = json.loads(
+        x_search_tool(
+            query="latest buyer intent",
+            allowed_x_handles=[f"user{i}" for i in range(21)],
+        )
+    )
+
+    assert "supports at most 20 handles" in result["error"]
+
+
 def test_x_search_extracts_inline_url_citations(monkeypatch):
     from tools.x_search_tool import x_search_tool
 
@@ -722,4 +773,3 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["success"] is True
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
-

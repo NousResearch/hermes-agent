@@ -46,6 +46,13 @@ _MANIFEST_VERSION = 1
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
+_GIT_SHA_REF_RE = re.compile(r"[0-9a-f]{7,40}")
+_IMMUTABLE_TAG_REF_RE = re.compile(r"v?\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?")
+
+
+def _is_immutable_git_ref(ref: str) -> bool:
+    """Return True for commit-SHA refs or release-tag-shaped refs."""
+    return bool(_GIT_SHA_REF_RE.fullmatch(ref) or _IMMUTABLE_TAG_REF_RE.fullmatch(ref))
 
 
 # ─── Data classes ────────────────────────────────────────────────────────────
@@ -87,7 +94,7 @@ class InstallSpec:
     """
     type: str  # "git"
     url: str
-    ref: str  # commit/tag/branch — pinned, never floats
+    ref: str  # commit SHA or release tag — pinned, never floats
     bootstrap: List[str] = field(default_factory=list)
 
 
@@ -235,10 +242,14 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         i_type = install_raw.get("type")
         if i_type != "git":
             raise CatalogError(f"{path}: install.type must be 'git' (got {i_type!r})")
-        url = install_raw.get("url") or ""
-        ref = install_raw.get("ref") or ""
+        url = str(install_raw.get("url") or "").strip()
+        ref = str(install_raw.get("ref") or "").strip()
         if not url or not ref:
             raise CatalogError(f"{path}: install.url and install.ref are required")
+        if not _is_immutable_git_ref(ref):
+            raise CatalogError(
+                f"{path}: install.ref must be a commit SHA or release tag, not floating ref {ref!r}"
+            )
         bootstrap = install_raw.get("bootstrap") or []
         if not isinstance(bootstrap, list):
             raise CatalogError(f"{path}: install.bootstrap must be a list")
@@ -394,7 +405,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     # Detecting SHA-shaped refs upfront avoids a guaranteed stderr leak on
     # the fast path (the --branch attempt would always fail noisily for a
     # SHA ref before we fall back to full-clone-then-checkout).
-    is_sha_ref = bool(re.fullmatch(r"[0-9a-f]{7,40}", install.ref))
+    is_sha_ref = bool(_GIT_SHA_REF_RE.fullmatch(install.ref))
 
     if not is_sha_ref:
         proc = subprocess.run(

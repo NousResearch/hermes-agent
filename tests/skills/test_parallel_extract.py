@@ -28,6 +28,7 @@ def frontmatter() -> dict:
 def test_description_under_60_chars(frontmatter) -> None:
     desc = frontmatter["description"]
     assert len(desc) <= 60, f"description is {len(desc)} chars: {desc!r}"
+    assert desc.startswith("Use when "), desc
 
 
 def test_author_credits_contributor(frontmatter) -> None:

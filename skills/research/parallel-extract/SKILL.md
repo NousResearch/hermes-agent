@@ -1,7 +1,7 @@
 ---
 name: parallel-extract
-description: "Bulk public URLs to markdown via Parallel Extract for RAG."
-version: 1.0.0
+description: "Use when bulk URL lists need Parallel Extract for RAG."
+version: 1.0.1
 author: Nietzsche-Ubermensch, Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]

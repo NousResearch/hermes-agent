@@ -82,6 +82,9 @@ const E164_RE = /^\+\d{6,}$/;
 const nativeEffectsEnabled = /^(1|true|yes|on)$/i.test(
   (process.env.PHOTON_NATIVE_EFFECTS || "").trim()
 );
+const nativeRepliesEnabled = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_NATIVE_REPLIES || "").trim()
+);
 const EFFECTS = {
   slam: "com.apple.MobileSMS.expressivesend.impact",
   impact: "com.apple.MobileSMS.expressivesend.impact",
@@ -262,6 +265,7 @@ let Spectrum,
   imessageRead,
   attachment,
   voice,
+  replyContent,
   spectrumText,
   spectrumMarkdown,
   spectrumTyping,
@@ -271,6 +275,7 @@ try {
     Spectrum,
     attachment,
     voice,
+    reply: replyContent,
     text: spectrumText,
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
@@ -799,6 +804,31 @@ const server = http.createServer(async (req, res) => {
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
       const result = await space.send(imessageEffect(content, resolvedEffect));
       return ok(res, { messageId: result?.id || null, effect: resolvedEffect });
+    }
+    if (req.url === "/reply") {
+      if (!nativeRepliesEnabled) {
+        return badRequest(res, "native replies are disabled");
+      }
+      const { spaceId, messageId, text, format = "text" } = body || {};
+      if (!spaceId || !messageId || typeof text !== "string") {
+        return badRequest(res, "spaceId, messageId and text are required");
+      }
+      if (format !== "text" && format !== "markdown") {
+        return badRequest(res, "format must be text or markdown");
+      }
+      if (typeof replyContent !== "function") {
+        return badRequest(res, "native replies not supported on this platform");
+      }
+      const space = await resolveSpace(spaceId);
+      const target =
+        knownMessages.get(messageId) ?? (await space.getMessage(messageId));
+      if (!target) {
+        return badRequest(res, "message not found");
+      }
+      const content =
+        format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      const result = await space.send(replyContent(content, target));
+      return ok(res, { messageId: result?.id || null, repliedTo: messageId });
     }
     if (req.url === "/send-attachment") {
       const { spaceId, path, name, mimeType, caption, kind } =

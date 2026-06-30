@@ -364,6 +364,13 @@ class PhotonAdapter(BasePlatformAdapter):
             "true", "1", "yes", "on",
         }
 
+        _native_replies = extra.get("native_replies")
+        if _native_replies is None:
+            _native_replies = os.getenv("PHOTON_NATIVE_REPLIES")
+        self._native_replies_enabled = str(_native_replies).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
     # -- Group-mention gating (parity with BlueBubbles) -------------------
 
     @staticmethod
@@ -956,6 +963,7 @@ class PhotonAdapter(BasePlatformAdapter):
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
         env["PHOTON_NATIVE_EFFECTS"] = "true" if self._native_effects_enabled else "false"
+        env["PHOTON_NATIVE_REPLIES"] = "true" if self._native_replies_enabled else "false"
         # The sidecar exits when its stdin (the pipe below) hits EOF, so a
         # gateway death of ANY kind — including SIGKILL, where disconnect()
         # never runs — can't leave it orphaned on the port.
@@ -1137,6 +1145,38 @@ class PhotonAdapter(BasePlatformAdapter):
             body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send-effect", body)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
+        return SendResult(success=True, message_id=data.get("messageId"))
+
+    async def reply_to_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        markdown: bool = True,
+    ) -> SendResult:
+        """Send a native iMessage threaded reply through the Photon sidecar."""
+        if not self._native_replies_enabled:
+            return SendResult(success=False, error="Photon native replies are disabled")
+        text = self.format_message(content)
+        if len(text) > self.MAX_MESSAGE_LENGTH:
+            logger.warning(
+                "[photon] truncating reply outbound from %d to %d chars",
+                len(text), self.MAX_MESSAGE_LENGTH,
+            )
+            text = text[: self.MAX_MESSAGE_LENGTH]
+        body: Dict[str, Any] = {
+            "spaceId": chat_id,
+            "messageId": message_id,
+            "text": text,
+        }
+        if markdown and _markdown_enabled():
+            body["format"] = "markdown"
+        try:
+            data = await self._sidecar_call("/reply", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))

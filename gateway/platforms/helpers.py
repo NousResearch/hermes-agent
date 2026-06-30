@@ -367,7 +367,7 @@ def _render_table_block(table_block: list[str]) -> str:
                 continue
             bullets.append(f"• {header}: {value}")
 
-        group_lines = [f"**{heading}**", *bullets]
+        group_lines = [f"**{strip_markdown(heading)}**", *bullets]
         rendered_groups.append("\n".join(group_lines))
 
     return "\n\n".join(rendered_groups)

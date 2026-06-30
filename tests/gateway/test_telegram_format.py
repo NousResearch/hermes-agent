@@ -806,6 +806,16 @@ class TestFormatMessageTables:
         assert "```" not in out
         assert "\\|" not in out
 
+    def test_embedded_heading_markdown_is_normalized(self, adapter):
+        text = (
+            "| Type | Notes |\n"
+            "|------|-------|\n"
+            "| Copy **Hands** | ok |"
+        )
+        out = adapter.format_message(text)
+        assert out.splitlines()[0] == "*Copy Hands*"
+        assert "• Notes: ok" in out
+
     def test_text_after_table_still_formatted(self, adapter):
         text = (
             "| A | B |\n"

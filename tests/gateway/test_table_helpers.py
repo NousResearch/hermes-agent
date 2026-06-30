@@ -81,6 +81,25 @@ class TestConvertTableToBullets:
         assert "• head1: a" not in out
         assert "• head2: b" in out
 
+    def test_heading_markdown_is_normalized_before_group_bold(self):
+        cases = [
+            ("**넷플릭스파**", "**넷플릭스파**"),
+            ("__Netflix__", "**Netflix**"),
+            ("***Title***", "**Title**"),
+            ("[Netflix](https://example.com)", "**Netflix**"),
+            ("`code`", "**code**"),
+            ("Copy **Hands**", "**Copy Hands**"),
+        ]
+        for heading, expected in cases:
+            text = (
+                "| Type | Notes |\n"
+                "|------|-------|\n"
+                f"| {heading} | ok |"
+            )
+            out = convert_table_to_bullets(text)
+            assert out.splitlines()[0] == expected
+            assert f"**{heading}**" not in out
+
     def test_two_consecutive_tables(self):
         text = (
             "| A | B |\n"

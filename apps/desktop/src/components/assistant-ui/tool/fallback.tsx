@@ -30,7 +30,7 @@ import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
-import { PendingToolApproval } from './tool-approval'
+import { PendingToolApproval } from './approval'
 import {
   buildToolView,
   clampForDisplay,
@@ -48,7 +48,7 @@ import {
   toolPartDisclosureId,
   type ToolStatus,
   type ToolTitleAction
-} from './tool-fallback-model'
+} from './fallback-model'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this

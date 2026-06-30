@@ -6,8 +6,8 @@ import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 
-import { PendingApprovalFallback, PendingToolApproval } from './tool-approval'
-import type { ToolPart } from './tool-fallback-model'
+import { PendingApprovalFallback, PendingToolApproval } from './approval'
+import type { ToolPart } from './fallback-model'
 
 // Radix's DropdownMenu touches pointer-capture + scrollIntoView, which jsdom
 // doesn't implement; stub them so the menu can open in tests.

@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { Thread } from './thread'
+import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 

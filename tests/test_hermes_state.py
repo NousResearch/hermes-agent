@@ -4,6 +4,7 @@ import sqlite3
 import time
 import pytest
 
+import hermes_state
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 

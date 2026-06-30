@@ -177,6 +177,149 @@ def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
     agent.context_compressor.compress.assert_not_called()
 
 
+def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
+    """The owning compression call must keep its lease alive while it runs."""
+    real_try_acquire = SessionDB.try_acquire_compression_lock
+
+    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
+        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+
+    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+
+    parent_sid = "REFRESH_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    agent_a = _build_agent_with_db(db, parent_sid)
+    agent_a._compression_lock_ttl_seconds = 1.0
+    agent_a._compression_lock_refresh_interval = 0.25
+
+    def _slow_compress(*_a, **_kw):
+        time.sleep(2.0)
+        return [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+
+    agent_a.context_compressor.compress.side_effect = _slow_compress
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    def run(agent):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    t_a = threading.Thread(target=run, args=(agent_a,), name="refresh_owner")
+    t_a.start()
+    deadline = time.time() + 2.0
+    while db.get_compression_lock_holder(parent_sid) is None and time.time() < deadline:
+        time.sleep(0.05)
+    assert db.get_compression_lock_holder(parent_sid) is not None
+    time.sleep(1.2)
+    assert db.try_acquire_compression_lock(
+        parent_sid, "refresh_probe", ttl_seconds=1.0
+    ) is False, "live owner lease expired and was reclaimable before compression finished"
+    t_a.join(timeout=10)
+
+    assert not t_a.is_alive()
+    assert _count_children(db, parent_sid) == 1
+    assert db.get_compression_lock_holder(parent_sid) is None
+
+
+def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatch) -> None:
+    """A warning-path exception after compress() returns must still release the lock."""
+    real_try_acquire = SessionDB.try_acquire_compression_lock
+
+    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
+        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+
+    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "REFRESH_EXCEPTION_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._compression_lock_ttl_seconds = 1.0
+    agent._compression_lock_refresh_interval = 0.1
+    agent.context_compressor._last_summary_error = "summary failed"
+    agent._emit_warning = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("warn boom"))
+
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with pytest.raises(RuntimeError, match="warn boom"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    time.sleep(1.3)
+    assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
+
+
+def test_abort_warning_exception_stops_lock_refresher(tmp_path: Path, monkeypatch) -> None:
+    """An abort-path warning exception must still release the refreshed lock."""
+    real_try_acquire = SessionDB.try_acquire_compression_lock
+
+    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
+        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+
+    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "REFRESH_ABORT_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._compression_lock_ttl_seconds = 1.0
+    agent._compression_lock_refresh_interval = 0.1
+
+    def _aborting_compress(*_a, **_kw):
+        agent.context_compressor._last_compress_aborted = True
+        agent.context_compressor._last_summary_error = "summary failed"
+        return [{"role": "user", "content": "tail"}]
+
+    agent.context_compressor.compress.side_effect = _aborting_compress
+    agent._emit_warning = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("abort boom"))
+
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with pytest.raises(RuntimeError, match="abort boom"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    time.sleep(1.3)
+    assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
+
+
+def test_typeerror_fallback_exception_stops_lock_refresher(tmp_path: Path, monkeypatch) -> None:
+    """A strict-signature fallback failure must still release the refreshed lock."""
+    real_try_acquire = SessionDB.try_acquire_compression_lock
+
+    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
+        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+
+    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "REFRESH_TYPEERROR_TEST"
+    db.create_session(parent_sid, source="discord")
+
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._compression_lock_ttl_seconds = 1.0
+    agent._compression_lock_refresh_interval = 0.1
+
+    def _strict_signature(*_a, **_kw):
+        if "focus_topic" in _kw or "force" in _kw:
+            raise TypeError("strict signature")
+        raise RuntimeError("fallback boom")
+
+    agent.context_compressor.compress.side_effect = _strict_signature
+
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with pytest.raises(RuntimeError, match="fallback boom"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    time.sleep(1.3)
+    assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
+
+
 class _NoLockSubsystemDB:
     """Wraps a real SessionDB but simulates a pre-#34351 version skew.
 
@@ -210,7 +353,7 @@ class _NoLockSubsystemDB:
         return getattr(self._real, name)
 
 
-def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> None:
+def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path, monkeypatch) -> None:
     """Version skew (no lock methods) must fail OPEN, not raise into the loop.
 
     Reproduces the "API call #47/#48/#49 ... has no attribute
@@ -227,6 +370,12 @@ def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> 
     # Swap in the lock-less wrapper AFTER construction (the agent already
     # holds a normal db reference; we only break the lock methods).
     agent._session_db = _NoLockSubsystemDB(db)
+    monkeypatch.setattr(
+        "agent.conversation_compression._CompressionLockLeaseRefresher",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("lock refresher should not start on fail-open lock skew")
+        ),
+    )
 
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
@@ -244,7 +393,7 @@ def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path) -> 
     assert agent.session_id != parent_sid
 
 
-def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None:
+def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path: Path) -> None:
     """The background-review fork must set ``compression_enabled = False``
     so it can never compress the parent it shares a session_id with
     (issue #38727).
@@ -270,8 +419,6 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None
     ``AIAgent.run_conversation`` patched (so no LLM call happens) and
     captures the constructed review agent to assert the flag.
     """
-    import tempfile
-
     import agent.background_review as br
 
     captured = {}
@@ -283,21 +430,20 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None
 
     parent_sid = "REVIEW_FORK_FLAG_TEST"
 
-    with tempfile.TemporaryDirectory() as td:
-        db = SessionDB(db_path=Path(td) / "state.db")
-        db.create_session(parent_sid, source="discord")
-        parent = _build_agent_with_db(db, parent_sid)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(parent_sid, source="discord")
+    parent = _build_agent_with_db(db, parent_sid)
 
-        # The worker does a local ``from run_agent import AIAgent``; patching
-        # the class method covers that import path.
-        from run_agent import AIAgent
+    # The worker does a local ``from run_agent import AIAgent``; patching
+    # the class method covers that import path.
+    from run_agent import AIAgent
 
-        with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
-            br._run_review_in_thread(
-                parent,
-                [{"role": "user", "content": "hi"}],
-                "review this conversation",
-            )
+    with patch.object(AIAgent, "run_conversation", _fake_run_conversation):
+        br._run_review_in_thread(
+            parent,
+            [{"role": "user", "content": "hi"}],
+            "review this conversation",
+        )
 
     assert captured, (
         "_run_review_in_thread never reached run_conversation — the spawn path "
@@ -314,3 +460,156 @@ def test_review_fork_disables_compression_to_prevent_stale_parent_fork() -> None
         "conversation_loop.py only short-circuit when compression_enabled is "
         "False — this flag MUST be cleared on the review fork."
     )
+    db.close()
+
+
+# ── Lease-refresher bounded-failure tolerance (salvage follow-up, #54465) ────
+# A single falsy refresh (transient DB blip) must NOT permanently kill the
+# lease — only a *persistent* failure (genuine lost-ownership) should stop the
+# refresher after a bounded number of consecutive failures. Without this, one
+# escaped lock-contention error silently reintroduces the TTL-expiry wedge the
+# PR set out to fix.
+
+
+class _FlakyRefreshDB:
+    """A db whose refresh_compression_lock returns a scripted sequence."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls = 0
+
+    def refresh_compression_lock(self, session_id, holder, ttl_seconds=300.0):
+        self.calls += 1
+        if self._results:
+            return self._results.pop(0)
+        return True  # steady-state success after the scripted prefix
+
+
+def _no_sleep(refresher) -> None:
+    """Make the refresher loop iterate without real wall-clock sleeps.
+
+    ``_stop.wait(interval)`` returns False (keep looping) instantly instead of
+    blocking for the (clamped) interval, so count-based tests stay fast and
+    deterministic — the loop's termination is driven by the failure cap / the
+    scripted db, not by timing.
+    """
+    refresher._stop.wait = lambda _interval: False  # type: ignore[assignment]
+
+
+def test_lease_refresher_survives_single_transient_failure() -> None:
+    """One False (transient blip) followed by success must NOT stop the loop.
+
+    Regression for the W1/W2 finding: the original ``if not refreshed: break``
+    treated a one-off failure identically to genuine lost-ownership, killing
+    the lease on the first hiccup.
+    """
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    # Script: success, FAILURE (blip), success, then stop the loop externally.
+    db = _FlakyRefreshDB([True, False, True])
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=0.001
+    )
+    # Stop after exactly 4 ticks (3 scripted + 1 steady success), no real sleep.
+    refresher._stop.wait = lambda _i: db.calls >= 4  # type: ignore[assignment]
+    refresher._run()
+
+    # The single False at call 2 must NOT have ended the loop — we keep going
+    # past it (calls reach >= 4), proving the blip was tolerated.
+    assert db.calls >= 4, (
+        "Lease refresher stopped after a single transient failure — the "
+        "bounded-tolerance fix regressed (one blip must not kill the lease)."
+    )
+
+
+def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
+    """Persistent failure stops within one lease's worth of time, not forever.
+
+    The contract (not a magic count): the give-up window
+    ``cap * refresh_interval`` must be <= the TTL, so a stuck refresher can
+    never hold the lock past its TTL. We assert that relationship directly
+    rather than freezing a literal cap (behavior contract over snapshot).
+    """
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    ttl, interval = 10.0, 2.0  # cap should be int(10/2) = 5
+    db = _FlakyRefreshDB([False] * 50)  # never recovers (lost ownership)
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=ttl, refresh_interval_seconds=interval
+    )
+    _no_sleep(refresher)
+    refresher._run()
+
+    cap = refresher._max_consecutive_failures
+    assert cap == int(ttl / interval), "cap must derive from ttl/interval"
+    # Stops at the cap — not on the first failure, not forever.
+    assert db.calls == cap
+    # The invariant that makes the cap honest: total tolerance <= one TTL.
+    assert cap * interval <= ttl, (
+        f"give-up window {cap * interval}s must not exceed the lease TTL {ttl}s"
+    )
+
+
+def test_lease_refresher_failure_cap_has_floor_of_one() -> None:
+    """A degenerate interval >= ttl still tolerates exactly one blip (floor 1)."""
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    db = _FlakyRefreshDB([False] * 10)
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=1.0, refresh_interval_seconds=5.0
+    )
+    _no_sleep(refresher)
+    refresher._run()
+    assert refresher._max_consecutive_failures == 1
+    assert db.calls == 1
+
+
+def test_lease_refresher_recovers_after_raise() -> None:
+    """A raise treated as a failure tick must RESET on a later success — the
+    exception arm gets the same blip-tolerance as a falsy return, not just a
+    'doesn't crash' guarantee."""
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    class _RaiseThenOKDB:
+        """Raise once, then succeed forever — the transient-blip analog."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def refresh_compression_lock(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("simulated DB hiccup")
+            return True
+
+    db = _RaiseThenOKDB()
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
+    )
+    # Run a handful of ticks past the raise, then stop.
+    refresher._stop.wait = lambda _i: db.calls >= 4  # type: ignore[assignment]
+    refresher._run()  # must not propagate the RuntimeError
+    # Survived the raise and kept refreshing — the counter reset on recovery.
+    assert db.calls >= 4
+
+
+def test_lease_refresher_stops_on_persistent_raise() -> None:
+    """A refresh that raises every tick is bounded by the same TTL-derived cap,
+    never propagates, and never loops forever."""
+    from agent.conversation_compression import _CompressionLockLeaseRefresher
+
+    class _AlwaysRaiseDB:
+        def __init__(self):
+            self.calls = 0
+
+        def refresh_compression_lock(self, *a, **k):
+            self.calls += 1
+            raise RuntimeError("simulated DB hiccup")
+
+    db = _AlwaysRaiseDB()
+    refresher = _CompressionLockLeaseRefresher(
+        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
+    )
+    _no_sleep(refresher)
+    refresher._run()  # must not propagate
+    assert db.calls == refresher._max_consecutive_failures

@@ -7,7 +7,7 @@ import { $activeSessionId } from '@/store/session'
 import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
-import { Thread } from './thread'
+import { Thread } from '../thread'
 
 // Regression coverage for the "approval must never be buried" bug. Tools now
 // render as a flat list (no collapsible "N steps" group), so a pending tool's

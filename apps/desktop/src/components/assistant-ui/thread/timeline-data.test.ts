@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { activeTimelineIndex, deriveTimelineEntries, timelinePreview } from './thread-timeline-data'
+import { activeTimelineIndex, deriveTimelineEntries, timelinePreview } from './timeline-data'
 
 describe('timelinePreview', () => {
   it('collapses whitespace to a single line', () => {

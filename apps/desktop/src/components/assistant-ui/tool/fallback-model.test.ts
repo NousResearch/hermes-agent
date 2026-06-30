@@ -9,7 +9,7 @@ import {
   inlineDiffFromResult,
   MAX_TOOL_RENDER_CHARS,
   type ToolPart
-} from './tool-fallback-model'
+} from './fallback-model'
 
 const part = (overrides: Partial<ToolPart>): ToolPart => ({
   args: {},

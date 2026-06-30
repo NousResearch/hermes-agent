@@ -1382,3 +1382,44 @@ class TestPatchAnchorsMiddleware:
         await PatchAnchorsMiddleware()(ctx, next_fn)
         assert ctx.raw_text == "hi [image: /cache/y.png]"
         next_fn.assert_awaited_once()
+
+
+# ============================================================
+# ForwardedRecordsParseMiddleware: loading heartbeat must be awaited
+# ============================================================
+
+class TestForwardedRecordsLoadingHeartbeat:
+    """The RUNNING heartbeat coroutine must actually be awaited.
+
+    Regression: ``handle`` called ``self._send_loading_heartbeat(ctx)``
+    without ``await``, so the coroutine was created and discarded — the
+    loading bubble never showed and Python logged "coroutine ... was never
+    awaited".
+    """
+
+    @pytest.mark.asyncio
+    async def test_loading_heartbeat_is_awaited(self):
+        from gateway.platforms.yuanbao import ForwardedRecordsParseMiddleware
+
+        adapter = make_adapter()
+        hb = AsyncMock()
+        adapter._outbound = MagicMock()
+        adapter._outbound.heartbeat.send_heartbeat_once = hb
+
+        ctx = make_ctx(
+            adapter=adapter,
+            forwarded_records=[{"any": "record"}],
+            chat_id="direct:alice",
+        )
+
+        ran = {"next": 0}
+
+        async def next_fn():
+            ran["next"] += 1
+
+        await ForwardedRecordsParseMiddleware()(ctx, next_fn)
+
+        # The coroutine must have been awaited (heartbeat actually sent),
+        # not created-and-discarded.
+        hb.assert_awaited()
+        assert ran["next"] == 1

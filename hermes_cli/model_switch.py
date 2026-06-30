@@ -1958,8 +1958,14 @@ def list_authenticated_providers(
                         models_list.append(m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    # List entries are normally plain id strings, but hand-edited
+                    # configs sometimes use {id|model|name: ..., label: ...} dicts.
+                    # Extract the id so models_list stays a list[str]: every
+                    # downstream consumer (inventory dedup, capabilities, pricing)
+                    # assumes string ids and calls .lower() / uses them as keys.
+                    mid = (m.get("id") or m.get("model") or m.get("name") or "") if isinstance(m, dict) else m
+                    if mid and mid not in models_list:
+                        models_list.append(mid)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.

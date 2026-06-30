@@ -3808,7 +3808,15 @@ def generate_launchd_plist() -> str:
     # to launchd's WorkingDirectory as to systemd's).
     working_dir = _stable_service_working_dir()
     hermes_home = str(get_hermes_home().resolve())
-    log_dir = get_hermes_home() / "logs"
+    launchd_home = _launchd_user_home()
+    if hermes_home.startswith("/Volumes/"):
+        # launchd opens stdout/stderr before external volumes may be mounted.
+        # Keep cwd and launchd-owned logs on the boot volume; HERMES_HOME still
+        # points at the external-volume runtime/config root.
+        working_dir = str(launchd_home)
+        log_dir = launchd_home / "Library" / "Logs" / "Hermes"
+    else:
+        log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
@@ -3839,7 +3847,9 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
+    # Build ProgramArguments array, including --profile when using a named profile.
+    # Keep this repo-generic: runtime identity is carried by HERMES_HOME in the
+    # plist environment, not by machine-specific launcher scripts.
     prog_args = [
         f"<string>{python_path}</string>",
         "<string>-m</string>",
@@ -3895,10 +3905,10 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{log_dir}/gateway.launchd.out.log</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{log_dir}/gateway.launchd.err.log</string>
 </dict>
 </plist>
 """

@@ -4421,6 +4421,120 @@ class TelegramAdapter(BasePlatformAdapter):
                 return await self._bot.send_message(**retry_kwargs)
             raise
 
+    def _control_deck_payload(self, section: str = "home") -> tuple[str, Any]:
+        """Build Telegram Control Deck text + inline keyboard.
+
+        Buttons are deliberately navigation-only in this first version: they
+        expose copy-friendly slash commands without executing privileged actions
+        from callback clicks.
+        """
+        sections = {
+            "home": (
+                "☤ *Hermes Control Deck*\n\n"
+                "Быстрые режимы для работы со мной. Кнопки ниже открывают подсказки, "
+                "а команды можно скопировать и отправить сообщением.\n\n"
+                "Главная команда для разработки:\n"
+                "`/cc-codex <задача>`\n\n"
+                "Она запускает guarded workflow: Claude Code → Codex review → Playwright проверка.",
+                [
+                    [
+                        InlineKeyboardButton("🚀 Кодинг", callback_data="cd:code"),
+                        InlineKeyboardButton("🛡 Ревью", callback_data="cd:review"),
+                    ],
+                    [
+                        InlineKeyboardButton("🧠 Память", callback_data="cd:memory"),
+                        InlineKeyboardButton("⚙️ Система", callback_data="cd:system"),
+                    ],
+                    [InlineKeyboardButton("📚 Все команды", callback_data="cd:commands")],
+                ],
+            ),
+            "code": (
+                "🚀 *Кодинг режим*\n\n"
+                "Используй, когда нужно писать/чинить код с quality gate.\n\n"
+                "`/cc-codex <задача>`\n"
+                "Claude Code реализует, Codex делает double-review, UI проверяется Playwright.\n\n"
+                "`/background <задача>`\n"
+                "Запустить длинную задачу в фоне.\n\n"
+                "`/agents`\n"
+                "Показать активные агенты/процессы.",
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="cd:home")]],
+            ),
+            "review": (
+                "🛡 *Ревью и качество*\n\n"
+                "`/status` — состояние сессии и модели\n"
+                "`/usage` — токены, контекст, лимиты\n"
+                "`/commands` — полный список команд\n\n"
+                "Для Claude Code внутри проекта:\n"
+                "`/codex:review --base main --background`\n"
+                "`/codex:adversarial-review --base main --background`",
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="cd:home")]],
+            ),
+            "memory": (
+                "🧠 *Память и навыки*\n\n"
+                "`/memory` — pending memory writes / approval\n"
+                "`/skills` — skills и approval\n"
+                "`/sessions` — прошлые сессии\n"
+                "`/resume` — продолжить сохранённую сессию\n\n"
+                "Важные процедуры лучше превращать в skills, а не держать в голове.",
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="cd:home")]],
+            ),
+            "system": (
+                "⚙️ *Система*\n\n"
+                "`/model` — выбрать модель\n"
+                "`/fast` — fast mode\n"
+                "`/reasoning` — reasoning effort\n"
+                "`/platform` — статус/пауза gateway platform\n"
+                "`/restart` — graceful restart gateway\n"
+                "`/version` — версия Hermes\n\n"
+                "Опасные действия всё равно требуют approve gate.",
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="cd:home")]],
+            ),
+            "commands": (
+                "📚 *Все команды*\n\n"
+                "Полный список с пагинацией:\n"
+                "`/commands`\n"
+                "`/commands 2`\n\n"
+                "Быстрый help:\n"
+                "`/help`",
+                [[InlineKeyboardButton("⬅️ Назад", callback_data="cd:home")]],
+            ),
+        }
+        text, rows = sections.get(section, sections["home"])
+        return self.format_message(text), InlineKeyboardMarkup(rows)  # type: ignore[operator]
+
+    async def send_control_deck(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send the Telegram Control Deck with inline navigation buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        text, keyboard = self._control_deck_payload("home")
+        parse_mode = ParseMode.MARKDOWN_V2 if ParseMode is not None else None
+        thread_id = self._metadata_thread_id(metadata)
+        reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+        try:
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as exc:
+            logger.warning("[%s] Failed to send Telegram Control Deck: %s", self.name, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -5233,6 +5347,33 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Control Deck callbacks (navigation-only; no command execution) ---
+        if data.startswith("cd:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to use this menu.")
+                return
+            section = data.split(":", 1)[1] or "home"
+            text, keyboard = self._control_deck_payload(section)
+            parse_mode = ParseMode.MARKDOWN_V2 if ParseMode is not None else None
+            try:
+                await query.edit_message_text(
+                    text=text,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                await query.answer(text="Could not update menu.")
+                return
+            await query.answer()
             return
 
         # --- Gmail-triage callbacks (gt:verb:arg) ---

@@ -4989,6 +4989,11 @@ class AIAgent:
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in opts)
+        # Custom/vLLM/Ollama providers: pass through reasoning if user
+        # explicitly configured it.  The CustomProfile.build_api_kwargs_extras()
+        # handles the wire format (think=True/False + reasoning_effort).
+        if (self.provider or "").strip().lower() in ("custom", "ollama", "vllm", "local"):
+            return True
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:

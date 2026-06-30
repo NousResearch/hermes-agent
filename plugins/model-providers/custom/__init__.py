@@ -30,12 +30,19 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
-        # Disable thinking when reasoning is turned off
+        # Reasoning / thinking support for custom providers (vLLM, Ollama, etc.)
         if reasoning_config and isinstance(reasoning_config, dict):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
+            else:
+                # Pass through thinking enabled — vLLM/Ollama use this to
+                # enable chain-of-thought reasoning on compatible models.
+                extra_body["think"] = True
+                # Pass through effort level if specified
+                if _effort and _effort not in ("none", ""):
+                    extra_body["reasoning_effort"] = _effort
 
         return extra_body, {}
 

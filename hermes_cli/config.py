@@ -2524,6 +2524,8 @@ DEFAULT_CONFIG = {
         # @mentions someone other than the bot) unless the bot is also mentioned.
         # Opt-in; default off keeps existing behaviour. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
         "ignore_other_user_mentions": False,
+        # If True, require @mention in Slack thread replies too.
+        "thread_require_mention": False,
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 

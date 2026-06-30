@@ -218,6 +218,27 @@ class TestCacheMediaBytes:
         assert result.kind == "document"
         assert result.media_type == "text/csv"
 
+    def test_extensionless_utf8_upload_is_cached_as_text_document(self):
+        from gateway.platforms.base import cache_media_bytes
+
+        result = cache_media_bytes(b"hello\nsecond line\n", filename="", mime_type="")
+
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "text/plain"
+        assert result.path.endswith(".txt")
+        assert Path(result.path).read_text() == "hello\nsecond line\n"
+
+    def test_extensionless_binary_upload_stays_octet_stream_document(self):
+        from gateway.platforms.base import cache_media_bytes
+
+        result = cache_media_bytes(b"\x00\xff\x00", filename="", mime_type="")
+
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/octet-stream"
+        assert result.path.endswith(".bin")
+
     def test_unknown_document_cached_as_octet_stream(self):
         """Unknown file types are cached (not dropped) so the agent can inspect them.
 

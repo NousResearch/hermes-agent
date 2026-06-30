@@ -415,6 +415,16 @@ compression:
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
 
+  # Idle compaction (default: 0 = disabled). When > 0, a session that resumes
+  # after at least this many seconds of inactivity compacts its accumulated
+  # history up front, before the first reply, so a long-lived thread you come
+  # back to later doesn't re-read its full stale context on every turn.
+  # Time-based, so it complements (does not replace) the size-based `threshold`
+  # above. It is skipped when the context is already small (at or below the
+  # post-compression target = threshold × target_ratio), so it never wastes a
+  # summarization on a short idle thread. Example: 1800 = compact after 30 min idle.
+  idle_compact_after_seconds: 0
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

@@ -45,7 +45,7 @@ Subclass `agent.video_gen_provider.VideoGenProvider`. Required: `name` property 
 
 ```python
 # plugins/video_gen/my-backend/__init__.py
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import os
 
 from agent.video_gen_provider import (
@@ -124,6 +124,7 @@ class MyVideoGenProvider(VideoGenProvider):
         negative_prompt: Optional[str] = None,
         audio: Optional[bool] = None,
         seed: Optional[int] = None,
+        on_progress: Optional[Callable[[float, str], None]] = None,
         **kwargs: Any,  # always ignore unknown kwargs for forward-compat
     ) -> Dict[str, Any]:
         # ROUTE: image_url presence picks the endpoint.
@@ -133,6 +134,9 @@ class MyVideoGenProvider(VideoGenProvider):
         else:
             endpoint = "my-backend/text-to-video"
             modality_used = "text"
+
+        if on_progress:
+            on_progress(10, "queued")
 
         # ... call your API ...
 
@@ -150,6 +154,13 @@ class MyVideoGenProvider(VideoGenProvider):
 def register(ctx) -> None:
     ctx.register_video_gen_provider(MyVideoGenProvider())
 ```
+
+Override `pre_generate(prompt, model=None, **kwargs)` when a backend needs to
+check quota, budget, policy, or rate limits before dispatching the remote job.
+Return a normal provider result dict to short-circuit `generate()`, or `None`
+to continue. During `generate()`, call `on_progress(percent, message)` when the
+optional callback is present; Hermes relays those updates to clients that show
+tool progress.
 
 ## The plugin manifest
 

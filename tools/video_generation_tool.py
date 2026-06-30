@@ -353,9 +353,45 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     }
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    tool_progress_callback = _kw.get("tool_progress_callback")
+
+    def _on_progress(percent: float, message: str) -> None:
+        if not callable(tool_progress_callback):
+            return
+        try:
+            numeric_percent = float(percent)
+        except (TypeError, ValueError):
+            numeric_percent = 0.0
+        numeric_percent = max(0.0, min(100.0, numeric_percent))
+        preview = (message or "").strip() or f"{numeric_percent:.0f}% complete"
+        try:
+            tool_progress_callback(
+                "progress",
+                name="video_generate",
+                preview=preview,
+                args={"prompt": prompt, "provider": getattr(provider, "name", "")},
+                percent=numeric_percent,
+                message=preview,
+            )
+        except Exception:
+            logger.debug("video_gen progress callback failed", exc_info=True)
 
     try:
-        result = provider.generate(prompt=prompt, **kwargs)
+        result = provider.pre_generate(prompt=prompt, **kwargs)
+        if result is None:
+            try:
+                result = provider.generate(
+                    prompt=prompt,
+                    on_progress=_on_progress if callable(tool_progress_callback) else None,
+                    **kwargs,
+                )
+            except TypeError as exc:
+                # Standalone providers predating this lifecycle extension may
+                # have a narrow generate() signature. Keep them running when
+                # only the new callback kwarg was rejected.
+                if "on_progress" not in str(exc):
+                    raise
+                result = provider.generate(prompt=prompt, **kwargs)
     except TypeError as exc:
         # A provider that hasn't widened its signature is a bug, not a
         # caller error — log and surface a clear contract message.

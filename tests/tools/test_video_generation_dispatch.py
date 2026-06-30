@@ -62,8 +62,41 @@ class _RaisingProvider(VideoGenProvider):
         raise RuntimeError("boom")
 
 
+class _PreGenerateProvider(_RecordingProvider):
+    def pre_generate(self, prompt, **kwargs):
+        return {
+            "success": False,
+            "video": None,
+            "error": f"blocked before dispatch: {prompt}",
+            "error_type": "quota_exceeded",
+            "model": kwargs.get("model") or "",
+            "prompt": prompt,
+            "aspect_ratio": kwargs.get("aspect_ratio", ""),
+            "provider": self.name,
+        }
+
+    def generate(self, prompt, **kwargs):
+        raise AssertionError("generate should not run after pre_generate short-circuits")
+
+
+class _ProgressProvider(_RecordingProvider):
+    def generate(self, prompt, **kwargs):
+        on_progress = kwargs.get("on_progress")
+        if on_progress:
+            on_progress(10, "queued")
+            on_progress(50, "rendering")
+            on_progress(120, "")
+        return super().generate(prompt, **kwargs)
+
+
 class TestUnifiedDispatch:
-    def _run(self, args: Dict[str, Any], *, configured: Optional[str] = None) -> Dict[str, Any]:
+    def _run(
+        self,
+        args: Dict[str, Any],
+        *,
+        configured: Optional[str] = None,
+        tool_progress_callback=None,
+    ) -> Dict[str, Any]:
         from tools import video_generation_tool
         import hermes_cli.plugins as plugins_module
 
@@ -72,7 +105,10 @@ class TestUnifiedDispatch:
         saved_discover = plugins_module._ensure_plugins_discovered
         plugins_module._ensure_plugins_discovered = lambda *_a, **_k: None  # type: ignore
         try:
-            raw = video_generation_tool._handle_video_generate(args)
+            raw = video_generation_tool._handle_video_generate(
+                args,
+                tool_progress_callback=tool_progress_callback,
+            )
         finally:
             video_generation_tool._read_configured_video_provider = saved  # type: ignore
             plugins_module._ensure_plugins_discovered = saved_discover  # type: ignore
@@ -133,7 +169,37 @@ class TestUnifiedDispatch:
         assert result["success"] is False
         assert result["error_type"] == "provider_exception"
 
+    def test_pre_generate_can_short_circuit_before_generate(self):
+        provider = _PreGenerateProvider("guarded")
+        video_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "expensive render"})
+        assert result["success"] is False
+        assert result["error_type"] == "quota_exceeded"
+        assert result["provider"] == "guarded"
+        assert provider.last_kwargs == {}
+
+    def test_provider_progress_events_relay_to_tool_progress_callback(self):
+        provider = _ProgressProvider("progress")
+        video_gen_registry.register_provider(provider)
+        events = []
+
+        def on_tool_progress(event_type, name=None, preview=None, args=None, **kwargs):
+            events.append((event_type, name, preview, args, kwargs))
+
+        result = self._run(
+            {"prompt": "a happy dog"},
+            tool_progress_callback=on_tool_progress,
+        )
+
+        assert result["success"] is True
+        assert [event[0] for event in events] == ["progress", "progress", "progress"]
+        assert [event[1] for event in events] == ["video_generate"] * 3
+        assert [event[2] for event in events] == ["queued", "rendering", "100% complete"]
+        assert [event[4]["percent"] for event in events] == [10.0, 50.0, 100.0]
+        assert all(event[3]["provider"] == "progress" for event in events)
+
     def test_edit_extend_fields_not_in_schema(self):
+        """Make sure edit/extend fields stay out of the unified schema."""
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "operation" not in props

@@ -2657,6 +2657,7 @@ class TestConcurrentToolExecution:
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
                 tool_request_middleware_trace=[],
+                tool_progress_callback=agent.tool_progress_callback,
             )
             assert result == "result"
 

@@ -52,7 +52,7 @@ import datetime
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,23 @@ class VideoGenProvider(abc.ABC):
             "max_reference_images": 0,
         }
 
+    def pre_generate(
+        self,
+        prompt: str,
+        *,
+        model: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Run optional checks before dispatching generation.
+
+        Return a provider-shaped result dict to short-circuit ``generate()``
+        (for quota, budget, policy, or rate-limit gates). Return ``None`` to
+        continue with normal generation. The tool layer invokes this after it
+        has resolved the active provider/model and normalized tool arguments,
+        but before any backend request is made.
+        """
+        return None
+
     @abc.abstractmethod
     def generate(
         self,
@@ -179,6 +196,7 @@ class VideoGenProvider(abc.ABC):
         negative_prompt: Optional[str] = None,
         audio: Optional[bool] = None,
         seed: Optional[int] = None,
+        on_progress: Optional[Callable[[float, str], None]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Generate a video from a prompt (text-to-video) or animate an image
@@ -189,10 +207,13 @@ class VideoGenProvider(abc.ABC):
         is responsible for picking the right underlying endpoint within
         the user's chosen model family.
 
-        Implementations should return the dict from :func:`success_response`
-        or :func:`error_response`. ``kwargs`` may contain forward-compat
-        parameters future versions of the schema will expose —
-        implementations MUST ignore unknown keys (no TypeError).
+        ``on_progress`` is optional. When provided, call it with a percentage
+        from 0 to 100 and a short status message during long-running work; the
+        tool layer relays those events to Hermes clients that expose tool
+        progress. Implementations should return the dict from
+        :func:`success_response` or :func:`error_response`. ``kwargs`` may
+        contain forward-compat parameters future versions of the schema will
+        expose — implementations MUST ignore unknown keys (no TypeError).
         """
 
 

@@ -90,6 +90,25 @@ class TestVoiMath(unittest.TestCase):
         self.assertTrue(rec["gated_out"])
         self.assertEqual(rec["value"], 0.0)
 
+    def test_exploration_value_answerability_discount(self):
+        base = math.sqrt(0.81 * 0.49)
+        self.assertAlmostEqual(voi.exploration_value(0.81, 0.49, 1.0), base)  # default unchanged
+        self.assertAlmostEqual(voi.exploration_value(0.81, 0.49, 0.5), 0.5 * base)
+        self.assertEqual(voi.exploration_value(0.9, 0.9, 0.0), 0.0)  # unanswerable → 0
+
+    def test_score_record_answerability_scales_value(self):
+        ans = [_answer(0.6, 0.8, 0.7), _answer(0.4, 0.2, 0.3)]
+        r1 = {"answers": [dict(a) for a in ans], "derivable_prob": 0.1, "answerability": 1.0}
+        r2 = {"answers": [dict(a) for a in ans], "derivable_prob": 0.1, "answerability": 0.5}
+        voi.score_record(r1)
+        voi.score_record(r2)
+        self.assertAlmostEqual(r2["value"], 0.5 * r1["value"], places=4)
+        self.assertEqual(r1["answerability"], 1.0)
+        # default (missing answerability) behaves as 1.0
+        r3 = {"answers": [dict(a) for a in ans], "derivable_prob": 0.1}
+        voi.score_record(r3)
+        self.assertAlmostEqual(r3["value"], r1["value"], places=4)
+
     def test_score_breakdown_matches_and_explains(self):
         rec = {"answers": [_answer(0.6, 0.8, 0.7), _answer(0.4, 0.2, 0.3)],
                "derivable_prob": 0.1}
@@ -221,6 +240,25 @@ class TestPipelineMocked(unittest.TestCase):
             out = pipeline.consolidate_questions("p", cands, "fast")
         self.assertEqual(out, cands)  # fall back to input — never lose questions
 
+    def test_project_answers_parses_answerability(self):
+        rec = {"question": "Q"}
+        with self._mock_raw('{"derivable_prob":0.2,"answerability":0.4,'
+                            '"answers":[{"answer":"a","prob":1.0}]}'):
+            pipeline.project_answers("p", {"goal": "g"}, rec, "fast", 5)
+        self.assertEqual(rec["answerability"], 0.4)
+        self.assertEqual(rec["derivable_prob"], 0.2)
+
+    def test_evidence_woven_into_prompts(self):
+        ev = ["budget is $0", "users are coaches"]
+        fp = pipeline.frame_prompt("problem", ev)
+        qp = pipeline.questions_prompt("problem", {"goal": "g"}, 6, evidence=ev)
+        ap = pipeline.answers_prompt("problem", {"goal": "g"}, "Q", 5, ev)
+        for prompt in (fp, qp, ap):
+            self.assertIn("budget is $0", prompt)
+            self.assertIn("ALREADY ESTABLISHED", prompt)
+        # no evidence → no block
+        self.assertNotIn("ALREADY ESTABLISHED", pipeline.frame_prompt("problem"))
+
     def test_project_then_judge_roundtrip(self):
         rec = {"question": "Which DB?"}
         with self._mock_raw('{"derivable_prob":0.2,"answers":[{"answer":"pg","prob":0.6},'
@@ -302,7 +340,23 @@ class TestOrchestrationMocked(unittest.TestCase):
         md = infogain.render_markdown(result)
         self.assertIn("Information-Gain Analysis", md)
         self.assertIn("Pre-answer these", md)
-        self.assertIn("value of information", md)
+        self.assertIn("exploration value", md)
+
+    def test_evidence_in_result_and_render(self):
+        cfg = self._cfg(max_rounds=1, questions_per_round=4, target_bucket_size=2,
+                        min_bucket_size=1)
+        with mock.patch.object(pipeline, "frame_and_plan",
+                               return_value=({"goal": "g", "decision": "d", "success_criteria": [],
+                                              "baseline_plan": "p"}, None)), \
+             mock.patch.object(pipeline, "generate_questions",
+                               side_effect=lambda *a, **k: (self._fake_round(4), None)), \
+             mock.patch.object(pipeline, "project_answers_batch", side_effect=lambda p, f, recs, *a, **k: recs), \
+             mock.patch.object(pipeline, "judge_plan_change_batch", side_effect=lambda p, f, b, recs, *a, **k: recs):
+            result = infogain.run("p", cfg, evidence=["budget is $0"])
+        self.assertEqual(result["evidence"], ["budget is $0"])
+        md = infogain.render_markdown(result)
+        self.assertIn("budget is $0", md)
+        self.assertIn("answerable", md)  # new column header
 
     def test_trace_captures_show_your_work(self):
         cfg = self._cfg(max_rounds=1, questions_per_round=4, target_bucket_size=2,
@@ -324,7 +378,8 @@ class TestOrchestrationMocked(unittest.TestCase):
         self.assertIn("evsi_terms", q0["breakdown"])
         md = infogain.render_trace(result)
         self.assertIn("show your work", md)
-        self.assertIn("EVSI = Σ", md)
+        self.assertIn("exploration value =", md)
+        self.assertIn("answerability", md)
 
 
 # ── live (real Ollama) ────────────────────────────────────────────────────────

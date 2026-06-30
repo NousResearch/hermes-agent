@@ -99,8 +99,12 @@ def _env_default(key):
 # ── orchestration ─────────────────────────────────────────────────────────────
 
 
-def run(problem, cfg, progress=None, trace=False):
+def run(problem, cfg, progress=None, trace=False, evidence=None):
     """Run the full bucket-fill loop. Returns a result dict (see keys below).
+
+    `evidence` is a list of already-established facts (the iterative loop): they are
+    woven into framing, generation (don't re-ask), and answer-projection (resolved
+    questions read as derivable and drop out).
 
     When trace=True, result['trace'] captures a 'show your work' record: each
     stage's prompt + raw model output, the per-question scoring arithmetic, and
@@ -119,7 +123,7 @@ def run(problem, cfg, progress=None, trace=False):
     log(f"framing problem + baseline plan via {plan_model} ...")
     framing_sink = [] if trace else None
     framing, ferr = pipeline.frame_and_plan(problem, plan_model, cfg["plan_timeout"],
-                                            sink=framing_sink)
+                                            sink=framing_sink, evidence=evidence)
     baseline_plan = framing.get("baseline_plan", "")
     trace_obj = ({"models": {"plan": plan_model, "question_gen": qg_model,
                              "answer": ans_model, "value_judge": judge_model,
@@ -138,7 +142,7 @@ def run(problem, cfg, progress=None, trace=False):
         new_qs, _ = pipeline.generate_questions(
             problem, framing, qg_model, cfg["questions_per_round"], avoid,
             cfg["gen_timeout"], sink=gen_sink,
-            samples=cfg["gen_samples"], temperature=cfg["gen_temperature"])
+            samples=cfg["gen_samples"], temperature=cfg["gen_temperature"], evidence=evidence)
         cons_sink = None
         if cfg["gen_samples"] > 1 and len(new_qs) > 1:
             log(f"round {rounds_used}: consolidating {len(new_qs)} sampled candidates "
@@ -164,7 +168,7 @@ def run(problem, cfg, progress=None, trace=False):
             f"judging plan-change ({judge_model}) for {len(fresh)} questions ...")
         fresh = pipeline.project_answers_batch(
             problem, framing, fresh, ans_model, cfg["answers_per_question"],
-            cfg["answer_timeout"], capture=trace)
+            cfg["answer_timeout"], capture=trace, evidence=evidence)
         fresh = pipeline.judge_plan_change_batch(
             problem, framing, baseline_plan, fresh, judge_model, cfg["judge_timeout"],
             capture=trace)
@@ -211,6 +215,7 @@ def run(problem, cfg, progress=None, trace=False):
 
     result = {
         "problem": problem,
+        "evidence": list(evidence or []),
         "framing": framing,
         "framing_error": ferr,
         "config": cfg,
@@ -262,17 +267,18 @@ def _template():
 _FALLBACK_TEMPLATE = """# Information-Gain Analysis
 
 **Problem:** {{problem}}
-
+{{evidence}}
 **Goal:** {{goal}}
 **Decision:** {{decision}}
 
-**Baseline plan (most-likely interpretation):**
+**Baseline plan (problem + established facts):**
 {{baseline_plan}}
 
 ## Pre-answer these first
 {{preanswer_list}}
 
-## Ranked questions by value of information
+## Ranked questions by exploration value
+exploration value = answerability × √(uncertainty × value-of-answering)
 {{table}}
 
 {{discarded_note}}
@@ -302,13 +308,13 @@ def render_markdown(result):
         pre = "_None above the pre-answer threshold — the problem is well enough " \
               "specified to proceed (resolve any ASSUME-DEFAULT items if convenient)._"
 
-    rows = ["| # | value | U | EVSI | rec | question | resolves | assume-if-skipped |",
-            "|---|------:|----:|-----:|-----|----------|----------|-------------------|"]
+    rows = ["| # | value | uncert | answer-value | answerable | rec | question | resolves | assume-if-skipped |",
+            "|---|------:|------:|------:|------:|-----|----------|----------|-------------------|"]
     for i, r in enumerate(bucket):
         rows.append(
             f"| {i + 1} | {r['value']:.2f} | {r['u']:.2f} | {r['evsi']:.2f} | "
-            f"{r.get('recommendation', '')} | {r['question']} | "
-            f"{r.get('target', '') or '—'} | {_fmt_default(r)} |")
+            f"{r.get('answerability', 1.0):.2f} | {r.get('recommendation', '')} | "
+            f"{r['question']} | {r.get('target', '') or '—'} | {_fmt_default(r)} |")
     table = "\n".join(rows) if bucket else "_No valuable questions found._"
 
     note = (f"_{result['discarded_count']} lower-value/redundant question(s) "
@@ -331,9 +337,14 @@ def render_markdown(result):
     crit = fr.get("success_criteria") or []
     crit_str = "; ".join(crit) if isinstance(crit, list) else str(crit)
 
+    ev = result.get("evidence") or []
+    evidence_str = ("\n**Evidence folded in (already established):**\n"
+                    + "\n".join(f"- {e}" for e in ev) + "\n") if ev else ""
+
     out = _template()
     for k, v in {
         "{{problem}}": result["problem"],
+        "{{evidence}}": evidence_str,
         "{{goal}}": fr.get("goal", "") or "—",
         "{{decision}}": fr.get("decision", "") or "—",
         "{{success_criteria}}": crit_str or "—",
@@ -377,12 +388,15 @@ def _render_trace_question(q):
     else:
         decision = rec or "—"
     lines += [
-        f"\nderivable_prob = {b['derivable_prob']:.2f}\n",
+        f"\nderivable_prob = {b['derivable_prob']:.2f} · answerability = {b['answerability']:.2f}\n",
         "**scoring (show your work):**  ",
-        f"- U = entropy {b['entropy']:.2f} × (1 − derivable {b['derivable_prob']:.2f}) "
+        f"- uncertainty U = entropy {b['entropy']:.2f} × (1 − derivable {b['derivable_prob']:.2f}) "
         f"= **{b['u']:.3f}**  ",
-        f"- EVSI = Σ P·Δplan·stakes = {ev} = **{b['evsi']:.3f}**  ",
-        f"- value = √(U × EVSI) = √({b['u']:.3f} × {b['evsi']:.3f}) = **{b['value']:.3f}**  ",
+        f"- value-of-answering (EVSI) = Σ P·Δplan·stakes = {ev} = **{b['evsi']:.3f}**  ",
+        f"- worth-if-resolved = √(U × answer-value) = √({b['u']:.3f} × {b['evsi']:.3f}) "
+        f"= **{b['intrinsic_value']:.3f}**  ",
+        f"- exploration value = answerability {b['answerability']:.2f} × {b['intrinsic_value']:.3f} "
+        f"= **{b['value']:.3f}**  ",
         f"- decision: **{decision}**\n",
     ]
     return "\n".join(lines)
@@ -440,20 +454,20 @@ def render_trace(result):
     return "\n".join(out)
 
 
-def _dry_run(problem, cfg):
+def _dry_run(problem, cfg, evidence=None):
     framing_stub = {"goal": "<goal from stage 0>", "decision": "<decision from stage 0>"}
     q_stub = {"question": "<a candidate question>"}
     a_stub = [{"answer": "<answer 1>"}, {"answer": "<answer 2>"}]
     sep = "\n" + "=" * 72 + "\n"
     print(sep.join([
         "DRY RUN — prompts only, no model calls.",
-        "STAGE 0 — frame_and_plan:\n\n" + pipeline.frame_prompt(problem),
+        "STAGE 0 — frame_and_plan:\n\n" + pipeline.frame_prompt(problem, evidence),
         "STAGE 1 — generate_questions:\n\n" + pipeline.questions_prompt(
             problem, framing_stub, cfg["questions_per_round"],
-            avoid=["<already-considered question>"]),
+            avoid=["<already-considered question>"], evidence=evidence),
         "STAGE 2 — project_answers (per question, parallel):\n\n"
         + pipeline.answers_prompt(problem, framing_stub, q_stub["question"],
-                                  cfg["answers_per_question"]),
+                                  cfg["answers_per_question"], evidence),
         "STAGE 3 — judge_plan_change (per question, parallel):\n\n"
         + pipeline.judge_prompt(problem, framing_stub, "<baseline plan from stage 0>",
                                 q_stub["question"], a_stub),
@@ -474,6 +488,10 @@ def build_parser():
                    help="Show your work: capture every stage's prompt + raw model output and "
                         "the per-question scoring arithmetic, then print the full trace.")
     p.add_argument("-o", "--output", help="Write the report to this file.")
+    p.add_argument("--evidence", nargs="*", default=None, metavar="FACT",
+                   help="Already-established facts/answers to fold into the context (the "
+                        "iterative loop). Pass several, e.g. --evidence \"budget: $0\" \"users: coaches\".")
+    p.add_argument("--evidence-file", help="File with one established fact per line ('#' comments ok).")
     p.add_argument("--quiet", action="store_true", help="Suppress progress logging on stderr.")
     p.add_argument("--mode", choices=list(MODES), default=None,
                    help="Preset over the breadth knobs: 'focus' (default — prioritized top few) "
@@ -519,8 +537,14 @@ def main(argv=None):
 
     cfg = resolve_config(args)
 
+    evidence = list(args.evidence or [])
+    if args.evidence_file:
+        with open(args.evidence_file) as f:
+            evidence += [ln.strip() for ln in f
+                         if ln.strip() and not ln.lstrip().startswith("#")]
+
     if args.dry_run:
-        _dry_run(problem, cfg)
+        _dry_run(problem, cfg, evidence)
         return 0
 
     if not pipeline.ollama_reachable():
@@ -529,7 +553,7 @@ def main(argv=None):
         return 2
 
     progress = None if args.quiet else (lambda m: print(f"… {m}", file=sys.stderr, flush=True))
-    result = run(problem, cfg, progress=progress, trace=args.trace)
+    result = run(problem, cfg, progress=progress, trace=args.trace, evidence=evidence)
 
     if args.json:
         rendered = json.dumps(result, indent=2, default=str)

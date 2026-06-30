@@ -92,6 +92,12 @@ python3 ${HERMES_SKILL_DIR}/scripts/infogain.py "<problem>" --dry-run
 # Invaluable for comparing models or scaffolding a weaker one. Add --json for structured.
 python3 ${HERMES_SKILL_DIR}/scripts/infogain.py "<problem>" --trace
 
+# Iterative loop: fold answered evidence back into the same context; resolved questions drop
+# out (they become derivable) and the next-best questions surface. You/the agent drive the loop.
+python3 ${HERMES_SKILL_DIR}/scripts/infogain.py "<problem>" \
+    --evidence "data residency: US-only, no third-party cloud" "budget: free tier only"
+# ...or --evidence-file facts.txt (one established fact per line).
+
 # Write to a file; quiet stderr
 python3 ${HERMES_SKILL_DIR}/scripts/infogain.py "<problem>" -o /tmp/infogain.md --quiet
 ```
@@ -100,21 +106,23 @@ Use `--problem/-p` (not positional) when the text contains `--` or shell-special
 
 ### What it returns
 
-A ranked table of questions with **value** = √(U · EVSI), the recommendation
-(**PRE_ANSWER** ≥ 0.60 / **ASSUME_DEFAULT** ≥ 0.40), and an `assume-if-skipped` default (the
-most-likely projected answer). The "Pre-answer these first" section is the actionable shortlist.
-If the bucket can't reach `min_bucket_size`, it says so — that means the problem is already
-well-specified.
+A ranked table of questions by **exploration value = answerability × √(uncertainty ×
+value-of-answering)** — *P(you can resolve it) × worth-if-resolved* — with the recommendation
+(**PRE_ANSWER** ≥ 0.60 / **ASSUME_DEFAULT** ≥ 0.40) and an `assume-if-skipped` default (the
+most-likely projected answer to proceed on if you disregard the question). The "Pre-answer these
+first" section is the actionable shortlist. If the bucket can't reach `min_bucket_size`, it says so
+— the problem is already well-specified. See `references/design-decisions.md` for the model.
 
 ## How it works (4 stages, looped)
 
 1. **Frame + baseline plan** (`question_gen_model`) — restate goal/decision and the plan you'd give
-   *right now*; everything is scored as change from this baseline.
-2. **Project answers** (`answer_model`, parallel) — plausible answers + probabilities + how
-   derivable each question is from the prompt.
+   *right now* (folding in any `--evidence`); everything is scored as change from this baseline.
+2. **Project answers** (`answer_model`, parallel) — plausible answers + probabilities, plus how
+   *derivable* each question is (already known?) and how *answerable* it is (resolvable if explored?).
 3. **Judge** (`value_judge_model`, parallel) — per-answer plan-change × stakes vs the baseline.
-4. **Score / gate / diversify** (pure Python) — `EVSI = Σ P·Δplan·stakes`, gate out the
-   no-uncertainty/no-change cases, `value = √(U·EVSI)`, collapse same-`target` duplicates, MMR-rank.
+4. **Score / gate / diversify** (pure Python) — `value-of-answering (EVSI) = Σ P·Δplan·stakes`;
+   `uncertainty U = entropy(answers)·(1−derivable)`; gate out the no-uncertainty/no-change cases;
+   `exploration value = answerability · √(U · EVSI)`; collapse same-`target` duplicates; MMR-rank.
    If the bucket is under `min_bucket_size`, generate another round (deduped) up to `max_rounds`.
 
 Full rationale + citations: `references/methodology.md`. Prompt contracts: `references/prompts.md`.

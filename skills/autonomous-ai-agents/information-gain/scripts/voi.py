@@ -116,8 +116,19 @@ def evsi(answers):
 
 
 def question_value(u, e):
-    """value = sqrt(U · EVSI). Geometric mean of the uncertainty gate and EVSI."""
+    """Intrinsic value if resolved = √(U · value-of-answering). Geometric mean of the
+    uncertainty gate and the EVSI (value of answering)."""
     return math.sqrt(clamp01(u) * clamp01(e))
+
+
+def exploration_value(u, e, answerability=1.0):
+    """The ranking number = answerability × √(U · value-of-answering).
+
+    = P(you can actually resolve it) × (worth if resolved). `answerability` defaults
+    to 1.0, so omitting it reproduces the plain √(U·EVSI) score — no threshold
+    recalibration needed; it only ever DISCOUNTS hard-to-resolve questions.
+    """
+    return clamp01(answerability) * question_value(u, e)
 
 
 def is_gated_out(u, e, eps=EPS):
@@ -136,9 +147,12 @@ def score_record(rec):
     answers = rec.get("answers") or []
     u = uncertainty(answers, rec.get("derivable_prob", 0.0))
     e = evsi(answers)
+    a = clamp01(rec.get("answerability", 1.0))
     rec["u"] = u
-    rec["evsi"] = e
-    rec["value"] = question_value(u, e)
+    rec["evsi"] = e  # value of answering
+    rec["answerability"] = a
+    rec["intrinsic_value"] = question_value(u, e)  # worth if resolved
+    rec["value"] = exploration_value(u, e, a)  # the ranking number
     rec["gated_out"] = is_gated_out(u, e)
     rec["modal_answer"] = modal_answer(answers)
     return rec
@@ -164,13 +178,16 @@ def score_breakdown(rec):
         terms.append({"answer": a.get("answer", ""), "p": round(p, 4),
                       "delta_plan": dp, "stakes": st, "term": round(p * dp * st, 4)})
     e = evsi(answers)
+    a = clamp01(rec.get("answerability", 1.0))
     return {
         "entropy": round(ent, 4),
         "derivable_prob": derivable,
         "u": round(u, 4),
         "evsi_terms": terms,
-        "evsi": round(e, 4),
-        "value": round(question_value(u, e), 4),
+        "evsi": round(e, 4),  # value of answering
+        "answerability": round(a, 4),
+        "intrinsic_value": round(question_value(u, e), 4),  # √(U · value-of-answering)
+        "value": round(exploration_value(u, e, a), 4),  # exploration value (the rank)
     }
 
 

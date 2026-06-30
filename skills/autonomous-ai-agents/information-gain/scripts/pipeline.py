@@ -155,23 +155,32 @@ def _call_json(model, prompt, timeout, num_predict, retries=1, sink=None, temper
 # ── prompt builders (separated so --dry-run can show them) ───────────────────
 
 
-def frame_prompt(problem):
+def _evidence_block(evidence, instruction):
+    """Render a list of already-established facts (the 'evidence' loop) for a prompt."""
+    if not evidence:
+        return ""
+    bullets = "\n".join(f"- {e}" for e in evidence)
+    return f"\nALREADY ESTABLISHED ({instruction}):\n{bullets}\n"
+
+
+def frame_prompt(problem, evidence=None):
     return (
         "You are scoping an underspecified problem BEFORE any work begins.\n\n"
-        f"PROBLEM:\n{problem}\n\n"
-        "Return ONLY a JSON object:\n"
+        f"PROBLEM:\n{problem}\n"
+        f"{_evidence_block(evidence, 'treat as known facts and fold into the baseline plan')}"
+        "\nReturn ONLY a JSON object:\n"
         '{"goal": str, "decision": str, "success_criteria": [str], "baseline_plan": str}\n'
         "- goal: the underlying objective in one sentence.\n"
         "- decision: the main decision/approach that must be made.\n"
         "- success_criteria: 2-4 short bullet strings for a good outcome.\n"
-        "- baseline_plan: the best recommended plan GIVEN ONLY THE PROBLEM AS STATED "
-        "(assume the most likely interpretation of any ambiguity; 2-5 sentences). "
-        "This baseline is what we measure information value against.\n"
+        "- baseline_plan: the best recommended plan GIVEN THE PROBLEM AND ANY ESTABLISHED "
+        "FACTS ABOVE (assume the most likely interpretation of remaining ambiguity; 2-5 "
+        "sentences). This baseline is what we measure information value against.\n"
         "Respond ONLY with the JSON object."
     )
 
 
-def questions_prompt(problem, framing, n, avoid=None):
+def questions_prompt(problem, framing, n, avoid=None, evidence=None):
     avoid_block = ""
     if avoid:
         bullets = "\n".join(f"- {q}" for q in avoid)
@@ -182,8 +191,9 @@ def questions_prompt(problem, framing, n, avoid=None):
     return (
         "You are interrogating an underspecified problem to find what is worth "
         "clarifying BEFORE doing the work.\n\n"
-        f"PROBLEM:\n{problem}\n\n"
-        f"GOAL: {framing.get('goal', '')}\n"
+        f"PROBLEM:\n{problem}\n"
+        f"{_evidence_block(evidence, 'resolved — do NOT ask about these again')}"
+        f"\nGOAL: {framing.get('goal', '')}\n"
         f"DECISION: {framing.get('decision', '')}\n"
         f"{avoid_block}\n"
         f"Propose {n} DISTINCT key questions whose answers are currently unknown and "
@@ -200,21 +210,26 @@ def questions_prompt(problem, framing, n, avoid=None):
     )
 
 
-def answers_prompt(problem, framing, question, m):
+def answers_prompt(problem, framing, question, m, evidence=None):
     return (
         "Project the plausible answers to a clarifying question about an "
         "underspecified problem.\n\n"
-        f"PROBLEM:\n{problem}\n\n"
-        f"GOAL: {framing.get('goal', '')}\n"
+        f"PROBLEM:\n{problem}\n"
+        f"{_evidence_block(evidence, 'known; if they answer the question, derivable_prob is high')}"
+        f"\nGOAL: {framing.get('goal', '')}\n"
         f"QUESTION: {question}\n\n"
         f"Enumerate the {m} most plausible DISTINCT answers. For each, estimate a "
-        "probability (0-1) that it is the true answer given the problem. Also "
-        "estimate whether the question is already answerable from the problem "
-        "statement alone.\n\n"
+        "probability (0-1) that it is the true answer given the problem. Also estimate "
+        "(a) whether it is already answerable from the problem + established facts, and "
+        "(b) whether it could realistically be RESOLVED if someone went and investigated.\n\n"
         "Return ONLY a JSON object:\n"
-        '{"derivable_prob": float, "answers": [{"answer": str, "prob": float}, ...]}\n'
-        "- derivable_prob: 0-1, probability the question can be confidently answered "
-        "from the problem statement as given (high = asking buys little).\n"
+        '{"derivable_prob": float, "answerability": float, '
+        '"answers": [{"answer": str, "prob": float}, ...]}\n'
+        "- derivable_prob: 0-1, probability the question is already answerable from the "
+        "problem + established facts (high = asking buys little).\n"
+        "- answerability: 0-1, probability the question has a determinate answer you could "
+        "actually obtain with reasonable effort (1 = a stakeholder/system can readily "
+        "provide it; low = speculative, judgment-call, or unknowable).\n"
         f"- Provide 2 to {m} answers; probabilities need not sum to exactly 1.\n"
         "Respond ONLY with the JSON object."
     )
@@ -248,10 +263,11 @@ def judge_prompt(problem, framing, baseline_plan, question, answers):
 # ── stages ───────────────────────────────────────────────────────────────────
 
 
-def frame_and_plan(problem, model, timeout=180, sink=None):
+def frame_and_plan(problem, model, timeout=180, sink=None, evidence=None):
     """Stage 0. Returns (framing_dict, error). framing has goal/decision/
     success_criteria/baseline_plan (always a dict, even on partial failure)."""
-    obj, err = _call_json(model, frame_prompt(problem), timeout, num_predict=700, sink=sink)
+    obj, err = _call_json(model, frame_prompt(problem, evidence), timeout, num_predict=700,
+                          sink=sink)
     if not isinstance(obj, dict):
         return ({"goal": "", "decision": "", "success_criteria": [],
                  "baseline_plan": ""}, err or "framing returned non-object")
@@ -279,7 +295,7 @@ def _parse_question_items(obj):
 
 
 def generate_questions(problem, framing, model, n, avoid=None, timeout=180, sink=None,
-                       samples=1, temperature=0.0):
+                       samples=1, temperature=0.0, evidence=None):
     """Stage 1. Draw `samples` independent generations at `temperature`, union + dedup.
 
     With samples>1 and temperature>0 this Monte-Carlo-samples the model's own
@@ -288,7 +304,7 @@ def generate_questions(problem, framing, model, n, avoid=None, timeout=180, sink
     temperature=0 is the deterministic (focus) path: a single greedy generation.
     Returns (deduped_records, error).
     """
-    prompt = questions_prompt(problem, framing, n, avoid)
+    prompt = questions_prompt(problem, framing, n, avoid, evidence)
     samples = max(1, int(samples))
 
     def _one(_i):
@@ -358,21 +374,24 @@ def consolidate_questions(problem, candidates, model, timeout=150, sink=None):
     return out
 
 
-def project_answers(problem, framing, rec, model, m, timeout=120, capture=False):
-    """Stage 2 (single question). Mutates rec with answers[] + derivable_prob."""
+def project_answers(problem, framing, rec, model, m, timeout=120, capture=False, evidence=None):
+    """Stage 2 (single question). Mutates rec with answers[] + derivable_prob + answerability."""
     sink = [] if capture else None
-    obj, err = _call_json(model, answers_prompt(problem, framing, rec["question"], m),
+    obj, err = _call_json(model, answers_prompt(problem, framing, rec["question"], m, evidence),
                           timeout, num_predict=600, sink=sink)
     answers = []
     derivable = 0.0
+    answerability = 1.0
     if isinstance(obj, dict):
         derivable = obj.get("derivable_prob", 0.0)
+        answerability = obj.get("answerability", 1.0)
         for a in (obj.get("answers") or []):
             if isinstance(a, dict) and (a.get("answer") or "").strip():
                 answers.append({"answer": a["answer"].strip(),
                                 "prob": a.get("prob", 0.0)})
     rec["answers"] = answers
     rec["derivable_prob"] = derivable
+    rec["answerability"] = answerability
     if err:
         rec["error"] = err
     if capture and sink:
@@ -425,9 +444,11 @@ def _parallel(fn, items, max_workers=None):
     return [result_by_id[id(it)] for it in items]
 
 
-def project_answers_batch(problem, framing, recs, model, m, timeout=120, capture=False):
+def project_answers_batch(problem, framing, recs, model, m, timeout=120, capture=False,
+                          evidence=None):
     return _parallel(
-        lambda r: project_answers(problem, framing, r, model, m, timeout, capture), recs)
+        lambda r: project_answers(problem, framing, r, model, m, timeout, capture, evidence),
+        recs)
 
 
 def judge_plan_change_batch(problem, framing, baseline_plan, recs, model, timeout=150,

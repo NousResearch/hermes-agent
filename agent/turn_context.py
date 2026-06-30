@@ -23,6 +23,7 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import uuid
 from dataclasses import dataclass
@@ -219,6 +220,15 @@ def build_turn_context(
 
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
+
+    # Seed scoped-memory retrieval context before the first system prompt build.
+    # The prompt itself is cached for the conversation, so this remains stable
+    # across turns and preserves provider prefix-cache behaviour.
+    if not getattr(agent, "_memory_scope_query", ""):
+        original_user_message = persist_user_message if persist_user_message is not None else user_message
+        agent._memory_scope_query = original_user_message if isinstance(original_user_message, str) else ""
+        agent._memory_scope_cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
+        agent._memory_scope_source = getattr(agent, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli")
 
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():

@@ -3251,6 +3251,13 @@ async function resourceBufferFromUrl(rawUrl) {
     return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
   }
 
+  const expandedPath = expandUserPath(rawUrl)
+  if (path.isAbsolute(expandedPath)) {
+    const { resolvedPath } = await resolveReadableFileForIpc(expandedPath, { purpose: 'Image file' })
+    const buffer = await fs.promises.readFile(resolvedPath)
+    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
+  }
+
   const parsed = new URL(rawUrl)
   const client = parsed.protocol === 'https:' ? https : http
   return new Promise((resolve, reject) => {
@@ -5921,6 +5928,11 @@ ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
 
 ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   clipboard.writeText(String(text || ''))
+  return true
+})
+
+ipcMain.handle('hermes:copyImageFromUrl', async (_event, url) => {
+  await copyImageFromUrl(String(url || ''))
   return true
 })
 

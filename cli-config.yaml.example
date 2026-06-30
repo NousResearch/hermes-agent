@@ -520,6 +520,16 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 
+  # Optional scoped node-graph retrieval. When enabled, MEMORY.md stays as
+  # the small flat fallback/live-edit file while memories/SCOPED_MEMORY.jsonl
+  # can hold typed nodes (user_preference, project, entity, workflow,
+  # vocabulary, environment_fact, safety_rule) with relationship edges.
+  # The first turn's prompt, cwd/project path, source, entities, and edges
+  # decide which nodes enter the session prompt, keeping long-term memory
+  # scalable without loading all memories into context.
+  scoped_memory_enabled: false
+  scoped_memory_char_limit: 4000
+
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)

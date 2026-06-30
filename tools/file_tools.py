@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from agent.file_safety import get_read_block_error
+from hermes_constants import get_real_home
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations,
@@ -19,6 +20,22 @@ from tools import file_state
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+
+def _expand_user_path(path: str | os.PathLike) -> Path:
+    """Expand current-user ``~`` using the real OS home, not profile HOME.
+
+    Some profile-scoped Desktop/gateway turns run with ``HOME`` pointed at
+    ``<HERMES_HOME>/home`` for tool isolation. User-authored paths like
+    ``~/.life-os/...`` should still mean the OS account home. ``get_real_home``
+    repairs profile-home environments via ``HERMES_REAL_HOME``/pwd before
+    falling back to ordinary expansion. ``~other`` keeps stdlib semantics.
+    """
+    raw = os.fspath(path)
+    if raw == "~" or raw.startswith("~/"):
+        suffix = raw[2:] if raw.startswith("~/") else ""
+        return Path(get_real_home()) / suffix
+    return Path(raw).expanduser()
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -107,7 +124,7 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = os.path.expanduser(raw)
+    expanded = os.fspath(_expand_user_path(raw))
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -152,22 +169,26 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         container_key = task_id
 
     with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
+        cached = _file_ops_cache.get(task_id)
+        if cached is None and container_key == task_id:
+            cached = _file_ops_cache.get(container_key)
     if cached is not None:
         live_cwd = getattr(getattr(cached, "env", None), "cwd", None) or getattr(
             cached, "cwd", None
         )
-        if live_cwd:
-            return live_cwd
+        if isinstance(live_cwd, (str, os.PathLike)) and os.fspath(live_cwd):
+            return os.fspath(live_cwd)
 
     try:
         from tools.terminal_tool import _active_environments, _env_lock
 
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env = _active_environments.get(task_id)
+            if env is None and container_key == task_id:
+                env = _active_environments.get(container_key)
             live_cwd = getattr(env, "cwd", None) if env is not None else None
-        if live_cwd:
-            return live_cwd
+        if isinstance(live_cwd, (str, os.PathLike)) and os.fspath(live_cwd):
+            return os.fspath(live_cwd)
     except Exception:
         pass
 
@@ -239,7 +260,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(filepath).expanduser()
+    p = _expand_user_path(filepath)
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
@@ -261,7 +282,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(filepath).expanduser().is_absolute():
+        if _expand_user_path(filepath).is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
@@ -285,7 +306,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.normpath(os.path.expanduser(path))
+    normalized = os.path.normpath(os.fspath(_expand_user_path(path)))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -309,7 +330,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     they resolve to terminal-specific paths. Then check each symlink hop before
     the final resolved path so aliases to devices cannot bypass the guard.
     """
-    expanded = os.path.expanduser(filepath)
+    expanded = os.fspath(_expand_user_path(filepath))
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
@@ -377,7 +398,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
-    normalized = os.path.normpath(os.path.expanduser(filepath))
+    normalized = os.path.normpath(os.fspath(_expand_user_path(filepath)))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
@@ -853,7 +874,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
-        device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+        device_base = None if _expand_user_path(path).is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
             return json.dumps({
                 "error": (
@@ -994,7 +1015,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(resolved_str, offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────

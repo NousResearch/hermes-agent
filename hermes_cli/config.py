@@ -1908,6 +1908,14 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Optional scoped node-graph retrieval. When enabled, MEMORY.md stays as
+        # the small flat fallback/live-edit file while memories/SCOPED_MEMORY.jsonl
+        # can hold typed nodes with edges. The first turn's prompt, cwd/project
+        # path, source, entities, and relationships decide which nodes enter the
+        # session prompt, keeping long-term memory scalable without loading all
+        # memories into context.
+        "scoped_memory_enabled": False,
+        "scoped_memory_char_limit": 4000,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

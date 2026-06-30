@@ -67,6 +67,33 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+class TestMemoryPromptCompatibility:
+    def test_legacy_memory_store_without_scoped_kwargs_does_not_crash(self):
+        class LegacyMemoryStore:
+            def format_for_system_prompt(self, target):
+                return f"legacy {target} block"
+
+        agent = _make_agent(
+            _memory_store=LegacyMemoryStore(),
+            _memory_enabled=True,
+            _user_profile_enabled=True,
+            _memory_scope_query="Botson",
+            _memory_scope_cwd="/work/botson",
+            _memory_scope_source="telegram",
+        )
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            volatile = build_system_prompt_parts(agent)["volatile"]
+
+        assert "legacy memory block" in volatile
+        assert "legacy user block" in volatile
+
+
 class TestCodingContextBlock:
     def test_injected_when_active(self, monkeypatch, tmp_path):
         import subprocess

@@ -3,9 +3,10 @@
 import { type ComponentProps, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { useImageCopy } from '@/hooks/use-image-copy'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
-import { Download } from '@/lib/icons'
+import { Copy, Download, type IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 export interface ZoomableImageProps extends ComponentProps<'img'> {
@@ -14,6 +15,8 @@ export interface ZoomableImageProps extends ComponentProps<'img'> {
 }
 
 export interface ImageActionCopy {
+  copyingImage: string
+  copyImage: string
   downloadImage: string
   savingImage: string
 }
@@ -21,6 +24,7 @@ export interface ImageActionCopy {
 export function ZoomableImage({ className, containerClassName, src, alt, slot, ...props }: ZoomableImageProps) {
   const { t } = useI18n()
   const copy = t.desktop
+  const { copyImage, copying } = useImageCopy(src)
   const { download, saving } = useImageDownload(src)
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const canOpen = Boolean(src)
@@ -41,14 +45,23 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
           <img alt={alt ?? ''} className={className} src={src} {...props} />
         </button>
         {src && (
-          <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
+          <ImageActionButtons
+            className="group-hover/image:opacity-100"
+            copy={copy}
+            copying={copying}
+            onCopy={copyImage}
+            onDownload={download}
+            saving={saving}
+          />
         )}
       </span>
       {src && (
         <ImageLightbox
           alt={alt}
           copy={copy}
-          onClick={download}
+          copying={copying}
+          onCopy={copyImage}
+          onDownload={download}
           onOpenChange={setLightboxOpen}
           open={lightboxOpen}
           saving={saving}
@@ -62,7 +75,9 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
 export function ImageLightbox({
   alt,
   copy,
-  onClick,
+  copying,
+  onCopy,
+  onDownload,
   onOpenChange,
   open,
   saving,
@@ -70,7 +85,9 @@ export function ImageLightbox({
 }: {
   alt?: string
   copy: ImageActionCopy
-  onClick: () => void
+  copying: boolean
+  onCopy: () => void
+  onDownload: () => void
   onOpenChange: (open: boolean) => void
   open: boolean
   saving: boolean
@@ -89,40 +106,91 @@ export function ImageLightbox({
             onClick={() => onOpenChange(false)}
             src={src}
           />
-          <ImageActionButton className="group-hover/lightbox:opacity-100" copy={copy} onClick={onClick} saving={saving} />
+          <ImageActionButtons
+            className="group-hover/lightbox:opacity-100"
+            copy={copy}
+            copying={copying}
+            onCopy={onCopy}
+            onDownload={onDownload}
+            saving={saving}
+          />
         </div>
       </DialogContent>
     </Dialog>
   )
 }
 
-export function ImageActionButton({
+export function ImageActionButtons({
   className,
+  copying,
   copy,
-  onClick,
+  onCopy,
+  onDownload,
   saving
 }: {
   className?: string
+  copying: boolean
   copy: ImageActionCopy
-  onClick: () => void
+  onCopy: () => void
+  onDownload: () => void
   saving: boolean
 }) {
   return (
-    <button
-      aria-label={saving ? copy.savingImage : copy.downloadImage}
+    <span
       className={cn(
-        'absolute right-2 top-2 grid size-8 place-items-center rounded-full border border-border/70 bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 disabled:opacity-50',
+        'absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100',
         className
       )}
-      disabled={saving}
+    >
+      <ImageActionButton
+        busy={copying}
+        icon={Copy}
+        label={copy.copyImage}
+        loadingLabel={copy.copyingImage}
+        onClick={onCopy}
+      />
+      <ImageActionButton
+        busy={saving}
+        icon={Download}
+        label={copy.downloadImage}
+        loadingLabel={copy.savingImage}
+        onClick={onDownload}
+      />
+    </span>
+  )
+}
+
+export function ImageActionButton({
+  busy,
+  icon: Icon,
+  label,
+  loadingLabel,
+  onClick,
+  className
+}: {
+  busy: boolean
+  className?: string
+  icon: IconComponent
+  label: string
+  loadingLabel: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      aria-label={busy ? loadingLabel : label}
+      className={cn(
+        'grid size-8 place-items-center rounded-full border border-border/70 bg-background/80 text-muted-foreground shadow-sm backdrop-blur hover:bg-accent hover:text-foreground disabled:opacity-50',
+        className
+      )}
+      disabled={busy}
       onClick={event => {
         event.stopPropagation()
         void onClick()
       }}
-      title={saving ? copy.savingImage : copy.downloadImage}
+      title={busy ? loadingLabel : label}
       type="button"
     >
-      <Download className={cn('size-4', saving && 'animate-pulse')} />
+      <Icon className={cn('size-4', busy && 'animate-pulse')} />
     </button>
   )
 }

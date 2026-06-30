@@ -106,6 +106,7 @@ import {
   $sidebarFolders,
   createFolder,
   deleteFolder,
+  ensureSessionsInNamedFolder,
   folderKeySet,
   renameFolder,
   reorderFolders,
@@ -490,6 +491,11 @@ export function ChatSidebar({
   // each folder's own sessions happens at render time via sessionByAnyId.
   const folders = useStore($sidebarFolders)
   const folderedKeys = useMemo(() => folderKeySet(folders), [folders])
+
+  useEffect(() => {
+    const keys = sortedSessions.filter(s => s.source === 'open-arthouse-watch').map(sessionPinId)
+    ensureSessionsInNamedFolder('OPEN-ARTHOUSE', keys, profileScope)
+  }, [sortedSessions, profileScope])
 
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly

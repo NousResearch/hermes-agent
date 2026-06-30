@@ -23,6 +23,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any, Dict, List, Optional
 
@@ -108,6 +109,32 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     if isinstance(append_text, str) and append_text.strip():
         return f"{base}\n\n{append_text.strip()}".strip()
     return base
+
+
+def _format_memory_prompt_block(
+    memory_store: Any,
+    target: str,
+    *,
+    query: str = "",
+    cwd: str = "",
+    session_source: str = "",
+) -> Optional[str]:
+    """Render a built-in memory block with scoped args when supported.
+
+    Desktop/gateway processes can temporarily contain a mixed-version state: a
+    newly imported prompt builder plus an older in-memory MemoryStore instance.
+    Old stores render their flat snapshot; new stores receive scoped retrieval
+    context. This keeps hot reloads/restarts non-fatal without hiding TypeError
+    exceptions raised inside the new implementation.
+    """
+    formatter = memory_store.format_for_system_prompt
+    try:
+        supports_scoped_kwargs = "query" in inspect.signature(formatter).parameters
+    except (TypeError, ValueError):
+        supports_scoped_kwargs = False
+    if not supports_scoped_kwargs:
+        return formatter(target)
+    return formatter(target, query=query, cwd=cwd, session_source=session_source)
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -424,8 +451,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: List[str] = []
 
     if agent._memory_store:
+        _memory_query = getattr(agent, "_memory_scope_query", "") or ""
+        _memory_cwd = getattr(agent, "_memory_scope_cwd", "") or ""
+        _memory_source = getattr(agent, "_memory_scope_source", "") or ""
         if agent._memory_enabled:
-            mem_block = agent._memory_store.format_for_system_prompt("memory")
+            mem_block = _format_memory_prompt_block(
+                agent._memory_store,
+                "memory",
+                query=_memory_query,
+                cwd=_memory_cwd,
+                session_source=_memory_source,
+            )
             if mem_block:
                 volatile_parts.append(mem_block)
         # USER.md is always included when enabled.

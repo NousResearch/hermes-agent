@@ -31,7 +31,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set, Tuple
 
 from utils import atomic_replace
 
@@ -57,6 +57,109 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+SCOPED_MEMORY_FILENAME = "SCOPED_MEMORY.jsonl"
+
+ALLOWED_SCOPED_NODE_TYPES = {
+    "user_preference",
+    "project",
+    "entity",
+    "workflow",
+    "vocabulary",
+    "environment_fact",
+    "safety_rule",
+}
+
+ALLOWED_SCOPED_EDGE_TYPES = {
+    "belongs_to",
+    "mentions",
+    "prefers",
+    "dislikes",
+    "requires",
+    "depends_on",
+    "synonym_of",
+    "relevant_to",
+}
+
+
+def _infer_scoped_node_type(
+    content: Optional[str],
+    *,
+    entities: Optional[List[str]] = None,
+    project_paths: Optional[List[str]] = None,
+    sources: Optional[List[str]] = None,
+    is_global: bool = False,
+) -> str:
+    """Best-effort node_type for scoped writes when clients omit the field.
+
+    ``node_type`` is optional in the provider-facing schema, so desktop or
+    structured-output clients can legitimately send a scoped add without it.
+    Prefer saving a conservative typed node over surfacing a raw validator
+    error to the user.
+    """
+    text = (content or "").strip().lower()
+    entity_values = [str(e).strip() for e in entities or [] if str(e).strip()]
+    project_path_values = [str(p).strip() for p in project_paths or [] if str(p).strip()]
+    source_values = [str(s).strip() for s in sources or [] if str(s).strip()]
+
+    if any(term in text for term in (
+        "do not",
+        "don't",
+        "never",
+        "must not",
+        "without permission",
+        "requires approval",
+        "security",
+        "safe to",
+        "sandbox",
+    )):
+        return "safety_rule"
+
+    if any(term in text for term in ("user prefers", "user wants", "prefers ", "preference", "likes ")):
+        return "user_preference"
+
+    if any(term in text for term in (" means ", " is called ", "term ", "vocabulary", "stands for")):
+        return "vocabulary"
+
+    if any(term in text for term in (
+        "workflow",
+        "process",
+        "when ",
+        "always ",
+        "should ",
+        "must ",
+        "use ",
+        "run ",
+        "launch",
+        "start",
+        "dock",
+        "reinstall",
+        "backup",
+        "verify",
+    )):
+        return "workflow"
+
+    if project_path_values or entity_values:
+        return "project"
+
+    if source_values or is_global:
+        return "environment_fact"
+
+    return "environment_fact"
+
+# Small built-in vocabulary used to give migration-shadow nodes enough structure
+# before the user has converted flat MEMORY.md entries to SCOPED_MEMORY.jsonl.
+VOCABULARY_TERMS = {
+    "botson",
+    "codex",
+    "claude",
+    "claude code",
+    "hermes",
+    "master_plan",
+    "rough cut",
+    "telegram",
+    "termfleet",
+    "watchpost",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -121,11 +224,21 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        scoped_memory_enabled: bool = False,
+        scoped_memory_char_limit: int = 4000,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.scoped_memory_enabled = bool(scoped_memory_enabled)
+        self.scoped_memory_char_limit = int(scoped_memory_char_limit or 4000)
+        self._scoped_nodes: List[Dict[str, Any]] = []
+        self._scoped_debug: Dict[str, List[Dict[str, str]]] = {"loaded": [], "skipped": []}
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -162,11 +275,18 @@ class MemoryStore:
         sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
         sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
 
-        # Capture frozen snapshot for system prompt injection
+        # Capture frozen snapshot for system prompt injection. In scoped mode,
+        # MEMORY.md remains the flat fallback/live editable store; the memory
+        # block is selected later from SCOPED_MEMORY.jsonl using the first turn's
+        # query/cwd context. USER.md stays flat to avoid duplicating profile data.
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+        if self.scoped_memory_enabled:
+            self._scoped_nodes = self._read_scoped_nodes(mem_dir / SCOPED_MEMORY_FILENAME)
+            if not self._scoped_nodes:
+                self._scoped_nodes = self._migration_shadow_nodes(sanitized_memory)
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -293,6 +413,24 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def _scoped_overflow_hint(self) -> str:
+        """Suffix for flat-overflow errors when the scoped graph is enabled,
+        steering durable project/workflow/env/safety/vocab facts there.
+
+        Returns "" when scoped is disabled: the model can't safely flip config
+        mid-session (it trips the config-mod threat scanner), so a disabled
+        profile is fixed out-of-band via `python -m tools.memory_migrate`.
+        """
+        if not self.scoped_memory_enabled:
+            return ""
+        return (
+            " If this is a project/workflow/environment/safety/vocabulary fact "
+            "(not a tiny global user-profile fact), save it to the scoped graph "
+            "instead: memory(action=add, target=\"scoped\", node_type=..., "
+            "content=...). The scoped graph has no flat char limit, so you won't "
+            "have to delete unrelated entries."
+        )
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -334,6 +472,7 @@ class MemoryStore:
                         f"Consolidate now: use 'replace' to merge overlapping entries into "
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
+                        + self._scoped_overflow_hint()
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -399,6 +538,7 @@ class MemoryStore:
                         f"Shorten the new content, or 'remove' other stale or less important "
                         f"entries to make room (see current_entries below), then retry — all "
                         f"in this turn."
+                        + self._scoped_overflow_hint()
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -538,10 +678,14 @@ class MemoryStore:
                 current = self._char_count(target)
                 return {
                     "success": False,
+                    "done": False,
+                    "recoverable": True,
                     "error": (
                         f"After applying all {len(operations)} operations, memory would be at "
                         f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                        f"entries in the same batch (see current_entries below), then retry."
+                        f"entries in one smaller replacement/removal batch (see current_entries "
+                        f"below), then retry once. No operations were applied."
+                        + self._scoped_overflow_hint()
                     ),
                     "current_entries": self._entries_for(target),
                     "usage": f"{current:,}/{limit:,}",
@@ -564,7 +708,13 @@ class MemoryStore:
             "usage": f"{current:,}/{limit:,}",
         }
 
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
+    def format_for_system_prompt(
+        self,
+        target: str,
+        query: str = "",
+        cwd: str = "",
+        session_source: str = "",
+    ) -> Optional[str]:
         """
         Return the frozen snapshot for system prompt injection.
 
@@ -572,10 +722,490 @@ class MemoryStore:
         state. Mid-session writes do not affect this. This keeps the system
         prompt stable across all turns, preserving the prefix cache.
 
+        In scoped-memory mode, MEMORY is rendered from the load-time scoped node
+        snapshot using the session's first user query/cwd/source. The system
+        prompt is still built once per session, so retrieval does not mutate the
+        cached prefix mid-conversation.
+
         Returns None if the snapshot is empty (no entries at load time).
         """
+        if target == "memory" and self.scoped_memory_enabled:
+            block = self._render_scoped_memory_block(query=query, cwd=cwd, session_source=session_source)
+            return block if block else None
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
+
+    def scoped_debug_summary(self) -> Dict[str, List[Dict[str, str]]]:
+        """Return the most recent scoped retrieval decisions for tests/debug UI."""
+        return {
+            "loaded": list(self._scoped_debug.get("loaded", [])),
+            "skipped": list(self._scoped_debug.get("skipped", [])),
+        }
+
+    def _read_scoped_nodes(self, path: Path) -> List[Dict[str, Any]]:
+        if not path.exists():
+            return []
+        nodes: List[Dict[str, Any]] = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, IOError):
+            return []
+        for line_no, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed scoped memory node at %s:%d", path, line_no)
+                continue
+            node = self._normalize_scoped_node(raw)
+            if node:
+                nodes.append(node)
+        return nodes
+
+    def _normalize_scoped_node(self, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+        node_id = str(raw.get("id") or "").strip()
+        node_type = str(raw.get("type") or "").strip()
+        content = str(raw.get("content") or "").strip()
+        if not node_id or not content or node_type not in ALLOWED_SCOPED_NODE_TYPES:
+            return None
+        scan_error = _scan_memory_content(content)
+        if scan_error:
+            content = f"[BLOCKED: {SCOPED_MEMORY_FILENAME} node {node_id} contained threat pattern. Removed from system prompt.]"
+        entities = [str(e).strip() for e in raw.get("entities", []) if str(e).strip()] if isinstance(raw.get("entities", []), list) else []
+        project_paths = [str(p).strip() for p in raw.get("project_paths", []) if str(p).strip()] if isinstance(raw.get("project_paths", []), list) else []
+        sources = [str(s).strip().lower() for s in raw.get("sources", []) if str(s).strip()] if isinstance(raw.get("sources", []), list) else []
+        edges = []
+        for edge in raw.get("edges", []) if isinstance(raw.get("edges", []), list) else []:
+            if not isinstance(edge, dict):
+                continue
+            edge_type = str(edge.get("type") or "").strip()
+            target = str(edge.get("target") or "").strip()
+            if edge_type in ALLOWED_SCOPED_EDGE_TYPES and target:
+                edges.append({"type": edge_type, "target": target})
+        return {
+            "id": node_id,
+            "type": node_type,
+            "content": content,
+            "entities": entities,
+            "project_paths": project_paths,
+            "sources": sources,
+            "edges": edges,
+            "global": bool(raw.get("global")),
+        }
+
+    def _migration_shadow_nodes(self, entries: List[str]) -> List[Dict[str, Any]]:
+        """Represent legacy flat MEMORY.md entries as scoped nodes without rewriting disk."""
+        nodes: List[Dict[str, Any]] = []
+        for idx, entry in enumerate(entries):
+            text = entry.lower()
+            entities = [term for term in VOCABULARY_TERMS if term in text]
+            nodes.append({
+                "id": f"legacy-memory-{idx}",
+                "type": "workflow" if entities else "environment_fact",
+                "content": entry,
+                "entities": entities,
+                "project_paths": [],
+                "sources": [],
+                "edges": [],
+                "global": not entities,
+            })
+        return nodes
+
+    def _render_scoped_memory_block(self, query: str = "", cwd: str = "", session_source: str = "") -> str:
+        if not self._scoped_nodes:
+            self._scoped_debug = {"loaded": [], "skipped": []}
+            return ""
+        selected, debug = self._select_scoped_nodes(query=query, cwd=cwd, session_source=session_source)
+        self._scoped_debug = debug
+        entries = [node["content"] for node in selected]
+        if not entries:
+            return ""
+        return self._render_scoped_block(entries)
+
+    def _select_scoped_nodes(
+        self,
+        query: str = "",
+        cwd: str = "",
+        session_source: str = "",
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, str]]]]:
+        query_l = (query or "").lower()
+        cwd_l = (cwd or "").lower()
+        source_l = (session_source or "").lower()
+        by_id = {node["id"]: node for node in self._scoped_nodes}
+        reason_by_id: Dict[str, str] = {}
+
+        for node in self._scoped_nodes:
+            reason = self._direct_scoped_reason(node, query_l=query_l, cwd_l=cwd_l, source_l=source_l)
+            if reason:
+                reason_by_id[node["id"]] = reason
+
+        changed = True
+        while changed:
+            changed = False
+            loaded_ids: Set[str] = set(reason_by_id)
+            for node in self._scoped_nodes:
+                if node["id"] in reason_by_id:
+                    continue
+                for edge in node.get("edges", []):
+                    target = edge.get("target", "")
+                    if target in loaded_ids and target in by_id:
+                        reason_by_id[node["id"]] = f"edge:{edge.get('type')} to {target}"
+                        changed = True
+                        break
+
+        ordered = sorted(
+            self._scoped_nodes,
+            key=lambda n: (
+                0 if n.get("global") else 1,
+                1 if reason_by_id.get(n["id"], "").startswith("edge:") else 0,
+                self._scoped_nodes.index(n),
+            ),
+        )
+        selected: List[Dict[str, Any]] = []
+        loaded: List[Dict[str, str]] = []
+        skipped: List[Dict[str, str]] = []
+        contents: List[str] = []
+        for node in ordered:
+            reason = reason_by_id.get(node["id"])
+            if not reason:
+                skipped.append({"id": node["id"], "reason": "no scoped match"})
+                continue
+            trial = contents + [node["content"]]
+            if len(ENTRY_DELIMITER.join(trial)) > self.scoped_memory_char_limit:
+                skipped.append({"id": node["id"], "reason": "scoped budget"})
+                continue
+            selected.append(node)
+            contents.append(node["content"])
+            loaded.append({"id": node["id"], "reason": reason})
+
+        return selected, {"loaded": loaded, "skipped": skipped}
+
+    @staticmethod
+    def _direct_scoped_reason(node: Dict[str, Any], query_l: str, cwd_l: str, source_l: str) -> str:
+        if node.get("global"):
+            return "global"
+        for project_path in node.get("project_paths", []):
+            project_l = str(project_path).lower()
+            if project_l and (cwd_l.startswith(project_l) or project_l in cwd_l):
+                return f"project_path:{project_path}"
+        for source in node.get("sources", []):
+            if source and source == source_l:
+                return f"source:{source}"
+        for entity in node.get("entities", []):
+            ent_l = str(entity).lower()
+            if ent_l and ent_l in query_l:
+                return f"entity:{ent_l}"
+        return ""
+
+    def _render_scoped_block(self, entries: List[str]) -> str:
+        limit = self.scoped_memory_char_limit
+        content = ENTRY_DELIMITER.join(entries)
+        current = len(content)
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+        separator = "═" * 46
+        header = f"MEMORY (scoped node graph) [{pct}% — {current:,}/{limit:,} chars]"
+        return f"{separator}\n{header}\n{separator}\n{content}"
+
+    # -- Scoped node-graph WRITES -------------------------------------------
+    #
+    # Writes go to SCOPED_MEMORY.jsonl via read-modify-write under the same
+    # file lock + atomic-rename discipline as the flat stores. They never
+    # mutate ``self._scoped_nodes`` (the frozen in-session snapshot used to
+    # render the system prompt) — new nodes therefore appear only after the
+    # next ``load_from_disk()`` (next session / prompt rebuild), exactly like
+    # flat memory. There is no whole-file char budget: the graph may grow
+    # large; retrieval selects a relevant subset within the render limit.
+
+    def _scoped_path(self) -> Path:
+        return get_memory_dir() / SCOPED_MEMORY_FILENAME
+
+    @staticmethod
+    def _slugify(text: str, max_len: int = 32) -> str:
+        import re
+
+        slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+        return slug[:max_len].strip("-")
+
+    def _generate_scoped_id(
+        self, node_type: str, entities: List[str], content: str, existing_ids: Set[str]
+    ) -> str:
+        """Deterministic, unique id from type + first entity (or content words)."""
+        anchor = self._slugify(entities[0], 24) if entities else self._slugify(content, 24)
+        base = "-".join(p for p in (node_type, anchor) if p).strip("-") or "node"
+        if base not in existing_ids:
+            return base
+        i = 2
+        while f"{base}-{i}" in existing_ids:
+            i += 1
+        return f"{base}-{i}"
+
+    @staticmethod
+    def _load_scoped_raw(path: Path) -> List[Dict[str, Any]]:
+        """Read SCOPED_MEMORY.jsonl into raw parsed dicts (skip malformed lines).
+
+        Unlike ``_read_scoped_nodes`` this does NOT sanitize/normalize — it
+        preserves the on-disk nodes so replace/remove operate on the real
+        records and don't lose fields on round-trip.
+        """
+        if not path.exists():
+            return []
+        nodes: List[Dict[str, Any]] = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, IOError):
+            return []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(raw, dict) and raw.get("id"):
+                nodes.append(raw)
+        return nodes
+
+    @staticmethod
+    def _write_scoped_nodes(path: Path, nodes: List[Dict[str, Any]]):
+        """Atomically write nodes as JSONL (temp file + fsync + rename)."""
+        content = "".join(json.dumps(n, ensure_ascii=False) + "\n" for n in nodes)
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), suffix=".tmp", prefix=".scoped_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                atomic_replace(tmp_path, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except (OSError, IOError) as e:
+            raise RuntimeError(f"Failed to write scoped memory file {path}: {e}")
+
+    @staticmethod
+    def _validate_edges(edges: Optional[List[Dict[str, Any]]]) -> Tuple[Optional[List[Dict[str, str]]], Optional[str]]:
+        """Return (normalized_edges, error). error is None when valid."""
+        norm: List[Dict[str, str]] = []
+        for edge in edges or []:
+            if not isinstance(edge, dict):
+                return None, "Each edge must be an object {type, target}."
+            etype = str(edge.get("type") or "").strip()
+            target = str(edge.get("target") or "").strip()
+            if etype not in ALLOWED_SCOPED_EDGE_TYPES:
+                return None, (
+                    f"Invalid edge type '{etype}'. Allowed edge types: "
+                    f"{', '.join(sorted(ALLOWED_SCOPED_EDGE_TYPES))}."
+                )
+            if not target:
+                return None, "Edge target cannot be empty."
+            norm.append({"type": etype, "target": target})
+        return norm, None
+
+    @staticmethod
+    def _norm_str_list(values: Optional[List[Any]], lower: bool = False) -> List[str]:
+        out: List[str] = []
+        for v in values or []:
+            s = str(v).strip()
+            if not s:
+                continue
+            out.append(s.lower() if lower else s)
+        return out
+
+    def _find_scoped_index(
+        self, nodes: List[Dict[str, Any]], selector: str
+    ) -> Tuple[Optional[int], Optional[str]]:
+        """Locate a node by exact id, else by unique content substring.
+
+        Returns (index, error). On no/ambiguous match, index is None and
+        error explains why.
+        """
+        for i, n in enumerate(nodes):
+            if n.get("id") == selector:
+                return i, None
+        matches = [i for i, n in enumerate(nodes) if selector in str(n.get("content", ""))]
+        if not matches:
+            return None, f"No scoped node matched '{selector}' (by id or content substring)."
+        if len(matches) > 1:
+            distinct = {str(nodes[i].get("content", "")) for i in matches}
+            if len(distinct) > 1:
+                return None, f"Multiple scoped nodes matched '{selector}'. Be more specific or use the node id."
+        return matches[0], None
+
+    def add_scoped(
+        self,
+        content: str,
+        node_type: str,
+        entities: Optional[List[str]] = None,
+        edges: Optional[List[Dict[str, Any]]] = None,
+        project_paths: Optional[List[str]] = None,
+        sources: Optional[List[str]] = None,
+        is_global: bool = False,
+    ) -> Dict[str, Any]:
+        """Append a typed node to SCOPED_MEMORY.jsonl. Idempotent on (type, content)."""
+        content = (content or "").strip()
+        if not content:
+            return {"success": False, "error": "Content cannot be empty."}
+        if node_type not in ALLOWED_SCOPED_NODE_TYPES:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid node_type '{node_type}'. Allowed node_type values: "
+                    f"{', '.join(sorted(ALLOWED_SCOPED_NODE_TYPES))}."
+                ),
+            }
+        norm_edges, edge_err = self._validate_edges(edges)
+        if edge_err:
+            return {"success": False, "error": edge_err}
+        scan_error = _scan_memory_content(content)
+        if scan_error:
+            return {"success": False, "error": scan_error}
+
+        entities = self._norm_str_list(entities)
+        project_paths = self._norm_str_list(project_paths)
+        sources = self._norm_str_list(sources, lower=True)
+
+        path = self._scoped_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._file_lock(path):
+            nodes = self._load_scoped_raw(path)
+            for n in nodes:
+                if str(n.get("content", "")).strip() == content and n.get("type") == node_type:
+                    return {
+                        "success": True,
+                        "done": True,
+                        "target": "scoped",
+                        "id": n.get("id"),
+                        "message": "Node already exists (no duplicate added).",
+                        "node_count": len(nodes),
+                        "note": "Write saved. This update is complete — do not repeat it.",
+                    }
+            existing_ids = {str(n.get("id")) for n in nodes}
+            node_id = self._generate_scoped_id(node_type, entities, content, existing_ids)
+            node = {
+                "id": node_id,
+                "type": node_type,
+                "content": content,
+                "entities": entities,
+                "project_paths": project_paths,
+                "sources": sources,
+                "edges": norm_edges or [],
+                "global": bool(is_global),
+            }
+            nodes.append(node)
+            self._write_scoped_nodes(path, nodes)
+            count = len(nodes)
+
+        return {
+            "success": True,
+            "done": True,
+            "target": "scoped",
+            "id": node_id,
+            "message": "Scoped node added.",
+            "node_count": count,
+            "note": "Write saved. This update is complete — do not repeat it.",
+        }
+
+    def replace_scoped(
+        self,
+        selector: str,
+        content: Optional[str] = None,
+        node_type: Optional[str] = None,
+        entities: Optional[List[str]] = None,
+        edges: Optional[List[Dict[str, Any]]] = None,
+        project_paths: Optional[List[str]] = None,
+        sources: Optional[List[str]] = None,
+        is_global: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Update a node identified by id or unique content substring."""
+        selector = (selector or "").strip()
+        if not selector:
+            return {"success": False, "error": "selector (node id or unique substring) is required."}
+        if content is not None:
+            content = content.strip()
+            if content:
+                scan_error = _scan_memory_content(content)
+                if scan_error:
+                    return {"success": False, "error": scan_error}
+        if node_type is not None and node_type not in ALLOWED_SCOPED_NODE_TYPES:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid node_type '{node_type}'. Allowed node_type values: "
+                    f"{', '.join(sorted(ALLOWED_SCOPED_NODE_TYPES))}."
+                ),
+            }
+        norm_edges = None
+        if edges is not None:
+            norm_edges, edge_err = self._validate_edges(edges)
+            if edge_err:
+                return {"success": False, "error": edge_err}
+
+        path = self._scoped_path()
+        with self._file_lock(path):
+            nodes = self._load_scoped_raw(path)
+            idx, err = self._find_scoped_index(nodes, selector)
+            if err:
+                return {"success": False, "error": err}
+            node = nodes[idx]
+            if content:
+                node["content"] = content
+            if node_type is not None:
+                node["type"] = node_type
+            if entities is not None:
+                node["entities"] = self._norm_str_list(entities)
+            if norm_edges is not None:
+                node["edges"] = norm_edges
+            if project_paths is not None:
+                node["project_paths"] = self._norm_str_list(project_paths)
+            if sources is not None:
+                node["sources"] = self._norm_str_list(sources, lower=True)
+            if is_global is not None:
+                node["global"] = bool(is_global)
+            self._write_scoped_nodes(path, nodes)
+            node_id = node.get("id")
+
+        return {
+            "success": True,
+            "done": True,
+            "target": "scoped",
+            "id": node_id,
+            "message": "Scoped node replaced.",
+            "note": "Write saved. This update is complete — do not repeat it.",
+        }
+
+    def remove_scoped(self, selector: str) -> Dict[str, Any]:
+        """Delete a node identified by id or unique content substring."""
+        selector = (selector or "").strip()
+        if not selector:
+            return {"success": False, "error": "selector (node id or unique substring) is required."}
+        path = self._scoped_path()
+        with self._file_lock(path):
+            nodes = self._load_scoped_raw(path)
+            idx, err = self._find_scoped_index(nodes, selector)
+            if err:
+                return {"success": False, "error": err}
+            removed = nodes.pop(idx)
+            self._write_scoped_nodes(path, nodes)
+            count = len(nodes)
+
+        return {
+            "success": True,
+            "done": True,
+            "target": "scoped",
+            "id": removed.get("id"),
+            "message": "Scoped node removed.",
+            "node_count": count,
+            "note": "Write saved. This update is complete — do not repeat it.",
+        }
 
     # -- Internal helpers --
 
@@ -732,12 +1362,15 @@ class MemoryStore:
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+                      old_text: Optional[str],
+                      scoped_fields: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
 
-    Only the mutating actions (add/replace/remove) are gated.
+    Only the mutating actions (add/replace/remove) are gated. ``scoped_fields``
+    carries node_type/entities/edges/... so a staged scoped write can be
+    replayed faithfully at approve time.
     """
     if action not in {"add", "replace", "remove"}:
         return None
@@ -750,7 +1383,12 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         return None
 
     # Build a small inline summary/detail for the foreground approval prompt.
-    label = "user profile" if target == "user" else "memory"
+    if target == "user":
+        label = "user profile"
+    elif target == "scoped":
+        label = "scoped memory graph"
+    else:
+        label = "memory"
     if action == "add":
         summary = f"add to {label}"
         detail = content or ""
@@ -776,6 +1414,8 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "content": content,
         "old_text": old_text,
     }
+    if scoped_fields:
+        payload.update(scoped_fields)
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
@@ -867,39 +1507,147 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
     )
 
 
+def _scoped_dispatch(
+    action: str,
+    content: Optional[str],
+    old_text: Optional[str],
+    node_type: Optional[str],
+    entities: Optional[List[str]],
+    edges: Optional[List[Dict[str, Any]]],
+    project_paths: Optional[List[str]],
+    sources: Optional[List[str]],
+    is_global: bool,
+    store: "MemoryStore",
+) -> str:
+    """Route a target='scoped' memory call to the graph write methods.
+
+    Reuses the flat write gate (approval staging) so scoped writes honour the
+    same background/gateway approval policy. old_text is the node selector for
+    replace/remove (id or unique content substring).
+    """
+    if not store.scoped_memory_enabled:
+        return tool_error(
+            "Scoped memory is not enabled for this profile. Set "
+            "memory.scoped_memory_enabled: true (or use target='memory'/'user').",
+            success=False,
+        )
+
+    if action == "add" and not content:
+        return tool_error("content is required for scoped 'add'.", success=False)
+    if action == "add" and not node_type:
+        node_type = _infer_scoped_node_type(
+            content,
+            entities=entities,
+            project_paths=project_paths,
+            sources=sources,
+            is_global=is_global,
+        )
+    if action in {"replace", "remove"} and not old_text:
+        return tool_error(
+            f"old_text (node id or unique content substring) is required for scoped '{action}'.",
+            success=False,
+        )
+
+    # Honour the write-approval gate (stage/block) just like flat writes.
+    gate_result = _apply_write_gate(
+        action, "scoped", content, old_text,
+        scoped_fields={
+            "node_type": node_type,
+            "entities": entities,
+            "edges": edges,
+            "project_paths": project_paths,
+            "sources": sources,
+            "is_global": is_global,
+        },
+    )
+    if gate_result is not None:
+        return gate_result
+
+    if action == "add":
+        result = store.add_scoped(
+            content=content, node_type=node_type, entities=entities,
+            edges=edges, project_paths=project_paths, sources=sources,
+            is_global=is_global,
+        )
+    elif action == "replace":
+        result = store.replace_scoped(
+            selector=old_text, content=content, node_type=node_type,
+            entities=entities, edges=edges, project_paths=project_paths,
+            sources=sources, is_global=(is_global if is_global else None),
+        )
+    elif action == "remove":
+        result = store.remove_scoped(selector=old_text)
+    else:
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+
+    return json.dumps(result, ensure_ascii=False)
+
+
 def memory_tool(
     action: str = None,
     target: str = "memory",
     content: str = None,
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
+    node_type: str = None,
+    entities: Optional[List[str]] = None,
+    edges: Optional[List[Dict[str, Any]]] = None,
+    project_paths: Optional[List[str]] = None,
+    sources: Optional[List[str]] = None,
+    is_global: bool = False,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
 
-    Two shapes:
+    Shapes:
       - Single op: action + (content / old_text).
       - Batch:     operations=[{action, content?, old_text?}, ...] applied
                    atomically against the final char budget in ONE call.
+      - Scoped:    target="scoped" (alias "graph") + node_type/entities/edges/
+                   project_paths for typed node-graph writes. old_text is the
+                   selector (id or unique substring) for replace/remove.
 
     Returns JSON string with results.
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
-    if target not in {"memory", "user"}:
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+    # "graph" is an alias for "scoped".
+    if target == "graph":
+        target = "scoped"
+
+    if target not in {"memory", "user", "scoped"}:
+        return tool_error(f"Invalid target '{target}'. Use 'memory', 'user', or 'scoped'.", success=False)
+
+    if not action and content and not old_text:
+        action = "add"
 
     # --- Batch path -------------------------------------------------------
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
+        if target == "scoped":
+            return tool_error(
+                "Scoped memory does not support the flat 'operations' batch shape. "
+                "Use a single scoped add/replace/remove call with node_type/entities/project_paths, "
+                "or use target='memory'/'user' for flat batch consolidation.",
+                success=False,
+            )
         gate_result = _apply_batch_write_gate(target, operations)
         if gate_result is not None:
             return gate_result
         result = store.apply_batch(target, operations)
         return json.dumps(result, ensure_ascii=False)
+
+    # --- Scoped node-graph path -------------------------------------------
+    if target == "scoped":
+        return _scoped_dispatch(
+            action=action, content=content, old_text=old_text,
+            node_type=node_type, entities=entities, edges=edges,
+            project_paths=project_paths, sources=sources, is_global=is_global,
+            store=store,
+        )
 
     # --- Single-op path ---------------------------------------------------
     # Validate required params BEFORE the gate so an invalid write is rejected
@@ -954,6 +1702,25 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     target = payload.get("target", "memory")
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
+    if target == "scoped":
+        if action == "add":
+            return store.add_scoped(
+                content=content, node_type=payload.get("node_type"),
+                entities=payload.get("entities"), edges=payload.get("edges"),
+                project_paths=payload.get("project_paths"),
+                sources=payload.get("sources"),
+                is_global=bool(payload.get("is_global")),
+            )
+        if action == "replace":
+            return store.replace_scoped(
+                selector=old_text, content=content or None,
+                node_type=payload.get("node_type"), entities=payload.get("entities"),
+                edges=payload.get("edges"), project_paths=payload.get("project_paths"),
+                sources=payload.get("sources"),
+            )
+        if action == "remove":
+            return store.remove_scoped(selector=old_text)
+        return {"success": False, "error": f"Unknown staged scoped action '{action}'."}
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action == "add":
@@ -984,8 +1751,22 @@ MEMORY_SCHEMA = {
         "memory stops the user repeating themselves.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
-        "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-        "notes (environment, conventions, tool quirks, lessons).\n\n"
+        "TARGETS: 'user' = TINY always-loaded global facts about who the user is (name, role, "
+        "language, broad communication style) — keep this small. 'memory' = your global notes "
+        "(environment, conventions, tool quirks, lessons). 'scoped' (alias 'graph') = a typed "
+        "node graph for project-, workflow-, environment-, safety-, and vocabulary-specific facts "
+        "that should load ONLY when relevant. When scoped is enabled, prefer target='scoped' for "
+        "anything tied to a specific project (Botson, TermFleet, Watchpost, Rough Cut, …), a "
+        "workflow, an environment fact, a safety rule, or vocabulary — it has no flat char limit, "
+        "so you never need to delete unrelated entries to make room. Reserve target='user' for "
+        "truly global identity/preferences. If a flat 'user'/'memory' add is rejected as full and "
+        "scoped is enabled, do NOT keep retrying the flat write — save it to target='scoped'.\n\n"
+        "SCOPED FIELDS (target='scoped'): node_type (optional but recommended for add; "
+        "if omitted Hermes infers one of user_preference, "
+        "project, entity, workflow, vocabulary, environment_fact, safety_rule), entities (names "
+        "that should trigger loading this node), edges ([{type, target}] relations to other node "
+        "ids), project_paths (cwd prefixes), sources (session sources e.g. 'telegram'). For scoped "
+        "replace/remove, old_text is the node id or a unique content substring.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."
@@ -1000,8 +1781,8 @@ MEMORY_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "enum": ["memory", "user", "scoped"],
+                "description": "Which store: 'memory' = global notes, 'user' = tiny global user profile, 'scoped' (alias 'graph') = typed node graph for project/workflow/environment/safety/vocabulary facts loaded only when relevant."
             },
             "content": {
                 "type": "string",
@@ -1009,7 +1790,43 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry. For target='scoped' it may be the node id or a unique content substring. Omit only for 'add'."
+            },
+            "node_type": {
+                "type": "string",
+                "enum": sorted(ALLOWED_SCOPED_NODE_TYPES),
+                "description": "target='scoped' only: the node type. Optional for scoped 'add'; Hermes infers a conservative type when omitted."
+            },
+            "entities": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "target='scoped' only: entity names that should trigger loading this node (e.g. ['Botson'])."
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": sorted(ALLOWED_SCOPED_EDGE_TYPES)},
+                        "target": {"type": "string", "description": "Target node id."},
+                    },
+                    "required": ["type", "target"],
+                },
+                "description": "target='scoped' only: typed relations to other node ids."
+            },
+            "project_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "target='scoped' only: cwd path prefixes that make this node relevant."
+            },
+            "sources": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "target='scoped' only: session sources (e.g. 'telegram', 'cli') that make this node relevant."
+            },
+            "is_global": {
+                "type": "boolean",
+                "description": "target='scoped' only: mark the node as always-relevant (loaded regardless of query/cwd)."
             },
             "operations": {
                 "type": "array",
@@ -1047,11 +1864,13 @@ registry.register(
         content=args.get("content"),
         old_text=args.get("old_text"),
         operations=args.get("operations"),
+        node_type=args.get("node_type"),
+        entities=args.get("entities"),
+        edges=args.get("edges"),
+        project_paths=args.get("project_paths"),
+        sources=args.get("sources"),
+        is_global=bool(args.get("is_global", False)),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

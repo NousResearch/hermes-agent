@@ -98,6 +98,7 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # ``claude-opus-4`` so non-thinking Claude 3.x or future
     # non-reasoning Claude variants don't match.
     ("claude-opus-4", 240),
+    ("claude-sonnet-5", 180),
     ("claude-sonnet-4.5", 180),
     ("claude-sonnet-4.6", 180),
     # xAI Grok reasoning variants.  Explicit reasoning-only keys

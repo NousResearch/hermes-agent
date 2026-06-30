@@ -1642,12 +1642,16 @@ def run_conversation(
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)
+                    if isinstance(status, str):
+                        status = status.strip().lower()
                     incomplete_details = getattr(response, "incomplete_details", None)
                     incomplete_reason = None
                     if isinstance(incomplete_details, dict):
                         incomplete_reason = incomplete_details.get("reason")
                     else:
                         incomplete_reason = getattr(incomplete_details, "reason", None)
+                    if incomplete_reason is not None:
+                        incomplete_reason = str(incomplete_reason).strip().lower()
                     if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
                         # Responses API max-output exhaustion is a normal
                         # Codex incomplete turn.  Let the Codex-specific
@@ -1657,6 +1661,8 @@ def run_conversation(
                         # emits "Response truncated due to output length
                         # limit" and stops gateway turns.
                         finish_reason = "incomplete"
+                    elif status == "incomplete" and incomplete_reason == "content_filter":
+                        finish_reason = "content_filter"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":

@@ -1702,6 +1702,8 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
 
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_LAUNCHD_CANONICAL_DEFAULT_LABEL = "io.nousresearch.hermes-agent.gateway"
+_LAUNCHD_LEGACY_DEFAULT_LABEL = "ai.hermes.gateway"
 
 
 def _profile_suffix() -> str:
@@ -2458,15 +2460,33 @@ def _launchd_user_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _launchd_plist_path_for_label(label: str) -> Path:
+    return _launchd_user_home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _default_launchd_label() -> str:
+    canonical = _LAUNCHD_CANONICAL_DEFAULT_LABEL
+    legacy = _LAUNCHD_LEGACY_DEFAULT_LABEL
+
+    canonical_plist = _launchd_plist_path_for_label(canonical)
+    if canonical_plist.exists():
+        return canonical
+
+    legacy_plist = _launchd_plist_path_for_label(legacy)
+    if legacy_plist.exists():
+        return legacy
+
+    return canonical
+
+
 def get_launchd_plist_path() -> Path:
     """Return the launchd plist path, scoped per profile.
 
-    Default ``~/.hermes`` → ``ai.hermes.gateway.plist`` (backward compatible).
+    Default ``~/.hermes`` → canonical ``io.nousresearch.hermes-agent.gateway.plist``
+    unless an installed legacy default-profile plist is the only service present.
     Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``.
     """
-    suffix = _profile_suffix()
-    name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
-    return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
+    return _launchd_plist_path_for_label(get_launchd_label())
 
 
 def _detect_venv_dir() -> Path | None:
@@ -3513,7 +3533,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
     suffix = _profile_suffix()
-    return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
+    return f"{_LAUNCHD_LEGACY_DEFAULT_LABEL}-{suffix}" if suffix else _default_launchd_label()
 
 
 # Cached launchd domain result — probing is cheap but should only run once per

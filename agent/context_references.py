@@ -328,9 +328,9 @@ async def _fetch_url_content(
 async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
 
-    raw = await web_extract_tool([url], format="markdown", use_llm_processing=True)
+    raw = await web_extract_tool([url], format="markdown")
     payload = json.loads(raw)
-    docs = payload.get("data", {}).get("documents", [])
+    docs = payload.get("results", [])
     if not docs:
         return ""
     doc = docs[0]

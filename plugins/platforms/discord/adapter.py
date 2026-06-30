@@ -665,6 +665,8 @@ class VoiceReceiver:
             f.write(pcm_data)
             pcm_path = f.name
         try:
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
             subprocess.run(
                 [
                     "ffmpeg", "-y", "-loglevel", "error",
@@ -679,6 +681,7 @@ class VoiceReceiver:
                 check=True,
                 timeout=10,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
         finally:
             try:

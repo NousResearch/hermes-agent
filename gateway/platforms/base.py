@@ -4335,7 +4335,8 @@ class BasePlatformAdapter(ABC):
         # Rewrite ``event.source.thread_id`` via the installed recovery hook
         # (Telegram DM topic mode) so the session key, guard checks, and
         # downstream delivery all agree on the same lane.
-        self._apply_topic_recovery(event)
+        # Offloaded: the sync hook must not block the loop.
+        await asyncio.to_thread(self._apply_topic_recovery, event)
 
         session_key = build_session_key(
             event.source,
@@ -4955,8 +4956,11 @@ class BasePlatformAdapter(ABC):
                     ),
                     metadata=_thread_metadata,
                 )
-            except Exception:
-                pass  # Last resort — don't let error reporting crash the handler
+            except Exception as notify_err:
+                logger.error(
+                    "[%s] Failed to send error notification to user: %s",
+                    self.name, notify_err, exc_info=True,
+                )  # Last resort — don't let error reporting crash the handler
         finally:
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not

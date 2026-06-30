@@ -335,10 +335,25 @@ class WeComAdapter(BasePlatformAdapter):
     async def _listen_loop(self) -> None:
         """Read websocket events forever, reconnecting on errors."""
         backoff_idx = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 50  # cap total retries to prevent infinite loops
         while self._running:
+            if consecutive_failures >= max_consecutive_failures:
+                logger.error(
+                    "[%s] WeCom reconnect exceeded %d attempts — giving up. "
+                    "Restart the gateway to recover.",
+                    self.name, max_consecutive_failures,
+                )
+                self._set_fatal_error(
+                    "wecom_reconnect_exhausted",
+                    f"WeCom reconnect failed after {max_consecutive_failures} attempts",
+                    retryable=True,
+                )
+                return
             try:
                 await self._read_events()
                 backoff_idx = 0
+                consecutive_failures = 0
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -346,18 +361,26 @@ class WeComAdapter(BasePlatformAdapter):
                     return
                 logger.warning("[%s] WebSocket error: %s", self.name, exc)
                 self._fail_pending_responses(RuntimeError("WeCom connection interrupted"))
+                # Clean up stale ws so _read_events won't see a zombie ref
+                await self._cleanup_ws()
 
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
                 backoff_idx += 1
+                consecutive_failures += 1
                 await asyncio.sleep(delay)
 
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    consecutive_failures = 0
                     self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                    # Clean up after failed _open_connection to avoid
+                    # leaving a closed ws that _read_events would silently
+                    # return from (busy-loop root cause).
+                    await self._cleanup_ws()
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
@@ -372,6 +395,13 @@ class WeComAdapter(BasePlatformAdapter):
                     await self._dispatch_payload(payload)
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
+
+        # while loop exited without raising — ws closed externally (e.g.
+        # during handshake). If we don't raise here, _listen_loop sees a
+        # normal return, resets backoff to 0, and re-enters _read_events
+        # which exits immediately again → busy-loop consuming 100% CPU.
+        if self._running:
+            raise RuntimeError("WeCom websocket closed (loop exit without error frame)")
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""

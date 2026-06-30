@@ -100,7 +100,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   return (
     <aside
       className={cn(
-        'relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-tertiary) bg-(--ui-editor-surface-background) text-(--ui-text-tertiary)',
+        "relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--dt-sidebar-border) bg-(--dt-sidebar-bg) text-(--ui-text-tertiary) before:pointer-events-none before:absolute before:inset-0 before:bg-[linear-gradient(180deg,color-mix(in_srgb,white_18%,transparent),transparent_30%)] before:content-['']",
         panesFlipped ? 'border-r' : 'border-l'
       )}
       // Windows/WSLg paint Electron's Window Controls Overlay across our
@@ -110,7 +110,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       // titlebar-height so it opens below the band. 0px elsewhere → unchanged.
       style={{ paddingTop: 'var(--right-rail-top-inset, 0px)' }}
     >
-      <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 border-b border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background)">
+      <div className="group/rail-tabs relative z-1 flex h-(--titlebar-height) shrink-0 border-b border-(--dt-sidebar-border) bg-[color-mix(in_srgb,var(--dt-sidebar-bg)_86%,transparent)]">
         <div
           className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           role="tablist"
@@ -126,10 +126,10 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                 <ContextMenuTrigger asChild>
                   <div
                     className={cn(
-                      'group/tab relative flex h-full min-w-0 max-w-48 shrink-0 items-center text-[0.6875rem] font-medium [-webkit-app-region:no-drag] last:border-r last:border-(--ui-stroke-quaternary)',
+                      'group/tab relative flex h-full min-w-0 max-w-48 shrink-0 items-center text-[0.6875rem] font-medium [-webkit-app-region:no-drag] last:border-r last:border-(--dt-sidebar-border)',
                       active
-                        ? 'bg-(--ui-editor-surface-background) text-foreground [--tab-bg:var(--ui-editor-surface-background)]'
-                        : 'border-r border-(--ui-stroke-quaternary) text-(--ui-text-tertiary) [--tab-bg:var(--ui-sidebar-surface-background)] hover:bg-(--chrome-action-hover) hover:text-foreground'
+                        ? 'bg-(--dt-user-bubble) text-foreground [--tab-bg:var(--dt-user-bubble)]'
+                        : 'border-r border-(--dt-sidebar-border) text-(--ui-text-tertiary) [--tab-bg:var(--dt-sidebar-bg)] hover:bg-[color-mix(in_srgb,var(--dt-user-bubble)_70%,transparent)] hover:text-foreground'
                     )}
                     // Middle-click closes the tab, matching browser/IDE muscle
                     // memory. `onMouseDown` swallows the middle-button press so
@@ -148,9 +148,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                       }
                     }}
                   >
-                    {active && (
-                      <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />
-                    )}
+                    {active && <div aria-hidden className="absolute bottom-0 left-0 right-0 h-px bg-[var(--tab-bg)]" />}
                     <Tip label={tab.target.path || tab.target.url || tab.label}>
                       <button
                         aria-selected={active}
@@ -178,7 +176,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     )}
                     <button
                       aria-label={t.preview.closeTab(tab.label)}
-                      className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-(--ui-text-tertiary) opacity-0 transition-[background-color,color,opacity] hover:bg-(--ui-bg-secondary) hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100 group-focus-within/tab:pointer-events-auto group-focus-within/tab:opacity-100"
+                      className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-(--ui-text-tertiary) opacity-0 transition-[background-color,color,opacity] hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100 group-focus-within/tab:pointer-events-auto group-focus-within/tab:opacity-100"
                       onClick={() => closeRightRailTab(tab.id)}
                       type="button"
                     >
@@ -214,7 +212,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="relative z-1 min-h-0 flex-1 overflow-hidden bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]">
         <PreviewPane
           embedded
           onRestartServer={isPreview ? onRestartServer : undefined}

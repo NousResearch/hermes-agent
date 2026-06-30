@@ -18,7 +18,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTheme, DesktopThemeColors, DesktopThemeMixes } from './types'
 import { $userThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
@@ -163,13 +163,16 @@ const NEUTRAL_CHROME = { light: '#f3f3f3', dark: '#0d0d0e' } as const
 const chromeBackground = (background: string, isDark: boolean) =>
   mix(background, NEUTRAL_CHROME[isDark ? 'dark' : 'light'], isDark ? 0.26 : 0.08)
 
-const mixesFor = (isDark: boolean): Record<string, string> => ({
-  '--theme-mix-chrome': isDark ? '74%' : '92%',
-  '--theme-mix-sidebar': '100%',
-  '--theme-mix-card': isDark ? '38%' : '22%',
-  '--theme-mix-elevated': isDark ? '46%' : '28%',
-  '--theme-mix-bubble': isDark ? '46%' : '0%'
+const mixesFor = (isDark: boolean, overrides: DesktopThemeMixes = {}): Record<string, string> => ({
+  '--theme-mix-chrome': overrides.chrome ?? (isDark ? '74%' : '92%'),
+  '--theme-mix-sidebar': overrides.sidebar ?? '100%',
+  '--theme-mix-card': overrides.card ?? (isDark ? '38%' : '22%'),
+  '--theme-mix-elevated': overrides.elevated ?? (isDark ? '46%' : '28%'),
+  '--theme-mix-bubble': overrides.bubble ?? (isDark ? '46%' : '0%')
 })
+
+const cssValue = (value: string | number | undefined, fallback: string) =>
+  typeof value === 'undefined' ? fallback : `${value}`
 
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   if (typeof document === 'undefined') {
@@ -178,11 +181,18 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
 
   const root = document.documentElement
   const c = theme.colors
-  const typo = { ...DEFAULT_TYPOGRAPHY, ...nousTheme.typography, ...theme.typography }
+  const layout = theme.layout ?? {}
+
+  const typo = {
+    ...DEFAULT_TYPOGRAPHY,
+    ...(theme.typography ?? {})
+  }
+
   const rendered = renderedModeFor(c, mode)
   const isDark = rendered === 'dark'
   const midground = c.midground ?? c.ring
   const skinName = theme.name.endsWith(`-${mode}`) ? theme.name.slice(0, -mode.length - 1) : theme.name
+  const mixOverrides = isDark ? (theme.darkMixes ?? theme.mixes) : theme.mixes
 
   root.style.setProperty('color-scheme', rendered)
   root.dataset.hermesTheme = skinName
@@ -221,10 +231,17 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
+    '--dt-base-size': cssValue(typo.baseSize, '1rem'),
+    '--dt-line-height': cssValue(typo.lineHeight, '1.5'),
+    '--dt-letter-spacing': cssValue(typo.letterSpacing, '0'),
+    '--radius-scalar': cssValue(typo.radiusScalar, '0.6'),
+    '--spacing-mul': cssValue(typo.spacingMul, '1'),
+    '--sidebar-width': layout.sidebarWidth ?? '14.8125rem',
+    '--composer-width': layout.composerWidth ?? '48.75rem',
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
-  for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {
+  for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark, mixOverrides), ...palette })) {
     root.style.setProperty(k, v)
   }
 
@@ -296,9 +313,10 @@ interface ThemeContextValue {
 }
 
 const SKIN_LIST = BUILTIN_THEME_LIST.map(({ name, label, description }) => ({ name, label, description }))
+const DEFAULT_THEME = BUILTIN_THEMES[DEFAULT_SKIN_NAME] ?? nousTheme
 
 const ThemeContext = createContext<ThemeContextValue>({
-  theme: nousTheme,
+  theme: DEFAULT_THEME,
   themeName: DEFAULT_SKIN_NAME,
   mode: 'light',
   resolvedMode: 'light',

@@ -1268,7 +1268,9 @@ export function ChatBar({
                 // 5px transparent grab margin around it — drag that to move it.
                 'fixed w-[var(--composer-popout-width)] max-w-[calc(100vw-1.5rem)] bg-transparent p-[5px]'
               : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
-            dragging && 'cursor-grabbing select-none touch-none'
+            dragging && 'cursor-grabbing select-none touch-none',
+            !poppedOut &&
+              'border border-(--dt-user-bubble-border) bg-(--dt-user-bubble) shadow-[0_0_14px_color-mix(in_srgb,var(--dt-composer-ring)_12%,transparent)]'
           )}
           data-drag-active={dragActive ? '' : undefined}
           data-popped-out={poppedOut ? '' : undefined}
@@ -1359,7 +1361,7 @@ export function ChatBar({
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(
-                'group/composer-surface relative z-4 isolate grid grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
+                'group/composer-surface relative z-4 isolate grid grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(20%*var(--composer-ring-strength)),var(--dt-user-bubble-border))] shadow-[inset_0_1px_0_color-mix(in_srgb,white_38%,transparent)]',
                 COMPOSER_DROP_FADE_CLASS,
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}

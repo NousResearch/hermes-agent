@@ -19,7 +19,7 @@ import {
   type SubagentStreamEntry
 } from '@/store/subagents'
 
-import { OverlayView } from '../overlays/overlay-view'
+import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
@@ -86,18 +86,16 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
 
   return (
-    <OverlayView
-      closeLabel={t.agents.close}
-      contentClassName="px-5 pt-5 pb-4 sm:px-6"
-      onClose={onClose}
-      rootClassName="mx-auto max-w-3xl"
-    >
-      <header className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-foreground">{t.agents.title}</h2>
-        <p className="text-xs text-muted-foreground/80">{t.agents.subtitle}</p>
-      </header>
-      <SubagentTree tree={tree} />
-    </OverlayView>
+    <Panel closeLabel={t.agents.close} onClose={onClose}>
+      {tree.length === 0 ? (
+        <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} />
+      ) : (
+        <>
+          <PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} />
+          <SubagentTree tree={tree} />
+        </>
+      )}
+    </Panel>
   )
 }
 

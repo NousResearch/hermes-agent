@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -48,6 +49,34 @@ class TestCheckRequirements:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_api_server_requirements() is False
+
+
+# ---------------------------------------------------------------------------
+# _redact_api_error_text — guards every outward error site (envelopes, SSE
+# error events, cron-endpoint 500 bodies) that routes raw exception text to
+# authenticated HTTP clients. #37733
+# ---------------------------------------------------------------------------
+
+
+class TestRedactApiErrorText:
+    def test_masks_secret_value_but_preserves_structure(self):
+        secret = "sk-api-server-leak-1234567890"
+        out = _redact_api_error_text(Exception(f"auth failed OPENAI_API_KEY={secret}"))
+        assert secret not in out
+        assert "OPENAI_API_KEY=" in out
+
+    def test_redacts_regardless_of_global_redaction_setting(self):
+        # force=True must mask even when global redaction is disabled.
+        secret = "sk-forced-redaction-0987654321"
+        with patch("agent.redact._REDACT_ENABLED", False):
+            out = _redact_api_error_text(Exception(f"boom AWS_SECRET_ACCESS_KEY={secret}"))
+        assert secret not in out
+
+    def test_limit_truncates_after_redaction(self):
+        assert len(_redact_api_error_text("x" * 500, limit=50)) == 50
+
+    def test_clean_text_passes_through_unchanged(self):
+        assert _redact_api_error_text("Job not found") == "Job not found"
 
 
 # ---------------------------------------------------------------------------
@@ -2065,6 +2094,33 @@ class TestResponsesEndpoint:
             assert resp.status == 500
 
     @pytest.mark.asyncio
+    async def test_result_error_fallback_is_redacted(self, adapter):
+        raw_secret = "sk-responses-leak-1234567890"
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "",
+                        "error": f"provider auth failed OPENAI_API_KEY={raw_secret}",
+                        "messages": [],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hello"},
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            body = json.dumps(data)
+            assert raw_secret not in body
+            assert "OPENAI_API_KEY=" in body
+            assert data["output"][0]["content"][0]["text"] != f"provider auth failed OPENAI_API_KEY={raw_secret}"
+
+    @pytest.mark.asyncio
     async def test_invalid_input_type_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2968,6 +3024,35 @@ class TestChatCompletionsAgentIncomplete:
             assert resp.headers.get("X-Hermes-Partial") == "true"
 
     @pytest.mark.asyncio
+    async def test_hard_failure_redacts_secret_like_error_text(self, adapter):
+        raw_secret = "sk-api-server-leak-1234567890"
+        mock_result = {
+            "final_response": "",
+            "completed": False,
+            "partial": False,
+            "failed": True,
+            "error": f"provider auth failed OPENAI_API_KEY={raw_secret}",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]},
+                )
+
+            assert resp.status == 502
+            data = await resp.json()
+            body = json.dumps(data)
+            assert raw_secret not in body
+            assert raw_secret not in resp.headers.get("X-Hermes-Error", "")
+            assert "OPENAI_API_KEY=" in body
+            assert data["error"]["hermes"]["failed"] is True
+
+    @pytest.mark.asyncio
     async def test_failure_with_no_text_returns_502_error_envelope(self, adapter):
         """No usable assistant text + failure → 502 with OpenAI error envelope.
 
@@ -3368,6 +3453,24 @@ class TestSessionIdHeader:
             assert resp.headers.get("X-Hermes-Session-Id") == "my-session-123"
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["session_id"] == "my-session-123"
+
+    @pytest.mark.asyncio
+    async def test_traversal_session_id_header_rejected(self, auth_adapter):
+        """Security (#5958): a path-traversal X-Hermes-Session-Id must be
+        rejected with 400 so it can't reach the filesystem artifact paths
+        (session snapshot / request dump) and escape the sessions dir."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                for bad in ("../../../../etc/pwned", "/abs/path", "..\\win"):
+                    resp = await cli.post(
+                        "/v1/chat/completions",
+                        headers={"X-Hermes-Session-Id": bad, "Authorization": "Bearer sk-secret"},
+                        json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                    )
+                    assert resp.status == 400, f"{bad!r} should be rejected"
+                # The agent is never invoked for a rejected ID.
+                assert mock_run.call_count == 0
 
     @pytest.mark.asyncio
     async def test_provided_session_id_loads_history_from_db(self, auth_adapter):

@@ -289,7 +289,14 @@ def finalize_turn(
                     and len(_stripped) <= 24
                     and _stripped[-1:] not in {".", "!", "?", "。", "！", "？", "`", ")"}
                 )
-                if _is_empty_terminal or _is_partial_fragment:
+                _is_partial_stream_recovery = (
+                    str(_turn_exit_reason) == "partial_stream_recovery"
+                )
+                if (
+                    _is_empty_terminal
+                    or _is_partial_fragment
+                    or _is_partial_stream_recovery
+                ):
                     _explanation = agent._format_turn_completion_explanation(
                         _turn_exit_reason
                     )

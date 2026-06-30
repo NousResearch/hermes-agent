@@ -1308,6 +1308,12 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Intent-ack continuation config: "auto" (default — codex_responses only,
+    # the historical gate), true (all api_modes), false (never), or a list of
+    # model-name substrings.  Resolved against the active api_mode/model in the
+    # conversation loop's intent-ack block.
+    agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement

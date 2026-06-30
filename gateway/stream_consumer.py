@@ -175,6 +175,7 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        self._delivered_commentary_texts: list[str] = []
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -290,6 +291,16 @@ class GatewayStreamConsumer:
             except (TypeError, ValueError):
                 pass
         return await self.adapter.edit_message(**kwargs)
+
+    def has_delivered_text(self, text: str) -> bool:
+        """Return True if *text* was already delivered as visible chat content."""
+        target = self._clean_for_display(text or "").strip()
+        if not target:
+            return False
+        visible_prefix = self._visible_prefix().strip()
+        if visible_prefix == target:
+            return True
+        return any(sent.strip() == target for sent in self._delivered_commentary_texts)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -1173,6 +1184,10 @@ class GatewayStreamConsumer:
                 # stale tool bubble above it so the next tool starts a
                 # new bubble below.
                 self._notify_new_message()
+                # Record the exact delivered text so run.py can confirm whether
+                # an interim "preview" actually carried the final response, vs.
+                # unrelated commentary delivered during a session split (#14238).
+                self._delivered_commentary_texts.append(text)
             return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)

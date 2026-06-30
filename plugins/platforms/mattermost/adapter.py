@@ -887,6 +887,14 @@ class MattermostAdapter(BasePlatformAdapter):
         media_types: List[str] = []
         for fid in file_ids:
             try:
+                # Guard: reject fids containing path-traversal sequences before
+                # building the download URL.  _api_get() already does this for
+                # the /files/{fid}/info call, but the direct session.get() below
+                # bypasses that helper — applying the same check here closes the
+                # gap (sibling of the guard added in commit d836b2bac).
+                if ".." in str(fid):
+                    logger.error("Mattermost: blocked download with path-traversal fid: %s", fid)
+                    continue
                 file_info = await self._api_get(f"files/{fid}/info")
                 fname = file_info.get("name", f"file_{fid}")
                 ext = Path(fname).suffix or ""

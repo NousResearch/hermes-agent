@@ -1034,3 +1034,81 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+class TestMattermostFileDownloadGuard:
+    """file_ids from WebSocket events are server-controlled and must be
+    validated before being interpolated into the download URL.
+
+    _api_get() already blocks '..' in its path argument, but the direct
+    self._session.get(dl_url, ...) call below it bypasses that helper.
+    A crafted fid like '../../admin/config' would build a URL that makes
+    the bot's bearer token request an unintended Mattermost API endpoint,
+    with the response injected into the agent's prompt context.
+    Regression for commit d836b2bac / PR #54569 sibling gap.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, file_ids):
+        post_data = {
+            "id": "post_guard_test",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id file attached",
+            "file_ids": file_ids,
+        }
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_traversal_fid_is_blocked(self):
+        """A file_id containing '..' must not reach the download request."""
+        self.adapter._api_get = AsyncMock(return_value={})
+        self.adapter._session = MagicMock()
+        self.adapter._session.get = MagicMock()
+
+        await self.adapter._handle_ws_event(self._make_event(["../../admin/config"]))
+
+        self.adapter._session.get.assert_not_called()
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert not msg.media_urls  # None or [] — no files attached
+
+    @pytest.mark.asyncio
+    async def test_traversal_fid_skipped_legitimate_fid_still_downloaded(self):
+        """A legitimate fid following a malicious one must still be downloaded."""
+        file_info = {"name": "photo.png", "mime_type": "image/png"}
+
+        async def fake_api_get(path):
+            if "../../" in path:
+                return {}
+            return file_info
+
+        self.adapter._api_get = fake_api_get
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=b"\x89PNG")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        self.adapter._session = MagicMock()
+        self.adapter._session.get = MagicMock(return_value=mock_resp)
+
+        with patch("gateway.platforms.base.cache_image_from_bytes", return_value="/tmp/p.png"):
+            await self.adapter._handle_ws_event(
+                self._make_event(["../../admin/config", "good_file_id"])
+            )
+
+        self.adapter._session.get.assert_called_once()
+        call_url = self.adapter._session.get.call_args[0][0]
+        assert "admin/config" not in call_url
+        assert "good_file_id" in call_url

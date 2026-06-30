@@ -1229,6 +1229,22 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
+    # Defensive: validate override_acp_command exists on PATH before honoring
+    # it. Models occasionally pass acp_command="copilot" / "claude" / etc. in
+    # delegate_task tool calls despite the schema saying not to, which forces
+    # the subagent onto the copilot-acp transport below and crashes the
+    # gateway when the binary is missing (e.g. headless container deploys).
+    if override_acp_command:
+        import shutil as _shutil
+
+        if not _shutil.which(override_acp_command):
+            logger.warning(
+                "Ignoring acp_command=%r: binary not found on PATH; "
+                "falling back to default transport.",
+                override_acp_command,
+            )
+            override_acp_command = None
+            override_acp_args = None
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -3255,6 +3271,30 @@ def _build_role_param_description() -> str:
     )
 
 
+# Known ACP-compatible CLIs that delegate_task can shell out to. Kept
+# narrow on purpose: only the ones agent/copilot_acp_client.py and friends
+# actually understand. Add new entries here when a new ACP CLI ships.
+_KNOWN_ACP_BINARIES: tuple[str, ...] = ("copilot", "claude", "codex")
+
+
+def _acp_binary_available() -> bool:
+    """True iff at least one known ACP CLI is on PATH.
+
+    Used to gate inclusion of ``acp_command`` / ``acp_args`` in the
+    delegate_task schema. On headless hosts (Railway / Fly / Docker /
+    fresh VPS) without any of these binaries, exposing the fields invites
+    the model to hallucinate ``acp_command="copilot"`` from the schema's
+    description, which used to crash subagent runs and take the gateway
+    down. Pruning the fields from the schema removes the temptation.
+
+    Not cached: ``shutil.which`` is cheap and we want the schema to react
+    to mid-session installs without forcing a process restart.
+    """
+    import shutil as _shutil
+
+    return any(_shutil.which(name) for name in _KNOWN_ACP_BINARIES)
+
+
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
 
@@ -3271,6 +3311,25 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+
+    # Prune ACP overrides from the schema when no known ACP CLI is on PATH.
+    # The runtime guard in _build_child_agent remains as defense-in-depth for
+    # internal callers / tests / future code paths that skip the schema layer.
+    if not _acp_binary_available():
+        overrides_params["properties"].pop("acp_command", None)
+        overrides_params["properties"].pop("acp_args", None)
+        tasks_schema = dict(overrides_params["properties"].get("tasks", {}))
+        if "items" in tasks_schema:
+            items = dict(tasks_schema["items"])
+            if "properties" in items:
+                items["properties"] = {
+                    k: v
+                    for k, v in items["properties"].items()
+                    if k not in ("acp_command", "acp_args")
+                }
+            tasks_schema["items"] = items
+            overrides_params["properties"]["tasks"] = tasks_schema
+
     return {
         "description": _build_top_level_description(),
         "parameters": overrides_params,

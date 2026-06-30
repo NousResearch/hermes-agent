@@ -106,6 +106,7 @@ LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 LINE_LOADING_URL = "https://api.line.me/v2/bot/chat/loading/start"
 LINE_CONTENT_URL_FMT = "https://api-data.line.me/v2/bot/message/{message_id}/content"
 LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
+_LINE_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 
 # LINE Messaging API hard limits
 LINE_PER_BUBBLE_CHARS = 5000  # Hard limit per text message object
@@ -438,6 +439,33 @@ def _allowed_for_source(
     return False
 
 
+async def _read_line_error_text_limited(
+    response: Any,
+    *,
+    limit: int = _LINE_ERROR_BODY_LIMIT_BYTES,
+) -> str:
+    content = getattr(response, "content", None)
+    if content is not None and hasattr(content, "read"):
+        chunks: List[bytes] = []
+        total = 0
+        while total <= limit:
+            size = min(4096, limit + 1 - total)
+            chunk = await content.read(size)
+            if not chunk:
+                break
+            data = bytes(chunk)
+            chunks.append(data)
+            total += len(data)
+        if total > limit:
+            release = getattr(response, "release", None)
+            if callable(release):
+                release()
+        return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
+
+    text = await response.text()
+    return str(text)[:limit]
+
+
 # ---------------------------------------------------------------------------
 # LINE Reply / Push HTTP client
 # ---------------------------------------------------------------------------
@@ -468,7 +496,7 @@ class _LineClient:
                 json={"replyToken": reply_token, "messages": messages},
             ) as resp:
                 if resp.status >= 400:
-                    body = await resp.text()
+                    body = await _read_line_error_text_limited(resp)
                     raise RuntimeError(f"LINE reply {resp.status}: {body[:200]}")
 
     async def push(self, chat_id: str, messages: List[Dict[str, Any]]) -> None:
@@ -481,7 +509,7 @@ class _LineClient:
                 json={"to": chat_id, "messages": messages},
             ) as resp:
                 if resp.status >= 400:
-                    body = await resp.text()
+                    body = await _read_line_error_text_limited(resp)
                     raise RuntimeError(f"LINE push {resp.status}: {body[:200]}")
 
     async def loading(self, chat_id: str, seconds: int = 60) -> None:

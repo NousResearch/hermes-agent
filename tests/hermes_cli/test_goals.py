@@ -349,6 +349,79 @@ def test_goal_command_in_registry():
     assert cmd.name == "goal"
 
 
+def test_goal_complete_self_declaration_stops_loop(hermes_home):
+    """Agent can stop the goal loop by emitting 'GOAL COMPLETE: ...' in its reply."""
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="self-declare-sid")
+    mgr.set("ship the feature")
+
+    # The self-declaration check runs inside judge_goal before the judge call,
+    # so we can call evaluate_after_turn directly without patching.
+    # We do need to patch the auxiliary client to prevent actual API calls.
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", side_effect=Exception("no aux")):
+        decision = mgr.evaluate_after_turn(
+            "Everything is ready.\nGOAL COMPLETE: feature shipped and tested."
+        )
+
+    assert decision["verdict"] == "done"
+    assert decision["should_continue"] is False
+    assert decision["continuation_prompt"] is None
+    assert mgr.state.status == "done"
+    assert "self-declared" in decision["reason"].lower()
+
+
+def test_goal_complete_case_insensitive(hermes_home):
+    """Self-declaration pattern is case-insensitive."""
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="case-insensitive-sid")
+    mgr.set("write docs")
+
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", side_effect=Exception("no aux")):
+        decision = mgr.evaluate_after_turn(
+            "Done.\ngoal complete: all documentation updated."
+        )
+
+    assert decision["verdict"] == "done"
+    assert decision["should_continue"] is False
+    assert mgr.state.status == "done"
+
+
+def test_goal_complete_mid_response_still_triggers(hermes_home):
+    """GOAL COMPLETE: anywhere in the response (not just at end) still stops."""
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="mid-response-sid")
+    mgr.set("fix bug")
+
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", side_effect=Exception("no aux")):
+        decision = mgr.evaluate_after_turn(
+            "GOAL COMPLETE: bug fixed.\nHere are some extra notes."
+        )
+
+    assert decision["verdict"] == "done"
+    assert decision["should_continue"] is False
+
+
+def test_continuation_prompt_instructs_agent_on_format(hermes_home):
+    """Continuation prompt tells the agent the exact stop phrase to use."""
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="prompt-format-sid")
+    mgr.set("test the feature")
+    prompt = mgr.next_continuation_prompt()
+
+    assert prompt is not None
+    assert "GOAL COMPLETE:" in prompt
+    assert "exact line" in prompt.lower()
+    assert "one-sentence summary" in prompt.lower()
+
+
+
 def test_goal_command_dispatches_in_cli_registry_helpers():
     """goal shows up in autocomplete / help categories alongside other Session cmds."""
     from hermes_cli.commands import COMMANDS, COMMANDS_BY_CATEGORY

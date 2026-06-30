@@ -67,13 +67,21 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
+# Pattern the agent must emit to self-declare completion. The
+# continuation prompt instructs the agent to end its reply with exactly
+# this format; detecting it here lets the agent stop the loop without
+# waiting for the judge to interpret prose.
+_GOAL_COMPLETE_RE = re.compile(r"^GOAL COMPLETE:", re.MULTILINE | re.IGNORECASE)
+
 
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
     "Goal: {goal}\n\n"
     "Continue working toward this goal. Take the next concrete step. "
-    "If you believe the goal is complete, state so explicitly and stop. "
-    "If you are blocked and need input from the user, say so clearly and stop."
+    "If you believe the goal is complete, end your reply with the "
+    "exact line: GOAL COMPLETE: <one-sentence summary>. "
+    "Do not stop with any other phrasing. "
+    "If you are blocked and need input from the user, say so clearly and stop.\n"
 )
 
 # Used when the user has added one or more /subgoal criteria. Surfaced
@@ -86,9 +94,11 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "{subgoals_block}\n\n"
     "Continue working toward the goal AND all additional criteria. Take "
     "the next concrete step. If you believe the goal and every "
-    "additional criterion are complete, state so explicitly and stop. "
+    "additional criterion are complete, end your reply with the "
+    "exact line: GOAL COMPLETE: <one-sentence summary>. "
+    "Do not stop with any other phrasing. "
     "If you are blocked and need input from the user, say so clearly "
-    "and stop."
+    "and stop.\n"
 )
 
 
@@ -98,13 +108,17 @@ JUDGE_SYSTEM_PROMPT = (
     "agent's most recent response. Your only job is to decide whether "
     "the goal is fully satisfied based on that response.\n\n"
     "A goal is DONE only when:\n"
+    "- The response ends with the exact line 'GOAL COMPLETE: <summary>', OR\n"
     "- The response explicitly confirms the goal was completed, OR\n"
+    "- The response clearly declares the goal is complete using "
+    "unambiguous language such as 'goal complete', 'all done', "
+    "'task finished', 'that concludes the goal', or 'objective met', OR\n"
     "- The response clearly shows the final deliverable was produced, OR\n"
     "- The response explains the goal is unachievable / blocked / needs "
     "user input (treat this as DONE with reason describing the block).\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
-    '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
+    '{"done": <true|false>, "reason": "<one-sentence rationale>"}'
 )
 
 
@@ -400,6 +414,12 @@ def judge_goal(
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
         return "continue", "empty response (nothing to evaluate)", False
+
+    # Early return: if the agent has self-declared completion using the
+    # structured format from the continuation prompt, treat that as
+    # authoritative without querying the judge or setting up the client.
+    if _GOAL_COMPLETE_RE.search(last_response or ""):
+        return "done", "agent self-declared completion", False
 
     try:
         from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client

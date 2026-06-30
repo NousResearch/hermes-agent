@@ -39,9 +39,33 @@ class TestResolvePath:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         from tools.file_tools import _resolve_path
 
+        from hermes_constants import get_real_home
         result = _resolve_path("~/notes.txt")
-        # After expanduser, ~/notes.txt becomes absolute → TERMINAL_CWD ignored
-        assert result == Path.home() / "notes.txt"
+        # After real-home expansion, ~/notes.txt becomes absolute → TERMINAL_CWD ignored
+        assert result == Path(get_real_home()) / "notes.txt"
+
+    def test_tilde_uses_real_home_when_profile_home_is_process_home(self, monkeypatch, tmp_path):
+        """~ should mean the OS user home, not <profile>/home.
+
+        Regression: a profile-scoped Desktop/gateway turn resolved
+        ~/.life-os/... as <HERMES_HOME>/home/.life-os/... and reported file not
+        found even though the user's real file lived under /home/<user>.
+        """
+        real_home = tmp_path / "real-home"
+        profile_home = tmp_path / ".hermes" / "profiles" / "life-advisor"
+        profile_user_home = profile_home / "home"
+        real_home.mkdir()
+        profile_user_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HOME", str(profile_user_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "workspace"))
+
+        from tools.file_tools import _resolve_path
+
+        result = _resolve_path("~/.life-os/projects/Main/memory/graph.json")
+
+        assert result == real_home / ".life-os" / "projects" / "Main" / "memory" / "graph.json"
 
     def test_result_is_resolved(self, monkeypatch, tmp_path):
         """Output path has no '..' components."""

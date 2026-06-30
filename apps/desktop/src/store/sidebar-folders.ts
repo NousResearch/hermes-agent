@@ -188,6 +188,58 @@ export function moveSessionToFolder(sessionKey: string, folderId: string) {
   )
 }
 
+export function ensureSessionsInNamedFolder(name: string, sessionKeys: string[], profileKey?: string) {
+  const keys = [...new Set(sessionKeys.filter(Boolean))]
+
+  if (!name.trim() || keys.length === 0) {
+    return
+  }
+
+  const current = $sidebarFolders.get()
+  const targetName = name.trim()
+  const existing = current.find(
+    f => f.name.localeCompare(targetName, undefined, { sensitivity: 'accent' }) === 0 && (f.pinned || !f.profileKey || f.profileKey === profileKey)
+  )
+  const folderId = existing?.id ?? createFolderId()
+  const target = existing ?? { id: folderId, name: targetName, open: true, profileKey, sessionIds: [] }
+  const wanted = new Set(keys)
+  let changed = !existing
+  const nextTargetSessionIds = [...target.sessionIds]
+
+  for (const key of keys) {
+    if (!wanted.has(key)) {
+      continue
+    }
+
+    if (!nextTargetSessionIds.includes(key)) {
+      nextTargetSessionIds.push(key)
+      changed = true
+    }
+  }
+
+  const next = current.map(folder => {
+    if (folder.id === folderId) {
+      return { ...folder, name: targetName, open: true, profileKey: folder.profileKey ?? profileKey, sessionIds: nextTargetSessionIds }
+    }
+
+    const filtered = folder.sessionIds.filter(id => !wanted.has(id))
+    if (filtered.length !== folder.sessionIds.length) {
+      changed = true
+      return { ...folder, sessionIds: filtered }
+    }
+
+    return folder
+  })
+
+  if (!existing) {
+    next.push({ ...target, sessionIds: nextTargetSessionIds })
+  }
+
+  if (changed) {
+    setFolders(next)
+  }
+}
+
 export function removeSessionFromFolder(sessionKey: string) {
   const current = $sidebarFolders.get()
 

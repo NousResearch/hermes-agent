@@ -3,7 +3,8 @@
 import { type FC, useEffect, useState } from 'react'
 
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
-import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
+import { ImageActionButtons, ImageLightbox } from '@/components/chat/zoomable-image'
+import { useImageCopy } from '@/hooks/use-image-copy'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
@@ -60,6 +61,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   const [canvasGone, setCanvasGone] = useState(false)
   const [failed, setFailed] = useState(false)
   const [lightboxOpen, setLightboxOpen] = useState(false)
+  const { copyImage, copying } = useImageCopy(src)
   const { download, saving } = useImageDownload(src)
 
   useEffect(() => setRatio(hintedRatio(aspectRatio)), [aspectRatio])
@@ -161,14 +163,23 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
           </button>
         )}
         {loaded && src && (
-          <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
+          <ImageActionButtons
+            className="group-hover/image:opacity-100"
+            copy={copy}
+            copying={copying}
+            onCopy={copyImage}
+            onDownload={download}
+            saving={saving}
+          />
         )}
       </span>
       {src && (
         <ImageLightbox
           alt="Generated image"
           copy={copy}
-          onClick={download}
+          copying={copying}
+          onCopy={copyImage}
+          onDownload={download}
           onOpenChange={setLightboxOpen}
           open={lightboxOpen}
           saving={saving}

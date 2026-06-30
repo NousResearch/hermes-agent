@@ -2677,6 +2677,79 @@ class TestSessionTitleLineage:
             db.set_session_title("child", "shared")
 
 
+class TestLineageAwareDelete:
+    """Deleting a compressed conversation must remove the WHOLE compression
+    chain, not just the surfaced tip. The sidebar projects a compression root
+    forward to its live tip and shows the tip's id; if delete only removes the
+    tip, the surviving root re-projects into the session list and the
+    conversation 'reappears' on the next refresh.
+    """
+
+    def _make_compression_chain(self, db, t0, *, root="root", tip="tip"):
+        db.create_session(root, "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, root))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 100, root),
+        )
+        db.create_session(tip, "cli", parent_session_id=root)
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 200, tip))
+        db._conn.commit()
+
+    def test_deleting_tip_removes_compression_root(self, db):
+        import time as _time
+        self._make_compression_chain(db, _time.time() - 3600)
+
+        # The sidebar surfaces the projected TIP id; deleting it must take the
+        # whole lineage with it.
+        assert db.delete_session("tip") is True
+        assert db.get_session("tip") is None
+        assert db.get_session("root") is None
+        # And the conversation must not re-surface in the projected list.
+        listed = db.list_sessions_rich(order_by_last_active=True)
+        assert all(s["id"] not in {"root", "tip"} for s in listed)
+
+    def test_deleting_root_removes_continuation_tip(self, db):
+        # Symmetric: deleting via the root id must also clear the live tip.
+        import time as _time
+        self._make_compression_chain(db, _time.time() - 3600)
+        assert db.delete_session("root") is True
+        assert db.get_session("root") is None
+        assert db.get_session("tip") is None
+
+    def test_deleting_multi_level_chain(self, db):
+        import time as _time
+        t0 = _time.time() - 7200
+        # root (compression) -> mid (compression) -> tip
+        self._make_compression_chain(db, t0, root="root", tip="mid")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 300, "mid"),
+        )
+        db.create_session("tip", "cli", parent_session_id="mid")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 400, "tip"))
+        db._conn.commit()
+
+        assert db.delete_session("tip") is True
+        assert db.get_session("root") is None
+        assert db.get_session("mid") is None
+        assert db.get_session("tip") is None
+
+    def test_delete_does_not_touch_unrelated_branch(self, db):
+        import time as _time
+        t0 = _time.time() - 3600
+        self._make_compression_chain(db, t0, root="root", tip="tip")
+        # A branch child: created while the parent was still live (started_at <
+        # parent.ended_at), so it is NOT a compression continuation. It must
+        # survive the delete (orphaned, not removed).
+        db.create_session("branch", "cli", parent_session_id="root")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 50, "branch"))
+        db._conn.commit()
+
+        assert db.delete_session("tip") is True
+        assert db.get_session("branch") is not None
+
+
 class TestSanitizeTitle:
     """Tests for SessionDB.sanitize_title() validation and cleaning."""
 

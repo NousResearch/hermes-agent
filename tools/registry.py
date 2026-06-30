@@ -26,6 +26,44 @@ from typing import Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 
+def _normalize_tool_schema_keys(name: str, schema: dict) -> dict:
+    """Adopt a tool's ``input_schema`` as ``parameters`` when only the former is set.
+
+    The OpenAI tool format — and therefore everything downstream of the
+    registry (the ``{"type": "function", ...}`` wrap in
+    :meth:`ToolRegistry.get_definitions`, the schema sanitizer, every
+    transport) — reads a tool's JSON Schema from the ``parameters`` key.
+    Anthropic and MCP tool definitions instead carry it under
+    ``input_schema``. A plugin author who copies an Anthropic-shaped tool spec
+    therefore registers a schema the registry silently ignores: ``parameters``
+    is absent, ``schema_sanitizer`` substitutes an empty object, and the model
+    ends up calling the tool with no arguments — a silent failure with no
+    error anywhere.
+
+    When a schema carries ``input_schema`` but no ``parameters``, alias it and
+    warn so the mistake is visible and fixable. A schema that already has
+    ``parameters`` is left untouched (it wins over any stray ``input_schema``).
+    """
+    if (
+        isinstance(schema, dict)
+        and "parameters" not in schema
+        and isinstance(schema.get("input_schema"), dict)
+    ):
+        logger.warning(
+            "Tool %r declares its JSON Schema under 'input_schema'; the tool "
+            "registry and OpenAI tool format read it from 'parameters'. "
+            "Aliasing it automatically, but rename the key to 'parameters' in "
+            "the tool's schema — otherwise a tool that gets this wrong is "
+            "exposed to the model with no parameters and called with no "
+            "arguments, silently.",
+            name,
+        )
+        params = schema["input_schema"]
+        schema = {k: v for k, v in schema.items() if k != "input_schema"}
+        schema["parameters"] = params
+    return schema
+
+
 def _is_registry_register_call(node: ast.AST) -> bool:
     """Return True when *node* is a ``registry.register(...)`` call expression."""
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
@@ -359,6 +397,7 @@ class ToolRegistry:
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
         """
+        schema = _normalize_tool_schema_keys(name, schema)
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:

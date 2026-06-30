@@ -460,6 +460,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topic_chat_ids: Set[str] = {
             str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
         }
+        # Thread-to-profile routing for forum topics / DM topics.
+        # Format: {"chat_id:thread_id": "profile_name", ...}
+        self._thread_profiles: Dict[str, str] = self.config.extra.get("thread_profiles", {})
         # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
         # locally-hosted telegram-bot-api server (configured via extra.base_url)
         # raises that to 2GB, so the presence of base_url is the opt-in.
@@ -610,6 +613,14 @@ class TelegramAdapter(BasePlatformAdapter):
             elif chat_type == "dm" and is_topic_message:
                 thread_id = str(thread_id_raw)
 
+        profile: Optional[str] = None
+        if thread_id and chat_id:
+            key = f"{chat_id}:{thread_id}"
+            profile = self._thread_profiles.get(key)
+            if not profile:
+                # Also try partial match: thread_id alone
+                profile = self._thread_profiles.get(thread_id)
+
         return SessionSource(
             platform=Platform.TELEGRAM,
             chat_id=chat_id or "",
@@ -617,6 +628,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_id,
+            profile=profile,
         )
 
     def _telegram_auth_env_configured(self) -> bool:

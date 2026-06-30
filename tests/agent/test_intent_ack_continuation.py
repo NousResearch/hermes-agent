@@ -181,3 +181,58 @@ def test_long_response_is_not_treated_as_an_ack():
     assert not looks_like_codex_intermediate_ack(
         a, REPRO_USER, long_ack, msgs, require_workspace=False
     )
+
+
+# ── detector: CJK (non-English) support ──────────────────────────────────
+
+CJK_ACK = "我来查看一下服务器的状态，先检查最近的日志。"
+CJK_USER = "帮我看看服务器有没有问题"
+
+
+def test_cjk_future_ack_with_action_fires():
+    """CJK future-ack + action marker should trigger continuation."""
+    a = _agent(True, "chat_completions")
+    msgs = [{"role": "user", "content": CJK_USER}]
+    assert looks_like_codex_intermediate_ack(
+        a, CJK_USER, CJK_ACK, msgs, require_workspace=False
+    )
+
+
+def test_cjk_ack_with_workspace_fires_for_codex():
+    """CJK ack mentioning workspace should fire under codex_only mode."""
+    a = _agent("auto", "codex_responses")
+    cjk_code_ack = "让我先检查一下代码库的目录结构。"
+    msgs = [{"role": "user", "content": "帮我看看项目"}]
+    assert looks_like_codex_intermediate_ack(
+        a, "帮我看看项目", cjk_code_ack, msgs, require_workspace=True
+    )
+
+
+def test_cjk_ack_without_action_does_not_fire():
+    """CJK future-ack without action marker should NOT trigger."""
+    a = _agent(True, "chat_completions")
+    no_action = "我来帮你想想这个问题。"
+    msgs = [{"role": "user", "content": "帮我决定"}]
+    assert not looks_like_codex_intermediate_ack(
+        a, "帮我决定", no_action, msgs, require_workspace=False
+    )
+
+
+def test_cjk_ack_without_future_ack_does_not_fire():
+    """CJK action marker without future-ack should NOT trigger."""
+    a = _agent(True, "chat_completions")
+    no_future = "检查完毕，服务器状态正常。"
+    msgs = [{"role": "user", "content": CJK_USER}]
+    assert not looks_like_codex_intermediate_ack(
+        a, CJK_USER, no_future, msgs, require_workspace=False
+    )
+
+
+def test_traditional_chinese_future_ack_fires():
+    """Traditional Chinese future-ack patterns should also work."""
+    a = _agent(True, "chat_completions")
+    tc_ack = "我來檢查一下檔案系統的狀態。"
+    msgs = [{"role": "user", "content": "幫我看看"}]
+    assert looks_like_codex_intermediate_ack(
+        a, "幫我看看", tc_ack, msgs, require_workspace=False
+    )

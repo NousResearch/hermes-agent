@@ -2341,6 +2341,14 @@ def looks_like_codex_intermediate_ack(
     has_future_ack = bool(
         re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
     )
+    # CJK future-ack patterns — \b word boundaries don't apply to CJK
+    # characters, so use substring matching instead.
+    if not has_future_ack:
+        _cjk_future_ack = (
+            "我来", "让我", "我先", "我可以", "我会",  # simplified
+            "我來", "讓我",  # traditional
+        )
+        has_future_ack = any(p in assistant_text for p in _cjk_future_ack)
     if not has_future_ack:
         return False
 
@@ -2364,6 +2372,13 @@ def looks_like_codex_intermediate_ack(
         "walkthrough",
         "report back",
         "summarize",
+        # CJK action markers (simplified + traditional)
+        "载入", "查看", "检查", "分析", "搜索",
+        "修复", "调试", "运行", "测试", "读取",
+        "打开", "执行", "总结", "查找", "扫描",
+        "載入", "檢查", "分析", "搜尋",
+        "修復", "偵錯", "執行", "讀取",
+        "開啟", "總結", "查找", "掃描",
     )
     workspace_markers = (
         "directory",
@@ -2379,6 +2394,9 @@ def looks_like_codex_intermediate_ack(
         "file tree",
         "files",
         "path",
+        # CJK workspace markers (simplified + traditional)
+        "目录", "文件夹", "文件", "路径", "项目", "代码库",
+        "目錄", "檔案夾", "檔案", "路徑", "專案", "程式碼庫",
     )
 
     assistant_mentions_action = any(marker in assistant_text for marker in action_markers)

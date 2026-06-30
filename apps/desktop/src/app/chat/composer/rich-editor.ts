@@ -272,6 +272,23 @@ export function composerPlainText(node: Node): string {
 
   const el = node as HTMLElement
 
+  if (el.dataset.slashKind) {
+    const refText = el.dataset.refText?.trim() ?? ''
+
+    if (refText && !/^\/+$/.test(refText)) {
+      return el.dataset.refText ?? ''
+    }
+
+    // A degraded slash chip payload of "/" would submit as "/ arg", which the
+    // dispatcher parses as an empty command. The visible chip label still names
+    // the command, so recover it here before submit.
+    const label = el.textContent?.trim() ?? ''
+
+    if (label) {
+      return label.startsWith('/') ? label : `/${label}`
+    }
+  }
+
   if (el.dataset.refText) {
     return el.dataset.refText
   }

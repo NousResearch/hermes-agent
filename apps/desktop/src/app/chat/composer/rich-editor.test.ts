@@ -8,7 +8,8 @@ import {
   normalizeComposerEditorDom,
   refChipElement,
   renderComposerContents,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  slashChipElement
 } from './rich-editor'
 
 const caretIn = (editor: HTMLElement) => {
@@ -33,6 +34,16 @@ describe('renderComposerContents', () => {
     expect(editor.textContent).toContain('<img src=x onerror=alert(1)>')
     expect(editor.textContent).toContain('<b>raw</b>')
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
+  })
+})
+
+describe('composerPlainText', () => {
+  it('recovers a slash chip command from its visible label when ref text is a bare slash', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(slashChipElement('/', 'skill', 'some-skill'), document.createTextNode(' do something'))
+
+    expect(composerPlainText(editor)).toBe('/some-skill do something')
   })
 })
 

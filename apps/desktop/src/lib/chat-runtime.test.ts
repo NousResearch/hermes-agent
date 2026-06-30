@@ -6,7 +6,8 @@ import {
   attachmentDisplayText,
   coerceThinkingText,
   optimisticAttachmentRef,
-  parseCommandDispatch
+  parseCommandDispatch,
+  parseSlashCommand
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -109,5 +110,22 @@ describe('parseCommandDispatch', () => {
 
   it('rejects a prefill directive missing its message', () => {
     expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
+  })
+})
+
+describe('parseSlashCommand', () => {
+  it('parses a non-empty slash command even when whitespace follows the slash', () => {
+    expect(parseSlashCommand('/ some-skill do something')).toEqual({
+      arg: 'do something',
+      name: 'some-skill'
+    })
+  })
+
+  it('keeps truly empty slash input empty', () => {
+    expect(parseSlashCommand('/   ')).toEqual({ arg: '', name: '' })
+  })
+
+  it('does not treat a command on the next line as the slash command name', () => {
+    expect(parseSlashCommand('/\nsome-skill do something')).toEqual({ arg: '', name: '' })
   })
 })

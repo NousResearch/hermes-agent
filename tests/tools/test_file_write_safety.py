@@ -368,5 +368,56 @@ class TestBomHandling:
         assert raw == self.BOM.encode("utf-8") + b"import os, json\nimport sys\n"
 
 
+class TestGetWriteDenialReason:
+    """Tests for get_write_denial_reason() — specific denial messages."""
+
+    def test_credential_path_returns_credential_message(self, tmp_path: Path):
+        from agent.file_safety import get_write_denial_reason
+
+        reason = get_write_denial_reason("/etc/shadow")
+        assert reason is not None
+        assert "protected system/credential file" in reason
+        assert "outside" not in reason
+
+    def test_safe_root_outside_returns_safe_root_message(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import get_write_denial_reason
+
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        outside = tmp_path / "other" / "file.txt"
+        outside.parent.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        reason = get_write_denial_reason(str(outside))
+        assert reason is not None
+        assert "outside" in reason
+        assert "HERMES_WRITE_SAFE_ROOT" in reason
+        assert str(safe_root) in reason
+        assert "credential" not in reason
+
+    def test_allowed_path_returns_none(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import get_write_denial_reason
+
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        inside = safe_root / "file.txt"
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        assert get_write_denial_reason(str(inside)) is None
+
+    def test_credential_path_takes_precedence_over_safe_root(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import get_write_denial_reason
+
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        # /etc/shadow is a credential path — should get credential message,
+        # not safe-root message, even though it's also outside the safe root.
+        reason = get_write_denial_reason("/etc/shadow")
+        assert reason is not None
+        assert "protected system/credential file" in reason
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

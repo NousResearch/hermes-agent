@@ -144,6 +144,73 @@ def is_write_denied(path: str) -> bool:
     return False
 
 
+def get_write_denial_reason(path: str) -> str | None:
+    """Return a human-readable reason why *path* is write-denied, or ``None``.
+
+    Unlike :func:`is_write_denied` (which returns a plain ``bool``), this
+    function distinguishes between:
+
+    * **Protected credential / system path** — the path is in the static
+      deny-list or matches a sensitive prefix (``/etc/shadow``, ``~/.ssh/…``,
+      mcp-tokens, pairing files).
+    * **Outside configured safe roots** — ``HERMES_WRITE_SAFE_ROOT`` is set
+      and the path falls outside every allowed root.
+
+    Returns ``None`` when the path is writable.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
+
+    # --- Static deny-list (credential / system paths) ---
+    if resolved in build_write_denied_paths(home):
+        return f"Write denied: '{path}' is a protected system/credential file."
+    for prefix in build_write_denied_prefixes(home):
+        if resolved.startswith(prefix):
+            return f"Write denied: '{path}' is a protected system/credential file."
+
+    mcp_tokens_dir_name = "mcp-tokens"
+
+    hermes_dirs: list[str] = []
+    for base in (_hermes_home_path(), _hermes_root_path()):
+        try:
+            real = os.path.realpath(base)
+            if real not in hermes_dirs:
+                hermes_dirs.append(real)
+        except Exception:
+            continue
+
+    for base_real in hermes_dirs:
+        try:
+            mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
+            if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
+                return f"Write denied: '{path}' is a protected system/credential file."
+        except Exception:
+            pass
+        try:
+            pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
+            if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
+                return f"Write denied: '{path}' is a protected system/credential file."
+        except Exception:
+            pass
+
+    # --- Safe-root check ---
+    safe_roots = get_safe_write_roots()
+    if safe_roots:
+        allowed = False
+        for safe_root in safe_roots:
+            if resolved == safe_root or resolved.startswith(safe_root + os.sep):
+                allowed = True
+                break
+        if not allowed:
+            roots_display = ", ".join(sorted(safe_roots))
+            return (
+                f"Write denied: '{path}' is outside the configured "
+                f"HERMES_WRITE_SAFE_ROOT ({roots_display})."
+            )
+
+    return None
+
+
 # Common secret-bearing project-local environment file basenames.
 # These are blocked because .env files routinely contain API keys,
 # database passwords, and other credentials.

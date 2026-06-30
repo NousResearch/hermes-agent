@@ -25,6 +25,7 @@ import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
+import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
@@ -382,6 +383,13 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
   )
 })
 
+const JourneyPane = memo(function JourneyPane() {
+  const { gw } = useGateway()
+  const ui = useStore($uiState)
+
+  return <Journey gw={gw} onClose={() => patchOverlayState({ journey: false })} t={ui.theme} />
+})
+
 const StatusRulePane = memo(function StatusRulePane({
   at,
   composer,
@@ -445,6 +453,10 @@ export const AppLayout = memo(function AppLayout({
             <PerfPane id="agents">
               <AgentsOverlayPane />
             </PerfPane>
+          ) : overlay.journey ? (
+            <PerfPane id="journey">
+              <JourneyPane />
+            </PerfPane>
           ) : (
             <PerfPane id="transcript">
               <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
@@ -452,7 +464,7 @@ export const AppLayout = memo(function AppLayout({
           )}
         </Box>
 
-        {!overlay.agents && (
+        {!overlay.agents && !overlay.journey && (
           <>
             <PetPane />
 

@@ -162,3 +162,40 @@ class TestGetCdpOverride:
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
+
+class TestCreateCdpSession:
+    """_create_cdp_session() must sanitize the CDP URL before logging.
+
+    PR #54851 added _sanitize_url_for_logs() and wired it into the three log
+    sites inside _resolve_cdp_override(). This test guards the fourth site
+    that was missed: the logger.info call inside _create_cdp_session(), which
+    receives the already-resolved CDP URL and could contain a query-string
+    token (e.g. wss://provider.example/session?token=secret).
+    """
+
+    def test_redacts_token_in_session_creation_log(self):
+        from tools.browser_tool import _create_cdp_session
+
+        cdp_url_with_token = "wss://cdp.example/devtools/browser/abc?token=super-secret-token-999"
+
+        with patch("tools.browser_tool.logger.info") as mock_info:
+            result = _create_cdp_session("task-1", cdp_url_with_token)
+
+        assert result["cdp_url"] == cdp_url_with_token, "raw URL must be stored unmodified"
+
+        mock_info.assert_called_once()
+        logged_args = " ".join(str(a) for a in mock_info.call_args.args)
+        assert "super-secret-token-999" not in logged_args
+        assert "token=***" in logged_args
+
+    def test_plain_url_without_secrets_passes_through(self):
+        from tools.browser_tool import _create_cdp_session
+
+        plain_url = "ws://localhost:9222/devtools/browser/abc123"
+
+        with patch("tools.browser_tool.logger.info") as mock_info:
+            _create_cdp_session("task-2", plain_url)
+
+        logged_args = " ".join(str(a) for a in mock_info.call_args.args)
+        assert "localhost:9222" in logged_args
+

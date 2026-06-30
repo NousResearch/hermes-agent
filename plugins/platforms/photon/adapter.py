@@ -357,6 +357,13 @@ class PhotonAdapter(BasePlatformAdapter):
             "true", "1", "yes", "on",
         }
 
+        _native_effects = extra.get("native_effects")
+        if _native_effects is None:
+            _native_effects = os.getenv("PHOTON_NATIVE_EFFECTS")
+        self._native_effects_enabled = str(_native_effects).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
     # -- Group-mention gating (parity with BlueBubbles) -------------------
 
     @staticmethod
@@ -948,6 +955,7 @@ class PhotonAdapter(BasePlatformAdapter):
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
+        env["PHOTON_NATIVE_EFFECTS"] = "true" if self._native_effects_enabled else "false"
         # The sidecar exits when its stdin (the pipe below) hits EOF, so a
         # gateway death of ANY kind — including SIGKILL, where disconnect()
         # never runs — can't leave it orphaned on the port.
@@ -1097,6 +1105,42 @@ class PhotonAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         return await self._sidecar_send(chat_id, self.format_message(content))
+
+    async def send_with_effect(
+        self,
+        chat_id: str,
+        content: str,
+        effect: str,
+        *,
+        markdown: bool = True,
+    ) -> SendResult:
+        """Send an iMessage bubble/screen effect through the Photon sidecar.
+
+        This is deliberately a narrow, feature-gated primitive: no polls,
+        replies, mini-apps, background changes, or global model tool surface.
+        """
+        if not self._native_effects_enabled:
+            return SendResult(success=False, error="Photon native effects are disabled")
+        text = self.format_message(content)
+        if len(text) > self.MAX_MESSAGE_LENGTH:
+            logger.warning(
+                "[photon] truncating effect outbound from %d to %d chars",
+                len(text), self.MAX_MESSAGE_LENGTH,
+            )
+            text = text[: self.MAX_MESSAGE_LENGTH]
+        body: Dict[str, Any] = {
+            "spaceId": chat_id,
+            "text": text,
+            "effect": effect,
+        }
+        if markdown and _markdown_enabled():
+            body["format"] = "markdown"
+        try:
+            data = await self._sidecar_call("/send-effect", body)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
+        return SendResult(success=True, message_id=data.get("messageId"))
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #

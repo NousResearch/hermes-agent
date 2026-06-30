@@ -79,6 +79,29 @@ const MAX_INLINE_ATTACHMENT_BYTES =
   Number(process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES) || 20 * 1024 * 1024;
 const DM_CHAT_GUID_RE = /^any;-;(\+\d{6,})$/;
 const E164_RE = /^\+\d{6,}$/;
+const nativeEffectsEnabled = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_NATIVE_EFFECTS || "").trim()
+);
+const EFFECTS = {
+  slam: "com.apple.MobileSMS.expressivesend.impact",
+  impact: "com.apple.MobileSMS.expressivesend.impact",
+  loud: "com.apple.MobileSMS.expressivesend.loud",
+  gentle: "com.apple.MobileSMS.expressivesend.gentle",
+  invisible: "com.apple.MobileSMS.expressivesend.invisibleink",
+  invisibleink: "com.apple.MobileSMS.expressivesend.invisibleink",
+  "invisible-ink": "com.apple.MobileSMS.expressivesend.invisibleink",
+  confetti: "com.apple.messages.effect.CKConfettiEffect",
+  fireworks: "com.apple.messages.effect.CKFireworksEffect",
+  balloons: "com.apple.messages.effect.CKBalloonEffect",
+  balloon: "com.apple.messages.effect.CKBalloonEffect",
+  heart: "com.apple.messages.effect.CKHeartEffect",
+  lasers: "com.apple.messages.effect.CKLasersEffect",
+  celebration: "com.apple.messages.effect.CKHappyBirthdayEffect",
+  birthday: "com.apple.messages.effect.CKHappyBirthdayEffect",
+  sparkles: "com.apple.messages.effect.CKSparklesEffect",
+  spotlight: "com.apple.messages.effect.CKSpotlightEffect",
+  echo: "com.apple.messages.effect.CKEchoEffect",
+};
 const MAX_KNOWN_SPACES = 2048;
 const MAX_KNOWN_MESSAGES = 1024;
 const MAX_REACTION_HANDLES = 512;
@@ -241,7 +264,8 @@ let Spectrum,
   voice,
   spectrumText,
   spectrumMarkdown,
-  spectrumTyping;
+  spectrumTyping,
+  imessageEffect;
 try {
   ({
     Spectrum,
@@ -251,7 +275,11 @@ try {
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
   } = await import("spectrum-ts"));
-  ({ imessage, read: imessageRead } = await import("spectrum-ts/providers/imessage"));
+  ({
+    imessage,
+    effect: imessageEffect,
+    read: imessageRead,
+  } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -600,6 +628,13 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
+function effectId(raw) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) return null;
+  if (value.startsWith("com.apple.")) return value;
+  return EFFECTS[value.toLowerCase()] || null;
+}
+
 function serverError(res) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
@@ -737,6 +772,33 @@ const server = http.createServer(async (req, res) => {
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
       const result = await space.send(builder);
       return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/send-effect") {
+      if (!nativeEffectsEnabled) {
+        return badRequest(res, "native effects are disabled");
+      }
+      const { spaceId, text, format = "text" } = body || {};
+      const resolvedEffect = effectId(body?.effectId || body?.effect);
+      if (!spaceId || typeof text !== "string") {
+        return badRequest(res, "spaceId and text are required");
+      }
+      if (!resolvedEffect) {
+        return badRequest(
+          res,
+          "effect must be one of: slam, loud, gentle, invisible, confetti, fireworks, balloons, heart, lasers, celebration, sparkles, spotlight, echo"
+        );
+      }
+      if (format !== "text" && format !== "markdown") {
+        return badRequest(res, "format must be text or markdown");
+      }
+      if (typeof imessageEffect !== "function") {
+        return badRequest(res, "native effects not supported on this platform");
+      }
+      const space = await resolveSpace(spaceId);
+      const content =
+        format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      const result = await space.send(imessageEffect(content, resolvedEffect));
+      return ok(res, { messageId: result?.id || null, effect: resolvedEffect });
     }
     if (req.url === "/send-attachment") {
       const { spaceId, path, name, mimeType, caption, kind } =

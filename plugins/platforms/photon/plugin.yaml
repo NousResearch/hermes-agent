@@ -90,3 +90,7 @@ optional_env:
     description: "Send native iMessage read receipts when Hermes starts processing an inbound Photon message (true/false, default false)"
     prompt: "Enable iMessage read receipts? (true/false)"
     password: false
+  - name: PHOTON_NATIVE_EFFECTS
+    description: "Enable the narrowly-scoped native iMessage /send-effect endpoint (true/false, default false)"
+    prompt: "Enable native iMessage effects? (true/false)"
+    password: false

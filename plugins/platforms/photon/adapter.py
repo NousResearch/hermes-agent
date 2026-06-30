@@ -371,6 +371,27 @@ class PhotonAdapter(BasePlatformAdapter):
             "true", "1", "yes", "on",
         }
 
+        _native_edits = extra.get("native_edits")
+        if _native_edits is None:
+            _native_edits = os.getenv("PHOTON_NATIVE_EDITS")
+        self._native_edits_enabled = str(_native_edits).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
+        _native_unsend = extra.get("native_unsend")
+        if _native_unsend is None:
+            _native_unsend = os.getenv("PHOTON_NATIVE_UNSEND")
+        self._native_unsend_enabled = str(_native_unsend).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
+        _native_polls = extra.get("native_polls")
+        if _native_polls is None:
+            _native_polls = os.getenv("PHOTON_NATIVE_POLLS")
+        self._native_polls_enabled = str(_native_polls).strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
     # -- Group-mention gating (parity with BlueBubbles) -------------------
 
     @staticmethod
@@ -964,6 +985,9 @@ class PhotonAdapter(BasePlatformAdapter):
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
         env["PHOTON_NATIVE_EFFECTS"] = "true" if self._native_effects_enabled else "false"
         env["PHOTON_NATIVE_REPLIES"] = "true" if self._native_replies_enabled else "false"
+        env["PHOTON_NATIVE_EDITS"] = "true" if self._native_edits_enabled else "false"
+        env["PHOTON_NATIVE_UNSEND"] = "true" if self._native_unsend_enabled else "false"
+        env["PHOTON_NATIVE_POLLS"] = "true" if self._native_polls_enabled else "false"
         # The sidecar exits when its stdin (the pipe below) hits EOF, so a
         # gateway death of ANY kind — including SIGKILL, where disconnect()
         # never runs — can't leave it orphaned on the port.
@@ -1181,6 +1205,69 @@ class PhotonAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
+
+    def _is_sent_by_hermes(self, message_id: Optional[str]) -> bool:
+        return bool(message_id and message_id in self._sent_message_ids)
+
+    async def edit_sent_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        markdown: bool = True,
+    ) -> SendResult:
+        """Edit a native iMessage, guarded to messages Hermes sent this run."""
+        if not self._native_edits_enabled:
+            return SendResult(success=False, error="Photon native edits are disabled")
+        if not self._is_sent_by_hermes(message_id):
+            return SendResult(
+                success=False,
+                error="Photon native edits are limited to tracked Hermes-sent messages",
+            )
+        text = self.format_message(content)
+        if len(text) > self.MAX_MESSAGE_LENGTH:
+            logger.warning(
+                "[photon] truncating edit outbound from %d to %d chars",
+                len(text), self.MAX_MESSAGE_LENGTH,
+            )
+            text = text[: self.MAX_MESSAGE_LENGTH]
+        body: Dict[str, Any] = {
+            "spaceId": chat_id,
+            "messageId": message_id,
+            "text": text,
+            "hermesSent": True,
+        }
+        if markdown and _markdown_enabled():
+            body["format"] = "markdown"
+        try:
+            await self._sidecar_call("/edit", body)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=message_id)
+
+    async def unsend_sent_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> SendResult:
+        """Unsend a native iMessage, guarded to messages Hermes sent this run."""
+        if not self._native_unsend_enabled:
+            return SendResult(success=False, error="Photon native unsend is disabled")
+        if not self._is_sent_by_hermes(message_id):
+            return SendResult(
+                success=False,
+                error="Photon native unsend is limited to tracked Hermes-sent messages",
+            )
+        try:
+            await self._sidecar_call(
+                "/unsend",
+                {"spaceId": chat_id, "messageId": message_id, "hermesSent": True},
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        self._sent_message_ids.pop(message_id, None)
+        return SendResult(success=True, message_id=message_id)
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #

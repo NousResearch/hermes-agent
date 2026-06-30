@@ -85,6 +85,12 @@ const nativeEffectsEnabled = /^(1|true|yes|on)$/i.test(
 const nativeRepliesEnabled = /^(1|true|yes|on)$/i.test(
   (process.env.PHOTON_NATIVE_REPLIES || "").trim()
 );
+const nativeEditsEnabled = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_NATIVE_EDITS || "").trim()
+);
+const nativeUnsendEnabled = /^(1|true|yes|on)$/i.test(
+  (process.env.PHOTON_NATIVE_UNSEND || "").trim()
+);
 const EFFECTS = {
   slam: "com.apple.MobileSMS.expressivesend.impact",
   impact: "com.apple.MobileSMS.expressivesend.impact",
@@ -265,7 +271,10 @@ let Spectrum,
   imessageRead,
   attachment,
   voice,
+  editContent,
+  pollContent,
   replyContent,
+  unsendContent,
   spectrumText,
   spectrumMarkdown,
   spectrumTyping,
@@ -275,7 +284,10 @@ try {
     Spectrum,
     attachment,
     voice,
+    edit: editContent,
+    poll: pollContent,
     reply: replyContent,
+    unsend: unsendContent,
     text: spectrumText,
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
@@ -776,6 +788,7 @@ const server = http.createServer(async (req, res) => {
       const builder =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
       const result = await space.send(builder);
+      rememberKnownMessage(result);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-effect") {
@@ -803,6 +816,7 @@ const server = http.createServer(async (req, res) => {
       const content =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
       const result = await space.send(imessageEffect(content, resolvedEffect));
+      rememberKnownMessage(result);
       return ok(res, { messageId: result?.id || null, effect: resolvedEffect });
     }
     if (req.url === "/reply") {
@@ -828,7 +842,66 @@ const server = http.createServer(async (req, res) => {
       const content =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
       const result = await space.send(replyContent(content, target));
+      rememberKnownMessage(result);
       return ok(res, { messageId: result?.id || null, repliedTo: messageId });
+    }
+    if (req.url === "/edit") {
+      if (!nativeEditsEnabled) {
+        return badRequest(res, "native edits are disabled");
+      }
+      const { spaceId, messageId, text, format = "text", hermesSent = false } = body || {};
+      if (hermesSent !== true) {
+        return badRequest(res, "edit requires a Hermes-sent message guard");
+      }
+      if (!spaceId || !messageId || typeof text !== "string") {
+        return badRequest(res, "spaceId, messageId and text are required");
+      }
+      if (format !== "text" && format !== "markdown") {
+        return badRequest(res, "format must be text or markdown");
+      }
+      if (typeof editContent !== "function") {
+        return badRequest(res, "native edits not supported on this platform");
+      }
+      const space = await resolveSpace(spaceId);
+      const target =
+        knownMessages.get(messageId) ?? (await space.getMessage(messageId));
+      if (!target) {
+        return badRequest(res, "message not found");
+      }
+      if (target.direction && target.direction !== "outbound") {
+        return badRequest(res, "only outbound messages can be edited");
+      }
+      const content =
+        format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      await space.send(editContent(content, target));
+      return ok(res, { messageId, edited: true });
+    }
+    if (req.url === "/unsend") {
+      if (!nativeUnsendEnabled) {
+        return badRequest(res, "native unsend is disabled");
+      }
+      const { spaceId, messageId, hermesSent = false } = body || {};
+      if (hermesSent !== true) {
+        return badRequest(res, "unsend requires a Hermes-sent message guard");
+      }
+      if (!spaceId || !messageId) {
+        return badRequest(res, "spaceId and messageId are required");
+      }
+      if (typeof unsendContent !== "function") {
+        return badRequest(res, "native unsend not supported on this platform");
+      }
+      const space = await resolveSpace(spaceId);
+      const target =
+        knownMessages.get(messageId) ?? (await space.getMessage(messageId));
+      if (!target) {
+        return badRequest(res, "message not found");
+      }
+      if (target.direction && target.direction !== "outbound") {
+        return badRequest(res, "only outbound messages can be unsent");
+      }
+      await space.send(unsendContent(target));
+      knownMessages.delete(messageId);
+      return ok(res, { messageId, unsent: true });
     }
     if (req.url === "/send-attachment") {
       const { spaceId, path, name, mimeType, caption, kind } =
@@ -850,6 +923,7 @@ const server = http.createServer(async (req, res) => {
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
       const result = await space.send(builder);
+      rememberKnownMessage(result);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.

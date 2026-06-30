@@ -98,3 +98,11 @@ optional_env:
     description: "Enable the narrowly-scoped native iMessage /reply endpoint (true/false, default false)"
     prompt: "Enable native iMessage replies? (true/false)"
     password: false
+  - name: PHOTON_NATIVE_EDITS
+    description: "Enable the narrowly-scoped native iMessage /edit endpoint for Hermes-sent messages only (true/false, default false)"
+    prompt: "Enable native iMessage edits? (true/false)"
+    password: false
+  - name: PHOTON_NATIVE_UNSEND
+    description: "Enable the narrowly-scoped native iMessage /unsend endpoint for Hermes-sent messages only (true/false, default false)"
+    prompt: "Enable native iMessage unsend? (true/false)"
+    password: false

@@ -922,7 +922,10 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
-        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+        try:
+            store = load_on_disk_store()
+        except Exception:
+            return tool_error("Memory store is unavailable in this session. Memory may be disabled in config, the memory tool may be unavailable on the active tool surface, or the store may have failed to initialize.", success=False)
 
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)

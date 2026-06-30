@@ -105,9 +105,19 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Exfiltration via curl/wget/cat with secrets (applies everywhere) ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl", "all"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget", "all"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc|\.aws/credentials|\.config/hermes)', "read_secrets", "all"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://', "send_to_url", "strict"),
     (r'(include|output|print|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil", "strict"),
+    # Base64-encoded payload delivery — common obfuscation over any of the above.
+    # "echo ... | base64 -d | sh/bash/python" is the canonical form; also catches
+    # exec() variants.  Near-zero false positive: legitimate scripts decode b64 to
+    # files, not directly to a shell interpreter.
+    (r'base64\s+(?:-d|--decode|/d)\s*\|?\s*(?:sh|bash|python\d?|perl|ruby|node)', "b64_pipe_exec", "all"),
+    (r'echo\s+[A-Za-z0-9+/=]{20,}\s*\|\s*base64\s+(?:-d|--decode)', "b64_echo_decode", "all"),
+    # mkfifo + nc / bash -i reverse-shell — near-zero legitimate use inside an agent
+    (r'mkfifo\s+', "mkfifo_backdoor", "context"),
+    (r'bash\s+-i\s+>&?\s*/dev/(tcp|udp)/', "reverse_shell", "all"),
+    (r'nc\s+(?:-e|-c)\s+(?:/bin/)?(?:bash|sh)', "nc_shell", "all"),
 
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),

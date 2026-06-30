@@ -1289,20 +1289,30 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
 
+    # Language: config.yaml (stt.groq.language > stt.local.language) > auto-detect.
+    language = (
+        _load_stt_config().get("groq", {}).get("language")
+        or _load_stt_config().get("local", {}).get("language")
+    )
+
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text",
-                )
+                create_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text",
+                }
+                if language:
+                    create_kwargs["language"] = language
+                transcription = client.audio.transcriptions.create(**create_kwargs)
 
             transcript_text = str(transcription).strip()
-            logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
+            logger.info("Transcribed %s via Groq API (%s, %d chars, lang=%s)",
+                         Path(file_path).name, model_name, len(transcript_text),
+                         language or "auto")
 
             return {"success": True, "transcript": transcript_text, "provider": "groq"}
         finally:

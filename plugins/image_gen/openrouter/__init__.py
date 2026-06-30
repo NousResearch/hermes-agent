@@ -245,14 +245,19 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         return dict(self._setup_schema)
 
     def _resolve_model(self, explicit: Optional[str] = None) -> str:
-        """Pick the image model: env override → config → :data:`DEFAULT_MODEL`."""
+        """Pick the image model (first of :meth:`_resolve_model_chain`)."""
         return self._resolve_model_chain(explicit)[0]
 
     def _resolve_model_chain(self, explicit: Optional[str] = None) -> list[str]:
         """Ordered model attempts for this request.
 
-        Explicit user/model config means "use this exact model", so no fallback.
-        Without overrides we run the quality-first default chain.
+        Precedence: explicit caller override (the ``model`` kwarg) → the
+        provider's ``*_IMAGE_MODEL`` env override → scoped
+        ``image_gen.<provider>.model`` → top-level ``image_gen.model`` (written
+        by ``hermes tools``) → the quality-first default chain.
+
+        Any explicit user/model selection means "use this exact model", so no
+        fallback. Only the bare default chain carries a Gemini fallback.
         """
         if isinstance(explicit, str) and explicit.strip():
             return [explicit.strip()]

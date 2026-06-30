@@ -799,6 +799,17 @@ def normalize_usage(
     output_details = getattr(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    if not reasoning_tokens:
+        # Chat Completions providers (DeepSeek thinking, OpenAI o-series via
+        # chat, etc.) report reasoning under completion_tokens_details, NOT the
+        # Responses-API output_tokens_details. completion_tokens already
+        # INCLUDES these, so this only restores the informational breakdown —
+        # total_tokens (prompt+output) and cost (output-priced) are unaffected,
+        # no double-count. Without it, e.g. DeepSeek's reasoning_tokens are
+        # silently dropped to 0 even though the model returns reasoning_content.
+        completion_details = getattr(response_usage, "completion_tokens_details", None)
+        if completion_details:
+            reasoning_tokens = _to_int(getattr(completion_details, "reasoning_tokens", 0))
 
     return CanonicalUsage(
         input_tokens=input_tokens,

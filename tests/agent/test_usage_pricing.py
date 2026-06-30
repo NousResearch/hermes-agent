@@ -39,6 +39,29 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     assert normalized.output_tokens == 700
 
 
+def test_normalize_usage_reads_chat_completions_reasoning_tokens():
+    """DeepSeek thinking (and OpenAI o-series via chat) report reasoning under
+    completion_tokens_details, not the Responses-API output_tokens_details.
+
+    Regression for reasoning_tokens being silently dropped to 0. Shape is taken
+    verbatim from a live deepseek-v4-flash response (completion_tokens already
+    includes the reasoning, so output_tokens stays the full count — no
+    double-count).
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=19,
+        completion_tokens=61,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=59),
+        prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 59
+    assert normalized.output_tokens == 61  # unchanged; reasoning is a subset
+    assert normalized.total_tokens == 80  # prompt(19)+output(61), reasoning NOT added
+
+
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     """Some OpenAI-compatible proxies (OpenRouter, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when

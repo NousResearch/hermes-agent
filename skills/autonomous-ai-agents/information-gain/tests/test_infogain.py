@@ -318,6 +318,21 @@ class TestPipelineMocked(unittest.TestCase):
         # no evidence → no block
         self.assertNotIn("ALREADY ESTABLISHED", pipeline.frame_prompt("problem"))
 
+    def test_judge_misaligned_short_list_defaults_zero(self):
+        # judge per-answer alignment is POSITIONAL (judged[i] -> answers[i]); a short/misaligned judged
+        # list must default trailing answers to 0.0 rather than crash or mis-score silently.
+        rec = {"question": "Q", "answers": [{"answer": "a", "prob": 0.4},
+                                            {"answer": "b", "prob": 0.4},
+                                            {"answer": "c", "prob": 0.2}]}
+        with self._mock_raw('{"answers":[{"delta_plan":0.9,"stakes":0.8},{"delta_plan":0.3,"stakes":0.2}]}'):
+            pipeline.judge_plan_change("p", {"goal": "g"}, "baseline", rec, "fast")
+        a = rec["answers"]
+        self.assertEqual((a[0]["delta_plan"], a[0]["stakes"]), (0.9, 0.8))   # aligned
+        self.assertEqual((a[1]["delta_plan"], a[1]["stakes"]), (0.3, 0.2))   # aligned
+        self.assertEqual((a[2]["delta_plan"], a[2]["stakes"]), (0.0, 0.0))   # short list -> safe default
+        empty = {"question": "Q", "answers": []}                            # no answers -> rec unchanged
+        self.assertIs(pipeline.judge_plan_change("p", {"goal": "g"}, "b", empty, "fast"), empty)
+
     def test_project_then_judge_roundtrip(self):
         rec = {"question": "Which DB?"}
         with self._mock_raw('{"derivable_prob":0.2,"answers":[{"answer":"pg","prob":0.6},'

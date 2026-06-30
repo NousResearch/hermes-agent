@@ -10,6 +10,7 @@ INFOGAIN_SCRIPTS_DIR. Run:
 import os
 import sys
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 # Point the investigator at the sibling information-gain ranker (source tree) + make iterate importable.
@@ -147,6 +148,49 @@ class LoopLogic(unittest.TestCase):
         cfg = iterate.apply_capability({}, "experiment")
         self.assertIn("terminal", cfg["answer_toolsets"])
         self.assertIn("REVERSIBLE", cfg["answer_directive"])
+
+
+@unittest.skipUnless(getattr(iterate, "_HAVE_ASK", False), "model_utils (ask skill) not importable")
+class GroundedAnswer(unittest.TestCase):
+    """grounded_answer with a mocked dispatch_single — prompt assembly, directive, NOT_FOUND parse."""
+
+    def _cfg(self, **over):
+        cfg = dict(iterate.DEFAULTS)
+        cfg.update(over)
+        return cfg
+
+    def test_directive_prepended_and_normal_answer(self):
+        cfg = iterate.apply_capability(self._cfg(), "read")  # read -> directive + file,web toolsets
+        ds = mock.MagicMock(return_value={"content": "The stack is FastAPI + Postgres.", "error": None})
+        with mock.patch.object(iterate, "dispatch_single", ds), \
+             mock.patch.object(iterate, "resolve_alias", lambda m: m):
+            found, text = iterate.grounded_answer("What's the stack?", "Add auth", [], cfg)
+        self.assertTrue(found)
+        self.assertIn("FastAPI", text)
+        # dispatch_single(model, PROMPT, "", toolsets, ...): directive prepended, toolsets downscoped
+        self.assertIn("READ-ONLY", ds.call_args[0][1])
+        self.assertEqual(ds.call_args[0][3], cfg["answer_toolsets"])
+        self.assertNotIn("terminal", ds.call_args[0][3])
+
+    def test_not_found_parsed_and_act_has_no_directive(self):
+        cfg = self._cfg()  # act default -> empty directive, full toolsets
+        ds = mock.MagicMock(return_value={"content": "NOT_FOUND: no credentials available", "error": None})
+        with mock.patch.object(iterate, "dispatch_single", ds), \
+             mock.patch.object(iterate, "resolve_alias", lambda m: m):
+            found, text = iterate.grounded_answer("Do you have creds?", "task", [], cfg)
+        self.assertFalse(found)
+        self.assertIn("no credentials", text)
+        self.assertNotIn("READ-ONLY", ds.call_args[0][1])     # act default -> no directive prepended
+        self.assertEqual(ds.call_args[0][3], "file,web,terminal")
+
+    def test_research_error_returns_not_found(self):
+        cfg = self._cfg()
+        ds = mock.MagicMock(return_value={"content": "", "error": "boom"})
+        with mock.patch.object(iterate, "dispatch_single", ds), \
+             mock.patch.object(iterate, "resolve_alias", lambda m: m):
+            found, text = iterate.grounded_answer("q", "task", [], cfg)
+        self.assertFalse(found)
+        self.assertIn("research error", text)
 
 
 if __name__ == "__main__":

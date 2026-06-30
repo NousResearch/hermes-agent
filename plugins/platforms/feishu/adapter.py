@@ -3535,9 +3535,16 @@ class FeishuAdapter(BasePlatformAdapter):
             ]
             for k in stale_keys:
                 del self._webhook_rate_counts[k]
-            # If still at capacity after pruning, allow through without tracking.
+            # If still at capacity after pruning, deny untracked keys (fail closed).
+            # The table only fills with this many distinct (account, endpoint, IP)
+            # triples under abuse; allowing untracked requests through at capacity
+            # would let an attacker who flooded the table bypass the limiter entirely.
             if rate_key not in self._webhook_rate_counts and len(self._webhook_rate_counts) >= _FEISHU_WEBHOOK_RATE_MAX_KEYS:
-                return True
+                logger.warning(
+                    "[Feishu] Webhook rate-limit table at capacity (%d keys) — denying untracked key",
+                    _FEISHU_WEBHOOK_RATE_MAX_KEYS,
+                )
+                return False
         self._webhook_rate_counts[rate_key] = (1, now)
         return True
 

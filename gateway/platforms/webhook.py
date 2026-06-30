@@ -340,6 +340,36 @@ class WebhookAdapter(BasePlatformAdapter):
             self._prune_seen_deliveries(now)
         return True
 
+    def _delivery_id_from_request(
+        self,
+        request: Any,
+        raw_body: bytes,
+        route_name: str,
+    ) -> str:
+        """Return a stable idempotency key for this webhook delivery.
+
+        Providers with retry IDs get precedence.  Local fan-out helpers such
+        as ``gog gmail watch serve`` do not send those headers; previously we
+        fell back to the current millisecond timestamp, which made every retry
+        look unique and could dispatch repeated identical agent runs.  For
+        headerless webhooks, hash the exact raw body (namespaced by route) so
+        duplicate retries inside the TTL collapse without suppressing distinct
+        events.
+        """
+        for header_name in (
+            "X-GitHub-Delivery",
+            "svix-id",
+            "X-Request-ID",
+        ):
+            value = (request.headers.get(header_name) or "").strip()
+            if value:
+                return value
+
+        digest = hashlib.sha256(
+            route_name.encode("utf-8") + b"\0" + raw_body
+        ).hexdigest()[:32]
+        return f"body-sha256:{digest}"
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
@@ -584,13 +614,12 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
+        # Build a stable delivery ID.  Headerless local fan-outs use a body
+        # hash so retries of the exact same Gmail event do not drain quota.
+        delivery_id = self._delivery_id_from_request(
+            request,
+            raw_body,
+            route_name,
         )
 
         # ── Idempotency ─────────────────────────────────────────

@@ -630,6 +630,55 @@ class TestIdempotency:
             assert data["status"] == "duplicate"
             assert data["delivery_id"] == "msg_duplicate"
 
+    @pytest.mark.asyncio
+    async def test_headerless_identical_body_is_deduped_by_body_hash(self):
+        """Headerless local fan-out retries should not dispatch duplicate agents."""
+        routes = {"gmail-gonto": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        payload = {
+            "emailAddress": "m@gon.to",
+            "historyId": "48260355",
+            "messages": [{"id": "m1", "threadId": "t1", "labelIds": ["INBOX"]}],
+        }
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.post("/webhooks/gmail-gonto", json=payload)
+            assert resp1.status == 202
+            data1 = await resp1.json()
+            assert data1["delivery_id"].startswith("body-sha256:")
+
+            resp2 = await cli.post("/webhooks/gmail-gonto", json=payload)
+            assert resp2.status == 200
+            data2 = await resp2.json()
+            assert data2["status"] == "duplicate"
+            assert data2["delivery_id"] == data1["delivery_id"]
+            assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_headerless_same_body_on_different_routes_has_distinct_delivery_id(self):
+        """Route names namespace body-hash fallback IDs."""
+        routes = {
+            "one": {"secret": _INSECURE_NO_AUTH, "prompt": "test"},
+            "two": {"secret": _INSECURE_NO_AUTH, "prompt": "test"},
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp1 = await cli.post("/webhooks/one", json={"a": 1})
+            assert resp1.status == 202
+            data1 = await resp1.json()
+
+            resp2 = await cli.post("/webhooks/two", json={"a": 1})
+            assert resp2.status == 202
+            data2 = await resp2.json()
+
+            assert data1["delivery_id"] != data2["delivery_id"]
+            assert adapter.handle_message.await_count == 2
+
 
 # ===================================================================
 # Rate limiting

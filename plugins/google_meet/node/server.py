@@ -194,7 +194,7 @@ class NodeServer:
                 reply = await self._handle_request(msg)
                 await ws.send(_proto.encode(reply))
 
-        async with websockets.serve(_handler, self.host, self.port):
+        async with websockets.serve(_handler, self.host, self.port, max_size=16 * 1024 * 1024):
             # Run until cancelled.
             import asyncio
             await asyncio.Future()

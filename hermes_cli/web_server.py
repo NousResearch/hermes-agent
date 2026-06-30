@@ -14085,6 +14085,7 @@ def start_server(
         # timeout, keeping it warm.  Loopback gets a longer window (see above).
         ws_ping_interval=30.0 if _is_loopback else 20.0,
         ws_ping_timeout=60.0 if _is_loopback else 20.0,
+        ws_max_size=16 * 1024 * 1024,
     )
     server = uvicorn.Server(config)
 

@@ -308,7 +308,7 @@ class WebSocketRelayTransport:
         self._dormant = False
         headers = self._upgrade_headers()
         if headers:
-            self._ws = await websockets.connect(self._url, additional_headers=headers)  # type: ignore[union-attr]
+            self._ws = await websockets.connect(self._url, additional_headers=headers, max_size=16 * 1024 * 1024)  # type: ignore[union-attr]
         else:
             self._ws = await websockets.connect(self._url)  # type: ignore[union-attr]
         self._reader = asyncio.create_task(self._read_loop(), name="relay-ws-reader")

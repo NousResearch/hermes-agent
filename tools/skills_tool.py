@@ -1082,30 +1082,54 @@ def skill_view(
                     _record(None, found_md)
 
         if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
-            logging.getLogger(__name__).warning(
-                "Skill name collision for '%s': %d candidates — %s",
-                name, len(candidates), "; ".join(paths),
-            )
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        f"Ambiguous skill name '{name}': {len(candidates)} skills "
-                        "match across your local skills dir and external_dirs. "
-                        "Refusing to guess — load one explicitly by its categorized path."
-                    ),
-                    "matches": paths,
-                    "hint": (
-                        "Pass the full relative path instead of the bare name "
-                        "(e.g., 'category/skill-name'), or rename one of the "
-                        "colliding skills so each name is unique."
-                    ),
-                },
-                ensure_ascii=False,
-            )
+            local_candidates: List[Tuple[Optional[Path], Path]] = []
+            try:
+                local_root = SKILLS_DIR.resolve()
+            except Exception:
+                local_root = SKILLS_DIR
 
-        if candidates:
+            for candidate in candidates:
+                _, candidate_md = candidate
+                try:
+                    candidate_md.resolve().relative_to(local_root)
+                    local_candidates.append(candidate)
+                except ValueError:
+                    continue
+                except Exception:
+                    try:
+                        candidate_md.relative_to(SKILLS_DIR)
+                        local_candidates.append(candidate)
+                    except Exception:
+                        continue
+
+            if len(local_candidates) == 1:
+                # Documented precedence: ~/.hermes/skills shadows any
+                # skills.external_dirs match with the same name/path.
+                skill_dir, skill_md = local_candidates[0]
+            else:
+                paths = [str(smd) for _, smd in candidates]
+                logging.getLogger(__name__).warning(
+                    "Skill name collision for '%s': %d candidates — %s",
+                    name, len(candidates), "; ".join(paths),
+                )
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Ambiguous skill name '{name}': {len(candidates)} skills "
+                            "match across your local skills dir and external_dirs. "
+                            "Refusing to guess because no unique local skill takes precedence."
+                        ),
+                        "matches": paths,
+                        "hint": (
+                            "Rename one of the colliding skills, or create a "
+                            "single local ~/.hermes/skills copy to shadow external duplicates."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+        if candidates and not skill_md:
             skill_dir, skill_md = candidates[0]
 
         if not skill_md or not skill_md.exists():

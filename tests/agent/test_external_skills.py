@@ -154,3 +154,59 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+    def test_skill_view_prefers_local_duplicate_over_external(self, hermes_home, external_skills_dir):
+        """skill_view follows the documented local-over-external precedence."""
+        local_skills = hermes_home / "skills"
+        local_skill = local_skills / "my-external-skill"
+        local_skill.mkdir(parents=True)
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal content.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+        )
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from agent import skill_utils
+            from tools.skills_tool import skill_view
+
+            skill_utils._external_dirs_cache_clear()
+            result = json.loads(skill_view("my-external-skill"))
+
+        assert result["success"] is True
+        assert "Local content" in result["content"]
+        assert "external things" not in result["content"]
+
+    def test_skill_view_prefers_local_duplicate_for_categorized_path(self, hermes_home, tmp_path):
+        """A full relative path still uses root precedence before external fallbacks."""
+        local_skills = hermes_home / "skills"
+        local_skill = local_skills / "github" / "hermes-agent"
+        external_skills = tmp_path / "external-skills"
+        external_skill = external_skills / "github" / "hermes-agent"
+        local_skill.mkdir(parents=True)
+        external_skill.mkdir(parents=True)
+        (local_skill / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Local Hermes skill\n---\n\nLocal Hermes.\n"
+        )
+        (external_skill / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: Shared Hermes skill\n---\n\nShared Hermes.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills}\n"
+        )
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from agent import skill_utils
+            from tools.skills_tool import skill_view
+
+            skill_utils._external_dirs_cache_clear()
+            result = json.loads(skill_view("github/hermes-agent"))
+
+        assert result["success"] is True
+        assert "Local Hermes" in result["content"]
+        assert "Shared Hermes" not in result["content"]

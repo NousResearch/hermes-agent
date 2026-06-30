@@ -171,6 +171,7 @@ function Sidebar({
         <SheetContent
           className="w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
           data-mobile="true"
+          data-mobile-drawer=""
           data-sidebar="sidebar"
           data-slot="sidebar"
           side={side}

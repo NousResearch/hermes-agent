@@ -712,6 +712,89 @@ button,
   user-select: none;
 }
 
+/* Mobile drawer: full-bleed, unified scroll. Original fork-mobile had the
+   nav + sessions list flowing inline so the drawer reads as one column
+   instead of two competing scrollers. Light theme inside the drawer so
+   active rows pop against the surface. */
+html.hermes-mobile-standalone [data-mobile-drawer] {
+  --ui-sidebar-surface-background: var(--ui-chat-surface-background);
+}
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] {
+  padding-inline: 1.25rem !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+  justify-content: flex-start !important;
+}
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] > div,
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] [data-sidebar='group'] {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+}
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='group-content'] {
+  overflow: visible !important;
+  min-height: 0 !important;
+}
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] .min-h-32,
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] .min-h-24,
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] .max-h-44,
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] .max-h-56 {
+  min-height: 0 !important;
+  max-height: none !important;
+}
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] > [data-sidebar='group']:first-child {
+  padding-top: calc(env(safe-area-inset-top) + 0.5rem) !important;
+}
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='menu-button'] {
+  min-height: 3rem !important;
+  border-radius: 0.95rem !important;
+  font-size: 1rem !important;
+}
+html.hermes-mobile-standalone [data-mobile-drawer] [data-sidebar='content'] span.truncate {
+  font-size: 0.95rem !important;
+  line-height: 1.35rem !important;
+}
+
+/* Composer-surface polish: rounded shoulder, lifted shadow, hairline border. */
+html.hermes-mobile-standalone [data-slot='composer-surface'] {
+  min-height: 4.95rem;
+  border-color: color-mix(in srgb, var(--dt-foreground) 12%, transparent) !important;
+  border-radius: 2rem !important;
+  box-shadow: 0 1.25rem 3.5rem color-mix(in srgb, #000 18%, transparent);
+}
+html.hermes-mobile-standalone [data-slot='composer-fade'] {
+  min-height: 4.35rem;
+  opacity: 1 !important;
+}
+html.hermes-mobile-standalone [data-slot='composer-rich-input'],
+html.hermes-mobile-standalone [data-slot='composer-rich-input']:empty::before {
+  font-size: 1rem;
+  line-height: 1.35rem;
+}
+
+/* Full-bleed overlays on mobile — no rounded card, no margins, no shadow.
+   The overlay IS the screen, not a sheet floating on top of one. */
+html.hermes-mobile-standalone [data-slot='overlay-view'] {
+  padding: 0 !important;
+}
+html.hermes-mobile-standalone [data-slot='overlay-view'] > div {
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Overlay form controls — 16pt+ font to suppress iOS zoom-on-focus, and a
+   44pt tap floor on inputs/combobox/select. */
+html.hermes-mobile-standalone [data-slot='overlay-view'] input,
+html.hermes-mobile-standalone [data-slot='overlay-view'] textarea {
+  font-size: 1rem;
+  min-height: 2.75rem;
+}
+html.hermes-mobile-standalone [data-slot='overlay-view'] [role='combobox'],
+html.hermes-mobile-standalone [data-slot='overlay-view'] select {
+  min-height: 2.75rem;
+}
+
 /* Mobile chrome: only the sidebar trigger lives in the titlebar on phone.
    Settings/keybinds/haptics/flip/right-rail/preview/devtools all collapse
    into the drawer or are inappropriate for a phone; hide them outright so

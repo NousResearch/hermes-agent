@@ -80,8 +80,7 @@ const NODE_BIRTH = { down: 0.11, up: 0.075 }
 
 // Glyph pool for the empty-core scramble: Matrix-style half-width katakana plus
 // a few digits/symbols for the "digital rain / decoding" look.
-const SCRAMBLE_CHARS =
-  'ﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾜﾝｦｱｳｴｵｶｷｹｺｻｼｽｾﾀﾁﾂﾃﾅﾆﾇﾈ0123456789:.=*+<>Ξ╳'
+const SCRAMBLE_CHARS = 'ﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾜﾝｦｱｳｴｵｶｷｹｺｻｼｽｾﾀﾁﾂﾃﾅﾆﾇﾈ0123456789:.=*+<>Ξ╳'
 
 // Sphere-sprite atlas: a lit orb is the same picture at every size, so we render
 // each distinct (ink, sheen, darken) appearance ONCE into an offscreen sprite and
@@ -477,6 +476,7 @@ export function drawScene(scene: Scene): DrawResult {
     if (revealed) {
       revealedRings.add(n.outerRingIndex)
     }
+
     const isFocus = revealed && n.id === focusId
     const isNeighbor = revealed && !!focusSet && focusSet.has(n.id)
     const inRing = !!ring && n.rec >= ringLo && n.rec < ringHi
@@ -758,7 +758,7 @@ export function drawScramble({
   rings: Ring[]
   vp: Viewport
 }): void {
-  const { darkTheme, primary } = palette
+  const { bg, darkTheme, primary } = palette
   const projX = (wx: number) => wx * vp.k + vp.x
   const projY = (wy: number) => wy * vp.k * TILT + vp.y
 
@@ -766,13 +766,32 @@ export function drawScramble({
 
   const coreX = projX(0)
   const coreY = projY(0)
-  // Fill to the innermost ring (the core shell), not the RING_INNER constant —
-  // the ring sits in lead-in space, so derive the radius from it directly.
-  const coreRx = (rings[0]?.r ?? RING_INNER) * vp.k * 0.94
+  // Scale with the world (like the rings), but ~1.25× bigger than the bare inner
+  // shell so the core reads prominently at the rested fit.
+  const coreRx = (rings[0]?.r ?? RING_INNER) * vp.k * 1.25
 
   if (coreRx <= 0) {
     return
   }
+
+  // Backdrop wash: a background-colour radial dimming the core ellipse, so on a
+  // busy map the nodes/links crowding through the centre recede behind the orb.
+  // Self-masking — bg over empty bg is invisible, so a sparse map shows no disc.
+  const washR = coreRx * 1.15
+  ctx.save()
+  ctx.translate(coreX, coreY)
+  ctx.scale(1, TILT)
+  const wash = ctx.createRadialGradient(0, 0, 0, 0, 0, washR)
+  // Near-opaque across the core (busy graph effectively vanishes behind the orb)
+  // with a soft falloff only at the rim so there's no hard disc edge.
+  wash.addColorStop(0, rgba(bg, darkTheme ? 0.9 : 0.93))
+  wash.addColorStop(0.62, rgba(bg, darkTheme ? 0.84 : 0.88))
+  wash.addColorStop(1, rgba(bg, 0))
+  ctx.fillStyle = wash
+  ctx.beginPath()
+  ctx.arc(0, 0, washR, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
 
   // Target ~SCRAMBLE_RADIUS cells to the rim (camera-scaled glyphs), but clamp the
   // glyph SIZE so a big/zoomed-in core scales the font DOWN — packing in more,

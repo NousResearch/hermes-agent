@@ -665,6 +665,7 @@ export interface Translations {
     emptyTitle: string
     emptyDesc: string
     share: string
+    shareHint: string
     shareTitle: string
     sharePlaceholder: string
     copy: string

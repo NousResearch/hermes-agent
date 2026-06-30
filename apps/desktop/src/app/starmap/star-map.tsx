@@ -473,7 +473,9 @@ export function StarMap({
     const val = style.getPropertyValue('--theme-primary').trim()
 
     if (val) {
-      const bgVal = style.getPropertyValue('--background').trim() || style.getPropertyValue('--dt-background').trim() || '#000'
+      const bgVal =
+        style.getPropertyValue('--background').trim() || style.getPropertyValue('--dt-background').trim() || '#000'
+
       setMemoryColor(rgba(memoryInkFor(resolveRgb(val), resolveRgb(bgVal)), 0.9))
     }
   }, [size, themeEpoch])
@@ -500,7 +502,10 @@ export function StarMap({
     // wasted CPU/GPU (WindowServer compositing) when the window isn't even the one
     // you're looking at. Freeze the loop while the window is hidden or unfocused;
     // a frozen core next to other work is fine, and it resumes instantly on focus.
-    const isPaused = () => (typeof document !== 'undefined' && document.hidden) || (typeof document.hasFocus === 'function' && !document.hasFocus())
+    const isPaused = () =>
+      (typeof document !== 'undefined' && document.hidden) ||
+      (typeof document.hasFocus === 'function' && !document.hasFocus())
+
     let paused = isPaused()
 
     const schedule = () => {
@@ -586,12 +591,22 @@ export function StarMap({
         dirtyRef.current = animating
       }
 
-      // Composite: live scramble underneath, cached static scene on top.
+      // Composite order flips on focus/hover. Idle: scene first, sphere on top —
+      // its backdrop wash dims the busy centre. Focused/hovered: sphere first,
+      // scene on top — so the active node's tooltip + lit lines lift ABOVE the
+      // sphere instead of being covered by it.
+      const focused = selectedIdRef.current ?? hoverRef.current
       ctx.setTransform(1, 0, 0, 1, 0, 0)
       ctx.clearRect(0, 0, canvas.width, canvas.height)
-      drawScramble({ ctx, dpr: dprRef.current, palette, rings: ringsRef.current, vp: viewportRef.current })
-      ctx.setTransform(1, 0, 0, 1, 0, 0)
-      ctx.drawImage(staticCanvas, 0, 0)
+
+      if (focused) {
+        drawScramble({ ctx, dpr: dprRef.current, palette, rings: ringsRef.current, vp: viewportRef.current })
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        ctx.drawImage(staticCanvas, 0, 0)
+      } else {
+        ctx.drawImage(staticCanvas, 0, 0)
+        drawScramble({ ctx, dpr: dprRef.current, palette, rings: ringsRef.current, vp: viewportRef.current })
+      }
     }
 
     const frame = (ts: number) => {
@@ -745,7 +760,11 @@ export function StarMap({
 
   const resetView = () => {
     setPlaying(false)
-    viewportRef.current = fitViewport(sizeRef.current.w, sizeRef.current.h, ringsRef.current[ringsRef.current.length - 1]?.r ?? RING_OUTER)
+    viewportRef.current = fitViewport(
+      sizeRef.current.w,
+      sizeRef.current.h,
+      ringsRef.current[ringsRef.current.length - 1]?.r ?? RING_OUTER
+    )
     selectedRingRef.current = null
     invalidate()
     setSelectedId(null)
@@ -762,7 +781,15 @@ export function StarMap({
     // Nodes aren't draggable (static map) — remember which was pressed so a click
     // (press without movement) can select it; any drag just pans.
     const nodeId = ringHit == null ? (pickNode(x, y)?.id ?? null) : null
-    dragRef.current = { id: nodeId, mode: 'pan', moved: false, ring: ringHit, sx: e.clientX, sy: e.clientY, vp: viewportRef.current }
+    dragRef.current = {
+      id: nodeId,
+      mode: 'pan',
+      moved: false,
+      ring: ringHit,
+      sx: e.clientX,
+      sy: e.clientY,
+      vp: viewportRef.current
+    }
   }
 
   const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -882,7 +909,15 @@ export function StarMap({
           z-20 lifts it above the titlebar's app-region drag layer (z-10) so the
           scrubber receives pointer events instead of dragging the window. */}
       <div className="pointer-events-none absolute inset-x-0 top-6 z-20 flex justify-center px-12">
-        <Timeline axis={timeAxis} memoryColor={memoryColor} onScrub={onScrub} onTogglePlay={onTogglePlay} playing={playing} revealStore={revealStore} ringStops={ringStops} />
+        <Timeline
+          axis={timeAxis}
+          memoryColor={memoryColor}
+          onScrub={onScrub}
+          onTogglePlay={onTogglePlay}
+          playing={playing}
+          revealStore={revealStore}
+          ringStops={ringStops}
+        />
       </div>
 
       {/* Share / import (WoW-talent-style code) — bottom-right, mirroring the legend. */}

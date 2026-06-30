@@ -952,6 +952,7 @@ export const zh: Translations = {
     emptyTitle: '尚无学习内容',
     emptyDesc: '当 Hermes 为你的工作构建技能和记忆时，会显示在这里。',
     share: '分享图谱',
+    shareHint: '复制代码以分享此图谱，或粘贴代码以载入。仅包含布局，不含你的记忆或技能内容。',
     shareTitle: '导入 / 导出图谱',
     sharePlaceholder: '粘贴图谱代码…',
     copy: '复制图谱代码',

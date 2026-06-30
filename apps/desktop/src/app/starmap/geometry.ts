@@ -89,9 +89,18 @@ export function fitViewport(w: number, h: number, outer: number = RING_OUTER): V
     return { k: 1, x: w / 2, y: h / 2 }
   }
 
-  const spanX = (outer + 30) * 2
-  const spanY = spanX * TILT
-  const k = clamp(Math.min((w - FIT_PADDING * 2) / spanX, (h - FIT_PADDING * 2) / spanY, 2.2), ZOOM_MIN, ZOOM_MAX)
+  // Fit zoom for a disk of radius r into this viewport (capped at 2.2× zoom-in).
+  const kFor = (r: number): number => {
+    const spanX = (r + 30) * 2
+
+    return Math.min((w - FIT_PADDING * 2) / spanX, (h - FIT_PADDING * 2) / (spanX * TILT), 2.2)
+  }
+
+  // Never zoom out past the reference (RING_OUTER / 5-ring) extent: a bigger map
+  // renders at that constant scale and overflows — you pan it — instead of
+  // shrinking every node to fit. Smaller extents (few rings, or the playback
+  // core) still fit tightly / zoom in.
+  const k = clamp(Math.max(kFor(outer), kFor(RING_OUTER)), ZOOM_MIN, ZOOM_MAX)
 
   // Bias the center down a touch — the timeline along the top adds visual weight
   // up there, so true-center reads as sitting high.
@@ -107,7 +116,8 @@ export function radiusForRecency(rec: number, outer: number = RING_OUTER): numbe
 // Screen-space scale at the graph's fully-rested fit. Nodes size against THIS,
 // not the live (playback) camera — so a spore-zoom moves WHERE they sit, not how
 // big they read (billboarded), while a full-map view keeps its honest density.
-export const fitScale = (w: number, h: number, rings: Ring[]): number => fitViewport(w, h, rings.at(-1)?.r ?? RING_OUTER).k
+export const fitScale = (w: number, h: number, rings: Ring[]): number =>
+  fitViewport(w, h, rings.at(-1)?.r ?? RING_OUTER).k
 
 // Squared distance from point (px,py) to segment a→b — for cheap link hit-tests.
 export function distToSegmentSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {

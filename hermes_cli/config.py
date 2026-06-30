@@ -937,6 +937,14 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Codex app-server startup retry is deliberately opt-in. Retrying a
+        # failed initialize/thread-start recreates the Codex app-server thread,
+        # which is fine for stateless chat but unsafe if an orchestration flow
+        # incorrectly stores progress in Codex thread-local state. Hermes
+        # durable state (kanban/Obsidian/audit ledgers) must remain the source
+        # of truth for long-running Operations Orchestrator work.
+        "codex_app_server_startup_retry": False,
+        "codex_app_server_retry_when_orchestration_active": False,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.

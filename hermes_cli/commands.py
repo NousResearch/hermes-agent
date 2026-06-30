@@ -206,6 +206,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc")),
+    CommandDef("clawops", "Queue a Hermes-owned ClawOps runtime task",
+               "Tools & Skills", aliases=("claw",), args_hint="<objective>"),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",

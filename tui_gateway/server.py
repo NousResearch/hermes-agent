@@ -2990,6 +2990,8 @@ def _get_usage(agent) -> dict:
 def _probe_credentials(agent) -> str:
     """Light credential check at session creation — returns warning or ''."""
     try:
+        if getattr(agent, "api_mode", "") == "codex_app_server":
+            return ""
         key = getattr(agent, "api_key", "") or ""
         provider = getattr(agent, "provider", "") or ""
         if not key or key == "no-key-required":
@@ -4204,6 +4206,12 @@ def _make_agent(
 
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
+    model_cfg = cfg.get("model") or {}
+    configured_openai_runtime = ""
+    if isinstance(model_cfg, dict):
+        configured_openai_runtime = str(
+            model_cfg.get("openai_runtime") or ""
+        ).strip().lower()
     system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
     startup_skills = _parse_tui_skills_env()
     if startup_skills:
@@ -4260,7 +4268,14 @@ def _make_agent(
             runtime["base_url"] = override_base_url
         if override_api_key:
             runtime["api_key"] = override_api_key
-        if override_api_mode:
+        if (
+            override_api_mode
+            and not (
+                configured_openai_runtime == "codex_app_server"
+                and str(runtime.get("api_mode") or "") == "codex_app_server"
+                and str(override_api_mode).strip().lower() != "codex_app_server"
+            )
+        ):
             runtime["api_mode"] = override_api_mode
     else:
         model, requested_provider = _resolve_startup_runtime()

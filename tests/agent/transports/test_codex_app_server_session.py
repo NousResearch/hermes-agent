@@ -34,6 +34,7 @@ class FakeClient:
         self.responses: list[tuple[Any, dict]] = []
         self.error_responses: list[tuple[Any, int, str]] = []
         self._initialized = False
+        self.initialize_kwargs: dict[str, Any] = {}
         self._closed = False
         self._notifications: list[dict] = []
         self._server_requests: list[dict] = []
@@ -42,6 +43,7 @@ class FakeClient:
     # API matching CodexAppServerClient
     def initialize(self, **kwargs):
         self._initialized = True
+        self.initialize_kwargs = dict(kwargs)
         return {"userAgent": "fake/0.0.0", "codexHome": "/tmp",
                 "platformOs": "linux", "platformFamily": "unix"}
 
@@ -160,6 +162,12 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+
+    def test_initialize_uses_longer_startup_timeout(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+        assert client.initialize_kwargs["timeout"] >= 90.0
 
     def test_close_idempotent(self):
         client = FakeClient()

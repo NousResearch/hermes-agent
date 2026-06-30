@@ -229,6 +229,34 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_codex_app_server_skips_codex_oauth(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-codex",
+            "default": "gpt-5.5",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "openai_runtime": "codex_app_server",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_codex_runtime_credentials",
+        lambda: (_ for _ in ()).throw(AssertionError("OAuth resolver should not run")),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["api_mode"] == "codex_app_server"
+    assert resolved["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert resolved["api_key"] == ""
+    assert resolved["source"] == "codex-app-server-runtime"
+    assert resolved["requested_provider"] == "openai-codex"
+
+
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(

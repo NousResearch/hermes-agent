@@ -458,6 +458,77 @@ class GatewaySlashCommandsMixin:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_clawops_command(self, event: MessageEvent) -> str:
+        """Create a Hermes-owned ClawOps runtime task.
+
+        This is intentionally a narrow intake command over the existing kanban
+        queue. Hermes decides the objective and owns the user-facing response;
+        workers only execute queued work and report back through kanban events.
+        """
+        import asyncio
+
+        objective = (event.get_command_args() or "").strip()
+        if not objective:
+            return (
+                "Usage: `/clawops <objective>`\n"
+                "Example: `/clawops check why Codex runtime health is still failing`"
+            )
+
+        def _platform_name(value: Any) -> str:
+            return (value.value if hasattr(value, "value") else str(value or "")).lower()
+
+        def _create() -> tuple[Any, bool]:
+            from proactive.clawops_intake import create_clawops_task, subscribe_clawops_task
+
+            source = event.source
+            platform = _platform_name(getattr(source, "platform", None))
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            thread_id = str(getattr(source, "thread_id", "") or "")
+            user_id = str(getattr(source, "user_id", "") or "")
+            profile = str(getattr(source, "profile", "") or "")
+            source_meta = {
+                "platform": platform,
+                "chat_id": chat_id,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "profile": profile,
+                "message_id": getattr(event, "message_id", None),
+            }
+            task = create_clawops_task(objective, source=source_meta)
+            notifier_profile = (
+                getattr(self, "_kanban_notifier_profile", None)
+                or self._active_profile_name()
+            )
+            subscribed = subscribe_clawops_task(
+                task.task_id,
+                platform=platform,
+                chat_id=chat_id,
+                thread_id=thread_id or None,
+                user_id=user_id or None,
+                notifier_profile=notifier_profile,
+            )
+            return task, subscribed
+
+        try:
+            task, subscribed = await asyncio.to_thread(_create)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("clawops intake failed: %s", exc)
+            return f"ClawOps intake failed: {exc}"
+
+        subscribe_line = (
+            "Hermes will report terminal updates back here."
+            if subscribed
+            else "No channel subscription was created; use `/kanban show "
+            f"{task.task_id}` to check status."
+        )
+        return (
+            f"ClawOps task queued: `{task.task_id}`\n"
+            f"Status: `{task.status}`\n"
+            f"Assigned Agent: `{task.assignee}`\n"
+            "Routing: Hermes -> kanban queue -> ClawOps worker -> Hermes summary\n"
+            f"{subscribe_line}"
+        )
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model

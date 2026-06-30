@@ -6523,6 +6523,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 error=error_text,
                 outcome="crashed",
                 failure_limit=1 if (protocol_violation or is_systemic) else None,
+                force_failure_limit=bool(protocol_violation or is_systemic),
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -6547,6 +6548,7 @@ def _record_task_failure(
     *,
     outcome: str,
     failure_limit: int = None,
+    force_failure_limit: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
@@ -6580,10 +6582,12 @@ def _record_task_failure(
     context (e.g. pid on crash, elapsed on timeout).
 
     Resolution order for the effective threshold:
-      1. per-task ``max_retries`` if set (nothing else overrides)
-      2. caller-supplied ``failure_limit`` (gateway passes the config
+      1. caller-supplied ``failure_limit`` when ``force_failure_limit=True``
+         (used for deterministic protocol/systemic failures)
+      2. per-task ``max_retries`` if set
+      3. caller-supplied ``failure_limit`` (gateway passes the config
          value from ``kanban.failure_limit``; tests pass fixed values)
-      3. ``DEFAULT_FAILURE_LIMIT``
+      4. ``DEFAULT_FAILURE_LIMIT``
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -6603,7 +6607,10 @@ def _record_task_failure(
         task_override = (
             row["max_retries"] if "max_retries" in row.keys() else None
         )
-        if task_override is not None:
+        if force_failure_limit:
+            effective_limit = int(failure_limit)
+            limit_source = "forced"
+        elif task_override is not None:
             effective_limit = int(task_override)
             limit_source = "task"
         else:

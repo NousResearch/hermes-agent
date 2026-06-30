@@ -4457,6 +4457,45 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
         conn.close()
 
 
+def test_detect_crashed_workers_protocol_violation_overrides_max_retries(kanban_home):
+    """Protocol violations are deterministic and must not be retried even when
+    a task has a higher max_retries value."""
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="quiet with retries",
+            assignee="worker",
+            max_retries=2,
+        )
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        events = kb.list_events(conn, tid)
+        gave_up = [e for e in events if e.kind == "gave_up"]
+        assert gave_up
+        assert gave_up[-1].payload["effective_limit"] == 1
+        assert gave_up[-1].payload["limit_source"] == "forced"
+    finally:
+        conn.close()
+
+
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the
     normal counter path — one failure doesn't trip the breaker.

@@ -3235,9 +3235,21 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             
         except Exception as e:
-            logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
+            if "bot can't send messages to the bot" in err_str:
+                logger.info(
+                    "[%s] Skipping Telegram send to bot self target: %s",
+                    self.name,
+                    e,
+                )
+                return SendResult(
+                    success=False,
+                    error="telegram_self_send_target",
+                    retryable=False,
+                    error_kind=error_kind,
+                )
+            logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             # Message too long — content exceeded 4096 chars. Return failure so
             # stream consumer enters fallback mode and sends the remainder.
             if "message_too_long" in err_str or "too long" in err_str:

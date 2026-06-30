@@ -105,6 +105,17 @@ def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
 
 
+def _resolve_proactive_obsidian_vault() -> Path:
+    for env_name in ("HERMES_OBSIDIAN_VAULT", "OBSIDIAN_VAULT"):
+        raw = os.environ.get(env_name, "").strip()
+        if raw:
+            return Path(raw).expanduser()
+    default_vault = Path.home() / "Documents" / "Obsidian Vault"
+    if default_vault.exists():
+        return default_vault
+    return Path.home() / ".hermes" / "obsidian"
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -5059,6 +5070,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = self.adapters.get(platform)
                 if not adapter:
                     continue
+                if self._is_self_delivery_target(platform, adapter, chat_id):
+                    logger.info(
+                        "Skipping shutdown notification to self target %s:%s",
+                        platform_str,
+                        chat_id,
+                    )
+                    continue
 
                 platform_cfg = self.config.platforms.get(platform)
                 if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
@@ -5162,6 +5180,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             try:
+                if self._is_self_delivery_target(platform, adapter, str(home.chat_id)):
+                    logger.info(
+                        "Skipping shutdown notification to self home channel %s:%s",
+                        platform.value,
+                        home.chat_id,
+                    )
+                    continue
                 metadata = self._thread_metadata_for_target(
                     platform,
                     home.chat_id,
@@ -5194,6 +5219,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.chat_id,
                     e,
                 )
+
+    @staticmethod
+    def _is_self_delivery_target(platform: Platform, adapter: Any, chat_id: str) -> bool:
+        if platform is not Platform.TELEGRAM:
+            return False
+        bot = getattr(adapter, "_bot", None)
+        bot_id = getattr(bot, "id", None)
+        if bot_id is None:
+            return False
+        return str(chat_id).strip() == str(bot_id).strip()
+
+    def _maybe_record_waiting_for_kj_commitment(
+        self,
+        *,
+        user_message: str,
+        assistant_response: str,
+        session_key: str,
+    ) -> None:
+        try:
+            from proactive.commitments import (
+                create_waiting_for_kj_record_from_response,
+            )
+
+            path = create_waiting_for_kj_record_from_response(
+                user_message=user_message,
+                assistant_response=assistant_response,
+                obsidian_vault=_resolve_proactive_obsidian_vault(),
+            )
+            if path:
+                logger.info(
+                    "Proactive waiting-for-KJ commitment recorded: session=%s path=%s",
+                    session_key,
+                    path,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Proactive waiting-for-KJ commitment recording failed: %s",
+                exc,
+            )
 
     async def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -8408,6 +8472,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            # /clawops is a Hermes-owned intake into the same profile-agnostic
+            # kanban queue. It must stay available while an agent is running so
+            # KJ can hand off runtime work without interrupting the current turn.
+            if _cmd_def_inner and _cmd_def_inner.name == "clawops":
+                return await self._handle_clawops_command(event)
+
             # /goal is safe mid-run for status/pause/clear/wait (inspection
             # and control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -8801,6 +8871,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "clawops":
+            return await self._handle_clawops_command(event)
 
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
@@ -10491,6 +10564,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+                self._maybe_record_waiting_for_kj_commitment(
+                    user_message=message_text,
+                    assistant_response=response,
+                    session_key=session_key,
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().

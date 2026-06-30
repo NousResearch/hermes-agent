@@ -3643,6 +3643,10 @@ def _resolve_auto(
     # config.yaml (auxiliary.<task>.provider) still win over this.
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
+    main_uses_codex_app_server = (
+        main_provider == "openai-codex"
+        and (runtime_api_mode or "").strip().lower() == "codex_app_server"
+    )
 
     # MoA virtual provider: the "model" is a preset name (e.g. "opus-gpt") and
     # there is no real "moa" HTTP endpoint, so resolving an aux client against
@@ -3674,7 +3678,12 @@ def _resolve_auto(
         except Exception:
             logger.debug("MoA aux resolution to aggregator failed", exc_info=True)
 
-    if (main_provider and main_model
+    if main_uses_codex_app_server:
+        logger.debug(
+            "Auxiliary auto-detect: skipping openai-codex OAuth probe because "
+            "main runtime is codex_app_server"
+        )
+    elif (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
         explicit_base_url = runtime_base_url or None

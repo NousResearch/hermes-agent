@@ -1,0 +1,11 @@
+name: openclaw_bridge
+version: 0.1.0
+description: "Hermes-owned safety bridge for delegated OpenClaw execution."
+author: KJ
+kind: backend
+provides_tools:
+  - openclaw_delegate
+provides_commands:
+  - openclaw-dry-run
+hooks:
+  - pre_gateway_dispatch

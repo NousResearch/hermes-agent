@@ -65,6 +65,22 @@ async def test_send_short_circuits_when_path_degraded():
 
 
 @pytest.mark.asyncio
+async def test_send_to_bot_self_target_is_non_retryable_without_error_log(caplog):
+    """Telegram's explicit self-send Forbidden should not pollute gateway logs."""
+    adapter = _make_adapter()
+    adapter._bot.send_message = AsyncMock(
+        side_effect=Exception("Forbidden: the bot can't send messages to the bot")
+    )
+
+    result = await adapter.send("999", "shutdown notice")
+
+    assert result.success is False
+    assert result.error == "telegram_self_send_target"
+    assert result.retryable is False
+    assert "Failed to send Telegram message" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
     """_handle_polling_network_error sets the flag while reconnecting; if the
     reconnect attempt itself raises (polling not yet healthy), the flag stays

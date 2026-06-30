@@ -1541,6 +1541,23 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     model_cfg = _get_model_config()
+    if (
+        provider in {"openai", "openai-codex"}
+        and str(model_cfg.get("openai_runtime") or "").strip().lower()
+        == "codex_app_server"
+    ):
+        return {
+            "provider": provider,
+            "api_mode": "codex_app_server",
+            "base_url": (
+                explicit_base_url
+                or model_cfg.get("base_url")
+                or DEFAULT_CODEX_BASE_URL
+            ).rstrip("/"),
+            "api_key": explicit_api_key or "",
+            "source": "codex-app-server-runtime",
+            "requested_provider": requested_provider,
+        }
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

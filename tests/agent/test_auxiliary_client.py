@@ -228,6 +228,35 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
 
+class TestCodexAppServerAuxiliaryRouting:
+    def test_auto_skips_codex_oauth_probe_for_codex_app_server_runtime(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        calls = []
+
+        def fake_resolve_provider_client(provider, *args, **kwargs):
+            calls.append(provider)
+            return None, None
+
+        monkeypatch.setattr(aux, "resolve_provider_client", fake_resolve_provider_client)
+        monkeypatch.setattr(aux, "_try_configured_fallback_chain", lambda *a, **kw: (None, None, ""))
+        monkeypatch.setattr(aux, "_try_main_fallback_chain", lambda *a, **kw: (None, None, ""))
+        monkeypatch.setattr(aux, "_get_provider_chain", lambda: [])
+
+        client, model = aux._resolve_auto(
+            main_runtime={
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "api_mode": "codex_app_server",
+            },
+            task="compression",
+        )
+
+        assert client is None
+        assert model is None
+        assert "openai-codex" not in calls
+
+
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

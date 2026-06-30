@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DelegatedTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "requested_by",
+    "objective",
+    "context_refs",
+    "allowed_tools",
+    "denied_tools",
+    "risk_level",
+    "requires_confirmation",
+    "max_runtime_seconds",
+    "output_format",
+    "audit_required"
+  ],
+  "properties": {
+    "task_id": { "type": "string", "minLength": 1 },
+    "requested_by": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "context_refs": { "type": "array", "items": { "type": "string" } },
+    "allowed_tools": { "type": "array", "items": { "type": "string" } },
+    "denied_tools": { "type": "array", "items": { "type": "string" } },
+    "risk_level": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+    "requires_confirmation": { "type": "boolean" },
+    "max_runtime_seconds": { "type": "integer", "minimum": 1 },
+    "output_format": { "type": "string", "minLength": 1 },
+    "audit_required": { "type": "boolean" }
+  }
+}
+

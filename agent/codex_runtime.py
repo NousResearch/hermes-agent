@@ -228,6 +228,101 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     }
 
 
+def _is_codex_app_server_startup_error(error: Any) -> bool:
+    if not error:
+        return False
+    text = str(error).lower()
+    return "codex app-server startup failed" in text
+
+
+def _retire_codex_app_server_session(agent, *, reason: Any) -> None:
+    logger.warning(
+        "codex app-server session retired (turn error: %s)",
+        reason,
+    )
+    session = getattr(agent, "_codex_session", None)
+    if session is not None:
+        try:
+            session.close()
+        except Exception:
+            pass
+    agent._codex_session = None
+
+
+def _codex_app_server_startup_retry_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return False
+    agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        return False
+    return bool(agent_cfg.get("codex_app_server_startup_retry", False))
+
+
+def _codex_app_server_retry_allowed_during_orchestration() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return False
+    agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        return False
+    return bool(
+        agent_cfg.get(
+            "codex_app_server_retry_when_orchestration_active", False
+        )
+    )
+
+
+def _has_active_kanban_orchestration() -> bool:
+    try:
+        from hermes_cli import kanban_db as kb
+
+        with kb.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                  FROM tasks
+                 WHERE status NOT IN ('done', 'archived')
+                 LIMIT 1
+                """
+            ).fetchone()
+            if row is not None:
+                return True
+            row = conn.execute(
+                """
+                SELECT 1
+                  FROM kanban_notify_subs
+                 LIMIT 1
+                """
+            ).fetchone()
+            return row is not None
+    except Exception:
+        logger.debug("could not inspect kanban orchestration state", exc_info=True)
+        return False
+
+
+def _should_retry_codex_app_server_startup(agent) -> bool:
+    if not _codex_app_server_startup_retry_enabled():
+        return False
+    if _codex_app_server_retry_allowed_during_orchestration():
+        return True
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+    if _has_active_kanban_orchestration():
+        logger.warning(
+            "codex app-server startup retry suppressed because active "
+            "kanban/orchestration state exists"
+        )
+        return False
+    return True
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -246,10 +341,13 @@ def run_codex_app_server_turn(
     """
     from agent.transports.codex_app_server_session import CodexAppServerSession
 
-    # Lazy session: one CodexAppServerSession per AIAgent instance.
-    # Spawned on first turn, reused across turns, closed at AIAgent
-    # shutdown (see _cleanup hook).
-    if not hasattr(agent, "_codex_session") or agent._codex_session is None:
+    def _ensure_session() -> None:
+        # Lazy session: one CodexAppServerSession per AIAgent instance.
+        # Spawned on first turn, reused across turns, closed at AIAgent
+        # shutdown (see _cleanup hook).
+        if hasattr(agent, "_codex_session") and agent._codex_session is not None:
+            return
+
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
@@ -258,6 +356,7 @@ def run_codex_app_server_turn(
         # codex-side fail-closed default.
         try:
             from tools.terminal_tool import _get_approval_callback
+
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
@@ -288,44 +387,54 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
-    try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
-    except Exception as exc:
-        logger.exception("codex app-server turn failed")
-        # Crash → unconditionally drop the session so the next turn
-        # respawns from scratch instead of reusing a dead client.
+    turn = None
+    for attempt in range(2):
+        _ensure_session()
         try:
-            agent._codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
-        return {
-            "final_response": (
-                f"Codex app-server turn failed: {exc}. "
-                f"Fall back to default runtime with `/codex-runtime auto`."
-            ),
-            "messages": messages,
-            "api_calls": 0,
-            "completed": False,
-            "partial": True,
-            "error": str(exc),
-        }
+            turn = agent._codex_session.run_turn(user_input=user_message)
+        except Exception as exc:
+            logger.exception("codex app-server turn failed")
+            # Crash → unconditionally drop the session so the next turn
+            # respawns from scratch instead of reusing a dead client.
+            _retire_codex_app_server_session(agent, reason=exc)
+            return {
+                "final_response": (
+                    f"Codex app-server turn failed: {exc}. "
+                    f"Fall back to default runtime with `/codex-runtime auto`."
+                ),
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "partial": True,
+                "error": str(exc),
+            }
 
-    # If the turn signalled the underlying client is wedged (deadline
-    # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
-    # exited), retire the session so the next turn respawns codex
-    # rather than riding the broken process. Mirrors openclaw beta.8's
-    # "retire timed-out app-server clients" fix.
-    if getattr(turn, "should_retire", False):
-        logger.warning(
-            "codex app-server session retired (turn error: %s)",
-            turn.error,
-        )
-        try:
-            agent._codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
+        # If startup failed before a Codex turn began, retire the wedged
+        # subprocess and retry once inside the same Hermes turn. This catches
+        # intermittent initialize/thread-start hangs without re-sending a
+        # user request after tools may have already run.
+        if (
+            attempt == 0
+            and getattr(turn, "should_retire", False)
+            and _is_codex_app_server_startup_error(turn.error)
+            and _should_retry_codex_app_server_startup(agent)
+        ):
+            _retire_codex_app_server_session(agent, reason=turn.error)
+            logger.warning(
+                "codex app-server startup failed; retrying once with a fresh session"
+            )
+            continue
+
+        # If the turn signalled the underlying client is wedged (deadline
+        # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
+        # exited), retire the session so the next turn respawns codex
+        # rather than riding the broken process. Mirrors openclaw beta.8's
+        # "retire timed-out app-server clients" fix.
+        if getattr(turn, "should_retire", False):
+            _retire_codex_app_server_session(agent, reason=turn.error)
+        break
+
+    assert turn is not None
 
     # Splice projected messages into the conversation. The projector emits
     # standard {role, content, tool_calls, tool_call_id} entries, which

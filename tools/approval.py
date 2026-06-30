@@ -1187,12 +1187,17 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(mode)
 
 
+def _coerce_approval_timeout(value, default: int) -> int:
+    """Coerce approval timeout config, falling back on malformed values."""
+    try:
+        return int(value)
+    except (OverflowError, TypeError, ValueError):
+        return default
+
+
 def _get_approval_timeout() -> int:
     """Read the approval timeout from config. Defaults to 60 seconds."""
-    try:
-        return int(_get_approval_config().get("timeout", 60))
-    except (ValueError, TypeError):
-        return 60
+    return _coerce_approval_timeout(_get_approval_config().get("timeout", 60), 60)
 
 
 def _get_cron_approval_mode() -> str:
@@ -1543,11 +1548,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # slices so we can fire activity heartbeats every ~10s to the agent's
     # inactivity tracker — otherwise the gateway watchdog kills the agent
     # while the user is still responding. Mirrors _wait_for_process() cadence.
-    timeout = _get_approval_config().get("gateway_timeout", 300)
-    try:
-        timeout = int(timeout)
-    except (ValueError, TypeError):
-        timeout = 300
+    timeout = _coerce_approval_timeout(
+        _get_approval_config().get("gateway_timeout", 300), 300
+    )
 
     try:
         from tools.environments.base import touch_activity_if_due

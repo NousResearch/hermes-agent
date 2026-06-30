@@ -53,6 +53,23 @@ class TestApprovalModeParsing:
         assert _normalize_approval_mode(True) == "manual"
 
 
+class TestApprovalTimeoutParsing:
+    def test_cli_timeout_non_finite_values_fall_back_to_default(self):
+        for value in (float("inf"), float("-inf"), float("nan")):
+            with mock_patch(
+                "hermes_cli.config.load_config",
+                return_value={"approvals": {"timeout": value}},
+            ):
+                assert approval_module._get_approval_timeout() == 60
+
+    def test_gateway_timeout_parser_rejects_non_finite_values(self):
+        for value in (float("inf"), float("-inf"), float("nan")):
+            assert approval_module._coerce_approval_timeout(value, 300) == 300
+
+    def test_timeout_parser_preserves_valid_integer_values(self):
+        assert approval_module._coerce_approval_timeout("42", 300) == 42
+
+
 class TestSmartApproval:
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(

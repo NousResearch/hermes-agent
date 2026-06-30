@@ -462,6 +462,7 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({
     "smba.trafficmanager.net",
     "smba.infra.gov.teams.microsoft.us",
 })
+_TEAMS_STANDALONE_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 
 # Conservative pattern for Bot Framework conversation IDs.  Real values
 # combine digits, colons, hyphens, dots, '@', and the ``thread.skype`` /
@@ -492,6 +493,34 @@ def _validate_teams_service_url(raw: str) -> Optional[str]:
         return None
     normalized = raw if raw.endswith("/") else raw + "/"
     return normalized
+
+
+async def _read_teams_error_text_limited(
+    response: Any,
+    *,
+    limit: int = _TEAMS_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+) -> str:
+    """Read a bounded error snippet from an aiohttp response."""
+    content = getattr(response, "content", None)
+    if content is not None and hasattr(content, "read"):
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit:
+            chunk = await content.read(min(4096, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(bytes(chunk))
+            total += len(chunk)
+        if total > limit:
+            release = getattr(response, "release", None)
+            if callable(release):
+                release()
+        return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
+
+    # Test doubles or alternate aiohttp-compatible responses may only expose
+    # text(); keep that fallback bounded after conversion.
+    text = await response.text()
+    return str(text)[:limit]
 
 
 async def _standalone_send(
@@ -580,7 +609,7 @@ async def _standalone_send(
                 timeout=per_request_timeout,
             ) as token_resp:
                 if token_resp.status >= 400:
-                    body = await token_resp.text()
+                    body = await _read_teams_error_text_limited(token_resp)
                     return {"error": f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}"}
                 token_payload = await token_resp.json()
             access_token = token_payload.get("access_token")
@@ -602,7 +631,7 @@ async def _standalone_send(
                 timeout=per_request_timeout,
             ) as send_resp:
                 if send_resp.status >= 400:
-                    body = await send_resp.text()
+                    body = await _read_teams_error_text_limited(send_resp)
                     return {"error": f"Teams standalone send: activity post failed ({send_resp.status}): {body[:300]}"}
                 send_payload = await send_resp.json()
         return {

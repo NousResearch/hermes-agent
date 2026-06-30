@@ -879,6 +879,9 @@ class BaseEnvironment(ABC):
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)
 
+        if result.get("returncode", 0) != 0:
+            logger.warning(f"_run_bash failed: wrapped_command={wrapped} resultcode={result['returncode']}")
+
         return result
 
     # ------------------------------------------------------------------

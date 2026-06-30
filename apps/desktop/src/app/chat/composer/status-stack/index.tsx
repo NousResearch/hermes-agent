@@ -35,11 +35,11 @@ const BACKGROUND_POLL_MS = 5_000
 // letting dead URLs pile up. File previews (a real on-disk artifact) stand alone.
 const isLocalhostPreview = (target: string): boolean => /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b/i.test(target)
 
-// Real codicons per group (no sparkles): a checklist for todos, a bot for
-// subagents, a background process glyph for background tasks.
+// Real codicons per group (no sparkles): a checklist for todos, the agent glyph
+// for subagents, a background process glyph for background tasks.
 const GROUP_ICON: Record<StatusGroup['type'], string> = {
   todo: 'checklist',
-  subagent: 'hubot',
+  subagent: 'agent',
   background: 'server-process'
 }
 

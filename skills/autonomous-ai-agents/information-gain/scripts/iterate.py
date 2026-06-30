@@ -51,7 +51,12 @@ DEFAULTS = {
     "k": 6, "max_rounds": 3, "floor": 0.12,
     "answer_model": "glm", "answer_provider": "ollama-glm",
     "answer_toolsets": "file,web,terminal", "answer_timeout": 300, "answer_max_turns": None,
+    # Where the grounded answerer researches. None = inherit the caller's cwd (the user's project
+    # in a real session). Pin it when the wrapper runs detached from the project — a live test showed
+    # the answerer otherwise researches the install dir and misses the actual project.
+    "answer_cwd": None,
     "responder_model": "glm", "responder_provider": "ollama-glm", "responder_timeout": 300,
+    "responder_toolsets": "", "responder_cwd": None,  # responder usually synthesizes from facts (no tools)
 }
 
 
@@ -102,7 +107,8 @@ def grounded_answer(question, problem, evidence, cfg):
               f"  {question}\n\n"
               f"If you genuinely cannot determine it, reply EXACTLY: NOT_FOUND: <brief reason>.")
     r = dispatch_single(resolve_alias(cfg["answer_model"]), prompt, "", cfg["answer_toolsets"],
-                        cfg["answer_max_turns"], cfg["answer_timeout"], cfg["answer_provider"])
+                        cfg["answer_max_turns"], cfg["answer_timeout"], cfg["answer_provider"],
+                        cwd=cfg.get("answer_cwd"))
     text, err = _extract(r)
     if err:
         return False, f"research error: {err}"
@@ -117,8 +123,9 @@ def respond(problem, evidence, cfg):
     prompt = (f"TASK: {problem}\n\nEstablished facts and known gaps:\n{facts}\n\n"
               f"Produce the best possible response to the task using what's established. "
               f"State any assumptions you make for unresolved gaps. Be direct and useful.")
-    r = dispatch_single(resolve_alias(cfg["responder_model"]), prompt, "", "",
-                        None, cfg["responder_timeout"], cfg["responder_provider"])
+    r = dispatch_single(resolve_alias(cfg["responder_model"]), prompt, "", cfg.get("responder_toolsets", ""),
+                        None, cfg["responder_timeout"], cfg["responder_provider"],
+                        cwd=cfg.get("responder_cwd"))
     text, err = _extract(r)
     return text or f"(no response: {err})"
 
@@ -177,14 +184,21 @@ def iterate(problem, cfg=None, answerer=None, responder=None, progress=None):
 
 
 def validate_selection(problem, which, k, cfg=None, answerer=None, responder=None, progress=None):
-    """End-to-end test (#21): answer top-k vs bottom-k of round-1 ranked, then respond. Single round."""
+    """End-to-end test (#21): respond after answering a selection of round-1 ranked questions.
+
+    which: "baseline" (answer none — respond directly) | "top" (top-k) | "bottom" (bottom-k).
+    Single round, so the three are directly comparable for a blind A/B judge.
+    """
     cfg = {**DEFAULTS, **(cfg or {})}
     answerer = answerer or grounded_answer
     responder = responder or respond
     progress = progress or (lambda m: None)
-    ranked = rank(problem, [], _rank_cfg())
-    sel = ranked[:k] if which == "top" else list(reversed(ranked[-k:]))
-    progress(f"{which}-{k}: " + " | ".join(q.get("question", "")[:40] for q in sel))
+    if which == "baseline":
+        sel = []
+    else:
+        ranked = rank(problem, [], _rank_cfg())
+        sel = ranked[:k] if which == "top" else list(reversed(ranked[-k:]))
+    progress(f"{which}-{k}: " + (" | ".join(q.get("question", "")[:40] for q in sel) or "(no clarification)"))
     tombstones, evidence = [], []
     for q in sel:
         found, text = answerer(q, problem, evidence, cfg)
@@ -211,7 +225,8 @@ def main(argv=None):
     p.add_argument("--k", type=int, default=DEFAULTS["k"])
     p.add_argument("--max-rounds", type=int, default=DEFAULTS["max_rounds"])
     p.add_argument("--floor", type=float, default=DEFAULTS["floor"])
-    p.add_argument("--validate", choices=["top", "bottom"], help="end-to-end test: answer top/bottom-k.")
+    p.add_argument("--validate", choices=["baseline", "top", "bottom"],
+                   help="end-to-end test: respond after answering baseline/top-k/bottom-k.")
     p.add_argument("--dry-run", action="store_true", help="mock answerer/responder (host, no hermes).")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)

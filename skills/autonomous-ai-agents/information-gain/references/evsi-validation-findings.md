@@ -224,6 +224,39 @@ ratings. The same likely applies to *eliciting* projected stakes. Until then the
 remains unvalidated by instrument limitation** (not by a negative result); the **Δ-half stands**
 (agentic per-answer ρ 0.64, value-vs-realized-change 0.66).
 
+## Wrapper end-to-end (the honest verdict)
+
+The #21 end-to-end test (`evals/validate_wrapper.py`): for each prompt, produce a baseline response
+(answer no clarifying questions) and a wrapper response (research the top-K via grounded `ask`, then
+respond), blind-judge which better serves the user. Findings — and the confound that nearly buried them:
+
+- **First pass (default env) → baseline 2-0.** But inspection killed the conclusion: the test runs in
+  a synthetic container with **10 projects** under `/opt/data/projects/`, so "add auth to my web app"
+  is genuinely ambiguous, and the grounded answerer ran in the install cwd (`/opt/hermes`) — it found
+  the Hermes codebase and honestly said "no web app here" while the baseline picked a real project
+  (`fastapi-tasks`) and delivered. A **fair, balanced re-judge** (penalizing over-assumption *and*
+  punting, ignoring length) still favored baseline — because the baseline **is itself a capable
+  investigating agent**, so a redundant k=1 clarification couldn't beat it.
+- **De-confounded (both pinned to the real project, responder given file tools) → 1-1 (k=1).**
+  `add-auth` → **wrapper wins** (researching the actual stack yields a "complete, production-ready
+  implementation"); `fix-test` → **baseline wins** ("correctly identifies the missing test files" — a
+  capable agent just investigates the failure directly; the clarification is redundant).
+
+**Verdict:** the wrapper is **not a universal win over a capable baseline agent** — its value is
+**task-dependent**. It helps where a clarification *shapes* the work (build/spec tasks: knowing the
+stack/constraints changes the implementation) and is redundant where the agent can *self-investigate*
+(debug tasks). Its **distinctive, non-redundant value is the genuinely user-only constraints** a
+capable agent can't investigate away. Two real levers were found and fixed: the grounded answerer's
+**`cwd`** must be the user's project (`answer_cwd`/`responder_cwd`), and the responder's tools.
+
+**Caveats:** n=2 de-confounded, k=1, single project, one judge — directional, not settled. k≥2 and
+genuinely user-only-constraint prompts are where the wrapper should show its clearest edge.
+
+**Implication:** ship the wrapper as a working v1 (ranking validated via realized_change; mechanically
+correct; de-confounded it holds its own). The strategic open question is emphasis: autonomous research
+loop (redundant with capable agents on investigable tasks) vs **surfacing the ranked user-only
+clarifications** (the report-only strength — the non-redundant value). Left for the user to steer.
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

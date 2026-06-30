@@ -110,6 +110,19 @@ class TestFormatMessage:
         out2 = adapter.format_message("# normal *em* tail")
         assert "**" not in out2
         assert out2 == "*normal em tail*"
+        # An UNMATCHED lone "*" must not survive into the wrap either: a
+        # balanced-span strip alone would leave "# *nix" -> "**nix*" (leading
+        # literal "**"). The surviving asterisk is dropped before wrapping.
+        out3 = adapter.format_message("# *nix")
+        assert "**" not in out3
+        assert out3 == "*nix*"
+        out4 = adapter.format_message("# C* programming")
+        assert "**" not in out4
+        assert out4 == "*C programming*"
+        # Odd asterisk count: one balanced span strips, the stray pair is dropped.
+        out5 = adapter.format_message("# a *b* c *d*")
+        assert "**" not in out5
+        assert out5 == "*a b c d*"
         # existing whole-line cases still hold
         assert adapter.format_message("# **Title**") == "*Title*"
         assert adapter.format_message("# Title") == "*Title*"

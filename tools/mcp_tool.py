@@ -3245,13 +3245,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
+            # If we reached here, the MCP transport/session round-trip itself
+            # succeeded.  The payload may still be an application/tool-level
+            # error (for example a 400 Flow Surfaces validation error returned
+            # by NocoBase), but that should NOT trip the server-level circuit
+            # breaker as "unreachable". Transport/connectivity failures are
+            # handled by the exception path below; tool/business errors should
+            # close any open breaker because they prove the server is reachable.
             try:
                 parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
+                _reset_server_error(server_name)
             except (json.JSONDecodeError, TypeError):
                 _reset_server_error(server_name)  # non-JSON = success
             return result

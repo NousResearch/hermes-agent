@@ -1343,7 +1343,10 @@ export const zhHant = defineLocale({
     kindLink: '連結',
     chat: '聊天',
     copyUrl: '複製 URL',
-    copyPath: '複製路徑'
+    copyPath: '複製路徑',
+    filterGeneratedLabel: '僅 Hermes 產生',
+    noGeneratedTitle: '沒有 Hermes 產生的成品',
+    noGeneratedDesc: 'Hermes 建立或編輯的檔案與媒體會顯示在這裡。'
   },
 
   sidebar: {

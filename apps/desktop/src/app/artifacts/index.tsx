@@ -16,6 +16,7 @@ import {
   PaginationNext,
   PaginationPrevious
 } from '@/components/ui/pagination'
+import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { Tip } from '@/components/ui/tooltip'
 import { getSessionMessages, listAllProfileSessions } from '@/hermes'
@@ -39,12 +40,24 @@ type ArtifactKind = 'image' | 'file' | 'link'
 type ArtifactFilter = 'all' | ArtifactKind
 const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'file', 'link']
 
+// 'generated' = produced by a Hermes mutating/generating tool (created or edited);
+// 'referenced' = merely read, searched, or mentioned in prose.
+type ArtifactOrigin = 'generated' | 'referenced'
+
+// Tools whose output counts as an artifact Hermes created or edited. A tool-result
+// message naming one of these (message.name / message.tool_name) marks the artifacts
+// it surfaces as 'generated'. The file-edit names mirror FILE_EDIT_TOOL_NAMES in
+// components/assistant-ui/tool-fallback-model.ts; image_generate / text_to_speech add
+// the media generators.
+const GENERATING_TOOLS = new Set(['edit_file', 'write_file', 'patch', 'image_generate', 'text_to_speech'])
+
 interface ArtifactRecord {
   id: string
   kind: ArtifactKind
   value: string
   href: string
   label: string
+  origin: ArtifactOrigin
   sessionId: string
   sessionTitle: string
   timestamp: number
@@ -267,6 +280,33 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
   }
 }
 
+// Provenance is a per-message property: artifacts surfaced by a tool result whose tool is
+// one of GENERATING_TOOLS are 'generated', everything else is 'referenced'. A failed
+// generation is treated as 'referenced' so it is not surfaced as something Hermes actually
+// produced. The backend's tool_error helper returns { error: "..." } (sometimes also
+// { success: false }), so both an explicit success:false and a non-empty error string count
+// as failure. (This is a per-message heuristic: an incidental path/URL embedded elsewhere in
+// a generating tool's result body also inherits 'generated' — acceptable for a UI filter.)
+function resolveMessageOrigin(message: SessionMessage): ArtifactOrigin {
+  if (message.role !== 'tool') {
+    return 'referenced'
+  }
+
+  const toolName = message.name ?? message.tool_name
+
+  if (!toolName || !GENERATING_TOOLS.has(toolName)) {
+    return 'referenced'
+  }
+
+  const parsed = parseMaybeJson(messageText(message))
+  const result = parsed && typeof parsed === 'object' ? (parsed as { error?: unknown; success?: unknown }) : null
+
+  const failed =
+    !!result && (result.success === false || (typeof result.error === 'string' && result.error.trim() !== ''))
+
+  return failed ? 'referenced' : 'generated'
+}
+
 export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
   const title = sessionTitle(session)
@@ -276,6 +316,8 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
+    const messageOrigin = resolveMessageOrigin(message)
+
     collectArtifactsFromMessage(message, candidate => {
       const value = normalizeValue(candidate)
 
@@ -284,8 +326,18 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       }
 
       const key = `${session.id}:${value}`
+      const existing = found.get(key)
 
-      if (found.has(key)) {
+      if (existing) {
+        // The same value commonly appears first as a prose mention ('referenced') and
+        // later in the producing tool result ('generated'). Generated always wins; never
+        // downgrade a record that was already marked generated. On upgrade, adopt the
+        // producing message's timestamp so the artifact sorts/displays by generation time
+        // rather than the earlier mention.
+        if (messageOrigin === 'generated' && existing.origin === 'referenced') {
+          found.set(key, { ...existing, origin: 'generated', timestamp: message.timestamp || existing.timestamp })
+        }
+
         return
       }
 
@@ -295,6 +347,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         value,
         href: artifactHref(value),
         label: artifactLabel(value),
+        origin: messageOrigin,
         sessionId: session.id,
         sessionTitle: title,
         timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
@@ -376,6 +429,14 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
+  const [generatedParam, setGeneratedParam] = useRouteEnumParam<'false' | 'true'>(
+    'generated',
+    ['true', 'false'],
+    'false'
+  )
+
+  const generatedOnly = generatedParam === 'true'
+
   const [failedImageIds, setFailedImageIds] = useState<Set<string>>(() => new Set())
   const [imagePage, setImagePage] = useState(1)
   const [filePage, setFilePage] = useState(1)
@@ -415,7 +476,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   useEffect(() => {
     setImagePage(1)
     setFilePage(1)
-  }, [artifacts, kindFilter, query])
+  }, [artifacts, kindFilter, generatedOnly, query])
 
   const visibleArtifacts = useMemo(() => {
     if (!artifacts) {
@@ -425,6 +486,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     const q = query.trim().toLowerCase()
 
     return artifacts.filter(artifact => {
+      if (generatedOnly && artifact.origin !== 'generated') {
+        return false
+      }
+
       if (kindFilter !== 'all' && artifact.kind !== kindFilter) {
         return false
       }
@@ -439,7 +504,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         artifact.sessionTitle.toLowerCase().includes(q)
       )
     })
-  }, [artifacts, kindFilter, query])
+  }, [artifacts, kindFilter, generatedOnly, query])
 
   const visibleImageArtifacts = useMemo(
     () => visibleArtifacts.filter(artifact => artifact.kind === 'image'),
@@ -466,16 +531,20 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [currentFilePage, visibleFileArtifacts]
   )
 
+  // Unfiltered total — drives empty-state and toggle visibility so the toggle never hides
+  // itself (and trap the user) when 'generated only' is on but no generated artifacts exist.
+  const totalCount = artifacts?.length ?? 0
+
   const counts = useMemo(() => {
-    const all = artifacts || []
+    const base = (artifacts || []).filter(artifact => !generatedOnly || artifact.origin === 'generated')
 
     return {
-      all: all.length,
-      image: all.filter(artifact => artifact.kind === 'image').length,
-      file: all.filter(artifact => artifact.kind === 'file').length,
-      link: all.filter(artifact => artifact.kind === 'link').length
+      all: base.length,
+      image: base.filter(artifact => artifact.kind === 'image').length,
+      file: base.filter(artifact => artifact.kind === 'file').length,
+      link: base.filter(artifact => artifact.kind === 'link').length
     }
-  }, [artifacts])
+  }, [artifacts, generatedOnly])
 
   const openArtifact = useCallback(
     async (href: string) => {
@@ -510,8 +579,21 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
+      filters={
+        totalCount > 0 ? (
+          <label className="flex cursor-pointer items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
+            <Switch
+              aria-label={a.filterGeneratedLabel}
+              checked={generatedOnly}
+              onCheckedChange={checked => setGeneratedParam(checked ? 'true' : 'false')}
+              size="xs"
+            />
+            {a.filterGeneratedLabel}
+          </label>
+        ) : undefined
+      }
       onSearchChange={setQuery}
-      searchHidden={counts.all === 0}
+      searchHidden={totalCount === 0}
       searchPlaceholder={a.search}
       searchTrailingAction={
         <Button
@@ -550,8 +632,12 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       ) : visibleArtifacts.length === 0 ? (
         <div className="grid h-full place-items-center px-6 text-center">
           <div>
-            <div className="text-sm font-medium">{a.noArtifactsTitle}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{a.noArtifactsDesc}</div>
+            <div className="text-sm font-medium">
+              {generatedOnly && totalCount > 0 && counts.all === 0 ? a.noGeneratedTitle : a.noArtifactsTitle}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {generatedOnly && totalCount > 0 && counts.all === 0 ? a.noGeneratedDesc : a.noArtifactsDesc}
+            </div>
           </div>
         </div>
       ) : (

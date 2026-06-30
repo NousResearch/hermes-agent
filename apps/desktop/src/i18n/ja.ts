@@ -1390,7 +1390,10 @@ export const ja = defineLocale({
     kindLink: 'リンク',
     chat: 'チャット',
     copyUrl: 'URL をコピー',
-    copyPath: 'パスをコピー'
+    copyPath: 'パスをコピー',
+    filterGeneratedLabel: 'Hermes が生成したもののみ',
+    noGeneratedTitle: 'Hermes が生成したアーティファクトはありません',
+    noGeneratedDesc: 'Hermes が作成または編集したファイルやメディアがここに表示されます。'
   },
 
   sidebar: {

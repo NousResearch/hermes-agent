@@ -22,9 +22,36 @@ import contextlib
 import json
 import logging
 import os
+import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_review_event(agent: Any, review_id: str, phase: str, **payload: Any) -> None:
+    """Best-effort structured event for UI surfaces.
+
+    The existing ``background_review_callback`` remains the human-facing text
+    hook used by gateway/chat adapters.  This structured hook lets browser
+    surfaces show review lifecycle state without parsing that text or changing
+    gateway behavior.
+    """
+    cb = getattr(agent, "background_review_event_callback", None)
+    if not cb:
+        return
+    event = {
+        "source": "background_review",
+        "phase": str(phase or ""),
+        "review_id": review_id,
+        "event_id": uuid.uuid4().hex,
+        "created_at": time.time(),
+    }
+    event.update(payload)
+    try:
+        cb(event)
+    except Exception:
+        logger.debug("background_review_event_callback failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +599,8 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    review_memory: bool = False,
+    review_skills: bool = False,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -601,6 +630,20 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+    review_id = uuid.uuid4().hex
+    scopes = []
+    if review_memory:
+        scopes.append("memory")
+    if review_skills:
+        scopes.append("skills")
+    _emit_review_event(
+        agent,
+        review_id,
+        "started",
+        review_memory=bool(review_memory),
+        review_skills=bool(review_skills),
+        scopes=scopes,
+    )
     try:
         with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
@@ -803,9 +846,42 @@ def _run_review_in_thread(
                     )
                 except Exception:
                     pass
+            _emit_review_event(
+                agent,
+                review_id,
+                "completed",
+                status="changed",
+                review_memory=bool(review_memory),
+                review_skills=bool(review_skills),
+                scopes=scopes,
+                actions=actions,
+                summary=summary,
+            )
+        else:
+            _emit_review_event(
+                agent,
+                review_id,
+                "completed",
+                status="unchanged",
+                review_memory=bool(review_memory),
+                review_skills=bool(review_skills),
+                scopes=scopes,
+                actions=[],
+                summary="No memory or skill changes.",
+            )
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
+        _emit_review_event(
+            agent,
+            review_id if "review_id" in locals() else uuid.uuid4().hex,
+            "failed",
+            status="failed",
+            review_memory=bool(review_memory),
+            review_skills=bool(review_skills),
+            scopes=scopes if "scopes" in locals() else [],
+            error=str(e),
+        )
         agent._emit_auxiliary_failure("background review", e)
     finally:
         # Safety-net cleanup for the exception path.  Normal
@@ -859,7 +935,13 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(
+            agent,
+            messages_snapshot,
+            prompt,
+            review_memory=review_memory,
+            review_skills=review_skills,
+        )
 
     return _target, prompt
 

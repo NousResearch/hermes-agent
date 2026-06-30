@@ -295,3 +295,40 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+    def test_spawn_uses_explicit_cwd_when_provided(self, monkeypatch, tmp_path):
+        """Codex app-server must start in the Hermes session workspace."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cwd"] = kwargs.get("cwd")
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+        client = cas.CodexAppServerClient(codex_bin="codex", cwd=str(workspace))
+        client._closed = True
+
+        assert captured["cwd"] == str(workspace)

@@ -651,7 +651,16 @@ def load_cli_config() -> Dict[str, Any]:
                     os.environ[env_var] = json.dumps(val)
                 else:
                     os.environ[env_var] = str(val)
-    
+
+    # Kanban dispatcher-spawned workers carry a resolved task workspace in
+    # HERMES_KANBAN_WORKSPACE. Keep that workspace authoritative even when
+    # local CLI startup bridges profile terminal config to TERMINAL_CWD.
+    _kanban_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    if _kanban_workspace:
+        _kw_path = Path(_kanban_workspace).expanduser()
+        if _kw_path.is_dir():
+            os.environ["TERMINAL_CWD"] = str(_kw_path.resolve())
+
     # Apply browser config to environment variables
     browser_config = defaults.get("browser", {})
     browser_env_mappings = {

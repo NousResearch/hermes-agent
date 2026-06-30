@@ -8,6 +8,7 @@ operator footgun that only manifests in long-running setups.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -114,6 +115,25 @@ def test_cli_invalid_max_in_progress_silently_disables(isolated_kanban_home, mon
             f"invalid max_in_progress={bad_val!r} should fall through to None, "
             f"got {captured.get('max_in_progress')!r}"
         )
+
+
+def test_cli_dispatch_json_reports_lock_skip(isolated_kanban_home, monkeypatch, capsys):
+    """A losing dispatcher must report that the lock was held elsewhere."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+
+    def fake_dispatch_once(conn, **kwargs):
+        return kanban_db.DispatchResult(skipped_locked=True)
+
+    monkeypatch.setattr(kanban_db, "dispatch_once", fake_dispatch_once)
+
+    args = argparse.Namespace(dry_run=False, max=None, failure_limit=2, json=True)
+    assert kb_cli._cmd_dispatch(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["skipped_locked"] is True
 
 
 def test_kanban_swarm_uses_existing_humanizer_skill():

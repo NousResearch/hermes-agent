@@ -7681,6 +7681,23 @@ def _default_spawn(
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
+    workspace_path = Path(workspace).expanduser()
+    if not workspace_path.is_absolute():
+        raise RuntimeError(
+            f"resolved workspace for task {task.id} is not absolute: {workspace!r}"
+        )
+    try:
+        workspace_path = workspace_path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"resolved workspace for task {task.id} does not exist: {workspace!r}"
+        ) from exc
+    if not workspace_path.is_dir():
+        raise RuntimeError(
+            f"resolved workspace for task {task.id} is not a directory: {workspace!r}"
+        )
+    workspace = str(workspace_path)
+
     from hermes_cli.profiles import normalize_profile_name
 
     profile_arg = normalize_profile_name(task.assignee)
@@ -7719,11 +7736,10 @@ def _default_spawn(
     # build_context_files_prompt (#34619 — workers loaded the dispatching
     # gateway's AGENTS.md instead of the task's). Setting it to the workspace
     # fixes both: the workspace is where the task's work actually happens.
-    # Only pin a real, absolute directory — file_tools rejects relative /
-    # sentinel TERMINAL_CWD values, so a non-dir workspace must NOT be set
-    # here (leave the inherited value rather than write a meaningless one).
-    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
-        env["TERMINAL_CWD"] = workspace
+    # `_default_spawn` validates the resolved workspace before building the
+    # worker env. The task workspace is now authoritative; never inherit the
+    # dispatcher cwd for a Kanban worker.
+    env["TERMINAL_CWD"] = workspace
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:
@@ -7810,7 +7826,7 @@ def _default_spawn(
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
+            cwd=workspace,
             stdin=subprocess.DEVNULL,
             stdout=log_f,
             stderr=subprocess.STDOUT,

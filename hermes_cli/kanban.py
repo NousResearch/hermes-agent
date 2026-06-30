@@ -2168,6 +2168,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "crashed": res.crashed,
             "timed_out": res.timed_out,
             "stale": res.stale,
+            "skipped_locked": res.skipped_locked,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
             "spawned": [
@@ -2183,6 +2184,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
         return 0
+    if res.skipped_locked:
+        print(
+            "Skipped:      dispatch lock already held by another dispatcher "
+            "(no DB writes from this process)"
+        )
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")
     if res.crashed:

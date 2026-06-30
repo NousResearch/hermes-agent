@@ -72,8 +72,10 @@ class CodexAppServerClient:
         codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        cwd: Optional[str] = None,
     ) -> None:
         self._codex_bin = codex_bin
+        self._cwd = cwd
         spawn_env = os.environ.copy()
         if env:
             spawn_env.update(env)
@@ -116,6 +118,7 @@ class CodexAppServerClient:
 
         self._proc = subprocess.Popen(
             cmd,
+            cwd=cwd or None,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

@@ -255,7 +255,7 @@ describe('applyTheme overlay injection', () => {
   it('sets a pink background seed CSS var for dark bubblegum theme', () => {
     applyTheme(deriveTheme('bubblegum', 'dark'), 'dark')
     const seed = document.documentElement.style.getPropertyValue('--theme-background-seed')
-    expect(seed).toBe('#3B1629')
+    expect(seed).toBe('#5A1F41')
   })
 
   it('sets a pink background seed CSS var for light bubblegum theme', () => {

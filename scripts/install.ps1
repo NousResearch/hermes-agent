@@ -1940,6 +1940,44 @@ print(','.join(scripts))
     Write-Success "All dependencies installed"
 }
 
+function Merge-HermesPathEntries([string]$existingPath, [string]$hermesBin, [string]$installDir) {
+    # Rebuild PATH so the *current* managed install wins and any stale
+    # hermes launchers under the same install root are dropped. Native
+    # Windows users can accumulate dead ``...\hermes-agent\venv\Scripts``
+    # entries from interrupted reinstalls or relocated checkouts; if one of
+    # those stale shims resolves first, every `hermes <cmd>` aborts before
+    # Python starts with uv's "trampoline failed to spawn Python child
+    # process" error.
+    $hermesBinFull = [System.IO.Path]::GetFullPath($hermesBin).TrimEnd('\')
+    $installRootPrefix = [System.IO.Path]::GetFullPath($installDir).TrimEnd('\') + '\'
+    $kept = New-Object System.Collections.Generic.List[string]
+
+    if ($existingPath) {
+        foreach ($entry in $existingPath.Split(';')) {
+            if (-not $entry) { continue }
+            $trimmed = $entry.Trim()
+            if (-not $trimmed) { continue }
+
+            try {
+                $entryFull = [System.IO.Path]::GetFullPath($trimmed).TrimEnd('\')
+            } catch {
+                $entryFull = $trimmed.TrimEnd('\')
+            }
+
+            if ($entryFull -ieq $hermesBinFull) { continue }
+            if ($entryFull.StartsWith($installRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+            $kept.Add($trimmed) | Out-Null
+        }
+    }
+
+    if ($kept.Count -gt 0) {
+        return "$hermesBinFull;$($kept -join ';')"
+    }
+    return $hermesBinFull
+}
+
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
@@ -1952,14 +1990,15 @@ function Set-PathVariable {
     # Add the venv Scripts dir to user PATH so hermes is globally available
     # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $newUserPath = Merge-HermesPathEntries $currentPath $hermesBin $InstallDir
     
-    if ($currentPath -notlike "*$hermesBin*") {
+    if ($newUserPath -ne $currentPath) {
         [Environment]::SetEnvironmentVariable(
             "Path",
-            "$hermesBin;$currentPath",
+            $newUserPath,
             "User"
         )
-        Write-Success "Added to user PATH: $hermesBin"
+        Write-Success "Added Hermes to the front of user PATH: $hermesBin"
     } else {
         Write-Info "PATH already configured"
     }
@@ -1975,7 +2014,24 @@ function Set-PathVariable {
     $env:HERMES_HOME = $HermesHome
     
     # Update current session
-    $env:Path = "$hermesBin;$env:Path"
+    $env:Path = Merge-HermesPathEntries $env:Path $hermesBin $InstallDir
+
+    if (-not $NoVenv) {
+        $expectedHermesExe = [System.IO.Path]::GetFullPath((Join-Path $hermesBin "hermes.exe"))
+        $resolvedHermes = Get-Command hermes -ErrorAction SilentlyContinue
+        if ($resolvedHermes -and $resolvedHermes.Source) {
+            try {
+                $resolvedHermesPath = [System.IO.Path]::GetFullPath($resolvedHermes.Source).TrimEnd('\')
+            } catch {
+                $resolvedHermesPath = $resolvedHermes.Source.TrimEnd('\')
+            }
+            if ($resolvedHermesPath -ne $expectedHermesExe) {
+                Write-Warn "hermes currently resolves to a different launcher: $resolvedHermesPath"
+                Write-Info "Expected: $expectedHermesExe"
+                Write-Info "Open a new terminal and retry. If it still resolves to the wrong path, remove the stale Hermes install from PATH and reinstall."
+            }
+        }
+    }
     
     Write-Success "hermes command ready"
 }

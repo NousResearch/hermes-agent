@@ -2342,6 +2342,12 @@ def looks_like_codex_intermediate_ack(
         re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
     )
     if not has_future_ack:
+        # CJK acks have no Latin future-ack phrase for the regex above to
+        # match, so check common Chinese future-ack phrases via substring
+        # containment instead (mirrors how action_markers below already work).
+        cjk_future_ack_markers = ("我先", "我來", "我会", "我會", "讓我", "让我", "我直接", "接下來我", "接下来我")
+        has_future_ack = any(marker in assistant_text for marker in cjk_future_ack_markers)
+    if not has_future_ack:
         return False
 
     action_markers = (
@@ -2364,6 +2370,20 @@ def looks_like_codex_intermediate_ack(
         "walkthrough",
         "report back",
         "summarize",
+        # CJK action verbs — already plain substring containment below, so
+        # these slot in directly without a separate word-boundary regex.
+        "載入",
+        "载入",
+        "查",
+        "執行",
+        "执行",
+        "掃描",
+        "扫描",
+        "檢查",
+        "检查",
+        "分析",
+        "讀取",
+        "读取",
     )
     workspace_markers = (
         "directory",

@@ -181,3 +181,38 @@ def test_long_response_is_not_treated_as_an_ack():
     assert not looks_like_codex_intermediate_ack(
         a, REPRO_USER, long_ack, msgs, require_workspace=False
     )
+
+
+# ── detector: CJK acks (#55664) ──────────────────────────────────────────────
+
+
+def test_chinese_ack_fires_under_all_api_mode():
+    """#55664: the future-ack regex is Latin-only, so a Chinese ack like
+    "我先載入 skill 確認用法" never matched and intent-ack continuation was a
+    complete no-op for CJK users. Traditional and simplified variants both
+    need to fire.
+    """
+    a = _agent(True, "chat_completions")
+    user_msg = "幫我看一下伺服器狀態並抓最新的錯誤紀錄"
+    traditional_ack = "我先載入 skill 確認用法，然後幫你檢查伺服器狀態。"
+    simplified_ack = "我先加载 skill 确认用法，然后帮你检查服务器状态。"
+    msgs = [{"role": "user", "content": user_msg}]
+    assert looks_like_codex_intermediate_ack(
+        a, user_msg, traditional_ack, msgs, require_workspace=False
+    )
+    assert looks_like_codex_intermediate_ack(
+        a, user_msg, simplified_ack, msgs, require_workspace=False
+    )
+
+
+def test_chinese_final_answer_does_not_fire():
+    """A real Chinese final answer (no future-ack phrase) must still not fire —
+    the CJK addition only widens the future-ack gate, not the other guardrails.
+    """
+    a = _agent(True, "chat_completions")
+    user_msg = "幫我看一下伺服器狀態"
+    final = "伺服器狀態正常，沒有發現任何嚴重錯誤。"
+    msgs = [{"role": "user", "content": user_msg}]
+    assert not looks_like_codex_intermediate_ack(
+        a, user_msg, final, msgs, require_workspace=False
+    )

@@ -1,5 +1,8 @@
 import pytest
-from agent.model_metadata import parse_available_output_tokens_from_error
+from agent.model_metadata import (
+    is_output_cap_error,
+    parse_available_output_tokens_from_error,
+)
 
 
 class TestParseOpenRouterOutputCap:
@@ -62,3 +65,58 @@ class TestParseCharBasedOutputCap:
         msg = ("maximum context length is 1000 tokens. However, you requested "
                "1000 output tokens and your prompt contains 9000 characters.")
         assert parse_available_output_tokens_from_error(msg) is None
+
+
+class TestParseDashScopeOutputCap:
+    """DashScope / Alibaba Cloud (Qwen) reject an over-cap output request with
+    a bounded range whose upper bound is the real max-output cap (#55546)."""
+
+    def test_dashscope_range_format(self):
+        msg = ("HTTP 400: InternalError.Algo.InvalidParameter: "
+               "Range of max_tokens should be [1, 65536]")
+        assert parse_available_output_tokens_from_error(msg) == 65536
+
+    def test_dashscope_range_arbitrary_bound(self):
+        msg = "Range of max_tokens should be [1, 8192]"
+        assert parse_available_output_tokens_from_error(msg) == 8192
+
+    def test_dashscope_range_with_spaces(self):
+        msg = "range of max_tokens should be [ 1 , 32768 ]"
+        assert parse_available_output_tokens_from_error(msg) == 32768
+
+
+class TestIsOutputCapError:
+    """`is_output_cap_error` is the broader yes/no gate that keeps an
+    output-cap 400 out of the compression death-loop even when we can't parse
+    a number from the provider's wording (#55546)."""
+
+    def test_dashscope_is_output_cap(self):
+        assert is_output_cap_error(
+            "Range of max_tokens should be [1, 65536]"
+        ) is True
+
+    def test_unknown_numeric_max_tokens_cap_is_output_cap(self):
+        # Provider we don't yet parse a number from, but clearly an output cap.
+        assert is_output_cap_error("Invalid value: max_tokens should be <= 8192") is True
+
+    def test_anthropic_available_tokens_is_output_cap(self):
+        assert is_output_cap_error(
+            "max_tokens: 32768 > context_window: 200000 - "
+            "input_tokens: 190000 = available_tokens: 10000"
+        ) is True
+
+    def test_real_input_overflow_is_not_output_cap(self):
+        # Mentions max_tokens but the INPUT is the problem -> compression path.
+        assert is_output_cap_error(
+            "prompt is too long: 250000 tokens > 200000 max_tokens window"
+        ) is False
+
+    def test_gpt5_unsupported_param_is_not_output_cap(self):
+        # format_error caught earlier; must NOT be treated as an output cap.
+        assert is_output_cap_error(
+            "Unsupported parameter: 'max_tokens' is not supported with this "
+            "model. Use 'max_completion_tokens' instead."
+        ) is False
+
+    def test_unrelated_error_is_not_output_cap(self):
+        assert is_output_cap_error("some unrelated 400 error") is False

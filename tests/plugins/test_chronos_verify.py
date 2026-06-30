@@ -54,7 +54,7 @@ def _base_claims(**over):
 
 
 def test_valid_token_returns_claims(rsa_keys):
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
     token = _mint(priv, _base_claims())
@@ -66,7 +66,7 @@ def test_valid_token_returns_claims(rsa_keys):
 
 
 def test_wrong_audience_rejected(rsa_keys):
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
     token = _mint(priv, _base_claims(aud="agent:someone-else"))
@@ -76,7 +76,7 @@ def test_wrong_audience_rejected(rsa_keys):
 
 def test_missing_purpose_rejected(rsa_keys):
     """A general agent JWT (no purpose=cron_fire) can't fire jobs."""
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
     claims = _base_claims()
@@ -87,7 +87,7 @@ def test_missing_purpose_rejected(rsa_keys):
 
 
 def test_wrong_purpose_rejected(rsa_keys):
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
     token = _mint(priv, _base_claims(purpose="inference"))
@@ -96,7 +96,7 @@ def test_wrong_purpose_rejected(rsa_keys):
 
 
 def test_expired_token_rejected(rsa_keys):
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
     now = int(time.time())
@@ -106,7 +106,7 @@ def test_expired_token_rejected(rsa_keys):
 
 
 def test_wrong_issuer_rejected(rsa_keys):
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
     token = _mint(priv, _base_claims(iss="https://evil.example"))
@@ -118,7 +118,7 @@ def test_tampered_signature_rejected(rsa_keys):
     """A token signed by a DIFFERENT key must fail signature verification."""
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     _, pub = rsa_keys
     attacker = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -135,7 +135,7 @@ def test_tampered_signature_rejected(rsa_keys):
 
 def test_no_key_configured_refuses(rsa_keys):
     """No JWKS/key configured → refuse (never fall back to unsigned decode)."""
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, _ = rsa_keys
     token = _mint(priv, _base_claims())
@@ -144,7 +144,7 @@ def test_no_key_configured_refuses(rsa_keys):
 
 
 def test_empty_token_refused(rsa_keys):
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     _, pub = rsa_keys
     assert verify_nas_fire_token(token="", expected_audience=AUD, jwks_or_key=pub) is None
@@ -152,7 +152,7 @@ def test_empty_token_refused(rsa_keys):
 
 def test_jwks_url_path_resolves_key(rsa_keys, monkeypatch):
     """The JWKS-URL branch resolves the signing key via PyJWKClient."""
-    from plugins.cron.chronos.verify import verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import verify_nas_fire_token
 
     priv, pub = rsa_keys
     token = _mint(priv, _base_claims())
@@ -177,6 +177,6 @@ def test_jwks_url_path_resolves_key(rsa_keys, monkeypatch):
 
 
 def test_get_fire_verifier_returns_nas_verifier():
-    from plugins.cron.chronos.verify import get_fire_verifier, verify_nas_fire_token
+    from plugins.cron_providers.chronos.verify import get_fire_verifier, verify_nas_fire_token
 
     assert get_fire_verifier() is verify_nas_fire_token

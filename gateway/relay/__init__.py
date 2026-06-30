@@ -44,15 +44,81 @@ def relay_url() -> Optional[str]:
     return None
 
 
-def relay_platform_identity() -> tuple[str, str]:
-    """Platform + bot id this gateway fronts over the relay (for the handshake hello).
+def relay_platform_identities() -> list[tuple[str, str]]:
+    """The (platform, bot_id) pairs this gateway fronts over the relay (Phase 1.5).
 
-    Defaults to ``("relay", "")``; overridable via ``GATEWAY_RELAY_PLATFORM`` /
-    ``GATEWAY_RELAY_BOT_ID`` so one connector can front several platforms.
+    Shape A (multi-platform-per-agent, D-Q1.5c — CUT OVER, no scalar fallback):
+    one gateway fronts a SET of platforms on one WS connection. The set is the
+    env-stamped deploy config:
+
+      - ``GATEWAY_RELAY_PLATFORMS`` — comma-sep list (e.g. ``discord,telegram``).
+      - ``GATEWAY_RELAY_BOT_IDS`` — JSON keyed map
+        ``{"discord": {"botId": "..."}, "telegram": {"botId": "...", "username": "..."}}``.
+
+    Returns the ordered list of ``(platform, bot_id)`` pairs (the FIRST is the
+    default the handshake/descriptor falls back to). The connector accepts N
+    hellos accumulating into its advertised set; outbound frames discriminate
+    per-frame on the platform (gateway-gateway D-Q1.5b.1). A platform present in
+    the list but absent from the ids map resolves with an empty bot_id (the
+    connector rejects an unprovisioned platform with a structured failure).
+
+    Defaults to ``[("relay", "")]`` when nothing is configured (the generic
+    single-plane fallback for a connector that didn't stamp a platform set).
     """
-    platform = os.environ.get("GATEWAY_RELAY_PLATFORM", "relay").strip() or "relay"
-    bot_id = os.environ.get("GATEWAY_RELAY_BOT_ID", "").strip()
-    return platform, bot_id
+    platforms_raw = os.environ.get("GATEWAY_RELAY_PLATFORMS", "").strip()
+    platforms = [p.strip() for p in platforms_raw.split(",") if p.strip()]
+    if not platforms:
+        return [("relay", "")]
+    ids = _relay_bot_ids_map()
+    out: list[tuple[str, str]] = []
+    for platform in platforms:
+        entry = ids.get(platform) or {}
+        bot_id = str(entry.get("botId", "")).strip() if isinstance(entry, dict) else ""
+        out.append((platform, bot_id))
+    return out
+
+
+def _relay_bot_ids_map() -> dict:
+    """Parse ``GATEWAY_RELAY_BOT_IDS`` (JSON keyed map). Never raises — a malformed
+    map yields ``{}`` so a bad config degrades to empty bot ids (the connector
+    rejects an unprovisioned platform) rather than crashing boot."""
+    import json
+    import logging
+
+    raw = os.environ.get("GATEWAY_RELAY_BOT_IDS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:  # noqa: BLE001 - a bad map must not crash boot
+        logging.getLogger("gateway.relay").warning(
+            "GATEWAY_RELAY_BOT_IDS is not valid JSON; treating as empty"
+        )
+        return {}
+
+
+def relay_bot_username(platform: str) -> Optional[str]:
+    """The bot's deep-link username/handle for a platform (e.g. Telegram's
+    ``@handle`` for ``t.me/<handle>``), read from the per-platform entry in
+    ``GATEWAY_RELAY_BOT_IDS``. None when absent (most platforms don't need one).
+    """
+    entry = _relay_bot_ids_map().get(platform)
+    if isinstance(entry, dict):
+        username = entry.get("username")
+        if username:
+            return str(username).lstrip("@")
+    return None
+
+
+def relay_platform_identity() -> tuple[str, str]:
+    """The PRIMARY (platform, bot_id) — the first identity in the configured set.
+
+    Kept for call sites that need a single representative identity (the default
+    descriptor platform, the policy projection's primary). The full set is
+    ``relay_platform_identities()``. Defaults to ``("relay", "")``.
+    """
+    return relay_platform_identities()[0]
 
 
 def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
@@ -158,6 +224,37 @@ def relay_instance_id() -> Optional[str]:
     return value or None
 
 
+def relay_wake_url() -> Optional[str]:
+    """The gateway's WAKE URL, forwarded at provision (Phase 5 §5.2 wake PRIMITIVE).
+
+    A poke target the connector issues a payload-free GET to when a buffered-only
+    (going-idle) destination for this instance receives its first buffered event,
+    so a suspended gateway wakes, reconnects its relay WS, and drains its
+    delivery-leg backlog. The value's *source* differs by deployment but the code
+    path is uniform: a managed/NAS container has ``GATEWAY_RELAY_WAKE_URL`` stamped
+    in (NAS knows the Fly autostart / dashboard hostname); a self-hosted operator
+    sets it explicitly (or passes ``--wake-url`` to ``hermes gateway enroll``).
+
+    Gateway-asserted but safely scoped: the org/tenant stays token-verified, so a
+    dishonest gateway can only register a wake target for ITS OWN instance — the
+    same posture as ``relay_instance_id()`` / the retired ``relay_endpoint()``.
+    Absent -> the connector stores null and simply can't wake this instance
+    (buffering still works; the gateway drains whenever it next reconnects).
+
+    Env first (Docker/NAS), then ``gateway.relay_wake_url`` in config.yaml.
+    """
+    value = os.environ.get("GATEWAY_RELAY_WAKE_URL", "").strip()
+    if not value:
+        try:
+            from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+            cfg = (_load_gateway_config().get("gateway") or {})
+            value = str(cfg.get("relay_wake_url", "") or "").strip()
+        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+            value = ""
+    return value.rstrip("/") or None
+
+
 def _provision_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…/relay/provision`` POST URL."""
     raw = relay_dial_url.rstrip("/")
@@ -186,14 +283,16 @@ def _policy_url(relay_dial_url: str) -> str:
     return f"{raw}/relay/policy"
 
 
-def relay_relevance_policy() -> Optional[dict]:
-    """Project this gateway's RELEVANCE config into the connector's generic vocabulary.
+def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
+    """Project a fronted platform's RELEVANCE config into the connector's generic vocabulary.
 
     The connector's relevance gate (Phase 6 Unit ζ) reasons over a
     platform-agnostic policy — ``requireAddress`` / ``freeResponseScopes`` /
     ``allowOtherBots`` — NOT over Discord/Telegram words. This is the gateway
     side of that contract: it reads the agent's existing relevance knobs and
-    emits the generic shape the connector stores per-instance.
+    emits the generic shape the connector stores per-instance (Phase 1.5: the
+    connector keys the policy by ``(tenant, platform, instanceId)``, so each
+    fronted platform gets its own row — pass its name here).
 
     Mapping (the connector vocabulary ← the gateway's existing config):
       - ``requireAddress``     ← the platform's ``require_mention`` (the agent
@@ -206,11 +305,13 @@ def relay_relevance_policy() -> Optional[dict]:
 
     Read from the relay platform's config block (the platform the connector
     fronts, e.g. ``discord:``), falling back to the bridged top-level keys, then
-    the ``{PLATFORM}_*`` env. Returns the generic dict, or None when relay isn't
+    the ``{PLATFORM}_*`` env. ``platform`` defaults to the PRIMARY fronted
+    platform (back-compat). Returns the generic dict, or None when relay isn't
     configured or the platform exposes no relevance knobs (⇒ the connector's
     quiet default already matches, so there's nothing to declare).
     """
-    platform, _bot_id = relay_platform_identity()
+    if platform is None:
+        platform, _bot_id = relay_platform_identity()
     if not platform or platform == "relay":
         # No concrete fronted platform resolved ⇒ nothing platform-specific to project.
         return None
@@ -274,6 +375,7 @@ def _post_provision(
     gateway_endpoint: Optional[str],
     route_keys: list[str],
     instance_id: Optional[str] = None,
+    wake_url: Optional[str] = None,
     timeout: float = 15.0,
 ) -> dict:
     """POST to the connector's ``/relay/provision`` and return the JSON body.
@@ -299,6 +401,10 @@ def _post_provision(
     # connector store null (back-compat) rather than binding an empty string.
     if instance_id:
         body["instanceId"] = instance_id
+    # Same for the wake URL (Phase 5 §5.2): omit when absent so the connector
+    # stores null and simply can't wake this instance (buffering still works).
+    if wake_url:
+        body["wakeUrl"] = wake_url
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         provision_url,
@@ -392,7 +498,7 @@ def self_provision_relay() -> bool:
         logger.warning("relay self-provision skipped: could not resolve Nous token (%s)", exc)
         return False
 
-    platform, bot_id = relay_platform_identity()
+    identities = relay_platform_identities()
     # gatewayId default mirrors the enroll CLI's hostname-based slug.
     import socket
 
@@ -404,38 +510,67 @@ def self_provision_relay() -> bool:
     endpoint = relay_endpoint()
     route_keys = relay_route_keys()
     instance_id = relay_instance_id()
+    wake_url = relay_wake_url()
 
-    try:
-        result = _post_provision(
-            provision_url=_provision_url(dial_url),
-            access_token=access_token,
-            gateway_id=gateway_id,
-            platform=platform,
-            bot_id=bot_id,
-            gateway_endpoint=endpoint,
-            route_keys=route_keys,
-            instance_id=instance_id,
+    # Phase 1.5 (D-Q1.5c): provision EACH fronted platform under the SAME
+    # gatewayId + the SAME (platform-less) per-gateway secret. The connector's
+    # secret record is (gatewayId -> tenant) only; platform/botId live on the
+    # per-platform route rows (relayProvision.ts:124/148), so N provision POSTs
+    # with one gatewayId add N platforms' routes under one secret. The loop is
+    # PARTIAL-FAILURE-TOLERANT: a platform that fails to provision is logged and
+    # skipped (it just isn't fronted) — the others still come up. The FIRST
+    # successful provision sets the in-process creds; later platforms re-provision
+    # against the same gatewayId (idempotent on the secret, additive on routes).
+    provisioned: list[str] = []
+    result: dict = {}
+    for platform, bot_id in identities:
+        try:
+            result = _post_provision(
+                provision_url=_provision_url(dial_url),
+                access_token=access_token,
+                gateway_id=gateway_id,
+                platform=platform,
+                bot_id=bot_id,
+                gateway_endpoint=endpoint,
+                route_keys=route_keys,
+                instance_id=instance_id,
+                wake_url=wake_url,
+            )
+        except RuntimeError as exc:
+            logger.warning(
+                "relay self-provision failed for platform=%s (%s); continuing with the rest",
+                platform,
+                exc,
+            )
+            continue
+        provisioned.append(platform)
+        # Set creds in-process on the FIRST success so register_relay_adapter()
+        # reads them from os.environ (the per-gateway secret authenticates the
+        # outbound WS upgrade). Subsequent platforms share the same gatewayId +
+        # secret (the connector returns the same record for the same gatewayId).
+        # Never logged.
+        if "GATEWAY_RELAY_SECRET" not in os.environ or not os.environ.get("GATEWAY_RELAY_SECRET"):
+            os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
+            os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")
+            os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
+
+    if not provisioned:
+        logger.warning(
+            "relay self-provision failed for ALL platforms (%s); gateway will boot without relay auth",
+            ",".join(p for p, _ in identities),
         )
-    except RuntimeError as exc:
-        logger.warning("relay self-provision failed (%s); gateway will boot without relay auth", exc)
         return False
 
-    # Set creds in-process so register_relay_adapter() reads them from os.environ
-    # (the per-gateway secret authenticates the outbound WS upgrade). The delivery
-    # key is still issued by the connector and persisted for forward-compat, but
-    # inbound now rides the WS (no HTTP receiver), so it is not consumed here.
-    # Never logged.
-    os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
-    os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")
-    os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
     tenant = str(result.get("tenant") or "")
     logger.info(
-        "relay self-provisioned (gateway_id=%s tenant=%s routes=%d inbound=%s instance=%s)",
-        os.environ["GATEWAY_RELAY_ID"],
+        "relay self-provisioned (gateway_id=%s tenant=%s platforms=%s routes=%d inbound=%s instance=%s wake=%s)",
+        os.environ.get("GATEWAY_RELAY_ID", gateway_id),
         tenant or "?",
+        ",".join(provisioned),
         len(route_keys),
         "yes" if endpoint else "outbound-only",
         instance_id or "unbound",
+        "yes" if wake_url else "none",
     )
     return True
 
@@ -507,33 +642,50 @@ def send_relay_policy() -> bool:
         # be unauthenticated too, so there's no instance to attach a policy to).
         return False
 
-    policy = relay_relevance_policy()
-    if policy is None:
-        # Nothing non-default to declare ⇒ the connector's quiet default already
-        # matches; don't write a redundant row.
-        logger.info("relay policy: no non-default relevance config to declare; using connector default")
-        return False
-
+    # Phase 1.5: declare a policy PER fronted platform — the connector keys the
+    # relevance policy by (tenant, platform, instanceId), so each platform this
+    # gateway fronts gets its own row. Per-platform, partial-tolerant: a platform
+    # with nothing non-default to declare is skipped; a failed POST for one
+    # platform doesn't block the others. A single-platform gateway declares one
+    # policy exactly as before.
     try:
         from gateway.relay.auth import make_upgrade_token
 
         token = make_upgrade_token(gateway_id, secret)
-        status = _post_policy(policy_url=_policy_url(dial_url), token=token, policy=policy)
-    except Exception as exc:  # noqa: BLE001 - boot must survive a policy-declare failure
-        logger.warning("relay policy declaration failed (%s); connector keeps prior/default policy", exc)
+    except Exception as exc:  # noqa: BLE001 - boot must survive a token-build failure
+        logger.warning("relay policy declaration failed to build token (%s); connector keeps prior policy", exc)
         return False
 
-    if status == 200:
-        logger.info(
-            "relay policy declared (platform=%s require_address=%s free_scopes=%d allow_bots=%s)",
-            policy.get("platform"),
-            policy.get("requireAddress"),
-            len(policy.get("freeResponseScopes") or []),
-            policy.get("allowOtherBots"),
-        )
-        return True
-    logger.warning("relay policy declaration returned HTTP %s; connector keeps prior/default policy", status)
-    return False
+    any_declared = False
+    for platform, _bot_id in relay_platform_identities():
+        policy = relay_relevance_policy(platform)
+        if policy is None:
+            # Nothing non-default to declare for this platform ⇒ the connector's
+            # quiet default already matches; don't write a redundant row.
+            continue
+        try:
+            status = _post_policy(policy_url=_policy_url(dial_url), token=token, policy=policy)
+        except Exception as exc:  # noqa: BLE001 - boot must survive a policy-declare failure
+            logger.warning(
+                "relay policy declaration failed for platform=%s (%s); continuing", platform, exc
+            )
+            continue
+        if status == 200:
+            any_declared = True
+            logger.info(
+                "relay policy declared (platform=%s require_address=%s free_scopes=%d allow_bots=%s)",
+                policy.get("platform"),
+                policy.get("requireAddress"),
+                len(policy.get("freeResponseScopes") or []),
+                policy.get("allowOtherBots"),
+            )
+        else:
+            logger.warning(
+                "relay policy declaration for platform=%s returned HTTP %s; connector keeps prior/default policy",
+                platform,
+                status,
+            )
+    return any_declared
 
 
 def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bool:
@@ -582,8 +734,19 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
                 resolved_url,
                 platform,
                 bot_id,
+                # Phase 1.5: the full SET of (platform, bot_id) this gateway fronts.
+                # The transport sends one hello per identity (the connector
+                # accumulates them) and resolves the per-frame egress botId from
+                # this set. A single-platform deploy passes a 1-element list, so
+                # behaviour is byte-identical to before.
+                identities=relay_platform_identities(),
                 gateway_id=gateway_id,
                 upgrade_secret=upgrade_secret,
+                # Phase 5 §5.3: re-dial + re-handshake after an unexpected socket
+                # close so a gateway that went idle/suspended re-establishes its
+                # relay socket — which triggers the connector's buffered-flip drain
+                # (the delivery-leg onResume) on the new handshake.
+                reconnect=True,
             )
         return RelayAdapter(config, placeholder, transport=transport)
 

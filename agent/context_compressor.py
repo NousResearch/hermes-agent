@@ -19,6 +19,7 @@ Improvements over v2:
 import hashlib
 import json
 import logging
+import sqlite3
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -638,6 +639,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._last_summary_error = None
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
@@ -658,6 +660,104 @@ class ContextCompressor(ContextEngine):
         owning session ends.
         """
         self._previous_summary = None
+
+    def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
+        """Bind the current session row so durable cooldowns can round-trip."""
+        self._session_db = session_db
+        self._session_id = session_id or ""
+        self._summary_failure_cooldown_until = 0.0
+        self._last_summary_error = None
+        self.get_active_compression_failure_cooldown()
+
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        """Bind session-scoped compression state for a new or resumed session."""
+        super().on_session_start(session_id, **kwargs)
+        self.bind_session_state(kwargs.get("session_db", getattr(self, "_session_db", None)), session_id)
+
+    def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
+        """Return the live compression-failure cooldown for the bound session."""
+        now_mono = time.monotonic()
+        if self._summary_failure_cooldown_until > now_mono:
+            return {
+                "cooldown_until": time.time() + (
+                    self._summary_failure_cooldown_until - now_mono
+                ),
+                "remaining_seconds": self._summary_failure_cooldown_until - now_mono,
+                "error": self._last_summary_error,
+            }
+
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return None
+
+        getter = getattr(session_db, "get_compression_failure_cooldown", None)
+        if getter is None:
+            return None
+        try:
+            state = getter(session_id)
+        except sqlite3.Error as exc:
+            logger.debug("compression failure cooldown lookup failed: %s", exc)
+            return None
+        except Exception:
+            return None
+        if not state:
+            return None
+
+        remaining_seconds = float(state.get("remaining_seconds") or 0.0)
+        if remaining_seconds <= 0:
+            return None
+
+        self._summary_failure_cooldown_until = now_mono + remaining_seconds
+        self._last_summary_error = state.get("error")
+        return {
+            "cooldown_until": float(state.get("cooldown_until") or 0.0),
+            "remaining_seconds": remaining_seconds,
+            "error": self._last_summary_error,
+        }
+
+    def _record_compression_failure_cooldown(
+        self,
+        cooldown_seconds: float,
+        error: Optional[str],
+    ) -> None:
+        cooldown_until = time.time() + cooldown_seconds
+        self._summary_failure_cooldown_until = time.monotonic() + cooldown_seconds
+        self._last_summary_error = error
+
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return
+
+        recorder = getattr(session_db, "record_compression_failure_cooldown", None)
+        if recorder is None:
+            return
+        try:
+            recorder(session_id, cooldown_until, error)
+        except sqlite3.Error as exc:
+            logger.debug("compression failure cooldown persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
+
+    def _clear_compression_failure_cooldown(self) -> None:
+        self._summary_failure_cooldown_until = 0.0
+        self._last_summary_error = None
+
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return
+
+        clearer = getattr(session_db, "clear_compression_failure_cooldown", None)
+        if clearer is None:
+            return
+        try:
+            clearer(session_id)
+        except sqlite3.Error as exc:
+            logger.debug("compression failure cooldown clear failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
 
     def update_model(
         self,
@@ -863,6 +963,8 @@ class ContextCompressor(ContextEngine):
         self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
+        self._session_db: Any = None
+        self._session_id: str = ""
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
@@ -890,7 +992,15 @@ class ContextCompressor(ContextEngine):
         # This is independent of the abort_on_summary_failure config flag:
         # rotating on a broken credential is never the right behavior.
         self._last_summary_auth_failure: bool = False
-        # When a user-configured summary model fails and we recover by
+        # Set when summary generation ultimately fails due to a transient
+        # network/connection error (httpx/httpcore connection drop, premature
+        # stream close, etc.) — distinct from auth failures but treated the
+        # same way by compress(): ABORT and preserve the session unchanged
+        # rather than destroy the middle window for a deterministic
+        # "summary unavailable" marker. Retrying once the network recovers is
+        # strictly better than discarding context for a transient blip
+        # (#29559, #25585). Independent of abort_on_summary_failure.
+        self._last_summary_network_failure: bool = False
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
         # succeeded.  Silent recovery would hide the broken config.
@@ -1440,7 +1550,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self._last_aux_model_failure_error = _err_text
         self._last_aux_model_failure_model = self.summary_model
         self.summary_model = ""  # empty = use main model
-        self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
+        self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
     def _generate_summary(
         self,
@@ -1658,7 +1768,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             # retry (_generate_summary recursion) re-enters harmlessly.
             with aux_interrupt_protection():
                 response = call_llm(**call_kwargs)
-            content = response.choices[0].message.content
+            # ``_validate_llm_response`` only guarantees ``choices[0].message``
+            # exists, not that it's an object with ``.content``. Some
+            # OpenAI-compatible proxies / local backends return a dict- or
+            # str-shaped message; coerce defensively instead of crashing.
+            message = response.choices[0].message
+            if isinstance(message, dict):
+                content = message.get("content")
+            else:
+                content = getattr(message, "content", message)
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
@@ -1683,10 +1801,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary = redact_sensitive_text(content.strip())
             # Store for iterative updates on next compaction
             self._previous_summary = summary
-            self._summary_failure_cooldown_until = 0.0
+            self._clear_compression_failure_cooldown()
             self._summary_model_fallen_back = False
             self._last_summary_error = None
             self._last_summary_auth_failure = False
+            self._last_summary_network_failure = False
             return self._with_summary_prefix(summary)
         except Exception as e:
             # ``call_llm`` raises ``RuntimeError`` for two very different cases:
@@ -1702,7 +1821,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             # a main-model retry before any cooldown. (#11978, #11914)
             if isinstance(e, RuntimeError) and "no llm provider configured" in str(e).lower():
                 # No provider configured — long cooldown, unlikely to self-resolve
-                self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+                self._record_compression_failure_cooldown(
+                    _SUMMARY_FAILURE_COOLDOWN_SECONDS,
+                    "no auxiliary LLM provider configured",
+                )
                 self._last_summary_error = "no auxiliary LLM provider configured"
                 logger.warning("Context compression: no provider available for "
                                 "summary. Middle turns will be dropped without summary "
@@ -1814,11 +1936,20 @@ This compaction should PRIORITISE preserving all information related to the focu
             # streaming premature-close) — shorter cooldown for JSON decode and
             # streaming-closed since those conditions can self-resolve quickly.
             _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
-            self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
+            self._record_compression_failure_cooldown(_transient_cooldown, err_text)
             self._last_summary_error = err_text
+            # A terminal connection/network failure (we reach this branch only
+            # after any main-model fallback has already been tried or is
+            # unavailable). Flag it so compress() ABORTS and preserves the
+            # session unchanged instead of destroying the middle window for a
+            # placeholder marker — retrying once the network recovers is
+            # strictly better than dropping context (#29559, #25585). Mirrors
+            # the auth-failure carve-out; independent of abort_on_summary_failure.
+            if _is_streaming_closed:
+                self._last_summary_network_failure = True
             logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
@@ -2382,12 +2513,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
         self._last_summary_auth_failure = False
+        self._last_summary_network_failure = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
         # this, /compress would silently no-op for 30-60s after a failure.
-        if force and self._summary_failure_cooldown_until > 0.0:
-            self._summary_failure_cooldown_until = 0.0
+        if force:
+            self._clear_compression_failure_cooldown()
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
@@ -2498,15 +2630,21 @@ This compaction should PRIORITISE preserving all information related to the focu
         #           surface a warning.
         # Default is False (historical behavior).
         #
-        # EXCEPTION — auth failures always abort. A 401/403 from the summary
-        # call means the credential or endpoint is broken (invalid/blocked
-        # key, or a token pointed at the wrong inference host). Rotating into
+        # EXCEPTION — auth AND transient network failures always abort. A
+        # 401/403 from the summary call means the credential or endpoint is
+        # broken (invalid/blocked key, or a token pointed at the wrong
+        # inference host). A connection/stream-close error means the network
+        # blipped at the compaction moment (#29559). In BOTH cases rotating into
         # a child session with a placeholder summary on a broken credential
         # strands the user on a degraded session for zero benefit — every
         # subsequent call fails the same way. So when the failure was an auth
         # error we abort regardless of abort_on_summary_failure, preserving
         # the conversation unchanged until the credential is fixed.
-        if not summary and (self.abort_on_summary_failure or self._last_summary_auth_failure):
+        if not summary and (
+            self.abort_on_summary_failure
+            or self._last_summary_auth_failure
+            or self._last_summary_network_failure
+        ):
             n_skipped = compress_end - compress_start
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
@@ -2519,6 +2657,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                         "unchanged; the session was NOT rotated. Check your "
                         "provider credential / inference endpoint, then retry "
                         "with /compress or start fresh with /new.",
+                        n_skipped,
+                    )
+                elif self._last_summary_network_failure:
+                    logger.warning(
+                        "Summary generation failed with a network/connection "
+                        "error — aborting compression. %d message(s) preserved "
+                        "unchanged; the session was NOT rotated. This is "
+                        "transient: retry with /compress once connectivity "
+                        "recovers, or continue the conversation as-is.",
                         n_skipped,
                     )
                 else:

@@ -91,7 +91,11 @@ _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _PHOTON_RETRYABLE_PATTERNS = (
     "internal sidecar error",
     "upstream connect error",
+    "upstream unavailable",
+    "connection dropped",
     "reset reason: overflow",
+    "upstream_overflow",
+    "upstream_unavailable",
 )
 
 # Minimum seconds between typing-indicator calls for the same chat.
@@ -235,8 +239,10 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
         self._inbound_task: Optional[asyncio.Task] = None
+        self._sidecar_health_task: Optional[asyncio.Task] = None
         self._inbound_running = False
         self._http_client: Optional["httpx.AsyncClient"] = None
+        self._sidecar_health_interval = 15.0
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
         # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
@@ -328,7 +334,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Connection lifecycle ---------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not HTTPX_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_DEP", "httpx not installed", retryable=False
@@ -370,6 +376,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._inbound_task = asyncio.get_event_loop().create_task(
             self._inbound_loop()
         )
+        self._sidecar_health_task = asyncio.get_event_loop().create_task(
+            self._monitor_sidecar_health()
+        )
 
         self._mark_connected()
         logger.info(
@@ -380,6 +389,17 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._inbound_running = False
+        if self._sidecar_health_task is not None:
+            task = self._sidecar_health_task
+            self._sidecar_health_task = None
+            task.cancel()
+            if task is not asyncio.current_task():
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
         if self._inbound_task is not None:
             self._inbound_task.cancel()
             try:
@@ -440,6 +460,49 @@ class PhotonAdapter(BasePlatformAdapter):
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
+    async def _monitor_sidecar_health(self) -> None:
+        """Promote degraded upstream Photon stream health into reconnect.
+
+        The sidecar HTTP process can stay alive while spectrum-ts repeatedly
+        fails to maintain the upstream inbound gRPC stream. Polling `/healthz`
+        keeps that from becoming a silent inbound outage.
+        """
+        while self._inbound_running:
+            await asyncio.sleep(self._sidecar_health_interval)
+            if not self._inbound_running:
+                break
+            try:
+                data = await self._sidecar_call("/healthz", {})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("[photon] sidecar health check failed: %s", exc)
+                continue
+
+            stream = data.get("stream") if isinstance(data, dict) else None
+            if not isinstance(stream, dict) or stream.get("ok") is not False:
+                continue
+
+            state = str(stream.get("state") or "unknown")
+            degraded_for_ms = stream.get("degradedForMs")
+            last_issue = str(stream.get("lastIssue") or "unknown stream issue")
+            message = (
+                "Photon upstream stream degraded"
+                f" (state={state}, degradedForMs={degraded_for_ms}): "
+                f"{last_issue}"
+            )
+            logger.error("[photon] %s", message)
+            self._set_fatal_error(
+                "UPSTREAM_STREAM_DEGRADED",
+                message,
+                retryable=True,
+            )
+            try:
+                await self._notify_fatal_error()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("[photon] fatal-error notification failed: %s", exc)
+            break
+
     async def _on_inbound_line(self, line: str) -> None:
         try:
             event = json.loads(line)
@@ -487,7 +550,8 @@ class PhotonAdapter(BasePlatformAdapter):
                           "encoding"?}
                        | {"type": "reaction", "emoji": "❤️",
                           "targetMessageId": "..." | null,
-                          "targetDirection": "inbound"|"outbound" | null},
+                          "targetDirection": "inbound"|"outbound" | null,
+                          "targetText": "..." | null},
               "timestamp": "2026-05-14T19:06:32.000Z"
 
         Attachment and voice content carry the bytes inline as base64 ``data``
@@ -579,12 +643,22 @@ class PhotonAdapter(BasePlatformAdapter):
                 user_id=sender_id,
                 user_name=sender_id or None,
             )
+            # Correlate the tapback to the message it reacted to, so the agent
+            # sees WHAT was reacted to. `is_ours` above guarantees the target is
+            # one of the bot's own messages, so reply_to_is_own_message holds and
+            # the gateway injects `[Replying to your previous message: "..."]`.
+            # reply_to_text comes from the sidecar (hydrated reaction target);
+            # it's None for attachment/voice-only targets, and the gateway only
+            # injects the pointer when both id and text are present.
             await self.handle_message(
                 MessageEvent(
                     text=f"reaction:added:{emoji}",
                     message_type=MessageType.TEXT,
                     source=source,
                     message_id=event.get("messageId"),
+                    reply_to_message_id=target_id,
+                    reply_to_text=content.get("targetText") or None,
+                    reply_to_is_own_message=True,
                     raw_message=event,
                     timestamp=timestamp,
                 )

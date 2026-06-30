@@ -13,6 +13,7 @@ from pathlib import Path
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
+from hermes_constants import agent_browser_runnable
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -1201,6 +1202,46 @@ def run_doctor(args):
             count = cursor.fetchone()[0]
             conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+
+            # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
+            # even when the FTS index is corrupt and every message write fails
+            # through the triggers. `_db_opens_cleanly` now drives a rolled-back
+            # write so this otherwise-silent corruption class is surfaced (and
+            # repaired in place with --fix).
+            from hermes_state import _db_opens_cleanly, repair_state_db_schema
+
+            _write_reason = _db_opens_cleanly(state_db_path)
+            if _write_reason is not None:
+                check_warn(
+                    f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",
+                    f"({_write_reason})",
+                )
+                if should_fix:
+                    report = repair_state_db_schema(state_db_path)
+                    if report.get("repaired"):
+                        backup_name = (
+                            Path(report["backup_path"]).name
+                            if report.get("backup_path") else "n/a"
+                        )
+                        check_ok(
+                            "Repaired state.db FTS write health",
+                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn(
+                            "state.db FTS write-health repair did not recover automatically",
+                            f"({report.get('error')}; backup: {report.get('backup_path')})",
+                        )
+                        issues.append(
+                            "state.db FTS write corruption and auto-repair failed — "
+                            "restore from the backup copy beside state.db"
+                        )
+                else:
+                    issues.append(
+                        "state.db FTS write corruption — run 'hermes doctor --fix' "
+                        "(or 'hermes sessions repair') to rebuild the FTS index"
+                    )
         except Exception as e:
             from hermes_state import is_malformed_db_error, repair_state_db_schema
 
@@ -1483,12 +1524,21 @@ def run_doctor(args):
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         agent_browser_ok = False
+        _which_ab = shutil.which("agent-browser")
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
             agent_browser_ok = True
-        elif shutil.which("agent-browser"):
+        elif _which_ab and agent_browser_runnable(_which_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
+        elif _which_ab:
+            # Found on PATH but won't run — almost always a dangling global
+            # symlink left behind by agent-browser's npm postinstall after a
+            # `hermes update` wiped node_modules (issue #48521).
+            check_warn(
+                "agent-browser found but not runnable",
+                f"(broken symlink at {_which_ab}? run: npm install)",
+            )
         elif _is_termux():
             check_info("agent-browser is not installed (expected in the tested Termux path)")
             check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")

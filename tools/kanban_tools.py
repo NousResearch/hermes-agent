@@ -34,6 +34,7 @@ import os
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
+from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 
@@ -176,6 +177,27 @@ def _connect(board: Optional[str] = None):
     """
     from hermes_cli import kanban_db as kb
     return kb, kb.connect(board=board)
+
+
+def _goal_judge_available() -> bool:
+    """True when an auxiliary client is configured for the goal judge.
+
+    ``judge_goal`` is fail-open at the source: when no auxiliary model can
+    be reached it returns a ``"continue"`` verdict that is indistinguishable
+    from a real "not done yet" judgment. The completion gate must not treat
+    that as a rejection, or an unconfigured/degraded auxiliary model would
+    wedge every ``goal_mode`` worker (it could never close its own task).
+
+    So we probe availability first and only enforce the gate when a judge is
+    actually reachable. This mirrors the same client lookup ``judge_goal``
+    performs internally.
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception:
+        return False
+    return client is not None and bool(model)
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +343,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "tenant": task.tenant,
         "workspace_kind": task.workspace_kind,
         "workspace_path": task.workspace_path,
+        "project_id": task.project_id,
         "created_by": task.created_by,
         "created_at": task.created_at,
         "started_at": task.started_at,
@@ -566,6 +589,37 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Goal-mode pre-completion judge gate (Issue #38367).
+            # Prevent workers from bypassing the auxiliary judge by
+            # calling kanban_complete before acceptance criteria are met.
+            # Only enforce when a judge is actually reachable — see
+            # _goal_judge_available for why an unavailable judge fails open.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode and _goal_judge_available():
+                verdict = "done"
+                reason = ""
+                try:
+                    verdict, reason, _ = judge_goal(
+                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                        last_response=(summary or result or "").strip(),
+                    )
+                except Exception as judge_exc:
+                    # Defensive: judge_goal swallows its own errors, but if
+                    # it ever raises, fail open rather than wedge the worker.
+                    logger.warning(
+                        "goal judge check failed, allowing completion: %s",
+                        judge_exc,
+                        exc_info=True,
+                    )
+                if verdict != "done":
+                    return tool_error(
+                        f"Goal completion rejected by judge: {reason}. "
+                        f"To proceed, either: (1) provide explicit acceptance "
+                        f"evidence in your summary matching the task's criteria, "
+                        f"or (2) create continuation tasks with parents=[{tid}] "
+                        f"and keep this task alive."
+                    )
+
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -622,13 +676,20 @@ def _handle_block(args: dict, **kw) -> str:
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
     reason = redact_sensitive_text(str(reason), force=True)
+    kind = args.get("kind")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
+        if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
+            conn.close()
+            return tool_error(
+                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+            )
         try:
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
+                kind=kind,
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -637,7 +698,15 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            # Tell the worker where the task actually landed so it doesn't
+            # assume it's sitting in 'blocked' when routing sent it elsewhere.
+            landed = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else "blocked",
+                block_kind=kind,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -767,6 +836,7 @@ def _handle_create(args: dict, **kw) -> str:
     # fall back to scratch as before. Explicit None path stays None.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    project_id = args.get("project") or args.get("project_id")
     _inherit_workspace = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
@@ -807,6 +877,10 @@ def _handle_create(args: dict, **kw) -> str:
                     if _self_task is not None and _self_task.workspace_kind:
                         workspace_kind = _self_task.workspace_kind
                         workspace_path = _self_task.workspace_path
+                        # Keep follow-up children inside the same project so the
+                        # whole subtree shares one repo + branch convention.
+                        if project_id is None and _self_task.project_id:
+                            project_id = _self_task.project_id
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -817,6 +891,7 @@ def _handle_create(args: dict, **kw) -> str:
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                project_id=project_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
                 max_runtime_seconds=(
@@ -1185,11 +1260,16 @@ KANBAN_COMPLETE_SCHEMA = {
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
-        "Transition the task to blocked because you need human input "
-        "to proceed. ``reason`` will be shown to the human on the "
-        "board and included in context when someone unblocks you. "
-        "Use for genuine blockers only — don't block on things you can "
-        "resolve yourself."
+        "Stop work on this task and route it according to WHY you're stuck. "
+        "Set ``kind`` to say which: 'dependency' (waiting on another task — "
+        "goes to todo and auto-resumes when that task finishes, no human "
+        "needed), 'needs_input' (you need a human decision/answer), "
+        "'capability' (a hard wall: no access, missing credentials, an action "
+        "no agent can do), or 'transient' (a flaky failure that may clear). "
+        "``reason`` is shown to the human on the board. If a task keeps "
+        "getting unblocked and re-blocked for the same reason, it is "
+        "auto-escalated to triage. Use for genuine blockers only — don't "
+        "block on things you can resolve yourself."
     ),
     "parameters": {
         "type": "object",
@@ -1201,9 +1281,18 @@ KANBAN_BLOCK_SCHEMA = {
             "reason": {
                 "type": "string",
                 "description": (
-                    "What you need answered, in one or two sentences. "
-                    "Don't paste the whole conversation; the human has "
-                    "the board and can ask follow-ups via comments."
+                    "What you need answered or what stopped you, in one or "
+                    "two sentences. Don't paste the whole conversation; the "
+                    "human has the board and can ask follow-ups via comments."
+                ),
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["dependency", "needs_input", "capability", "transient"],
+                "description": (
+                    "Why you're blocked. 'dependency' waits in todo and "
+                    "resumes automatically; the others surface to a human. "
+                    "Omit only if none apply."
                 ),
             },
             "board": _board_schema_prop(),
@@ -1341,6 +1430,15 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Absolute path for 'dir' or 'worktree' workspace. "
                     "Relative paths are rejected at dispatch."
+                ),
+            },
+            "project": {
+                "type": "string",
+                "description": (
+                    "Optional project id or slug to link the task to. When "
+                    "set, the task becomes a git worktree under the project's "
+                    "primary repo with a deterministic branch (project slug + "
+                    "task id), instead of a random branch."
                 ),
             },
             "triage": {

@@ -3,22 +3,23 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
-import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
+import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $activeSessionId } from '@/store/session'
 import {
   $subagentsBySession,
+  allSubagents,
   buildSubagentTree,
   type SubagentNode,
   type SubagentStatus,
   type SubagentStreamEntry
 } from '@/store/subagents'
 
-import { OverlayView } from '../overlays/overlay-view'
+import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
@@ -77,29 +78,24 @@ interface AgentsViewProps {
 
 export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
-  const activeSessionId = useStore($activeSessionId)
   const subagentsBySession = useStore($subagentsBySession)
 
-  const activeSubagents = useMemo(
-    () => (activeSessionId ? (subagentsBySession[activeSessionId] ?? []) : []),
-    [activeSessionId, subagentsBySession]
-  )
-
-  const tree = useMemo(() => buildSubagentTree(activeSubagents), [activeSubagents])
+  // Aggregate every session, matching the status-bar indicator — a subagent
+  // running in a background session must still be visible here, or the two
+  // desync ("Agents N running" vs an empty tree).
+  const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
 
   return (
-    <OverlayView
-      closeLabel={t.agents.close}
-      contentClassName="px-5 pt-5 pb-4 sm:px-6"
-      onClose={onClose}
-      rootClassName="mx-auto max-w-3xl"
-    >
-      <header className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-foreground">{t.agents.title}</h2>
-        <p className="text-xs text-muted-foreground/80">{t.agents.subtitle}</p>
-      </header>
-      <SubagentTree tree={tree} />
-    </OverlayView>
+    <Panel closeLabel={t.agents.close} onClose={onClose}>
+      {tree.length === 0 ? (
+        <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} />
+      ) : (
+        <>
+          <PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} />
+          <SubagentTree tree={tree} />
+        </>
+      )}
+    </Panel>
   )
 }
 
@@ -212,7 +208,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   if (tree.length === 0) {
     return (
       <div className="grid place-items-center gap-3 py-12 text-center">
-        <Sparkles className="size-6 text-muted-foreground/60" />
+        <Codicon className="text-muted-foreground/60" name="hubot" size="1.5rem" />
         <p className="text-sm font-medium text-foreground/90">{t.agents.emptyTitle}</p>
         <p className="max-w-md text-xs leading-relaxed text-muted-foreground/75">{t.agents.emptyDesc}</p>
       </div>

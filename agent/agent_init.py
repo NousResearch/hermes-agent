@@ -106,7 +106,12 @@ def _custom_provider_extra_body_for_agent(
     base_url: str,
     custom_providers: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if (provider or "").strip().lower() != "custom":
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
         return None
 
     target_url = _normalized_custom_base_url(base_url)
@@ -117,6 +122,13 @@ def _custom_provider_extra_body_for_agent(
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
         extra_body = entry.get("extra_body")
@@ -707,6 +719,55 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.provider == "moa":
+        from agent.moa_loop import MoAClient
+        agent.api_mode = "chat_completions"
+
+        # Route reference-model outputs to the agent's tool_progress_callback so
+        # every surface that already consumes it (CLI spinner/scrollback, TUI,
+        # desktop, gateway) can show each reference's answer as a labelled block
+        # before the aggregator acts. The facade emits "moa.reference" and
+        # "moa.aggregating" events; we forward them through the same callback
+        # the tool lifecycle uses. Best-effort and cache-safe — these are
+        # display-only events, they never touch the message history.
+        def _moa_reference_relay(event: str, **kwargs: Any) -> None:
+            cb = getattr(agent, "tool_progress_callback", None)
+            if cb is None:
+                return
+            try:
+                if event == "moa.reference":
+                    label = str(kwargs.get("label") or "")
+                    text = str(kwargs.get("text") or "")
+                    idx = kwargs.get("index")
+                    count = kwargs.get("count")
+                    cb(
+                        "moa.reference",
+                        label,
+                        text,
+                        None,
+                        moa_index=idx,
+                        moa_count=count,
+                    )
+                elif event == "moa.aggregating":
+                    cb(
+                        "moa.aggregating",
+                        str(kwargs.get("aggregator") or ""),
+                        None,
+                        None,
+                        moa_ref_count=kwargs.get("ref_count"),
+                    )
+            except Exception:
+                pass
+
+        agent.client = MoAClient(
+            agent.model or "default",
+            reference_callback=_moa_reference_relay,
+        )
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "moa-virtual-provider"
+        agent.base_url = "moa://local"
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.
@@ -767,7 +828,7 @@ def init_agent(
                 client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)
             elif base_url_host_matches(effective_base, "api.routermint.com"):
                 client_kwargs["default_headers"] = _ra()._routermint_headers()
-            elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
+            elif base_url_host_matches(effective_base, "githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 
                 client_kwargs["default_headers"] = copilot_default_headers()
@@ -1246,6 +1307,12 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # Intent-ack continuation config: "auto" (default — codex_responses only,
+    # the historical gate), true (all api_modes), false (never), or a list of
+    # model-name substrings.  Resolved against the active api_mode/model in the
+    # conversation loop's intent-ack block.
+    agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement
@@ -1506,6 +1573,7 @@ def init_agent(
     # 3. Check general plugin system (user-installed plugins)
     # 4. Fall back to built-in ContextCompressor
     _selected_engine = None
+    _copy_failed = False
     _engine_name = "compressor"  # default
     try:
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
@@ -1523,15 +1591,35 @@ def init_agent(
 
         # Try general plugin system as fallback
         if _selected_engine is None:
+            _candidate = None
             try:
                 from hermes_cli.plugins import get_plugin_context_engine
                 _candidate = get_plugin_context_engine()
-                if _candidate and _candidate.name == _engine_name:
-                    _selected_engine = _candidate
             except Exception:
-                pass
+                _candidate = None
+            if _candidate is not None and _candidate.name == _engine_name:
+                # Deep-copy the shared plugin singleton so a child agent's
+                # update_model() can't mutate the parent's compressor (#42449).
+                # Copy can fail for engines holding uncopyable state (locks, DB
+                # connections, clients); in that case fall back to the built-in
+                # compressor with an ACCURATE message rather than silently
+                # mislabelling it "not found".
+                import copy
+                try:
+                    _selected_engine = copy.deepcopy(_candidate)
+                except Exception as _copy_err:
+                    _copy_failed = True
+                    _ra().logger.warning(
+                        "Context engine '%s' could not be safely copied for this "
+                        "agent (%s) — falling back to built-in compressor. Plugin "
+                        "engines that hold uncopyable state (locks, DB connections) "
+                        "should implement __deepcopy__ to copy only mutable budget "
+                        "state.",
+                        _engine_name, _copy_err,
+                    )
+                    _selected_engine = None
 
-        if _selected_engine is None:
+        if _selected_engine is None and not _copy_failed:
             _ra().logger.warning(
                 "Context engine '%s' not found — falling back to built-in compressor",
                 _engine_name,
@@ -1577,6 +1665,12 @@ def init_agent(
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
         )
+    _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
+    if callable(_bind_session_state):
+        try:
+            _bind_session_state(session_db=session_db, session_id=agent.session_id)
+        except Exception:
+            pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
 
@@ -1588,8 +1682,10 @@ def init_agent(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
             f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-            f"model.context_length in config.yaml to override."
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
+            f"reports a window smaller than the model's true window, set "
+            f"model.context_length in config.yaml to the real value "
+            f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
@@ -1621,16 +1717,27 @@ def init_agent(
             for t in agent.tools
             if isinstance(t, dict)
         }
-        for _schema in agent.context_compressor.get_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
+        from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
+        for _raw_schema in agent.context_compressor.get_tool_schemas():
+            _schema = _normalize_tool_schema(_raw_schema)
+            if _schema is None:
+                # A schema with no resolvable name (e.g. an already-wrapped
+                # entry) would append a nameless tool that strict providers
+                # 400 on, disabling the whole toolset (#47707). Skip it.
+                _ra().logger.warning(
+                    "Context engine returned a tool schema with no resolvable "
+                    "name; skipping to avoid poisoning the request (%r)",
+                    _raw_schema,
+                )
+                continue
+            _tname = _schema["name"]
+            if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
             _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                agent._context_engine_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
+            agent.valid_tool_names.add(_tname)
+            agent._context_engine_tool_names.add(_tname)
+            _existing_tool_names.add(_tname)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

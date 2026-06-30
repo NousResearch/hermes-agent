@@ -31,6 +31,7 @@ def _clean_env(monkeypatch):
         "GATEWAY_RELAY_PLATFORM",
         "GATEWAY_RELAY_BOT_ID",
         "GATEWAY_RELAY_INSTANCE_ID",
+        "GATEWAY_RELAY_WAKE_URL",
     ):
         monkeypatch.delenv(k, raising=False)
     # Never read config.yaml off disk in these tests.
@@ -253,6 +254,99 @@ def test_post_provision_body_includes_instanceId_only_when_set(monkeypatch):
         route_keys=[],
     )
     assert "instanceId" not in sent["body"]
+
+
+# ─────────────────── wake-url forwarding (Phase 5 Unit C) ───────────────────
+
+def test_relay_wake_url_from_env(monkeypatch):
+    monkeypatch.setenv("GATEWAY_RELAY_WAKE_URL", "  https://wake.example/poke  ")
+    assert relay.relay_wake_url() == "https://wake.example/poke"
+
+
+def test_relay_wake_url_absent_is_none():
+    assert relay.relay_wake_url() is None
+
+
+def test_relay_wake_url_from_config(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"gateway": {"relay_wake_url": "https://wake.from-config/poke"}},
+        raising=False,
+    )
+    assert relay.relay_wake_url() == "https://wake.from-config/poke"
+
+
+def test_forwards_wake_url_to_provision(monkeypatch):
+    """A suspendable agent stamped with GATEWAY_RELAY_WAKE_URL forwards it to the
+    connector so the connector can poke it awake when the first buffered event
+    lands on a flipped destination (Unit C wake primitive)."""
+    _arm(monkeypatch)
+    monkeypatch.setenv("GATEWAY_RELAY_WAKE_URL", "https://wake.example/poke")
+    captured: dict = {}
+    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
+
+    assert relay.self_provision_relay() is True
+    assert captured["wake_url"] == "https://wake.example/poke"
+
+
+def test_wake_url_absent_forwards_none(monkeypatch):
+    """No stamp (self-hosted / non-suspendable) -> wake_url None; the connector
+    stores null and simply never pokes (it can't wake what it can't reach)."""
+    _arm(monkeypatch)
+    captured: dict = {}
+    monkeypatch.setattr(relay, "_post_provision", _stub_post(captured))
+
+    assert relay.self_provision_relay() is True
+    assert captured["wake_url"] is None
+
+
+def test_post_provision_body_includes_wakeUrl_only_when_set(monkeypatch):
+    """The real _post_provision adds `wakeUrl` to the JSON body ONLY when a value
+    is supplied — omitting it lets the connector store null (back-compat)."""
+    import json
+
+    sent: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"secret": "a" * 64, "deliveryKey": "b" * 64, "tenant": "t", "gatewayId": "gw-1"}).encode()
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ANN001
+        sent["body"] = json.loads(req.data.decode())
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    # With a wake url -> present in the body.
+    relay._post_provision(
+        provision_url="https://c.example/relay/provision",
+        access_token="tok",
+        gateway_id="gw-1",
+        platform="discord",
+        bot_id="app",
+        gateway_endpoint=None,
+        route_keys=[],
+        wake_url="https://wake.example/poke",
+    )
+    assert sent["body"]["wakeUrl"] == "https://wake.example/poke"
+
+    # Without one -> the key is absent entirely (not "").
+    relay._post_provision(
+        provision_url="https://c.example/relay/provision",
+        access_token="tok",
+        gateway_id="gw-1",
+        platform="discord",
+        bot_id="app",
+        gateway_endpoint=None,
+        route_keys=[],
+    )
+    assert "wakeUrl" not in sent["body"]
 
 
 # ─────────────────────────── fail-soft ───────────────────────────

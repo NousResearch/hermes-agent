@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
-from utils import env_var_enabled
+from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 
@@ -68,6 +68,13 @@ try:
     import yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
+
+
+class PluginToolOverrideError(PermissionError):
+    """Raised when a plugin attempts to override a built-in tool without
+    operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override``.
+    """
+
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +143,17 @@ VALID_HOOKS: Set[str] = {
     "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
+    # Verification-loop gate. Fired once per turn when the agent has edited code
+    # and is about to verify/finish (after the verify-on-stop guard). A callback
+    # may keep the agent going — run a check, defer it, tidy the diff — instead
+    # of stopping by returning:
+    #   {"action": "continue", "message": "<follow-up instruction>"}
+    # The Claude-Code Stop shape {"decision": "block", "reason": "..."} (block
+    # the stop == keep going) is accepted too. Anything else lets the turn
+    # finish. Hermes' shipped guidance lives in the evidence-based
+    # verification-stop nudge; this hook is for user/plugin policy and is
+    # bounded by agent.max_verify_nudges.
+    "pre_verify",
     "pre_api_request",
     "post_api_request",
     "api_request_error",
@@ -306,6 +324,10 @@ class LoadedPlugin:
     commands_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
+    # True for a bundled platform plugin recorded as a deferred (not-yet-
+    # imported) loader. The module loads on first real use via the
+    # platform_registry; see PluginManager._register_deferred_platform.
+    deferred: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +405,24 @@ class PluginContext:
         same name (e.g. swap the default ``browser_navigate`` for a custom
         CDP-backed implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
+
+        ``override=True`` against a built-in tool requires the operator to
+        opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
+        in config.yaml — mirrors the trust gate pattern used for
+        ``ctx.llm`` provider/model overrides (#23194). Without that gate,
+        any enabled plugin could silently replace a privileged built-in
+        like ``shell_exec`` or ``write_file`` and exfiltrate everything
+        the model invokes through it.
         """
+        if override and not self._tool_override_allowed(name):
+            plugin_id = self.manifest.key or self.manifest.name
+            raise PluginToolOverrideError(
+                f"Plugin {self.manifest.name!r} cannot override built-in tool "
+                f"{name!r}. Set "
+                f"plugins.entries.{plugin_id}.allow_tool_override: true "
+                f"in config.yaml to allow this plugin to replace built-in tools."
+            )
+
         from tools.registry import registry
 
         registry.register(
@@ -403,6 +442,32 @@ class PluginContext:
             "Plugin %s registered tool: %s%s",
             self.manifest.name, name, " (override)" if override else "",
         )
+
+    # -- override trust gate ------------------------------------------------
+
+    def _tool_override_allowed(self, tool_name: str) -> bool:
+        """Return True if this plugin is configured to override built-in tools.
+
+        Bundled plugins (shipped with Hermes core) are trusted by default —
+        an override there is a deliberate maintainer choice, not a third-party
+        plugin trying to elevate privilege. For every other source, require
+        ``allow_tool_override: true`` under
+        ``plugins.entries.<plugin_id>`` in config.yaml.
+        """
+        source = getattr(self.manifest, "source", "") or ""
+        if source == "bundled":
+            return True
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception:
+            # If we can't load config, fail closed — better to break the
+            # override than silently grant it.
+            return False
+        plugin_id = self.manifest.key or self.manifest.name
+        entries = (cfg.get("plugins") or {}).get("entries") or {}
+        entry = entries.get(plugin_id) or {}
+        return bool(entry.get("allow_tool_override", False))
 
     # -- message injection --------------------------------------------------
 
@@ -1318,12 +1383,23 @@ class PluginManager:
             # just work. Selection among them (e.g. which image_gen backend
             # services calls) is driven by ``<category>.provider`` config,
             # enforced by the tool wrapper.
-            #
-            # Bundled platform plugins (gateway adapters like IRC) auto-load
-            # for the same reason: every platform Hermes ships must be
-            # available out of the box without the user having to opt in.
-            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
+            if manifest.source == "bundled" and manifest.kind == "backend":
                 self._load_plugin(manifest)
+                continue
+
+            # Bundled platform plugins (gateway adapters: telegram, discord,
+            # feishu, teams, ...) are registered LAZILY. Their modules import
+            # heavy, platform-specific SDKs at module level (lark_oapi,
+            # microsoft_teams, discord.py, slack_bolt, ...), so eagerly loading
+            # all ~20 of them added several seconds to every `hermes`
+            # invocation — including plain `hermes chat`, which never touches a
+            # gateway platform. Instead we register a cheap deferred loader in
+            # the platform_registry keyed on the platform name; the real module
+            # is imported only when the gateway / cron / setup / send_message
+            # path actually asks for that platform. Every platform Hermes ships
+            # remains available out of the box — it just loads on first use.
+            if manifest.source == "bundled" and manifest.kind == "platform":
+                self._register_deferred_platform(manifest)
                 continue
 
             # Everything else (standalone, user-installed backends,
@@ -1454,7 +1530,7 @@ class PluginManager:
             if yaml is None:
                 logger.warning("PyYAML not installed – cannot load %s", manifest_file)
                 return None
-            data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+            data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
 
             name = data.get("name", plugin_dir.name)
             key = f"{prefix}/{plugin_dir.name}" if prefix else name
@@ -1564,6 +1640,66 @@ class PluginManager:
     # Loading
     # -----------------------------------------------------------------------
 
+    def _platform_name_from_manifest(self, manifest: PluginManifest) -> str:
+        """Derive the gateway platform name (e.g. ``feishu``) for a platform plugin.
+
+        The platform name registered via ``register_platform(name=...)`` lives
+        inside the adapter module (which we are explicitly trying NOT to import
+        early). It is not carried in ``plugin.yaml``. Across every bundled
+        platform plugin the manifest name is ``<platform>-platform`` and the
+        plugin directory basename is ``<platform>``, so we derive the name
+        without importing: strip a trailing ``-platform`` from the manifest
+        name, falling back to the directory basename. This is also a sensible
+        convention for third-party platform plugins.
+        """
+        name = manifest.name or ""
+        if name.endswith("-platform"):
+            return name[: -len("-platform")]
+        if manifest.path:
+            return Path(manifest.path).name
+        return name
+
+    def _register_deferred_platform(self, manifest: PluginManifest) -> None:
+        """Register a lazy loader for a bundled platform plugin.
+
+        The platform adapter module is imported only when the gateway / cron /
+        setup / send_message path first asks the ``platform_registry`` for this
+        platform. Until then we record a lightweight ``LoadedPlugin`` so
+        ``hermes plugins list`` still shows the platform as available, and we
+        hand the registry a loader that runs the normal eager-load path.
+        """
+        lookup_key = manifest.key or manifest.name
+        platform_name = self._platform_name_from_manifest(manifest)
+
+        # Record an enabled placeholder for introspection (`hermes plugins
+        # list`). The real module load swaps in a fully-populated LoadedPlugin
+        # (tools/hooks/commands attribution) when the loader fires.
+        loaded = LoadedPlugin(manifest=manifest, enabled=True)
+        loaded.deferred = True
+        self._plugins[lookup_key] = loaded
+
+        def _loader(_manifest: PluginManifest = manifest) -> None:
+            self._load_plugin(_manifest)
+
+        try:
+            from gateway.platform_registry import platform_registry
+
+            platform_registry.register_deferred(platform_name, _loader)
+            logger.debug(
+                "Registered deferred platform loader: %s (plugin=%s)",
+                platform_name,
+                lookup_key,
+            )
+        except Exception:
+            # If the registry import fails for any reason, fall back to eager
+            # loading so the platform is never silently lost.
+            logger.debug(
+                "Deferred platform registration failed for '%s'; eager-loading",
+                lookup_key,
+                exc_info=True,
+            )
+            self._load_plugin(manifest)
+
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
         loaded = LoadedPlugin(manifest=manifest)
@@ -1572,6 +1708,13 @@ class PluginManager:
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
         )
 
+        from tools.registry import registry as _registry
+        _plugin_id = manifest.key or manifest.name
+        _slug = _plugin_id.replace("/", "__").replace("-", "_")
+        _registry.register_plugin_override_policy(
+            f"{_NS_PARENT}.{_slug}",
+            PluginContext(manifest, self)._tool_override_allowed(""),
+        )
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1639,7 +1782,6 @@ class PluginManager:
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
-
         self._plugins[manifest.key or manifest.name] = loaded
 
     def _load_directory_module(self, manifest: PluginManifest) -> types.ModuleType:
@@ -1950,6 +2092,57 @@ def get_pre_tool_call_block_message(
         message = result.get("message")
         if isinstance(message, str) and message:
             return message
+
+    return None
+
+
+def get_pre_verify_continue_message(
+    *,
+    session_id: str = "",
+    platform: str = "",
+    model: str = "",
+    coding: bool = False,
+    attempt: int = 0,
+    final_response: str = "",
+    changed_paths: Optional[List[str]] = None,
+) -> Optional[str]:
+    """Check user ``pre_verify`` hooks for a directive to keep the agent going.
+
+    Fired once per turn when the agent edited code and is about to verify/finish.
+    A hook keeps the turn going (run a check, defer it, tidy the diff) by
+    returning::
+
+        {"action": "continue", "message": "<follow-up for the model>"}
+
+    The Claude-Code Stop shape ``{"decision": "block", "reason": "..."}`` (block
+    the stop == keep going) is accepted too. The first directive carrying a
+    non-empty message wins; any other return lets the turn finish. Mirrors
+    :func:`get_pre_tool_call_block_message` — the call site stays a one-liner.
+
+    ``coding`` / ``attempt`` let a hook scope itself (``if not coding`` …) and
+    self-throttle (``if attempt`` …), the same way a ``pre_tool_call`` hook
+    scopes on ``tool_name``.
+    """
+    hook_results = invoke_hook(
+        "pre_verify",
+        session_id=session_id,
+        platform=platform,
+        model=model,
+        coding=coding,
+        attempt=attempt,
+        final_response=final_response,
+        changed_paths=list(changed_paths or []),
+    )
+
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        if action not in ("continue", "block"):
+            continue
+        message = result.get("message") or result.get("reason")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
 
     return None
 

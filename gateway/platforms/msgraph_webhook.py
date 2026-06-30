@@ -136,7 +136,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     def _source_allowlist_required_but_missing(self) -> bool:
         return is_network_accessible(self._host) and not self._allowed_source_networks
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if self._client_state is None:
             logger.error(
                 "[msgraph_webhook] Refusing to start without extra.client_state configured"

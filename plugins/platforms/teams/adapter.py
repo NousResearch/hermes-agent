@@ -709,7 +709,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
         # then re-check the module globals it rebinds.
         check_teams_requirements()

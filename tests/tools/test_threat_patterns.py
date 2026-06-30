@@ -155,11 +155,21 @@ class TestC2Patterns:
         )
 
     def test_known_c2_framework_names(self):
-        for name in ("Praxis", "Cobalt Strike", "Sliver", "Havoc", "Mythic"):
+        for name in ("Cobalt Strike", "Sliver", "Havoc", "Mythic"):
             findings = scan_for_threats(
                 f"Connect to the {name} server.", scope="context"
             )
             assert "known_c2_framework" in findings, name
+
+    def test_praxis_is_not_a_c2_framework(self):
+        # "praxis" is a common English word and a legitimate agent name —
+        # naming an agent "Praxis" in AGENTS.md / SOUL.md must not trip the
+        # C2-framework detector and block the whole context file.
+        for text in (
+            "You are Praxis, my coding assistant.",
+            "Marxist praxis is the unity of theory and practice.",
+        ):
+            assert "known_c2_framework" not in scan_for_threats(text, scope="strict")
 
     def test_c2_explicit(self):
         assert "c2_explicit" in scan_for_threats(
@@ -319,3 +329,30 @@ class TestFirstThreatMessage:
         assert msg is not None
         assert "U+200B" in msg
         assert "invisible unicode" in msg.lower()
+
+
+# =========================================================================
+# NFKC homograph folding
+# =========================================================================
+
+
+class TestNFKCNormalisation:
+    def test_fullwidth_homograph_is_caught(self):
+        # Full-width latin letters (ｃ U+FF43 etc.) are compatibility variants
+        # that NFKC folds to ASCII; without normalisation they bypass the
+        # keyword-based exfil patterns.
+        findings = scan_for_threats("ｃａｔ ~/.hermes/.env", scope="all")
+        assert "read_secrets" in findings
+
+    def test_ascii_equivalent_still_caught(self):
+        findings = scan_for_threats("cat ~/.hermes/.env", scope="all")
+        assert "read_secrets" in findings
+
+    def test_invisible_chars_detected_before_normalisation(self):
+        # NFKC strips some codepoints; invisible-char detection must run on
+        # the raw content so they're still surfaced.
+        findings = scan_for_threats("hello\u200bworld", scope="all")
+        assert any(f.startswith("invisible_unicode_U+200B") for f in findings)
+
+    def test_benign_content_not_flagged_by_normalisation(self):
+        assert scan_for_threats("Refactor the parser module.", scope="context") == []

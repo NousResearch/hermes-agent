@@ -274,6 +274,7 @@ let Spectrum,
   imessageRead,
   attachment,
   voice,
+  cloud,
   editContent,
   pollContent,
   replyContent,
@@ -281,12 +282,14 @@ let Spectrum,
   spectrumText,
   spectrumMarkdown,
   spectrumTyping,
-  imessageEffect;
+  imessageEffect,
+  advancedCreateClient;
 try {
   ({
     Spectrum,
     attachment,
     voice,
+    cloud,
     edit: editContent,
     poll: pollContent,
     reply: replyContent,
@@ -307,6 +310,14 @@ try {
       (e && e.stack ? e.stack : String(e))
   );
   process.exit(3);
+}
+
+try {
+  ({ createClient: advancedCreateClient } = await import(
+    "@photon-ai/advanced-imessage"
+  ));
+} catch {
+  advancedCreateClient = null;
 }
 
 const app = await Spectrum({
@@ -359,6 +370,73 @@ function phoneTargetFromSpaceId(spaceId) {
   if (E164_RE.test(spaceId)) return spaceId;
   const dmGuid = spaceId.match(DM_CHAT_GUID_RE);
   return dmGuid ? dmGuid[1] : null;
+}
+
+function advancedSpacePhone(space) {
+  const phone = String(space?.phone ?? "").trim();
+  return phone || phoneTargetFromSpaceId(space?.id) || undefined;
+}
+
+async function withAdvancedIMessageClient(space, fn) {
+  if (!advancedCreateClient) {
+    throw new Error(
+      "advanced iMessage poll actions require @photon-ai/advanced-imessage"
+    );
+  }
+  if (typeof cloud?.issueImessageTokens !== "function") {
+    throw new Error("advanced iMessage poll actions require cloud token support");
+  }
+  const tokenData = await cloud.issueImessageTokens(projectId, projectSecret);
+  const clients = [];
+  if (tokenData?.type === "shared") {
+    const address =
+      process.env.SPECTRUM_IMESSAGE_ADDRESS ?? "imessage.spectrum.photon.codes:443";
+    clients.push({
+      phone: "shared",
+      client: advancedCreateClient({
+        address,
+        tls: true,
+        token: async () => tokenData.token,
+      }),
+    });
+  } else {
+    const auth = tokenData?.auth ?? {};
+    const numbers = tokenData?.numbers ?? {};
+    for (const [instanceId, token] of Object.entries(auth)) {
+      const phone = String(numbers[instanceId] ?? "");
+      if (!phone) continue;
+      clients.push({
+        phone,
+        client: advancedCreateClient({
+          address: `${instanceId}.imsg.photon.codes:443`,
+          tls: true,
+          token: async () => String(token),
+        }),
+      });
+    }
+  }
+  if (clients.length === 0) {
+    throw new Error("could not create an advanced iMessage client");
+  }
+  const phone = advancedSpacePhone(space);
+  const entry =
+    clients.length === 1 || clients[0]?.phone === "shared"
+      ? clients[0]
+      : clients.find((candidate) => candidate.phone === phone);
+  if (!entry) {
+    throw new Error(
+      `could not find an advanced iMessage client for phone ${phone ?? "<unknown>"}`
+    );
+  }
+  try {
+    return await fn(entry.client);
+  } finally {
+    await Promise.allSettled(clients.map(({ client }) => client.close()));
+  }
+}
+
+function clientMessageId(prefix) {
+  return `${prefix || "photon"}-${crypto.randomUUID()}`;
 }
 
 function rememberInboundSpace(space, message) {
@@ -932,6 +1010,41 @@ const server = http.createServer(async (req, res) => {
         messageId: result?.id || null,
         question: question.trim(),
         optionCount: options.length,
+      });
+    }
+    if (
+      req.url === "/poll-add-option" ||
+      req.url === "/poll-vote" ||
+      req.url === "/poll-unvote"
+    ) {
+      if (!nativePollsEnabled) {
+        return badRequest(res, "native polls are disabled");
+      }
+      const { spaceId, pollMessageId, messageId } = body || {};
+      const targetPollId = pollMessageId || messageId;
+      if (!spaceId || !targetPollId) {
+        return badRequest(res, "spaceId and pollMessageId are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const pollState = await withAdvancedIMessageClient(space, (client) => {
+        const opts = { clientMessageId: clientMessageId(targetPollId) };
+        if (req.url === "/poll-add-option") {
+          const option = typeof body?.option === "string" ? body.option.trim() : "";
+          if (!option) return Promise.reject(new Error("option is required"));
+          return client.polls.addOption(targetPollId, option, opts);
+        }
+        if (req.url === "/poll-vote") {
+          const optionId =
+            typeof body?.optionId === "string" ? body.optionId.trim() : "";
+          if (!optionId) return Promise.reject(new Error("optionId is required"));
+          return client.polls.vote(targetPollId, optionId, opts);
+        }
+        return client.polls.unvote(targetPollId, opts);
+      });
+      return ok(res, {
+        pollMessageId: pollState?.pollMessageGuid || targetPollId,
+        optionCount: Array.isArray(pollState?.options) ? pollState.options.length : null,
+        voteCount: Array.isArray(pollState?.votes) ? pollState.votes.length : null,
       });
     }
     if (req.url === "/send-attachment") {

@@ -1,7 +1,7 @@
 """Native iMessage poll tests for PhotonAdapter.
 
-Poll creation is feature-gated and intentionally limited to creation only — no
-vote/add-option/poll-event mutation surface is exposed here.
+Polls are feature-gated. Hermes exposes creation plus the remaining explicit
+poll mutation helpers from OpenClaw: add option, vote, and unvote.
 """
 from __future__ import annotations
 
@@ -25,7 +25,11 @@ def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]
 
     async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         calls.append((path, body))
-        return {"ok": True, "messageId": "poll-msg-123"}
+        return {
+            "ok": True,
+            "messageId": "poll-msg-123",
+            "pollMessageId": body.get("pollMessageId", "poll-msg-123"),
+        }
 
     adapter._sidecar_call = _fake_call  # type: ignore[assignment]
     return calls
@@ -93,5 +97,95 @@ async def test_send_poll_posts_trimmed_creation_payload_and_tracks_id(
                 "question": "Tea?",
                 "options": ["Yes", "No"],
             },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_poll_option_posts_trimmed_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_NATIVE_POLLS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.add_poll_option("+155****4567", "poll-msg-123", " Maybe ")
+
+    assert result.success is True
+    assert result.message_id == "poll-msg-123"
+    assert calls == [
+        (
+            "/poll-add-option",
+            {
+                "spaceId": "+155****4567",
+                "pollMessageId": "poll-msg-123",
+                "option": "Maybe",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_poll_option_requires_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOTON_NATIVE_POLLS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.add_poll_option("+155****4567", "poll-msg-123", " ")
+
+    assert result.success is False
+    assert "option" in (result.error or "")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_vote_poll_posts_option_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOTON_NATIVE_POLLS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.vote_poll("+155****4567", "poll-msg-123", " option-1 ")
+
+    assert result.success is True
+    assert result.message_id == "poll-msg-123"
+    assert calls == [
+        (
+            "/poll-vote",
+            {
+                "spaceId": "+155****4567",
+                "pollMessageId": "poll-msg-123",
+                "optionId": "option-1",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_vote_poll_requires_option_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOTON_NATIVE_POLLS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.vote_poll("+155****4567", "poll-msg-123", " ")
+
+    assert result.success is False
+    assert "optionId" in (result.error or "")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_unvote_poll_posts_poll_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PHOTON_NATIVE_POLLS", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.unvote_poll("+155****4567", "poll-msg-123")
+
+    assert result.success is True
+    assert result.message_id == "poll-msg-123"
+    assert calls == [
+        (
+            "/poll-unvote",
+            {"spaceId": "+155****4567", "pollMessageId": "poll-msg-123"},
         )
     ]

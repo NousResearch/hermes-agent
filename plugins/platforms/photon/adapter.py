@@ -1301,6 +1301,73 @@ class PhotonAdapter(BasePlatformAdapter):
         self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
+    async def add_poll_option(
+        self,
+        chat_id: str,
+        poll_message_id: str,
+        option: str,
+    ) -> SendResult:
+        """Add an option to a native iMessage poll."""
+        if not self._native_polls_enabled:
+            return SendResult(success=False, error="Photon native polls are disabled")
+        clean_option = option.strip()
+        if not clean_option:
+            return SendResult(success=False, error="Photon poll option is required")
+        try:
+            data = await self._sidecar_call(
+                "/poll-add-option",
+                {
+                    "spaceId": chat_id,
+                    "pollMessageId": poll_message_id,
+                    "option": clean_option,
+                },
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=data.get("pollMessageId", poll_message_id))
+
+    async def vote_poll(
+        self,
+        chat_id: str,
+        poll_message_id: str,
+        option_id: str,
+    ) -> SendResult:
+        """Vote for an option in a native iMessage poll."""
+        if not self._native_polls_enabled:
+            return SendResult(success=False, error="Photon native polls are disabled")
+        clean_option_id = option_id.strip()
+        if not clean_option_id:
+            return SendResult(success=False, error="Photon poll optionId is required")
+        try:
+            data = await self._sidecar_call(
+                "/poll-vote",
+                {
+                    "spaceId": chat_id,
+                    "pollMessageId": poll_message_id,
+                    "optionId": clean_option_id,
+                },
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=data.get("pollMessageId", poll_message_id))
+
+    async def unvote_poll(
+        self,
+        chat_id: str,
+        poll_message_id: str,
+    ) -> SendResult:
+        """Remove this account's vote from a native iMessage poll."""
+        if not self._native_polls_enabled:
+            return SendResult(success=False, error="Photon native polls are disabled")
+        try:
+            data = await self._sidecar_call(
+                "/poll-unvote",
+                {"spaceId": chat_id, "pollMessageId": poll_message_id},
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=data.get("pollMessageId", poll_message_id))
+
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
     # Photon ships outbound attachments via spectrum-ts' `attachment()` /

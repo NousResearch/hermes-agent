@@ -695,6 +695,18 @@ textarea,
   user-select: text;
 }
 
+/* Mobile session rows: hide the kebab action button entirely. Desktop
+   exposes it as the per-row entry to the actions dropdown; on phone the
+   kebab is a 1.25rem icon that the 44pt tap-target rule was inflating
+   into a 44pt-tall right-edge strip, which routed mis-aimed row taps into
+   the dropdown menu where Pin sits as the first item — surfacing as "tap
+   pins". Long-press on the row body fires onPin directly (see
+   session-row.tsx); other actions live in a future swipe/sheet flow. */
+html.hermes-mobile-standalone [data-sidebar='sidebar'] [data-row-kebab],
+html.hermes-mobile-standalone [data-slot='sheet-content'] [data-row-kebab] {
+  display: none !important;
+}
+
 /* iOS loupe suppression on session rows. WebKit arms its text-selection
    magnifier on long-press anywhere it finds selectable text — defeating it
    by inheritance alone fails because deeper spans re-acquire user-select:text

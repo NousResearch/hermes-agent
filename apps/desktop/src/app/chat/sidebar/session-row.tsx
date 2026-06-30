@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 
 import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
@@ -92,9 +92,17 @@ export function SidebarSessionRow({
   // which a touch device can't produce). On mobile we also drop the Radix
   // ContextMenu wrapper so its long-press menu doesn't race the tap and let
   // the user accidentally hit "Pin" as the first item.
-  const mobileStandalone =
-    typeof window !== 'undefined' &&
-    Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__)
+  // Read both the global flag AND the html class — the flag is set in
+  // injectedJavaScriptBeforeContentLoaded but during HMR there's a window
+  // where a fresh module re-evaluates before main.tsx runs again. classList
+  // is set once at boot and never removed, so it's the more reliable gate.
+  const [mobileStandalone] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      (Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__) ||
+        (typeof document !== 'undefined' &&
+          document.documentElement.classList.contains('hermes-mobile-standalone')))
+  )
   const longPressTimer = useRef<number | null>(null)
   const longPressFired = useRef(false)
   const clearLongPress = () => {
@@ -138,6 +146,8 @@ export function SidebarSessionRow({
             <Button
               aria-label={r.actionsFor(title)}
               className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+              data-no-tap-min=""
+              data-row-kebab=""
               size="icon"
               title={r.sessionActions}
               variant="ghost"

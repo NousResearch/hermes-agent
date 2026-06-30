@@ -1,6 +1,7 @@
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { ArrowUp, iconSize, Pencil, Trash2 } from '@/lib/icons'
@@ -28,7 +29,10 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
   }
 
   return (
-    <StatusSection label={c.queued(entries.length)}>
+    <StatusSection
+      icon={<Codicon className="text-muted-foreground/70" name="layers" size="0.8rem" />}
+      label={c.queued(entries.length)}
+    >
       {entries.map(entry => {
         const isEditing = editingId === entry.id
         const attachmentsCount = entry.attachments.length

@@ -2312,7 +2312,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 def looks_like_codex_intermediate_ack(
     agent,
-    user_message: str,
+    user_message: Any,
     assistant_content: str,
     messages: List[Dict[str, Any]],
     require_workspace: bool = True,
@@ -2392,7 +2392,14 @@ def looks_like_codex_intermediate_ack(
     if not require_workspace:
         return True
 
-    user_text = (user_message or "").strip().lower()
+    # ``user_message`` is typed ``str`` but can arrive as an OpenAI-style
+    # multi-part content list (``[{type:"text",...}, {type:"image_url",...}]``)
+    # for vision requests routed through the OpenAI-compat API server. A
+    # truthy list survives ``(user_message or "")`` and then ``.strip()``
+    # raises ``AttributeError`` — flatten to text first.
+    from agent.codex_responses_adapter import _summarize_user_message_for_log
+
+    user_text = _summarize_user_message_for_log(user_message).strip().lower()
     user_targets_workspace = (
         any(marker in user_text for marker in workspace_markers)
         or "~/" in user_text

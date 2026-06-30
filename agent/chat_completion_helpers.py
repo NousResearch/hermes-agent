@@ -632,7 +632,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _ct = agent._get_transport()
         is_github_responses = (
             base_url_host_matches(agent.base_url, "models.github.ai")
-            or base_url_host_matches(agent.base_url, "api.githubcopilot.com")
+            or base_url_host_matches(agent.base_url, "githubcopilot.com")
         )
         is_codex_backend = (
             agent.provider == "openai-codex"
@@ -702,7 +702,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     _is_or = agent._is_openrouter_url()
     _is_gh = (
         base_url_host_matches(agent._base_url_lower, "models.github.ai")
-        or base_url_host_matches(agent._base_url_lower, "api.githubcopilot.com")
+        or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
     )
     _is_nous = "nousresearch" in agent._base_url_lower
     _is_nvidia = "integrate.api.nvidia.com" in agent._base_url_lower
@@ -2086,7 +2086,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             entry["function"]["arguments"] += tc_delta.function.arguments
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
-                        extra = (tc_delta.model_extra or {}).get("extra_content")
+                        extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
                     if extra is not None:
                         if hasattr(extra, "model_dump"):
                             extra = extra.model_dump()

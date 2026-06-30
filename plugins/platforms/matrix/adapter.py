@@ -2149,9 +2149,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """Read a local file and upload it."""
         p = Path(file_path).expanduser()
         if not p.exists():
-            return await self.send(
-                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            # file_path is a host-local path; never echo it into chat.
+            logger.warning(
+                "[%s] upload fallback: media file not found for %s",
+                self.name, file_path,
             )
+            text = f"{caption}\n⚠️ Couldn't deliver the attachment." if caption \
+                else "⚠️ Couldn't deliver the attachment."
+            return await self.send(room_id, text, reply_to)
         try:
             file_size = p.stat().st_size
         except OSError:

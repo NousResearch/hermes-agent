@@ -383,37 +383,46 @@ class GatewayKanbanWatchersMixin:
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
+                        # Per-subscription delivery mode:
+                        #   "notify"       -> passive adapter.send only (default)
+                        #   "notify+wake"  -> passive send AND wake the agent
+                        #   "wake"         -> wake the agent only, no passive send
+                        # Unknown / missing falls back to passive.
+                        mode = sub.get("delivery_mode") or "notify"
+                        send_passive = mode != "wake"
+                        wake_agent = mode in ("notify+wake", "wake")
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
-                            )
-                            logger.debug(
-                                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
-                            )
-                            # After delivering the text notification, surface
-                            # any artifact paths the worker referenced in
-                            # ``kanban_complete(summary=..., artifacts=[...])``
-                            # (or the legacy ``result`` field) as native
-                            # uploads. ``extract_local_files`` finds bare
-                            # absolute paths in the summary;
-                            # ``send_document`` / ``send_image_file`` uploads
-                            # them. Only fires on the ``completed`` event so
-                            # we never spam attachments on retries.
-                            if kind == "completed":
-                                try:
-                                    await self._deliver_kanban_artifacts(
-                                        adapter=adapter,
-                                        chat_id=sub["chat_id"],
-                                        metadata=metadata,
-                                        event_payload=getattr(ev, "payload", None),
-                                        task=task,
-                                    )
-                                except Exception as art_exc:
-                                    logger.debug(
-                                        "kanban notifier: artifact delivery for %s failed: %s",
-                                        sub["task_id"], art_exc,
-                                    )
+                            if send_passive:
+                                await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
+                                )
+                                logger.debug(
+                                    "kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                                    kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                                )
+                                # After delivering the text notification, surface
+                                # any artifact paths the worker referenced in
+                                # ``kanban_complete(summary=..., artifacts=[...])``
+                                # (or the legacy ``result`` field) as native
+                                # uploads. ``extract_local_files`` finds bare
+                                # absolute paths in the summary;
+                                # ``send_document`` / ``send_image_file`` uploads
+                                # them. Only fires on the ``completed`` event so
+                                # we never spam attachments on retries.
+                                if kind == "completed":
+                                    try:
+                                        await self._deliver_kanban_artifacts(
+                                            adapter=adapter,
+                                            chat_id=sub["chat_id"],
+                                            metadata=metadata,
+                                            event_payload=getattr(ev, "payload", None),
+                                            task=task,
+                                        )
+                                    except Exception as art_exc:
+                                        logger.debug(
+                                            "kanban notifier: artifact delivery for %s failed: %s",
+                                            sub["task_id"], art_exc,
+                                        )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
                         except Exception as exc:
@@ -445,6 +454,41 @@ class GatewayKanbanWatchersMixin:
                             # a later tick can retry. After too many failures,
                             # dropping the subscription is the terminal action.
                             break
+                        # Active wake: forge a synthetic inbound event so the
+                        # destination gateway agent takes a real turn and replies
+                        # in its own voice. Best-effort and must not break the
+                        # loop: a wake failure must not rewind the cursor, or a
+                        # wake-only sub (which has no passive fallback) would
+                        # re-wake on every tick.
+                        if wake_agent:
+                            try:
+                                from tools.send_message_tool import _trigger_gateway_agent
+                                trigger_result = await _trigger_gateway_agent(
+                                    platform_str,
+                                    sub["chat_id"],
+                                    msg,
+                                    thread_id=sub.get("thread_id") or None,
+                                    # Replay the originating source so the woken
+                                    # turn keys to the operator's real channel.
+                                    chat_type=sub.get("chat_type") or None,
+                                    user_id=sub.get("user_id") or None,
+                                )
+                                if trigger_result.get("triggered_agent"):
+                                    logger.debug(
+                                        "kanban notifier: active wake scheduled for %s to %s/%s",
+                                        sub["task_id"], platform_str, sub["chat_id"],
+                                    )
+                                else:
+                                    logger.warning(
+                                        "kanban notifier: active wake failed for %s to %s/%s: %s",
+                                        sub["task_id"], platform_str, sub["chat_id"],
+                                        trigger_result.get("trigger_error", "unknown trigger failure"),
+                                    )
+                            except Exception as trigger_exc:
+                                logger.warning(
+                                    "kanban notifier: active wake exception for %s to %s/%s: %s",
+                                    sub["task_id"], platform_str, sub["chat_id"], trigger_exc,
+                                )
                     else:
                         # All events delivered; advance cursor. The cursor
                         # is the dedup mechanism — it prevents re-delivery

@@ -3097,3 +3097,140 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestTriggerGatewayAgentWake:
+    """Unit tests for the active-wake primitive ``_trigger_gateway_agent``
+    (backs the Kanban delivery_mode ``notify+wake`` / ``wake`` feature)."""
+
+    def test_active_wake_not_exposed_in_send_message_schema(self):
+        """Active wake must never be model-exposed: only the gateway/CLI
+        control plane reaches _trigger_gateway_agent, so an LLM can't loop a
+        wake on itself via send_message."""
+        from tools.send_message_tool import SEND_MESSAGE_SCHEMA
+
+        properties = SEND_MESSAGE_SCHEMA["parameters"]["properties"]
+        assert "trigger_agent" not in properties
+
+    @pytest.mark.asyncio
+    async def test_missing_inputs_return_structured_error(self):
+        from tools.send_message_tool import _trigger_gateway_agent
+
+        assert (await _trigger_gateway_agent("telegram", "", "hi")).get("trigger_error")
+        assert (await _trigger_gateway_agent("telegram", "chat1", "")).get("trigger_error")
+
+    @pytest.mark.asyncio
+    async def test_no_live_gateway_returns_structured_error(self):
+        """Outside a live gateway process the helper must degrade gracefully to
+        a structured trigger_error (never raise), so the notifier's best-effort
+        wake branch can just log and advance the cursor."""
+        from tools.send_message_tool import _trigger_gateway_agent
+
+        with patch("gateway.run._gateway_runner_ref", new=lambda: None):
+            result = await _trigger_gateway_agent("telegram", "chat1", "hi")
+        assert result == {"trigger_error": "no live gateway runner in this process"}
+
+    @pytest.mark.asyncio
+    async def test_wake_task_retained_in_background_tasks(self):
+        """The scheduled wake task must be retained in ``runner._background_tasks``
+        so asyncio can't garbage-collect it mid-run and silently drop the wake.
+        It must also auto-discard via its done callback once it finishes."""
+        from tools.send_message_tool import _trigger_gateway_agent
+
+        handled = asyncio.Event()
+
+        class _FakeAdapter:
+            async def handle_message(self, event):
+                handled.set()
+
+        loop = asyncio.get_running_loop()
+
+        class _FakeRunner:
+            def __init__(self):
+                self.adapters = {Platform.TELEGRAM: _FakeAdapter()}
+                # We're already on the gateway loop in this test, so the
+                # direct ``loop.create_task`` branch is exercised.
+                self._gateway_loop = loop
+                self._background_tasks: set = set()
+
+        runner = _FakeRunner()
+        with patch("gateway.run._gateway_runner_ref", new=lambda: runner):
+            result = await _trigger_gateway_agent("telegram", "chat1", "hi")
+
+        assert result == {"triggered_agent": True}
+        # Retained synchronously (strong ref held) — not left to GC.
+        assert len(runner._background_tasks) == 1
+
+        # The wake actually runs, and the done callback discards the task.
+        await asyncio.wait_for(handled.wait(), timeout=1)
+        for _ in range(20):
+            if not runner._background_tasks:
+                break
+            await asyncio.sleep(0)
+        assert runner._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_wake_source_resolves_to_originating_session_key(self):
+        """The forged event's source must resolve to the SAME session key as the
+        operator's originating channel, for both DM and group shapes, so a woken
+        turn reuses the real session instead of a parallel one."""
+        from tools.send_message_tool import _trigger_gateway_agent
+        from gateway.session import SessionSource, build_session_key
+
+        captured: list = []
+
+        class _CaptureAdapter:
+            async def handle_message(self, event):
+                captured.append(event)
+
+        loop = asyncio.get_running_loop()
+
+        class _FakeRunner:
+            def __init__(self):
+                self.adapters = {Platform.TELEGRAM: _CaptureAdapter()}
+                self._gateway_loop = loop
+                self._background_tasks: set = set()
+
+        runner = _FakeRunner()
+
+        # (originating source, kwargs the watcher forwards from the sub)
+        cases = [
+            # DM: build_session_key uses chat_id, not user_id.
+            (
+                SessionSource(
+                    platform=Platform.TELEGRAM, chat_id="dm-123",
+                    chat_type="dm", user_id="op-7",
+                ),
+                {"chat_type": "dm", "user_id": "op-7"},
+            ),
+            # Group: the key includes the real participant user_id.
+            (
+                SessionSource(
+                    platform=Platform.TELEGRAM, chat_id="grp-9",
+                    chat_type="group", user_id="op-42",
+                ),
+                {"chat_type": "group", "user_id": "op-42"},
+            ),
+        ]
+
+        for original, kw in cases:
+            captured.clear()
+            with patch("gateway.run._gateway_runner_ref", new=lambda: runner):
+                result = await _trigger_gateway_agent(
+                    "telegram", original.chat_id, "task done", **kw,
+                )
+            assert result == {"triggered_agent": True}
+
+            for _ in range(20):
+                if captured:
+                    break
+                await asyncio.sleep(0)
+            assert captured, "wake task did not run"
+
+            woke = captured[0].source
+            assert captured[0].internal is True
+            assert woke.chat_type == original.chat_type
+            assert woke.user_id == original.user_id
+            assert build_session_key(woke) == build_session_key(original)
+            # Never a synthetic placeholder user_id.
+            assert woke.user_id != "hermes-internal-trigger"

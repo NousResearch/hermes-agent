@@ -354,9 +354,11 @@ class TestCliApprovalUi:
             chat_console.return_value.print = MagicMock()
             cli._handle_background_command("/btw check weather")
 
-            deadline = time.time() + 2
-            while cli._background_tasks and time.time() < deadline:
-                time.sleep(0.01)
+            # Join the worker thread deterministically rather than polling a
+            # wall-clock deadline — under load the thread's finally-block pop
+            # of _background_tasks can lag a fixed timeout, which flaked CI.
+            for _thread in list(cli._background_tasks.values()):
+                _thread.join(timeout=10)
 
         assert seen["approval"].__self__ is cli
         assert seen["approval"].__func__ is HermesCLI._approval_callback

@@ -17,16 +17,13 @@ import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-d
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
-  clearComposerAttachments,
-  clearSessionDraft,
-  type ComposerAttachment
+  clearComposerAttachments
 } from '@/store/composer'
 import {
   browseBackward,
@@ -43,10 +40,7 @@ import {
   setComposerPopoutPosition,
   setComposerPoppedOut
 } from '@/store/composer-popout'
-import {
-  enqueueQueuedPrompt,
-  removeQueuedPrompt
-} from '@/store/composer-queue'
+import { removeQueuedPrompt } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
@@ -60,7 +54,6 @@ import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
 import {
-  cloneAttachments,
   COMPLETION_ACTIONS,
   COMPOSER_FADE_BACKGROUND,
   pickPlaceholder,
@@ -72,13 +65,14 @@ import {
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerSubmitRequest } from './focus'
+import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerQueue } from './hooks/use-composer-queue'
+import { useComposerSubmit } from './hooks/use-composer-submit'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
@@ -270,6 +264,34 @@ export function ChatBar({
   const canSteer = busy && !!onSteer && attachments.length === 0 && isSteerableText
 
   const showHelpHint = isHelpHint
+
+  // The submit engine — the orchestration seam where draft + queue meet. Owns
+  // the submit decision tree, the send-with-restore primitive, and steer.
+  const { steerDraft, submitDraft } = useComposerSubmit({
+    activeQueueSessionKey,
+    activeQueueSessionKeyRef,
+    attachments,
+    busy,
+    canSteer,
+    clearDraft,
+    disabled,
+    draftRef,
+    drainNextQueued,
+    editorRef,
+    exitQueuedEdit,
+    focusInput,
+    inputDisabled,
+    loadIntoComposer,
+    onCancel,
+    onSteer,
+    onSubmit,
+    queueCurrentDraft,
+    queueEdit,
+    queuedPrompts,
+    sessionId,
+    setComposerText,
+    stashAt
+  })
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -993,26 +1015,6 @@ export function ChatBar({
     [cwd]
   )
 
-  // Steer the live turn (nudge without interrupting). Clears the draft up front
-  // for snappy feedback; if the gateway rejects (no live tool window) the words
-  // are re-queued so nothing is lost — same safety net as a plain queue.
-  const steerDraft = useCallback(() => {
-    if (!onSteer || !canSteer) {
-      return
-    }
-
-    const text = draftRef.current.trim()
-
-    triggerHaptic('submit')
-    clearDraft()
-
-    void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
-      }
-    })
-  }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
-
   // Esc cancels the in-flight turn when the CHAT has focus — not just the
   // composer input (which has its own handler above). Clicking into the
   // transcript and hitting Esc now stops the run, matching the Stop button.
@@ -1052,99 +1054,6 @@ export function ChatBar({
 
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
-
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
-    const submittedScope = activeQueueSessionKeyRef.current
-    const submittedAttachments = attachments ?? []
-
-    const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
-    }
-
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
-      .catch(restore)
-  }
-
-  // External "submit this prompt" requests (e.g. the review pane's agent-ship
-  // button) route through the same send path. A ref keeps the listener stable
-  // while always calling the latest dispatchSubmit closure.
-  const dispatchSubmitRef = useRef(dispatchSubmit)
-  dispatchSubmitRef.current = dispatchSubmit
-
-  useEffect(
-    () =>
-      onComposerSubmitRequest(({ target, text }) => {
-        if (target === 'main' && !inputDisabled) {
-          dispatchSubmitRef.current(text)
-        }
-      }),
-    [inputDisabled]
-  )
-
-  const submitDraft = () => {
-    if (disabled) {
-      return
-    }
-
-    // Source the text from the DOM editor, not React state. The AUI composer
-    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
-    // render, so on fast typing or IME composition the final keystroke(s) may
-    // not have synced yet — reading state here drops the message (Enter looks
-    // like it does nothing; typing a trailing space only "fixes" it because the
-    // extra input event forces a state sync). draftRef is updated on every
-    // input event; refresh it from the editor once more to also cover an
-    // in-flight keystroke that hasn't fired its input event yet.
-    const editor = editorRef.current
-
-    if (editor) {
-      const domText = composerPlainText(editor)
-
-      if (domText !== draftRef.current) {
-        draftRef.current = domText
-        setComposerText(domText)
-      }
-    }
-
-    const text = draftRef.current
-    const payloadPresent = text.trim().length > 0 || attachments.length > 0
-
-    if (queueEdit) {
-      exitQueuedEdit('save')
-    } else if (busy) {
-      // Slash commands should execute immediately even while the agent is
-      // busy — they're client-side operations (/yolo, /skin, /new, /help,
-      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
-      // routes them to executeSlashCommand, which has its own per-command
-      // busy guard for commands that genuinely need an idle session (skill
-      // /send directives).  Queuing them would make every slash command wait
-      // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
-        triggerHaptic('submit')
-        clearDraft()
-        dispatchSubmit(text)
-      } else if (payloadPresent) {
-        queueCurrentDraft()
-      } else {
-        // Stop button (the only way to reach here while busy with an empty
-        // composer — empty Enter is short-circuited in the keydown handler).
-        triggerHaptic('cancel')
-        void Promise.resolve(onCancel())
-      }
-    } else if (!payloadPresent && queuedPrompts.length > 0) {
-      void drainNextQueued()
-    } else if (payloadPresent) {
-      const submittedAttachments = cloneAttachments(attachments)
-      triggerHaptic('submit')
-      resetBrowseState(sessionId)
-      clearDraft()
-      clearComposerAttachments()
-      dispatchSubmit(text, submittedAttachments)
-    }
-
-    focusInput()
-  }
 
   const submitUrl = () => {
     const url = urlValue.trim()

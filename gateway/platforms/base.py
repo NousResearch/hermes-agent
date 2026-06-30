@@ -5329,8 +5329,13 @@ class BasePlatformAdapter(ABC):
                 stripped = line.strip()
                 if stripped.startswith("```"):
                     if in_code:
-                        in_code = False
-                        lang = ""
+                        # CommonMark: a closing code fence must have only
+                        # whitespace after the backticks.  A line like
+                        # ```` ``` not a close ```` is ordinary code content.
+                        after_backticks = stripped[3:]
+                        if not after_backticks or after_backticks.isspace():
+                            in_code = False
+                            lang = ""
                     else:
                         in_code = True
                         tag = stripped[3:].strip()

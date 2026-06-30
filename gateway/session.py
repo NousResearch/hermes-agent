@@ -901,6 +901,7 @@ class SessionStore:
             return
 
         stale_keys: list = []
+        recovered_keys = 0
         try:
             for key, entry in self._entries.items():
                 row = db.get_session(entry.session_id)
@@ -908,6 +909,43 @@ class SessionStore:
                 # end_reason is None  -> session alive — keep
                 # end_reason not None -> session ended — prune
                 if row is not None and row.get("end_reason") is not None:
+                    recovered_entry = None
+                    if entry.origin is not None:
+                        try:
+                            recovered_entry = self._recover_session_from_db(
+                                session_key=key,
+                                source=entry.origin,
+                                now=_now(),
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "gateway.session: recovery lookup failed for stale "
+                                "sessions.json entry %r -> %s: %s",
+                                key,
+                                entry.session_id,
+                                exc,
+                            )
+
+                    # If the stale entry points at a compression-ended parent but
+                    # a newer live child session exists for the exact same gateway
+                    # peer, repoint the routing index instead of dropping it. A
+                    # hard restart between compression rotation and the next clean
+                    # save otherwise leaves Telegram with no resumable mapping, so
+                    # queued/resume-pending work disappears until the user sends a
+                    # fresh message.
+                    if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
+                        logger.warning(
+                            "gateway.session: repointing stale sessions.json entry "
+                            "%r from ended %s (end_reason=%r) to recovered %s",
+                            key,
+                            entry.session_id,
+                            row["end_reason"],
+                            recovered_entry.session_id,
+                        )
+                        self._entries[key] = recovered_entry
+                        recovered_keys += 1
+                        continue
+
                     logger.warning(
                         "gateway.session: pruning stale sessions.json entry "
                         "%r -> %s (end_reason=%r); left by a crashed gateway",
@@ -924,7 +962,7 @@ class SessionStore:
         for key in stale_keys:
             del self._entries[key]
 
-        if stale_keys:
+        if stale_keys or recovered_keys:
             self._save()
 
     def _save(self) -> None:

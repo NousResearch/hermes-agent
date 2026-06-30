@@ -10499,6 +10499,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
                 self.session_store._save()
+                self.session_store._record_gateway_session_peer(
+                    session_entry.session_id,
+                    session_key,
+                    source,
+                )
                 await asyncio.to_thread(
                     self._sync_telegram_topic_binding,
                     source, session_entry, reason="agent-result-compression",
@@ -17044,6 +17049,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if entry:
                     entry.session_id = agent_session_id
                     self.session_store._save()
+                    self.session_store._record_gateway_session_peer(
+                        agent_session_id,
+                        session_key,
+                        source,
+                    )
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it

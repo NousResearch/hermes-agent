@@ -248,3 +248,104 @@ class TestAuthCredentialPoolFallback:
         assert key == "sk-dotenv-priority-xyz"
         assert source == "DEEPSEEK_API_KEY"
         mp.assert_not_called()
+
+
+class TestCopilotCredentialPoolFallback:
+    """For provider_id='copilot', the pool fallback must also fire when the
+    dedicated copilot resolver (env vars + `gh auth token`) yields nothing.
+
+    Without this, auxiliary tasks (compression, vision, session_search)
+    silently fail for users whose only Copilot credential lives in the
+    credential pool — even though the main agent loop happily uses the
+    same pool entry for chat.
+    """
+
+    def test_copilot_pool_fallback_when_resolve_token_empty(self, isolated_hermes_home):
+        # Strip env vars consulted by resolve_copilot_token().
+        for v in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            os.environ.pop(v, None)
+
+        mock_entry = MagicMock()
+        mock_entry.access_token = "github_pat_11ABCDEFGHIJ_pool_token_xyz"
+        mock_entry.runtime_api_key = ""
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        mock_pool.peek.return_value = mock_entry
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret, PROVIDER_REGISTRY
+        with patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("", ""),
+        ), patch(
+            "agent.credential_pool.load_pool", return_value=mock_pool,
+        ), patch(
+            "hermes_cli.copilot_auth.get_copilot_api_token",
+            side_effect=lambda t: t,
+        ), patch(
+            "hermes_cli.copilot_auth.validate_copilot_token",
+            return_value=(True, "OK"),
+        ):
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="copilot",
+                pconfig=PROVIDER_REGISTRY["copilot"],
+            )
+
+        assert key == "github_pat_11ABCDEFGHIJ_pool_token_xyz"
+        assert source == "credential_pool:copilot"
+
+    def test_copilot_pool_skipped_when_classic_pat(self, isolated_hermes_home):
+        """Classic PATs (ghp_*) are unsupported by the Copilot API → pool
+        entry must be rejected rather than returned."""
+        for v in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            os.environ.pop(v, None)
+
+        mock_entry = MagicMock()
+        mock_entry.access_token = "ghp_classic_pat_unsupported"
+        mock_entry.runtime_api_key = ""
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        mock_pool.peek.return_value = mock_entry
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret, PROVIDER_REGISTRY
+        with patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("", ""),
+        ), patch(
+            "agent.credential_pool.load_pool", return_value=mock_pool,
+        ):
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="copilot",
+                pconfig=PROVIDER_REGISTRY["copilot"],
+            )
+
+        assert key == ""
+        assert source == ""
+
+    def test_copilot_resolve_token_takes_priority_over_pool(self, isolated_hermes_home):
+        """When resolve_copilot_token() succeeds, the pool must NOT be touched."""
+        for v in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            os.environ.pop(v, None)
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+
+        from hermes_cli.auth import _resolve_api_key_provider_secret, PROVIDER_REGISTRY
+        with patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("gho_env_token", "GH_TOKEN"),
+        ), patch(
+            "hermes_cli.copilot_auth.get_copilot_api_token",
+            side_effect=lambda t: t,
+        ), patch(
+            "agent.credential_pool.load_pool", return_value=mock_pool,
+        ) as mp:
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="copilot",
+                pconfig=PROVIDER_REGISTRY["copilot"],
+            )
+
+        assert key == "gho_env_token"
+        assert source == "GH_TOKEN"
+        mp.assert_not_called()

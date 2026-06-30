@@ -574,6 +574,40 @@ def _resolve_api_key_provider_secret(
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
             pass
+
+        # Fallback: credential pool (e.g. token stored via `hermes login copilot`
+        # or seeded into auth.json by setup).  Without this, auxiliary tasks
+        # (compression, vision, session_search) silently fail for users whose
+        # only Copilot credential lives in the credential pool — even though
+        # the main agent loop happily uses the same pool entry for chat.
+        try:
+            from agent.credential_pool import load_pool
+            from hermes_cli.copilot_auth import (
+                get_copilot_api_token,
+                validate_copilot_token,
+            )
+            pool = load_pool(provider_id)
+            if pool and pool.has_credentials():
+                entry = pool.peek()
+                if entry:
+                    raw = (
+                        getattr(entry, "access_token", "")
+                        or getattr(entry, "runtime_api_key", "")
+                    )
+                    raw = str(raw).strip()
+                    if has_usable_secret(raw):
+                        valid, msg = validate_copilot_token(raw)
+                        if valid:
+                            return (
+                                get_copilot_api_token(raw),
+                                f"credential_pool:{provider_id}",
+                            )
+                        logger.debug(
+                            "Copilot credential pool entry rejected: %s", msg
+                        )
+        except Exception:
+            pass
+
         return "", ""
 
     from hermes_cli.config import get_env_value_prefer_dotenv

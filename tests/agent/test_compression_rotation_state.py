@@ -636,3 +636,170 @@ class TestCooldownPersistFailureIsNotAClearedRow:
             side_effect=AssertionError("nothing durable to refresh"),
         ):
             assert compressor._automatic_compression_blocked() is True
+
+
+class TestTodoSnapshotMergedNotDuplicated:
+    """Todo snapshots preserve tail content without duplicate user turns."""
+
+    def test_snapshot_merges_into_trailing_user(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_TODO_MERGE"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent, platform="cli")
+
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "acknowledged"},
+            {"role": "user", "content": "tail"},
+        ]
+        agent._todo_store._todos = [
+            {"id": "t1", "content": "task A", "status": "pending"}
+        ]
+        agent._todo_store.format_for_injection = (
+            lambda: "## Current Tasks\n- [ ] task A"
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        assert len(compressed) == 3
+        tail = compressed[-1]
+        assert tail["role"] == "user"
+        assert "tail" in tail["content"]
+        assert "task A" in tail["content"]
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(compressed, compressed[1:])
+        )
+
+    def test_multimodal_snapshot_merges_into_trailing_user_on_rotation(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_TODO_MULTIMODAL_ROTATION"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent, platform="cli")
+
+        original_parts = [
+            {"type": "text", "text": "tail text"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/context.png"},
+            },
+        ]
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "acknowledged"},
+            {"role": "user", "content": list(original_parts)},
+        ]
+        agent._todo_store._todos = [
+            {"id": "t1", "content": "inspect image", "status": "pending"}
+        ]
+        agent._todo_store.format_for_injection = (
+            lambda: "## Current Tasks\n- [ ] inspect image"
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        assert len(compressed) == 3
+        tail = compressed[-1]
+        assert tail["role"] == "user"
+        assert isinstance(tail["content"], list)
+        assert tail["content"][: len(original_parts)] == original_parts
+        assert any(
+            isinstance(part, dict) and "inspect image" in (part.get("text") or "")
+            for part in tail["content"]
+        )
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(compressed, compressed[1:])
+        )
+
+    def test_snapshot_merge_is_persisted_in_place(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_TODO_INPLACE"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent, platform="cli")
+        agent.compression_in_place = True
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "last user msg"},
+        ]
+        agent._todo_store._todos = [
+            {"id": "t1", "content": "do thing", "status": "in_progress"}
+        ]
+        agent._todo_store.format_for_injection = (
+            lambda: "## Current Tasks\n- [ ] do thing"
+        )
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+        db_msgs = db.get_messages(agent.session_id)
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(db_msgs, db_msgs[1:])
+        )
+        last_user = [message for message in db_msgs if message["role"] == "user"][-1]
+        assert "last user msg" in last_user["content"]
+        assert "do thing" in last_user["content"]
+
+    def test_multimodal_snapshot_merge_is_persisted_in_place(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_TODO_MULTIMODAL_INPLACE"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent, platform="cli")
+        agent.compression_in_place = True
+
+        original_parts = [
+            {"type": "text", "text": "last user msg"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/context.png"},
+            },
+        ]
+        agent.context_compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": list(original_parts)},
+        ]
+        agent._todo_store._todos = [
+            {"id": "t1", "content": "inspect image", "status": "in_progress"}
+        ]
+        agent._todo_store.format_for_injection = (
+            lambda: "## Current Tasks\n- [ ] inspect image"
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        assert len(compressed) == 3
+        tail = compressed[-1]
+        assert tail["role"] == "user"
+        assert isinstance(tail["content"], list)
+        assert tail["content"][: len(original_parts)] == original_parts
+        assert any(
+            isinstance(part, dict) and "inspect image" in (part.get("text") or "")
+            for part in tail["content"]
+        )
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(compressed, compressed[1:])
+        )
+
+        db_msgs = db.get_messages(agent.session_id)
+        persisted_tail = db_msgs[-1]
+        assert persisted_tail["role"] == "user"
+        assert persisted_tail["content"][: len(original_parts)] == original_parts
+        assert any(
+            isinstance(part, dict) and "inspect image" in (part.get("text") or "")
+            for part in persisted_tail["content"]
+        )
+        assert not any(
+            previous.get("role") == current.get("role") == "user"
+            for previous, current in zip(db_msgs, db_msgs[1:])
+        )

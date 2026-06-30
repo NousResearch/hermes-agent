@@ -43,6 +43,29 @@ def test_density_stats_count_isolated_nodes():
     assert stats["isolated_pct"] == round(100 / 3, 1)
 
 
+def test_skill_node_timestamp_uses_iso_usage_activity(tmp_path, monkeypatch):
+    skill_dir = tmp_path / "skills" / "dev" / "iso-skill"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("---\nname: iso-skill\ncategory: dev\n---\n# ISO\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        learning_graph,
+        "_load_usage",
+        lambda: {
+            "iso-skill": {
+                "created_by": "agent",
+                "last_used_at": "2026-04-30T12:00:00+00:00",
+                "use_count": 1,
+            }
+        },
+    )
+
+    nodes = learning_graph.build_skill_nodes([("profile", tmp_path / "skills")])
+
+    assert nodes["iso-skill"].timestamp == 1_777_550_400
+
+
 def test_memory_is_cards_split_on_separator(tmp_path):
     home = tmp_path / ".hermes"
     (home / "memories").mkdir(parents=True)

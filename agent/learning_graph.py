@@ -16,11 +16,13 @@ Run as a module to print edge-density stats against real data:
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from hermes_constants import get_hermes_home
 
 
 @dataclass
@@ -77,7 +79,7 @@ def _load_usage() -> dict[str, dict[str, Any]]:
 
         return load_usage()
     except Exception:
-        path = Path(os.path.expanduser("~/.hermes/skills/.usage.json"))
+        path = get_hermes_home() / "skills" / ".usage.json"
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -91,9 +93,25 @@ def _to_int_ts(value: Any) -> Optional[int]:
         if isinstance(value, (int, float)):
             return int(value)
         s = str(value).strip()
-        return int(float(s)) if s else None
+        if not s:
+            return None
+        try:
+            return int(float(s))
+        except ValueError:
+            parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp())
     except Exception:
         return None
+
+
+def _usage_timestamp(rec: dict[str, Any]) -> Optional[int]:
+    for key in ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at"):
+        ts = _to_int_ts(rec.get(key))
+        if ts is not None:
+            return ts
+    return None
 
 
 def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNode]:
@@ -111,7 +129,7 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
         if not name or name in nodes:
             continue
         rec = usage.get(name, {})
-        last_activity = _to_int_ts(rec.get("last_activity_at"))
+        last_activity = _usage_timestamp(rec)
         file_ts = _to_int_ts(skill_md.stat().st_mtime)
         nodes[name] = SkillNode(
             name=name,
@@ -134,7 +152,8 @@ def build_edges(nodes: dict[str, SkillNode]) -> list[tuple[str, str]]:
     for node in nodes.values():
         for target in node.related:
             if target in nodes and target != node.name:
-                key = tuple(sorted((node.name, target)))
+                a, b = sorted((node.name, target))
+                key = (a, b)
                 if key not in seen:
                     seen.add(key)
                     edges.append(key)
@@ -169,13 +188,7 @@ def _memory_cards() -> list[dict[str, Any]]:
     ``MEMORY.md`` / ``USER.md`` are prose split on bare ``§`` separators; each
     chunk becomes one card. Every chunk is surfaced — the graph shows everything.
     """
-    try:
-        from hermes_constants import get_hermes_home
-
-        base = get_hermes_home() / "memories"
-    except Exception:
-        base = Path(os.path.expanduser("~/.hermes/memories"))
-
+    base = get_hermes_home() / "memories"
     cards: list[dict[str, Any]] = []
     for fname, source in (("MEMORY.md", "memory"), ("USER.md", "profile")):
         path = base / fname
@@ -203,7 +216,7 @@ def _tokenize(text: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", text.lower()) if len(t) >= 3}
 
 
-def _memory_skill_edges(memory_cards: list[dict[str, str]], skills: list[SkillNode]) -> list[tuple[str, str]]:
+def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNode]) -> list[tuple[str, str]]:
     edges: list[tuple[str, str]] = []
     skill_meta = [(s, _tokenize(s.name), s.name.lower()) for s in skills]
     for idx, card in enumerate(memory_cards):
@@ -226,12 +239,7 @@ def _memory_skill_edges(memory_cards: list[dict[str, str]], skills: list[SkillNo
 
 def _skill_roots() -> list[tuple[str, Path]]:
     repo = Path(__file__).resolve().parent.parent
-    try:
-        from hermes_constants import get_hermes_home
-
-        home_skills = get_hermes_home() / "skills"
-    except Exception:
-        home_skills = Path(os.path.expanduser("~/.hermes/skills"))
+    home_skills = get_hermes_home() / "skills"
     return [("base", repo / "skills"), ("profile", home_skills)]
 
 

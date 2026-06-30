@@ -516,6 +516,49 @@ export interface Translations {
     invalidKeyName: string;
   };
 
+  ssh: {
+    description: string;
+    keysTitle: string;
+    keysHint: string;
+    noKeys: string;
+    keyName: string;
+    comment: string;
+    generateTitle: string;
+    generateHint: string;
+    generateAction: string;
+    importTitle: string;
+    importHint: string;
+    privateKey: string;
+    importAction: string;
+    copyPublic: string;
+    publicKeyCopied: string;
+    copyFailed: string;
+    keyGenerated: string;
+    keyImported: string;
+    keyDeleted: string;
+    generateFailed: string;
+    importFailed: string;
+    loadFailed: string;
+    hostsTitle: string;
+    hostsHint: string;
+    addHost: string;
+    hostAlias: string;
+    hostName: string;
+    hostUser: string;
+    hostPort: string;
+    identityFile: string;
+    saveHost: string;
+    hostSaved: string;
+    hostSaveFailed: string;
+    hostDeleted: string;
+    testConnection: string;
+    testFailed: string;
+    deleteKeyTitle: string;
+    deleteKeyMessage: string;
+    deleteHostTitle: string;
+    deleteHostMessage: string;
+  };
+
   // ── OAuth ──
   oauth: {
     title: string;

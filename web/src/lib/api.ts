@@ -517,6 +517,42 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
     }),
+  getSshKeys: () => fetchJSON<{ keys: SshKeyInfo[] }>("/api/ssh/keys"),
+  generateSshKey: (name: string, comment = "hermes-agent") =>
+    fetchJSON<{ ok: boolean; key: SshKeyInfo }>("/api/ssh/keys/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, comment }),
+    }),
+  importSshKey: (name: string, private_key: string) =>
+    fetchJSON<{ ok: boolean; key: SshKeyInfo }>("/api/ssh/keys/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, private_key }),
+    }),
+  deleteSshKey: (name: string) =>
+    fetchJSON<{ ok: boolean; name: string }>(`/api/ssh/keys/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  getSshHosts: () => fetchJSON<{ hosts: SshHostInfo[] }>("/api/ssh/hosts"),
+  upsertSshHost: (host: SshHostUpsert) =>
+    fetchJSON<{ ok: boolean; host: SshHostInfo }>("/api/ssh/hosts", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(host),
+    }),
+  deleteSshHost: (alias: string) =>
+    fetchJSON<{ ok: boolean; alias: string }>("/api/ssh/hosts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias }),
+    }),
+  testSshHost: (alias: string) =>
+    fetchJSON<{ ok: boolean; message: string }>("/api/ssh/hosts/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias }),
+    }),
   revealEnvVar: async (key: string) => {
     const token = await getSessionToken();
     return fetchJSON<{ key: string; value: string }>("/api/env/reveal", {
@@ -1702,6 +1738,32 @@ export interface EnvVarInfo {
   channel_managed?: boolean;
   /** True when this key is set in .env but not in any catalog (user-added custom key). */
   custom?: boolean;
+}
+
+export interface SshKeyInfo {
+  name: string;
+  has_private: boolean;
+  has_public: boolean;
+  fingerprint: string | null;
+  key_type: string | null;
+  public_key: string | null;
+  comment: string | null;
+}
+
+export interface SshHostInfo {
+  alias: string;
+  host_name: string;
+  user: string;
+  port: number;
+  identity_file: string;
+}
+
+export interface SshHostUpsert {
+  alias: string;
+  host_name: string;
+  user?: string;
+  port?: number;
+  identity_file?: string;
 }
 
 export interface TelegramOnboardingStartResponse {

@@ -772,6 +772,38 @@ class EnvVarReveal(BaseModel):
     profile: Optional[str] = None
 
 
+class SshKeyGenerateRequest(BaseModel):
+    name: str = "id_ed25519"
+    comment: str = "hermes-agent"
+    profile: Optional[str] = None
+
+
+class SshKeyImportRequest(BaseModel):
+    name: str
+    private_key: str
+    public_key: Optional[str] = None
+    profile: Optional[str] = None
+
+
+class SshHostUpsertRequest(BaseModel):
+    alias: str
+    host_name: str
+    user: str = ""
+    port: int = 22
+    identity_file: str = "id_ed25519"
+    profile: Optional[str] = None
+
+
+class SshHostDeleteRequest(BaseModel):
+    alias: str
+    profile: Optional[str] = None
+
+
+class SshHostTestRequest(BaseModel):
+    alias: str
+    profile: Optional[str] = None
+
+
 class MemoryProviderConfigUpdate(BaseModel):
     values: Dict[str, str] = {}
 
@@ -4935,6 +4967,124 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     except Exception:
         _log.exception("DELETE /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
+# SSH keys & host aliases (dashboard-managed, stored under $HERMES_HOME/.ssh)
+# ---------------------------------------------------------------------------
+
+
+def _ssh_http_error(exc: Exception) -> HTTPException:
+    from hermes_cli.ssh_keys import SshKeysError
+
+    if isinstance(exc, SshKeysError):
+        return HTTPException(status_code=400, detail=str(exc))
+    _log.exception("SSH keys API failed")
+    return HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/ssh/keys")
+async def list_ssh_keys_api(profile: Optional[str] = None):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(profile):
+            return {"keys": ssh_keys.list_ssh_keys()}
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
+
+
+@app.post("/api/ssh/keys/generate")
+async def generate_ssh_key_api(body: SshKeyGenerateRequest):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(body.profile):
+            key = ssh_keys.generate_ssh_key(body.name, body.comment)
+        return {"ok": True, "key": key}
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
+
+
+@app.post("/api/ssh/keys/import")
+async def import_ssh_key_api(body: SshKeyImportRequest):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(body.profile):
+            key = ssh_keys.import_ssh_key(
+                body.name,
+                body.private_key,
+                public_key=body.public_key,
+            )
+        return {"ok": True, "key": key}
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
+
+
+@app.delete("/api/ssh/keys/{name}")
+async def delete_ssh_key_api(name: str, profile: Optional[str] = None):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(profile):
+            ssh_keys.delete_ssh_key(name)
+        return {"ok": True, "name": name}
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
+
+
+@app.get("/api/ssh/hosts")
+async def list_ssh_hosts_api(profile: Optional[str] = None):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(profile):
+            return {"hosts": ssh_keys.list_ssh_hosts()}
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
+
+
+@app.put("/api/ssh/hosts")
+async def upsert_ssh_host_api(body: SshHostUpsertRequest):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(body.profile):
+            host = ssh_keys.upsert_ssh_host(
+                alias=body.alias,
+                host_name=body.host_name,
+                user=body.user,
+                port=body.port,
+                identity_file=body.identity_file,
+            )
+        return {"ok": True, "host": host}
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
+
+
+@app.delete("/api/ssh/hosts")
+async def delete_ssh_host_api(body: SshHostDeleteRequest, profile: Optional[str] = None):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(body.profile or profile):
+            ssh_keys.delete_ssh_host(body.alias)
+        return {"ok": True, "alias": body.alias}
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
+
+
+@app.post("/api/ssh/hosts/test")
+async def test_ssh_host_api(body: SshHostTestRequest):
+    from hermes_cli import ssh_keys
+
+    try:
+        with _profile_scope(body.profile):
+            result = ssh_keys.test_ssh_host(body.alias)
+        return result
+    except Exception as exc:
+        raise _ssh_http_error(exc) from exc
 
 
 @app.post("/api/env/reveal")

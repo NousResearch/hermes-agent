@@ -265,6 +265,12 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    # Codex/Responses encrypted reasoning is real replayed wire payload;
+    # without it the protected tail under-measures Responses sessions by
+    # 100K+ tokens.  Count it when present (counting a non-existent key is
+    # a no-op anyway).
+    for it in msg.get("codex_reasoning_items") or []:
+        tokens += len(str(it)) // _CHARS_PER_TOKEN
     return tokens
 
 

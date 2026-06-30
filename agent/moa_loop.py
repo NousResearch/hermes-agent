@@ -94,6 +94,37 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
         resolved_provider = str(rt.get("provider") or provider).strip().lower()
+
+        # Copilot serves models on DIFFERENT endpoints by model family: GPT-5.x
+        # require the Responses API (codex_responses) while Claude / Gemini stay
+        # on chat_completions. ``resolve_runtime_provider`` derives api_mode from
+        # the *session* default model, not this slot's model, so within one MoA
+        # preset it can't distinguish a gpt-5.5 reference from a claude
+        # aggregator — every Copilot slot gets the session default's api_mode.
+        # That mismatch is doubly harmful because api_mode participates in the
+        # auxiliary client cache key: the first Copilot slot to build a client
+        # (say gpt-5.5 → Responses) poisons the cache for every later Copilot
+        # slot in the same turn, so the Claude models reuse the Responses client
+        # and 400 with "model claude-* does not support Responses API" (and,
+        # symmetrically, a Claude-first ordering 400s the gpt-5.x slot on
+        # chat_completions). Resolve api_mode from THIS slot's own model via the
+        # canonical per-model resolver and keep the provider identified by name
+        # (no base_url → call_llm builds the real Copilot request, not a generic
+        # custom endpoint). Pinning the correct per-model api_mode also keys the
+        # client cache per-mode, so mixed GPT-5.x + Claude presets stop poisoning
+        # each other.
+        if resolved_provider == "copilot":
+            try:
+                from hermes_cli.models import copilot_model_api_mode
+
+                out["api_mode"] = copilot_model_api_mode(model)
+            except Exception:
+                # Fall back to the runtime-resolved api_mode (best effort) so a
+                # resolver import/lookup failure still attempts the call.
+                if rt.get("api_mode"):
+                    out["api_mode"] = rt["api_mode"]
+            return out
+
         # call_llm treats an explicit base_url as a custom endpoint. That is
         # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
         # provider-backed targets whose provider branch adds auth refresh,

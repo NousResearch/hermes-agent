@@ -200,6 +200,136 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
 
 
+def test_moa_copilot_slot_resolves_api_mode_per_model(monkeypatch):
+    """Copilot slots must resolve api_mode from the SLOT's model, not the
+    session default.
+
+    Copilot serves GPT-5.x via the Responses API (codex_responses) and Claude
+    via chat_completions. ``resolve_runtime_provider`` derives api_mode from the
+    session default model, so for a Copilot slot it returns the same mode for
+    every model in a preset. ``_slot_runtime`` must override that by resolving
+    api_mode from each slot's own model via ``copilot_model_api_mode`` — and
+    must keep the provider identified by name (no base_url) so call_llm builds
+    the real Copilot request instead of a generic custom endpoint.
+    """
+    from agent import moa_loop
+
+    # resolve_runtime_provider returns the (wrong, session-default) mode for
+    # every Copilot model — the bug this fix works around.
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": "copilot",
+            "api_mode": "chat_completions",  # session default leaks to all slots
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    # Per-model resolver: GPT-5.x → responses, everything else → chat.
+    def fake_copilot_mode(model_id, **_kwargs):
+        return "codex_responses" if str(model_id).startswith("gpt-5") else "chat_completions"
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode", fake_copilot_mode
+    )
+
+    gpt = moa_loop._slot_runtime({"provider": "copilot", "model": "gpt-5.5"})
+    claude = moa_loop._slot_runtime({"provider": "copilot", "model": "claude-opus-4.8"})
+
+    # api_mode comes from the slot's OWN model, not the shared session default.
+    assert gpt["api_mode"] == "codex_responses"
+    assert claude["api_mode"] == "chat_completions"
+    # Provider stays identified by name; no base_url flattening to custom.
+    assert gpt["provider"] == "copilot" and "base_url" not in gpt
+    assert claude["provider"] == "copilot" and "base_url" not in claude
+
+
+def test_moa_mixed_copilot_preset_does_not_cross_contaminate_api_mode(monkeypatch):
+    """A mixed Copilot preset (GPT-5.x reference + Claude aggregator) must give
+    each model its own api_mode.
+
+    Regression for the client-cache-poisoning failure: because api_mode is part
+    of the auxiliary client cache key, a single shared api_mode across Copilot
+    slots let the first-built client (e.g. gpt-5.5 → Responses) poison the cache
+    for later Claude slots, which then 400'd with "does not support Responses
+    API". Resolving api_mode per model keys the cache per mode, so the modes the
+    slots request are mode-correct and never cross-contaminate.
+    """
+    from agent import moa_loop
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": "copilot",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    def fake_copilot_mode(model_id, **_kwargs):
+        return "codex_responses" if str(model_id).startswith("gpt-5") else "chat_completions"
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode", fake_copilot_mode
+    )
+
+    preset_models = [
+        "gpt-5.5",            # Responses
+        "claude-sonnet-4.6",  # chat
+        "claude-opus-4.6",    # chat
+        "claude-opus-4.8",    # chat (aggregator)
+    ]
+    modes = {
+        m: moa_loop._slot_runtime({"provider": "copilot", "model": m})["api_mode"]
+        for m in preset_models
+    }
+
+    assert modes["gpt-5.5"] == "codex_responses"
+    assert modes["claude-sonnet-4.6"] == "chat_completions"
+    assert modes["claude-opus-4.6"] == "chat_completions"
+    assert modes["claude-opus-4.8"] == "chat_completions"
+    # The GPT-5.x Responses mode must NOT leak onto any Claude slot.
+    assert {modes[m] for m in preset_models if m.startswith("claude")} == {"chat_completions"}
+
+
+def test_moa_copilot_slot_falls_back_when_per_model_resolver_unavailable(monkeypatch):
+    """If the per-model Copilot resolver raises, the slot still attempts the
+    call using the runtime-resolved api_mode rather than aborting."""
+    from agent import moa_loop
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": "copilot",
+            "api_mode": "chat_completions",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    def boom(model_id, **_kwargs):
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(
+        "hermes_cli.models.copilot_model_api_mode", boom
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "copilot", "model": "gpt-5.5"})
+    # Provider identity preserved; falls back to the runtime-resolved api_mode.
+    assert rt["provider"] == "copilot"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["api_mode"] == "chat_completions"
+    assert "base_url" not in rt
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "minimax-oauth", "qwen-oauth"])
 def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider):
     """MoA can pass resolved endpoints for provider-backed slots without

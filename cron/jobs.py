@@ -1127,7 +1127,19 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "schedule_display",
                     updated_schedule.get("display", updated.get("schedule_display")),
                 )
-                if updated.get("state") != "paused":
+                # Only recompute next_run_at when the schedule's run-affecting
+                # fields actually changed.  Re-saving the same schedule (common
+                # in dashboard/tool edits that touch unrelated fields) would
+                # otherwise advance a due run into the future.
+                old_schedule = job.get("schedule", {})
+                if isinstance(old_schedule, str):
+                    old_schedule = parse_schedule(old_schedule)
+                _run_affecting = {"kind", "minutes", "expr", "run_at"}
+                schedule_semantically_changed = (
+                    {k: old_schedule.get(k) for k in _run_affecting}
+                    != {k: updated_schedule.get(k) for k in _run_affecting}
+                )
+                if schedule_semantically_changed and updated.get("state") != "paused":
                     updated["next_run_at"] = compute_next_run(updated_schedule)
 
             if inference_fields_changed:

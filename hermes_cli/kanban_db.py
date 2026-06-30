@@ -6332,6 +6332,31 @@ def detect_stale_running(
     return reclaimed
 
 
+def _worker_log_has_rate_limit(task_id: str, max_bytes: int = 4096) -> bool:
+    """Check if a worker's log tail contains rate-limit / quota patterns.
+
+    Defensive heuristic for ``hermes chat -q`` workers that exit rc=0
+    despite hitting a provider rate-limit wall (the ``-q`` path does not
+    map ``run_conversation`` failure reasons to exit codes).  Reads only
+    the tail of the log to avoid loading multi-MB files into memory.
+    """
+    try:
+        log_path = worker_logs_dir() / f"{task_id}.log"
+        if not log_path.is_file():
+            return False
+        with open(log_path, "rb") as f:
+            try:
+                f.seek(0, 2)  # SEEK_END
+                size = f.tell()
+                f.seek(max(0, size - max_bytes))
+            except OSError:
+                return False
+            tail = f.read().decode("utf-8", errors="replace")
+        return bool(_RESPAWN_BLOCKER_RE.search(tail))
+    except Exception:
+        return False
+
+
 def _error_fingerprint(error_text: str) -> str:
     """Normalize an error message for grouping identical failures.
 
@@ -6410,17 +6435,41 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # ``running`` in the DB — it exited without calling
                 # ``kanban_complete`` / ``kanban_block``. Retrying won't
                 # help.
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation"
-                )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                }
+                #
+                # Defensive: ``hermes chat -q`` (single-query mode) does
+                # not map ``run_conversation`` failure reasons to exit
+                # codes, so a rate-limited worker exits 0 and lands here.
+                # Check the worker log tail for quota/rate-limit patterns
+                # before tripping the circuit breaker — if found, treat
+                # this as a rate-limited exit and requeue without counting
+                # a failure (#55445, #48000).
+                if _worker_log_has_rate_limit(row["id"]):
+                    protocol_violation = False
+                    rate_limited_exit = True
+                    error_text = (
+                        f"pid {pid} exited rc=0 but worker log shows "
+                        f"rate-limit/quota wall — requeued without "
+                        f"counting a failure"
+                    )
+                    event_kind = "rate_limited"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        "detected_via": "worker_log_tail",
+                    }
+                else:
+                    protocol_violation = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) without calling "
+                        "kanban_complete or kanban_block — protocol violation"
+                    )
+                    event_kind = "protocol_violation"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                    }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —

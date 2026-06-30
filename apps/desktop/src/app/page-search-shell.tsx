@@ -52,7 +52,10 @@ export function PageSearchShell({
       */}
       <div className="shrink-0" data-slot="page-search-shell-header">
         {(tabs || !searchHidden) && (
-          <div className="flex items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]" data-slot="page-search-header-row">
+          <div
+            className="flex items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]"
+            data-slot="page-search-header-row"
+          >
             {tabs ? <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">{tabs}</div> : null}
             {!searchHidden && (
               <div className={cn('flex shrink-0 items-center', !tabs && 'flex-1')}>

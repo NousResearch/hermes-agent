@@ -32,6 +32,7 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
 )
+from agent.tool_call_scrubber import StreamingToolCallScrubber
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -188,6 +189,7 @@ class GatewayStreamConsumer:
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
+        self._tool_call_scrubber = StreamingToolCallScrubber()
 
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
@@ -380,6 +382,9 @@ class GatewayStreamConsumer:
         discarded.  Partial tags at buffer boundaries are held back in
         ``_think_buffer`` until enough characters arrive to decide.
         """
+        text = self._tool_call_scrubber.feed(text)
+        if not text:
+            return
         buf = self._think_buffer + text
         self._think_buffer = ""
 
@@ -466,6 +471,9 @@ class GatewayStreamConsumer:
         Called when the stream ends (got_done) so that partial text that
         was held back waiting for a possible opening tag is not lost.
         """
+        tool_tail = self._tool_call_scrubber.flush()
+        if tool_tail:
+            self._filter_and_accumulate(tool_tail)
         if self._think_buffer and not self._in_think_block:
             self._accumulated += self._think_buffer
             self._think_buffer = ""

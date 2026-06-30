@@ -146,6 +146,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
+from agent.tool_call_scrubber import strip_tool_call_markup
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
@@ -4278,6 +4279,20 @@ class AIAgent:
         scrubber = getattr(self, "_stream_context_scrubber", None)
         if scrubber is not None:
             tail = scrubber.flush()
+            tool_scrubber = getattr(self, "_stream_tool_call_scrubber", None)
+            if tail and tool_scrubber is not None:
+                tail = tool_scrubber.feed(tail)
+            if tail:
+                callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+                for cb in callbacks:
+                    try:
+                        cb(tail)
+                    except Exception:
+                        pass
+                self._record_streamed_assistant_text(tail)
+        tool_scrubber = getattr(self, "_stream_tool_call_scrubber", None)
+        if tool_scrubber is not None:
+            tail = tool_scrubber.flush()
             if tail:
                 callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
                 for cb in callbacks:
@@ -4362,6 +4377,11 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = sanitize_context(text)
+            tool_scrubber = getattr(self, "_stream_tool_call_scrubber", None)
+            if tool_scrubber is not None:
+                text = tool_scrubber.feed(text)
+            else:
+                text = strip_tool_call_markup(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             if not prepended_break and not getattr(
                 self, "_current_streamed_assistant_text", ""

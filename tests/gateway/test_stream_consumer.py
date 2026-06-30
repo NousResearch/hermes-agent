@@ -1528,6 +1528,22 @@ class TestFilterAndAccumulate:
         c._filter_and_accumulate("still hidden</think>visible")
         assert c._accumulated == "visible"
 
+    def test_dsml_tool_call_block_stripped(self):
+        c = _make_consumer()
+        c._filter_and_accumulate("Before <｜DSML｜tool_calls>")
+        c._filter_and_accumulate("<｜DSML｜invoke name=\"write_file\">")
+        c._filter_and_accumulate("{\"content\":\"internal\"}")
+        c._filter_and_accumulate("<｜DSML｜/tool_calls> After")
+        assert c._accumulated == "Before  After"
+
+    def test_split_dsml_tool_call_opening_stripped(self):
+        c = _make_consumer()
+        c._filter_and_accumulate("Before <｜DSM")
+        assert c._accumulated == "Before "
+        c._filter_and_accumulate("L｜tool_calls>{\"content\":\"internal\"}")
+        c._flush_think_buffer()
+        assert c._accumulated == "Before "
+
 
 class TestFilterAndAccumulateIntegration:
     """Integration: verify think blocks don't leak through the full run() path."""
@@ -2111,4 +2127,3 @@ class TestFreshFinalRespectsAdapterDecline:
         assert adapter.send.call_count == 2, (
             f"Expected 2 send calls (initial + fresh-final), got {adapter.send.call_count}"
         )
-

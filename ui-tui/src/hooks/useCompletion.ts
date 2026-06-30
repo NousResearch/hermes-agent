@@ -65,6 +65,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     ref.current = input
 
     const request = completionRequestForInput(input)
+
     if (!request) {
       clear()
 

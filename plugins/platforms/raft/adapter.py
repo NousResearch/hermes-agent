@@ -36,7 +36,7 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -468,7 +468,7 @@ class RaftAdapter(BasePlatformAdapter):
     def runtime_session(self) -> str:
         return self._runtime_session
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not self._bridge_token:
             self._bridge_token = secrets.token_hex(32)
             logger.info("[raft] Auto-generated bridge token")

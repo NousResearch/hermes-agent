@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -169,8 +169,8 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 #   the dashboard. ``config.yaml`` is the supported surface for these.
 #
 # IMPORTANT: ``HERMES_*`` overall is NOT blocked. Many legitimate
-# integration credentials follow that prefix (HERMES_GEMINI_CLIENT_ID,
-# HERMES_LANGFUSE_PUBLIC_KEY, HERMES_SPOTIFY_CLIENT_ID, ...). The
+# integration credentials follow that prefix (HERMES_LANGFUSE_PUBLIC_KEY,
+# HERMES_SPOTIFY_CLIENT_ID, ...). The
 # denylist is name-by-name on purpose so the gate stays narrow and
 # doesn't accidentally break provider setup wizards.
 #
@@ -299,7 +299,7 @@ _EXTRA_ENV_KEYS = frozenset({
 import yaml
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.default_soul import DEFAULT_SOUL_MD
+from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 
 
 # =============================================================================
@@ -670,7 +670,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home  # noqa: F811,E402
-from utils import atomic_replace
+from utils import atomic_replace, fast_safe_load
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -819,10 +819,22 @@ def _secure_file(path):
 
 
 def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
+    """Seed a default SOUL.md into HERMES_HOME, upgrading legacy empty templates.
+
+    First run: write DEFAULT_SOUL_MD. Existing installs whose SOUL.md is still
+    the old comment-only scaffold (seeded by older install.sh / install.ps1 /
+    docker images, which shadowed the runtime default) get upgraded in place to
+    DEFAULT_SOUL_MD. A SOUL.md the user actually customized is never touched.
+    """
     soul_path = home / "SOUL.md"
     if soul_path.exists():
-        return
+        try:
+            existing = soul_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return
+        if not is_legacy_template_soul(existing):
+            return
+        # Legacy empty template -> upgrade to the real default in place.
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)
 
@@ -889,6 +901,11 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. When more than
+    # this many are live, the gateway evicts the least-recently-active DETACHED
+    # sessions (no live client) so accumulated agents don't pile up under memory
+    # pressure. Reopening one re-resumes it from disk. 0/null disables.
+    "max_live_sessions": 16,
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -899,13 +916,18 @@ DEFAULT_CONFIG = {
         # Graceful drain timeout for gateway stop/restart (seconds).
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.
-        # 0 = no drain, interrupt immediately.
+        # 0 = no drain, interrupt immediately (the default).
         #
-        # 180s is calibrated for realistic in-flight agent turns: a typical
-        # coding conversation mid-reasoning runs 60–150s per call, so a 60s
-        # budget routinely interrupted legitimate work on /restart. Raise
-        # further in config.yaml if you run very-long-reasoning models.
-        "restart_drain_timeout": 180,
+        # Contract: if you restart the gateway, in-flight work stops. We do
+        # not hold the restart open for a grace window — a drain timeout
+        # large enough to "save" a long agent turn would have to outlast an
+        # unbounded task (some runs take days), which is impossible, and a
+        # drain timeout shorter than systemd's TimeoutStopSec invites a
+        # SIGKILL-mid-cleanup race that leaves a stale lock and crash-loops
+        # the service. 0 sidesteps both: interrupt now, clean up, exit fast.
+        # Set a positive value in config.yaml only if you explicitly want a
+        # grace window on /restart (and keep it well under TimeoutStopSec).
+        "restart_drain_timeout": 0,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries
@@ -922,6 +944,16 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Intent-ack continuation: when the model opens a turn by narrating an
+        # action it will take ("I'll go check the logs...") but emits no tool
+        # call, intercept the turn-end, inject a "continue now, execute the
+        # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
+        # per turn). This is the corrective sibling of tool_use_enforcement (the
+        # preventive prompt-side guard). Values: "auto" (default — fires only on
+        # the codex_responses api_mode, the historical behavior), true (all
+        # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
+        # false (never), or a list of model-name substrings to match.
+        "intent_ack_continuation": "auto",
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating
@@ -967,6 +999,31 @@ DEFAULT_CONFIG = {
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",
+        # Standing operator instructions for the coding posture. A string (or
+        # list of strings) appended to the coding brief as an extra stable
+        # system block — pin project-wide workflow rules here instead of editing
+        # the shipped brief, e.g. "For UI work, don't run tsc/lint until I
+        # approve. Clean the diff before you commit and push." Cache-safe:
+        # takes effect next session. Empty by default.
+        "coding_instructions": "",
+        # When verify-on-stop finds edited code without fresh verification
+        # evidence, append guidance for creative UI work (avoid broad
+        # tsc/lint/test before visual approval) and clean-diff expectations.
+        # Set false to keep the evidence nudge terse.
+        "verify_guidance": True,
+        # Upper bound on consecutive `pre_verify` "continue" nudges in a single
+        # turn, so a user/plugin hook can never trap the loop.
+        "max_verify_nudges": 3,
+        # Verification closure: after the agent edits files in a code workspace,
+        # do not accept a final answer until fresh verification evidence exists
+        # or the agent explains why it cannot run checks. The loop is bounded
+        # and uses the passive verification ledger. Default is "auto" —
+        # surface-aware: on for interactive coding surfaces (CLI, TUI, desktop)
+        # and programmatic callers, off for conversational messaging surfaces
+        # (Telegram, Discord, etc.) where the verification narrative would reach
+        # a human as chat noise. Doc/markdown/skill-only edits never fire it.
+        # Set true to force on everywhere, or false to disable.
+        "verify_on_stop": "auto",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -976,7 +1033,13 @@ DEFAULT_CONFIG = {
         # unblocks with "[user did not respond within Xm]" so it can adapt
         # rather than pinning the running-agent guard forever.  CLI clarify
         # blocks indefinitely (input() is synchronous) and ignores this.
-        "clarify_timeout": 600,
+        # Default 3600 (1h): real users step away (meetings, AFK) and the
+        # old 600s default evicted the entry mid-think, so a later button
+        # tap landed on a dead entry (#32762).  Tradeoff: a higher value
+        # holds the gateway's running-agent guard longer for a genuinely
+        # abandoned prompt — lower it if a single session must free up the
+        # guard sooner.
+        "clarify_timeout": 3600,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
@@ -1021,6 +1084,12 @@ DEFAULT_CONFIG = {
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Bounded grace period (seconds) between SIGTERM and an escalated
+        # SIGKILL when terminating a host process tree (browser daemons, etc.).
+        # A daemon that stalls in its SIGTERM handler is force-killed after this
+        # window so it can't leak indefinitely. 0 disables escalation (SIGTERM
+        # only — the historical behavior). Floored internally at 0.
+        "daemon_term_grace_seconds": 2.0,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.
@@ -1108,6 +1177,7 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
     },
 
     "browser": {
@@ -1259,7 +1329,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -1287,6 +1357,22 @@ DEFAULT_CONFIG = {
                                       # exact route is affected — gpt-5.5 on OpenAI's
                                       # direct API, OpenRouter, and Copilot keep the
                                       # global threshold regardless.
+        "in_place": True,             # When True, compaction rewrites the message
+                                      # list and rebuilds the system prompt WITHOUT
+                                      # rotating the session id — the conversation
+                                      # keeps one durable id for its whole life
+                                      # (no parent_session_id chain, no `name #N`
+                                      # renumbering). Eliminates the session-rotation
+                                      # bug cluster (#33618 /goal loss, #14238 lost
+                                      # response, #33907 orphans, #45117 search gaps,
+                                      # #42228 null cwd) — see #38763. Non-destructive:
+                                      # the live context is compacted (lossy for what
+                                      # the model reloads), but the pre-compaction
+                                      # turns are soft-archived under the same id
+                                      # (active=0, compacted=1) — still searchable via
+                                      # session_search and recoverable, not deleted.
+                                      # Default False during rollout; will flip on
+                                      # after live validation.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
@@ -1513,6 +1599,41 @@ DEFAULT_CONFIG = {
             "timeout": 60,
             "extra_body": {},
         },
+        # Background review — the post-turn self-improvement fork that decides
+        # whether to save a memory / patch a skill. "auto" (default) = run on
+        # the main chat model, replaying the full conversation, which is already
+        # warm in the prompt cache (cheap cache reads) — unchanged, optimal.
+        # Set provider/model to a cheaper model (e.g. openrouter
+        # google/gemini-3-flash-preview) to run the review there for ~3-5x lower
+        # cost. A different model can't reuse the main prompt cache anyway, so
+        # the fork automatically replays a compact digest instead of the full
+        # transcript when routed (minimises the cold-write). Same model = full
+        # replay; different model = digest. Quality holds (memory capture
+        # identical, skill near-identical in benchmarks).
+        "background_review": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 120,
+            "extra_body": {},
+        },
+        "moa_reference": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 600,
+            "extra_body": {},
+        },
+        "moa_aggregator": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 600,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -1551,6 +1672,10 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # When reasoning display is on, the post-response "Reasoning" recap box
+        # collapses long thinking to the first 10 lines. Set true to print the
+        # complete thinking text uncollapsed (live streaming is always full).
+        "reasoning_full": False,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
         #   "on"      — generic "💾 Memory updated" line (default)
@@ -1616,12 +1741,23 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Human-phrased tool status labels for built-in tools: "Searching the
+        # web for ...", "Reading <file>", "Browsing <url>" instead of the raw
+        # tool name. Applies to CLI spinner + gateway/desktop tool-progress.
+        # Custom/plugin/MCP tools always fall back to the raw preview.
+        "friendly_tool_labels": True,
         # How gateway tool-progress is grouped on platforms that support message
         # editing: "accumulate" (default) edits one bubble in place; "separate"
         # sends one message per tool (the pre-v0.9 behavior, noisier). Only
         # applies where tool_progress is already enabled. Per-platform override
         # via display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
+        # How a reasoning/thinking summary renders when show_reasoning is on.
+        # "code" (default) = 💭 fenced code block; "blockquote" = "> " lines;
+        # "subtext" = "-# " lines (Discord small grey metadata text). Discord
+        # defaults to "subtext"; override per-platform via
+        # display.platforms.<platform>.reasoning_style.
+        "reasoning_style": "code",
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
         # that support message deletion (currently Telegram; other platforms
@@ -1660,6 +1796,31 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
+        # Petdex animated mascot (https://github.com/crafter-station/petdex).
+        # A purely cosmetic sprite that reacts to agent activity across the
+        # CLI, TUI, and desktop app. Manage with `hermes pets`. Disabled until
+        # a pet is installed + selected (no effect on prompt caching — this is
+        # a display concern only).
+        "pet": {
+            "enabled": False,
+            # Active pet slug; resolved against installed pets in
+            # get_hermes_home()/pets/. Empty → first installed pet.
+            "slug": "",
+            # Terminal render protocol for CLI/TUI:
+            #   auto  — detect kitty/iTerm2/sixel, else unicode half-blocks
+            #   kitty | iterm | sixel | unicode | off
+            "render_mode": "auto",
+            # Master size scalar (relative to native 192×208 frames). One knob
+            # shrinks every surface: the desktop canvas scales its pixels by it
+            # and the CLI/TUI derive their terminal column width from it. The
+            # half-block fallback clamps to a legibility floor (it can't shrink
+            # as far as true-pixel kitty/GUI without turning to mush).
+            "scale": 0.33,
+            # Hard override for terminal column width. 0 = auto (derive from
+            # scale); set a positive int only to pin the half-block/kitty width
+            # independently of scale.
+            "unicode_cols": 0,
+        },
     },
 
     # Web dashboard settings
@@ -1724,6 +1885,22 @@ DEFAULT_CONFIG = {
             "password": "",  # plaintext fallback (hashed in-memory at load)
             "secret": "",  # token-signing key; blank → random per-process
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
+        },
+        # Drain-control service-credential configuration — read by the
+        # bundled ``dashboard_auth/drain`` plugin (the first consumer of the
+        # generic non-interactive token-auth capability). The SECRET itself
+        # is a credential and is NOT configured here: it is provisioned by
+        # nous-account-service at deploy time via the
+        # ``HERMES_DASHBOARD_DRAIN_SECRET`` env var (the .env-is-for-secrets
+        # rule). These are the behavioural knobs only. The plugin is a no-op
+        # unless that env var is set to a >=256-bit secret; a weak secret is
+        # rejected at registration (fail-closed) and the drain endpoint stays
+        # disabled. ``scope`` is the capability label attached to the verified
+        # principal; ``min_secret_chars`` is the entropy bar (url-safe-b64
+        # chars; 43 ~= 256 bits).
+        "drain_auth": {
+            "scope": "drain",
+            "min_secret_chars": 43,
         },
         # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
         # When set, this is the complete authority — scheme + host +
@@ -1956,6 +2133,27 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+    # Mixture of Agents — named presets used by /moa. A preset is an execution
+    # mode around the main model, not a provider/model itself: references +
+    # aggregator synthesize private guidance before each main-model iteration.
+    "moa": {
+        "default_preset": "default",
+        "active_preset": "",
+        "presets": {
+            "default": {
+                "reference_models": [
+                    {"provider": "openai-codex", "model": "gpt-5.5"},
+                    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                ],
+                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                "reference_temperature": 0.6,
+                "aggregator_temperature": 0.4,
+                "max_tokens": 4096,
+                "enabled": True,
+            }
+        },
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -2092,12 +2290,11 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
-        # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
-        # When True, any uploaded file is cached to disk with mime
-        # application/octet-stream and the path is surfaced to the agent so it
-        # can use terminal/read_file/etc. against it. Default False preserves
-        # the historical allowlist behaviour.
-        # Env override: DISCORD_ALLOW_ANY_ATTACHMENT.
+        # DEPRECATED / no-op. Any uploaded file is now always cached and
+        # surfaced to the agent regardless of file type — authorization to
+        # message the agent is the gate, not the extension. Kept so existing
+        # configs that set it do not error. Env override:
+        # DISCORD_ALLOW_ANY_ATTACHMENT.
         "allow_any_attachment": False,
         # Maximum bytes per attachment the gateway will cache. The whole file
         # is held in memory while being written, so unlimited uploads carry a
@@ -2142,7 +2339,8 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
         "extra": {
-            "rich_messages": True,      # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set False to force legacy MarkdownV2
+            "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
+            "rich_drafts": False,       # Experimental Bot API 10.1 rich draft previews during Telegram DM streaming. Default off because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws.
         },
     },
 
@@ -2265,7 +2463,7 @@ DEFAULT_CONFIG = {
     "cron": {
         # Active cron SCHEDULER provider (Axis B — the trigger that decides
         # WHEN a due job fires). Empty string = the built-in in-process 60s
-        # ticker (default). Name an installed provider (plugins/cron/<name>/ or
+        # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
         # $HERMES_HOME/plugins/<name>/) to relocate the trigger — e.g. "chronos",
         # the NAS-mediated managed-cron provider for scale-to-zero deployments.
         # An unknown or unavailable provider falls back to the built-in, so cron
@@ -2293,11 +2491,36 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
+        # and the agent has it in context (no "what is Task #2?" amnesia).
+        # Default False preserves the historical isolation guarantee (cron
+        # deliveries live only in the cron job's own session). Per-job
+        # `attach_to_session` overrides this for a single job.
+        #
+        # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
+        #   - Thread-capable platforms (Telegram forum/DM topics, Discord
+        #     threads, Slack threads): a dedicated thread is opened for the job
+        #     via the adapter's create_handoff_thread, the brief is delivered
+        #     into it, and that thread's session is seeded so the user's reply
+        #     in-thread continues with full context. Each continuable job gets
+        #     its own scrollback, isolated from the parent channel.
+        #   - DM-only platforms (WhatsApp / Signal / SMS): no threads exist, so
+        #     the brief is mirrored into the origin DM session instead — the
+        #     DM itself is the continuation surface.
+        # Both paths ride the shipped gateway.mirror.mirror_to_session and are
+        # alternation- and cache-safe (appended at a turn boundary, never
+        # mid-loop, never mutating the cached system prompt). Only the origin
+        # chat is ever touched — fan-out / broadcast targets are never mirrored.
+        "mirror_delivery": False,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Per-job output-file retention: save_job_output keeps the N most
+        # recent .md files and prunes older ones. 0 or negative disables
+        # pruning (for operators who manage cleanup externally). Default 50.
+        "output_retention": 50,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
@@ -2447,6 +2670,18 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
+        # and, when an instance is opted in via the NAS "Labs" toggle (carried as
+        # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
+        # AND a wakeUrl is registered, drives the relay transport dormant so the
+        # platform (e.g. Fly autostop:"suspend") can suspend the now-idle machine;
+        # it wakes on the connector's wakeUrl poke. This is the idle TIMEOUT only
+        # — whether the feature is enabled at all is the Labs toggle, never a
+        # config key (decisions.md D2/D11). 0/negative falls back to the default.
+        "scale_to_zero": {
+            "idle_timeout_minutes": 5,
+        },
+
         # Inject a human-readable timestamp prefix (e.g.
         # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
         # CONTEXT so the agent has temporal awareness of when each message was
@@ -2457,6 +2692,16 @@ DEFAULT_CONFIG = {
         "message_timestamps": {
             "enabled": False,
         },
+
+        # Maximum bytes for an inbound image / audio / video payload the
+        # gateway will buffer into memory and cache to disk. Inbound media is
+        # read fully into RAM before being written, so an unbounded upload
+        # (Discord Nitro allows 500 MB) or a remote media URL pointing at a
+        # huge file can spike memory and OOM-kill the gateway on constrained
+        # deployments. Enforced in the shared cache helpers
+        # (gateway/platforms/base.py), so the cap holds across every platform
+        # adapter. ``0`` disables the cap. Default 128 MiB.
+        "max_inbound_media_bytes": 134217728,
 
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
@@ -2495,6 +2740,18 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+
+        # OpenAI-compatible API server platform
+        # (gateway/platforms/api_server.py).
+        "api_server": {
+            # Maximum number of agent runs the API server will service
+            # concurrently. Requests to /v1/chat/completions, /v1/responses,
+            # and /v1/runs that arrive while this many runs are already
+            # in flight are rejected with HTTP 429 + a Retry-After header,
+            # bounding CPU / memory / upstream-LLM-quota exhaustion from a
+            # request flood. Set to 0 to disable the cap entirely.
+            "max_concurrent_runs": 10,
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,
@@ -2590,14 +2847,14 @@ DEFAULT_CONFIG = {
     "updates": {
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Defaults to true
-        # after the #48200 incident: a ``hermes update --yes`` run that
-        # computed a wrong path silently wiped the user's ``.env``,
-        # ``MEMORY.md``, ``kanban.db``, custom skills, and scripts in one
-        # go.  The cost of a few minutes of zip time per update is
-        # negligible compared to the alternative.  Set to false to opt
-        # out, or pass ``--no-backup`` for a single update run.
-        "pre_update_backup": True,
+        # can be restored with ``hermes import <path>``.  Off by default:
+        # zipping a large HERMES_HOME (sessions DB, caches, skills) can add
+        # minutes to every update.  The #48200 incident — a ``hermes update
+        # --yes`` run that computed a wrong path and silently wiped the
+        # user's ``.env``, ``MEMORY.md``, ``kanban.db``, custom skills, and
+        # scripts — is the reason this knob exists; enable it (here, or via
+        # ``--backup`` for a single run) if you want that safety net.
+        "pre_update_backup": False,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.  Values below 1 are
         # floored to 1 — the backup just created is always preserved.  To
@@ -2747,9 +3004,38 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
+    # Computer Use (cua-driver) toolset settings.
+    "computer_use": {
+        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
+        # by default upstream. Hermes disables it for our users unless they
+        # explicitly opt in here. When false (default), Hermes sets
+        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for
+        # every invocation (MCP backend, status, doctor, install). Set true
+        # to let cua-driver use its own default (telemetry on).
+        "cua_telemetry": False,
+    },
+
+    # Hermes Desktop (Electron app) launch options. These only affect
+    # `hermes desktop`; they do not touch the CLI/gateway.
+    "desktop": {
+        # Extra Electron command-line flags appended to every desktop launch,
+        # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
+        # explicit ozone backend, or GPU workaround flags. A list of strings;
+        # a single string is also accepted and shell-split.
+        "electron_flags": [],
+        # GPU hardware acceleration policy for the desktop app:
+        #   "auto"  - let the app detect remote displays (SSH/VNC/RDP) and
+        #             disable GPU only then (default; current behavior).
+        #   true    - always disable GPU acceleration (software rendering).
+        #             Use on no-GPU VMs / Proxmox hosts where the GPU path hangs.
+        #   false   - always keep GPU acceleration on, even over a remote display.
+        # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
+        "disable_gpu": "auto",
+    },
+
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 32,
 }
 
 # =============================================================================
@@ -2789,7 +3075,7 @@ OPTIONAL_ENV_VARS = {
         "prompt": "OpenRouter API key",
         "url": "https://openrouter.ai/keys",
         "password": True,
-        "tools": ["vision_analyze", "mixture_of_agents"],
+        "tools": ["vision_analyze"],
         "category": "provider",
         "advanced": True,
     },
@@ -3033,30 +3319,6 @@ OPTIONAL_ENV_VARS = {
     "HERMES_QWEN_BASE_URL": {
         "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
         "prompt": "Qwen Portal base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HERMES_GEMINI_CLIENT_ID": {
-        "description": "Google OAuth client ID for google-gemini-cli (optional; defaults to Google's public gemini-cli client)",
-        "prompt": "Google OAuth client ID (optional — leave empty to use the public default)",
-        "url": "https://console.cloud.google.com/apis/credentials",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HERMES_GEMINI_CLIENT_SECRET": {
-        "description": "Google OAuth client secret for google-gemini-cli (optional)",
-        "prompt": "Google OAuth client secret (optional)",
-        "url": "https://console.cloud.google.com/apis/credentials",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HERMES_GEMINI_PROJECT_ID": {
-        "description": "GCP project ID for paid Gemini tiers (free tier auto-provisions)",
-        "prompt": "GCP project ID for Gemini OAuth (leave empty for free tier)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -3309,6 +3571,15 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
     },
+    "CAMOFOX_API_KEY": {
+        "description": "Optional bearer token sent as Authorization header to a remote/authenticated Camofox server",
+        "prompt": "Camofox API key",
+        "url": "https://github.com/jo-inc/camofox-browser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
     "FAL_KEY": {
         "description": "FAL API key for image and video generation",
         "prompt": "FAL API key",
@@ -3409,6 +3680,83 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
+    # ── Hindsight ──
+    "HINDSIGHT_API_KEY": {
+        "description": "Hindsight API key for graph-aware persistent memory",
+        "prompt": "Hindsight API key",
+        "url": "https://hindsight.vectorize.io",
+        "tools": ["hindsight_recall"],
+        "password": True,
+        "category": "tool",
+    },
+    "HINDSIGHT_API_URL": {
+        "description": "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)",
+        "prompt": "Hindsight API URL",
+        "category": "tool",
+        "advanced": True,
+    },
+
+    # ── Supermemory ──
+    "SUPERMEMORY_API_KEY": {
+        "description": "Supermemory API key for conversation-scoped persistent memory",
+        "prompt": "Supermemory API key",
+        "url": "https://supermemory.ai",
+        "tools": ["supermemory_search"],
+        "password": True,
+        "category": "tool",
+    },
+
+    # ── Mem0 ──
+    "MEM0_API_KEY": {
+        "description": "Mem0 Platform API key for semantic persistent memory",
+        "prompt": "Mem0 API key",
+        "url": "https://app.mem0.ai",
+        "tools": ["mem0_search"],
+        "password": True,
+        "category": "tool",
+    },
+
+    # ── RetainDB ──
+    "RETAINDB_API_KEY": {
+        "description": "RetainDB API key for persistent memory",
+        "prompt": "RetainDB API key",
+        "url": "https://retaindb.com",
+        "tools": ["retaindb_search"],
+        "password": True,
+        "category": "tool",
+    },
+    "RETAINDB_BASE_URL": {
+        "description": "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)",
+        "prompt": "RetainDB base URL",
+        "category": "tool",
+        "advanced": True,
+    },
+
+    # ── ByteRover ──
+    "BRV_API_KEY": {
+        "description": "ByteRover API key (optional, for cloud sync — local-first by default)",
+        "prompt": "ByteRover API key",
+        "url": "https://app.byterover.dev",
+        "tools": ["brv_query"],
+        "password": True,
+        "category": "tool",
+    },
+
+    # ── OpenViking ──
+    "OPENVIKING_API_KEY": {
+        "description": "OpenViking API key (leave blank for local dev mode)",
+        "prompt": "OpenViking API key",
+        "tools": ["viking_search"],
+        "password": True,
+        "category": "tool",
+    },
+    "OPENVIKING_ENDPOINT": {
+        "description": "OpenViking server URL (default: http://127.0.0.1:1933)",
+        "prompt": "OpenViking endpoint",
+        "category": "tool",
+        "advanced": True,
+    },
+
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": {
         "description": "Langfuse project public key (pk-lf-...)",
@@ -3478,7 +3826,7 @@ OPTIONAL_ENV_VARS = {
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
-                       "im:history, im:read, im:write, users:read, files:read, files:write",
+                       "im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
         "help": "In your Slack app, add the required bot scopes, install the app to the workspace, then copy OAuth & Permissions > Bot User OAuth Token.",
         "url": "https://api.slack.com/apps",
@@ -3488,7 +3836,7 @@ OPTIONAL_ENV_VARS = {
     "SLACK_APP_TOKEN": {
         "description": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → "
                        "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
-                       "message.channels, message.groups, app_mention",
+                       "message.channels, message.groups, message.mpim, app_mention",
         "prompt": "Slack App Token (xapp-...)",
         "help": "In your Slack app, enable Socket Mode, then create Basic Information > App-Level Tokens with the connections:write scope.",
         "url": "https://api.slack.com/apps",
@@ -3920,6 +4268,7 @@ def clear_model_endpoint_credentials(
     *,
     clear_api_key: bool = True,
     clear_api_mode: bool = True,
+    clear_base_url: bool = False,
 ) -> Dict[str, Any]:
     """Remove stale inline endpoint credentials from a model config.
 
@@ -3936,6 +4285,8 @@ def clear_model_endpoint_credentials(
         model_cfg.pop("api", None)
     if clear_api_mode:
         model_cfg.pop("api_mode", None)
+    if clear_base_url:
+        model_cfg.pop("base_url", None)
     return model_cfg
 
 
@@ -4068,6 +4419,14 @@ def _normalize_custom_provider_entry(
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
             candidate = raw_url.strip()
+            # Accept URLs containing unresolved placeholder tokens — both
+            # ``${ENV_VAR}`` env-refs and bare ``{region}``-style templates —
+            # without URL validation. They are expanded at runtime, so a
+            # caller reaching this normalizer with raw (un-expanded) config
+            # would otherwise see the provider silently dropped (#14457).
+            if re.search(r"\{[^}]+\}", candidate):
+                base_url = candidate
+                break
             parsed = urlparse(candidate)
             if parsed.scheme and parsed.netloc:
                 base_url = candidate
@@ -4341,7 +4700,7 @@ def check_config_version() -> Tuple[int, int]:
 
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
+            config = fast_safe_load(f) or {}
     except Exception as e:
         # Invalid YAML needs a parse warning, not an automatic schema rewrite
         # that could replace the user's broken file with defaults.
@@ -4363,7 +4722,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
 }
 
@@ -4626,7 +4985,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
-        config = load_config()
+        config = read_raw_config()
         display = config.get("display", {})
         if not isinstance(display, dict):
             display = {}
@@ -4643,13 +5002,13 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 display["tool_progress"] = "all"
                 results["config_added"].append("display.tool_progress=all (default)")
             config["display"] = display
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
     # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
-        config = load_config()
+        config = read_raw_config()
         if "timezone" not in config:
             old_tz = os.getenv("HERMES_TIMEZONE", "")
             if old_tz and old_tz.strip():
@@ -4658,7 +5017,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 config["timezone"] = ""
                 results["config_added"].append("timezone= (empty, uses server-local)")
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
@@ -4677,7 +5036,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     if current_ver < 12:
-        config = load_config()
+        config = read_raw_config()
         custom_list = config.get("custom_providers")
         if isinstance(custom_list, list) and custom_list:
             providers_dict = config.get("providers", {})
@@ -4732,7 +5091,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 config["providers"] = providers_dict
                 # Remove the old list — runtime reads via get_compatible_custom_providers()
                 config.pop("custom_providers", None)
-                save_config(config)
+                save_config(config, strip_defaults=False)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
                     for key in list(providers_dict.keys())[-migrated_count:]:
@@ -4768,7 +5127,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_stt, dict) and "model" in raw_stt:
             legacy_model = raw_stt["model"]
             provider = raw_stt.get("provider", "local")
-            config = load_config()
+            config = read_raw_config()
             stt = config.get("stt", {})
             # Remove the legacy flat key
             stt.pop("model", None)
@@ -4800,7 +5159,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     provider_cfg = stt.setdefault(provider, {})
                     provider_cfg["model"] = legacy_model
             config["stt"] = stt
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print(f"  ✓ Migrated legacy stt.model to provider-specific config")
 
@@ -4814,7 +5173,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             display["interim_assistant_messages"] = True
             config["display"] = display
             results["config_added"].append("display.interim_assistant_messages=true (default)")
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print("  ✓ Added display.interim_assistant_messages=true")
 
@@ -4836,7 +5195,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     platforms[plat]["tool_progress"] = mode
             display["platforms"] = platforms
             config["display"] = display
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
@@ -4872,7 +5231,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     migrated_keys.append(f"base_url={s_base_url}")
             if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
                 config["compression"] = comp
-                save_config(config)
+                save_config(config, strip_defaults=False)
                 if not quiet:
                     if migrated_keys:
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
@@ -4916,7 +5275,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                             continue
                         try:
                             with open(manifest_file, encoding="utf-8") as _mf:
-                                manifest = yaml.safe_load(_mf) or {}
+                                manifest = fast_safe_load(_mf) or {}
                         except Exception:
                             manifest = {}
                         name = manifest.get("name") or child.name
@@ -4928,7 +5287,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             plugins_cfg["enabled"] = grandfathered
             config["plugins"] = plugins_cfg
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append(
                 f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
             )
@@ -5008,7 +5367,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             touched = True
 
         if touched:
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if added_curator:
                 results["config_added"].append(
                     f"curator ({len(added_curator)} default key(s))"
@@ -5039,7 +5398,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 24:
             raw_mc["ttl_hours"] = 1
             config["model_catalog"] = raw_mc
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("model_catalog.ttl_hours 24→1")
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
@@ -5068,7 +5427,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
             )
         if touched:
-            save_config(config)
+            save_config(config, strip_defaults=False)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
@@ -5087,12 +5446,70 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if isinstance(raw_curator, dict) and "consolidate" not in raw_curator:
             raw_curator["consolidate"] = False
             config["curator"] = raw_curator
-            save_config(config)
+            save_config(config, strip_defaults=False)
             results["config_added"].append("curator.consolidate=false")
             if not quiet:
                 print(
                     "  ✓ Seeded curator.consolidate: false "
                     "(LLM consolidation is now opt-in; pruning stays on)"
+                )
+
+    # ── Version 30 → 31: switch verify_on_stop OFF (one-time) ──
+    # verify_on_stop defaulted to the "auto" sentinel (surface-aware: on for
+    # interactive coding surfaces). In practice the verification narrative was
+    # more noise than signal — it even fired on doc/markdown/skill edits with
+    # nothing to verify. The new default is OFF. This migration switches
+    # existing installs off ONCE, but only when the user never expressed an
+    # explicit preference: we rewrite the value only if it's missing or still
+    # the "auto" sentinel. An explicit true/false the user set is preserved.
+    if current_ver < 31:
+        config = read_raw_config()
+        raw_agent = config.get("agent")
+        if not isinstance(raw_agent, dict):
+            raw_agent = {}
+        cur = raw_agent.get("verify_on_stop")
+        is_auto_sentinel = (
+            isinstance(cur, str) and cur.strip().lower() == "auto"
+        )
+        # Only flip the non-committal states; leave explicit bool/on/off alone.
+        if cur is None or is_auto_sentinel:
+            raw_agent["verify_on_stop"] = False
+            config["agent"] = raw_agent
+            save_config(config, strip_defaults=False)
+            results["config_added"].append("agent.verify_on_stop=false")
+            if not quiet:
+                print(
+                    "  ✓ Turned off verify-on-stop (agent.verify_on_stop: false). "
+                    "Set it to true to re-enable, or \"auto\" for the legacy "
+                    "surface-aware behavior."
+                )
+
+    # ── Version 31 → 32: flip the BAKED-IN literal true to OFF (one-time) ──
+    # The v30→v31 flip above only caught missing/"auto" values. But the very
+    # first ship of verify-on-stop (config v30, commit 2f1a47b90) defaulted
+    # DEFAULT_CONFIG["agent"]["verify_on_stop"] to a literal True, and
+    # migrate_config persists defaults with strip_defaults=False — so every
+    # install that updated through v30 got `verify_on_stop: true` written into
+    # config.yaml as a literal. v31's guard deliberately preserves an explicit
+    # bool, so it skipped that whole population and left them ON. That literal
+    # true was never a user choice: the feature had no off-switch worth setting
+    # it against until v31 introduced one, so a true persisted before v32 is
+    # always the old machine default. Flip it off once here. A true the user
+    # sets AFTER v32 (config already at version 32) is never touched.
+    if current_ver < 32:
+        config = read_raw_config()
+        raw_agent = config.get("agent")
+        if isinstance(raw_agent, dict) and raw_agent.get("verify_on_stop") is True:
+            raw_agent["verify_on_stop"] = False
+            config["agent"] = raw_agent
+            save_config(config, strip_defaults=False)
+            results["config_added"].append("agent.verify_on_stop=false")
+            if not quiet:
+                print(
+                    "  ✓ Turned off verify-on-stop (agent.verify_on_stop: false) — "
+                    "the old default was written into your config as a literal "
+                    "true. Set it to true again to re-enable, or \"auto\" for the "
+                    "legacy surface-aware behavior."
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
@@ -5125,11 +5542,31 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
             if mcp_touched:
                 config["mcp_servers"] = raw_mcp_servers
-                save_config(config)
+                save_config(config, strip_defaults=False)
+
+    # ── Always: validate platform_toolsets after migration ──
+    # A migration (or hand-edit) that leaves an invalid toolset name in
+    # platform_toolsets silently disables the affected tools — resolve_toolset()
+    # returns [] for an unknown name, so the agent quietly loses tools with no
+    # error or warning. Surface it loudly instead. See #38798.
+    try:
+        from toolsets import validate_toolset
+        from hermes_cli.toolset_validation import validate_platform_toolsets
+
+        ts_warnings = validate_platform_toolsets(
+            read_raw_config().get("platform_toolsets"), validate_toolset
+        )
+        for w in ts_warnings:
+            results["warnings"].append(w)
+            if not quiet:
+                print(f"  ⚠ {w}")
+    except Exception as _ts_val_err:
+        # best-effort; never block migration on validation
+        logger.debug("platform_toolsets validation skipped: %s", _ts_val_err)
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
-    
+
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
     
@@ -5213,7 +5650,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     missing_config = get_missing_config_fields()
     
     if missing_config:
-        config = load_config()
+        config = read_raw_config()
         
         for field in missing_config:
             key = field["key"]
@@ -5226,12 +5663,12 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         
         # Update version and save
         config["_config_version"] = latest_ver
-        save_config(config)
+        save_config(config, strip_defaults=False)
     elif current_ver < latest_ver:
         # Just update version
-        config = load_config()
+        config = read_raw_config()
         config["_config_version"] = latest_ver
-        save_config(config)
+        save_config(config, strip_defaults=False)
 
     # ── Skill-declared config vars ──────────────────────────────────────
     # Skills can declare config.yaml settings they need via
@@ -5251,7 +5688,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
         if answer in {"y", "yes"}:
             print()
-            config = load_config()
+            config = read_raw_config()
             try:
                 from agent.skill_utils import SKILL_CONFIG_PREFIX
             except Exception:
@@ -5272,7 +5709,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
                     )
                 print()
-            save_config(config)
+            save_config(config, strip_defaults=False)
         else:
             print("  Set later with: hermes config set <key> <value>")
 
@@ -5421,6 +5858,79 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     return current
 
 
+def _explicit_config_paths(config: Dict[str, Any]) -> Set[Tuple[str, ...]]:
+    """Return leaf paths explicitly present in a raw config dict.
+
+    Computed on the **raw** (un-normalized, un-expanded) config so that
+    values injected by normalisation (e.g. ``agent.max_turns`` from
+    ``DEFAULT_CONFIG``) are not mistakenly treated as user-set.
+
+    Used by ``save_config`` to build the *preserve* set passed to
+    ``_strip_default_values`` so only user-authored keys survive the
+    defaults-strip pass.
+    """
+    paths: Set[Tuple[str, ...]] = set()
+
+    def _walk(value: Any, path: Tuple[str, ...]) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                _walk(child, path + (key,))
+            return
+        if path:
+            paths.add(path)
+
+    _walk(config, ())
+    return paths
+
+
+def _strip_default_values(
+    config: Dict[str, Any],
+    defaults: Dict[str, Any] = DEFAULT_CONFIG,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+) -> Dict[str, Any]:
+    """Return *config* without keys whose values match *defaults*.
+
+    Keys in *preserve_keys* (explicitly present in the user's raw config,
+    before any normalisation) are always kept even when they equal the
+    default, so user-set values such as ``memory.user_char_limit: 2200``
+    survive a ``save_config`` round-trip.
+
+    Nested dicts whose every child is stripped are removed entirely so
+    default-only subtrees (e.g. ``gateway``) never bloat ``config.yaml``
+    when the user has nothing to say about them.
+    """
+    preserve_keys = {("_config_version",)} | set(preserve_keys or ())
+
+    def _strip(value: Any, default: Any, path: Tuple[str, ...]) -> Any:
+        if path in preserve_keys:
+            return copy.deepcopy(value)
+
+        if isinstance(value, dict) and value:
+            default_dict = default if isinstance(default, dict) else {}
+            stripped: Dict[str, Any] = {}
+            for key, child in value.items():
+                child_default = default_dict.get(key)
+                stripped_child = _strip(child, child_default, path + (key,))
+                if stripped_child is not None:
+                    stripped[key] = stripped_child
+            if stripped:
+                return stripped
+            # Entire subtree stripped — remove it
+            return None
+
+        if value == default:
+            return None
+
+        return copy.deepcopy(value)
+
+    result: Dict[str, Any] = {}
+    for key, value in config.items():
+        stripped = _strip(value, defaults.get(key), (key,))
+        if stripped is not None:
+            result[key] = stripped
+    return result
+
+
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     """Move stale root-level provider/base_url/context_length into model section.
 
@@ -5430,17 +5940,52 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     ``model.*`` key is empty — they never override an existing value.
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
+
+    Also aliases ``api_base`` → ``base_url`` (issue #8919). ``api_base`` is the
+    intuitive name OpenAI-SDK / LiteLLM users reach for, and ``hermes config set``
+    blindly accepts any dotted key — so ``model.api_base`` got written, confirmed,
+    and then silently ignored by the runtime resolver (which reads only
+    ``model.base_url``), causing requests to fall back to OpenRouter. We migrate
+    the alias to the canonical key (fallback-only — never override an explicit
+    ``base_url``) and drop the alias so it can't confuse later loads.
+
+    Finally, canonicalizes the model-id key to ``model.default`` (issue #34500).
+    The runtime resolver and ~14 other readers select the chat model via
+    ``model.default``; ``model.model`` was already aliased inline at some sites
+    but ``model.name`` was not, so a custom-provider config like
+    ``model: {name: <id>, provider: <custom>}`` resolved to an empty model and
+    the API request went out with ``model=`` (HTTP 400 from OpenAI-compatible
+    backends) — while display paths (``hermes status``/``dump``) read ``name``
+    and *showed* the model, making the failure silent. Normalizing here (the
+    single load/save chokepoint) means every reader, present and future, sees a
+    populated ``default`` and the stale alias is migrated out of config.yaml on
+    the next save. Precedence: ``default`` > ``model`` > ``name`` (never
+    overrides an explicit ``default``, so existing configs are unaffected).
     """
-    # Only act if there are root-level keys to migrate
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
-    if not has_root:
+    # Only act if there's something to migrate: root-level keys, an api_base
+    # alias, or a model dict whose id lives under a non-canonical key.
+    model_in = config.get("model")
+    model_has_alias = isinstance(model_in, dict) and model_in.get("api_base")
+    # A model dict needs canonicalization if its id lives under a non-canonical
+    # key (``model``/``name``) — either because ``default`` is empty (we must
+    # promote the alias) or because ``default`` is set but a stale alias still
+    # lingers (we must drop it so config.yaml ends up canonical).
+    model_needs_canon = isinstance(model_in, dict) and (
+        model_in.get("model") or model_in.get("name")
+    )
+    has_root = any(
+        config.get(k) for k in ("provider", "base_url", "context_length", "api_base")
+    )
+    if not has_root and not model_has_alias and not model_needs_canon:
         return config
 
     config = dict(config)
     model = config.get("model")
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
-        config["model"] = model
+    else:
+        model = dict(model)
+    config["model"] = model
 
     for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
@@ -5448,18 +5993,52 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
             model[key] = root_val
         config.pop(key, None)
 
+    # api_base is an alias for base_url, at the root OR inside model.
+    for alias_val in (config.get("api_base"), model.get("api_base")):
+        if alias_val and not model.get("base_url"):
+            model["base_url"] = alias_val
+    config.pop("api_base", None)
+    model.pop("api_base", None)
+
+    # Canonicalize the model id to ``default``. ``model`` and ``name`` are
+    # last-resort aliases (in that order) — only consulted when ``default`` is
+    # empty, then dropped so later loads/saves can't reintroduce the ambiguity.
+    if not (model.get("default") or ""):
+        alias = model.get("model") or model.get("name")
+        if alias:
+            model["default"] = alias
+    if model.get("default"):
+        # Drop the now-redundant aliases so config.yaml ends up canonical.
+        model.pop("model", None)
+        model.pop("name", None)
+
     return config
 
 
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize legacy root-level max_turns into agent.max_turns."""
+    """Normalize legacy root-level max_turns into agent.max_turns.
+
+    Only injects the schema default when the user actually set max_turns
+    somewhere (root level or under ``agent``).  A bare ``load_config()``
+    call that passes the result straight to ``save_config()`` should not
+    materialise ``agent.max_turns`` in config.yaml when the user never set
+    it — that makes the default sticky and blocks future schema changes.
+    """
     config = dict(config)
     agent_config = dict(config.get("agent") or {})
 
-    if "max_turns" in config and "max_turns" not in agent_config:
+    had_root = "max_turns" in config
+    had_agent = "max_turns" in agent_config
+
+    if had_root and not had_agent:
         agent_config["max_turns"] = config["max_turns"]
 
-    if "max_turns" not in agent_config:
+    # Only inject the default when the user explicitly set max_turns
+    # (either root-level or under agent).  Otherwise leave it absent so
+    # save_config can omit it and the schema default fills in at runtime.
+    if not had_root and not had_agent:
+        pass  # deliberately do not inject DEFAULT_CONFIG default
+    elif "max_turns" not in agent_config:
         agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
 
     config["agent"] = agent_config
@@ -5541,7 +6120,7 @@ def read_raw_config() -> Dict[str, Any]:
 
         try:
             with open(config_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+                data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return {}
@@ -5590,6 +6169,34 @@ def load_config_readonly() -> Dict[str, Any]:
     safety guarantee is purely documented, not enforced — be careful.
     """
     return _load_config_impl(want_deepcopy=False)
+
+
+def write_platform_config_field(
+    platform_key: str,
+    field_key: str,
+    value: Any,
+    *,
+    raw: bool = False,
+) -> None:
+    """Persist one scalar field under ``platforms.<platform_key>``.
+
+    ``raw=True`` preserves CLI setup flows that intentionally edit only the
+    user's raw config file. Dashboard routes use the default loaded-config path
+    so they retain their existing profile-scoped ``load_config`` behavior.
+    """
+    config = read_raw_config() if raw else load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+
+    platform_config = platforms.setdefault(platform_key, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[platform_key] = platform_config
+
+    platform_config[field_key] = value
+    save_config(config)
 
 
 TERMINAL_CONFIG_ENV_MAP = {
@@ -5728,7 +6335,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         if user_sig is not None:
             try:
                 with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+                    user_config = fast_safe_load(f) or {}
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -5851,8 +6458,20 @@ _COMMENTED_SECTIONS = """
 """
 
 
-def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+def save_config(
+    config: Dict[str, Any],
+    *,
+    strip_defaults: bool = True,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+):
+    """Save configuration to ~/.hermes/config.yaml.\n
+
+    Default values from ``DEFAULT_CONFIG`` are not written to disk unless
+    the user explicitly set them (i.e. the path exists in the raw config
+    before any normalisation).  This prevents config.yaml from being
+    contaminated with schema defaults on every save, which makes future
+    default changes invisible to users.
+    """
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
@@ -5877,6 +6496,16 @@ def save_config(config: Dict[str, Any]):
 
         ensure_hermes_home()
         config_path = get_config_path()
+        # Compute explicit user paths BEFORE any normalisation --------
+        # _normalize_max_turns_config may inject agent.max_turns from
+        # DEFAULT_CONFIG; using the raw dict preserves which paths the
+        # user actually set so _strip_default_values can keep them.
+        _raw_for_paths = read_raw_config()
+        explicit_raw_paths: Optional[Set[Tuple[str, ...]]] = (
+            _explicit_config_paths(_raw_for_paths) if _raw_for_paths else None
+        )
+        # ----------------------------------------------------------------
+
         current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         normalized = current_normalized
         raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
@@ -5885,6 +6514,25 @@ def save_config(config: Dict[str, Any]):
                 normalized,
                 raw_existing,
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            )
+
+        # Strip schema-default values so the user's custom settings are not
+        # silently reset on every save.  Keys the user explicitly set (paths
+        # from the raw pre-normalisation config) are always preserved.
+        effective_preserve_keys: Set[Tuple[str, ...]] = {("_config_version",)}
+        if explicit_raw_paths:
+            effective_preserve_keys.update(explicit_raw_paths)
+        if preserve_keys:
+            effective_preserve_keys.update(preserve_keys)
+
+        if strip_defaults and effective_preserve_keys:
+            # _preserve_env_ref_templates may return Any; cast for type-checker.
+            from typing import cast as _cast
+            normalized = _cast(Dict[str, Any], normalized)
+            normalized = _strip_default_values(
+                normalized,  # type: ignore[arg-type]
+                DEFAULT_CONFIG,
+                preserve_keys=effective_preserve_keys,
             )
 
         # Build optional commented-out sections for features that are off by
@@ -5909,6 +6557,29 @@ def save_config(config: Dict[str, Any]):
         )
         _secure_file(config_path)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+
+
+def _parse_env_value(raw_value: str) -> str:
+    """Parse the small .env value subset Hermes writes itself."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        quoted = value[1:-1]
+        parsed: list[str] = []
+        i = 0
+        while i < len(quoted):
+            ch = quoted[i]
+            if ch == "\\" and i + 1 < len(quoted):
+                next_ch = quoted[i + 1]
+                if next_ch in {'"', "\\"}:
+                    parsed.append(next_ch)
+                    i += 2
+                    continue
+            parsed.append(ch)
+            i += 1
+        return "".join(parsed)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return value
 
 
 def load_env() -> Dict[str, str]:
@@ -5959,8 +6630,13 @@ def load_env() -> Dict[str, str]:
         for line in lines:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
+                # Strip the bash-compatible ``export `` prefix so lines like
+                # ``export API_KEY=...`` parse as ``API_KEY`` rather than being
+                # stored under the wrong key ``"export API_KEY"`` (#6659).
+                if line.startswith('export '):
+                    line = line[7:]
                 key, _, value = line.partition('=')
-                env_vars[key.strip()] = value.strip().strip('"\'')
+                env_vars[key.strip()] = _parse_env_value(value)
 
     if cache_key is not None:
         _env_cache = (cache_key, dict(env_vars))
@@ -6134,6 +6810,22 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
+def _quote_env_value(value: str) -> str:
+    """Quote .env values containing characters with special dotenv meaning."""
+    if value == "":
+        return value
+    needs_quoting = (
+        "#" in value
+        or '"' in value
+        or "'" in value
+        or value != value.strip()
+    )
+    if not needs_quoting:
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -6173,11 +6865,13 @@ def save_env_value(key: str, value: str):
         # Sanitize on every read: split concatenated keys, drop stale placeholders
         lines = _sanitize_env_lines(lines)
 
+    serialized_value = _quote_env_value(value)
+
     # Find and update or append
     found = False
     for i, line in enumerate(lines):
         if line.strip().startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
+            lines[i] = f"{key}={serialized_value}\n"
             found = True
             break
 
@@ -6185,7 +6879,7 @@ def save_env_value(key: str, value: str):
         # Ensure there's a newline at the end of the file before appending
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
-        lines.append(f"{key}={value}\n")
+        lines.append(f"{key}={serialized_value}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.
@@ -6372,6 +7066,60 @@ def redact_key(key: str) -> str:
     return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
+# Key names (case-insensitive, exact match) whose VALUE is a credential and
+# must be masked before printing any config dict to the terminal. Covers the
+# fields a custom provider stuffs into the `model`/`custom_providers` blocks
+# (`api_key`) plus the usual token/secret/password shapes. Exact-match only so
+# benign keys like `token_count` or `secret_santa` don't get masked.
+_SECRET_CONFIG_KEYS = frozenset({
+    "api_key",
+    "apikey",
+    "key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "secret",
+    "client_secret",
+    "password",
+    "passwd",
+    "auth",
+    "authorization",
+    "private_key",
+    "bearer",
+    "jwt",
+})
+
+
+def redact_config_value(value: Any, _depth: int = 0) -> Any:
+    """Return a copy of ``value`` with credential-shaped keys masked for display.
+
+    Recursively walks dicts/lists and replaces the value of any key in
+    ``_SECRET_CONFIG_KEYS`` (case-insensitive) with a masked form via
+    :func:`agent.redact.mask_secret`. Non-secret keys and scalar values pass
+    through unchanged. Use this before ``print``-ing any config sub-tree that
+    might carry a custom-provider ``api_key`` — ``print`` bypasses the logging
+    redactor, and opaque tokens (e.g. Cloudflare ``cfut_...``) don't match the
+    vendor-prefix regexes either, so structural key-name masking is required.
+    """
+    from agent.redact import mask_secret
+
+    # Defensive bound on recursion depth for pathological/cyclic configs.
+    if _depth > 20:
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+                out[k] = mask_secret(v)
+            else:
+                out[k] = redact_config_value(v, _depth + 1)
+        return out
+    if isinstance(value, list):
+        return [redact_config_value(v, _depth + 1) for v in value]
+    return value
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -6440,7 +7188,7 @@ def show_config():
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
-    print(f"  Model:        {config.get('model', 'not set')}")
+    print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
     _cfg_max_turns = config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])
     print(f"  Max turns:    {_cfg_max_turns}")
     # Warn on stale HERMES_MAX_ITERATIONS ghost in .env that disagrees with
@@ -6588,7 +7336,7 @@ def edit_config():
     
     # Ensure config exists
     if not config_path.exists():
-        save_config(DEFAULT_CONFIG)
+        save_config(DEFAULT_CONFIG, strip_defaults=False)
         print(f"Created {config_path}")
     
     # Find editor
@@ -6666,7 +7414,7 @@ def set_config_value(key: str, value: str):
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
+                user_config = fast_safe_load(f) or {}
         except Exception:
             user_config = {}
     
@@ -6686,7 +7434,15 @@ def set_config_value(key: str, value: str):
         value = float(value)
 
     _set_nested(user_config, key, value)
-    
+    # Normalize the api_base → base_url alias at set-time too (issue #8919),
+    # so a fresh `hermes config set model.api_base ...` lands on the canonical
+    # key the runtime resolver actually reads, instead of being silently
+    # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
+    _alias_norm = key.strip().lower()
+    if _alias_norm in ("model.api_base", "api_base"):
+        user_config = _normalize_root_model_keys(user_config)
+        key = "model.base_url"
+        print("  (note: 'api_base' is an alias — saved as model.base_url)")
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write
@@ -6698,7 +7454,17 @@ def set_config_value(key: str, value: str):
     if env_var and key != "terminal.cwd":
         save_env_value(env_var, _terminal_env_value(value))
 
-    print(f"✓ Set {key} = {value} in {config_path}")
+    # Mask the echoed value when the (possibly nested) key is credential-shaped
+    # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
+    # (lowercase, so it misses the .env api_keys list above) and would otherwise
+    # print the raw secret to the terminal.
+    _leaf_key = key.rsplit(".", 1)[-1].lower()
+    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+        from agent.redact import mask_secret
+        _display_value = mask_secret(value)
+    else:
+        _display_value = value
+    print(f"✓ Set {key} = {_display_value} in {config_path}")
 
 
 # =============================================================================
@@ -6936,7 +7702,7 @@ def _inject_platform_plugin_env_vars() -> None:
                 continue
             try:
                 with open(manifest_path, "r", encoding="utf-8") as f:
-                    manifest = yaml.safe_load(f) or {}
+                    manifest = fast_safe_load(f) or {}
             except Exception:
                 continue
             label = manifest.get("label") or manifest.get("name") or child.name

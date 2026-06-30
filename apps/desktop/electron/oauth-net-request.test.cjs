@@ -30,5 +30,8 @@ test('setJsonRequestHeaders does not set Electron-restricted Content-Length', ()
   setJsonRequestHeaders(request)
 
   assert.deepEqual(headers, [['Content-Type', 'application/json']])
-  assert.equal(headers.some(([name]) => name.toLowerCase() === 'content-length'), false)
+  assert.equal(
+    headers.some(([name]) => name.toLowerCase() === 'content-length'),
+    false
+  )
 })

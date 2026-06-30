@@ -11,7 +11,7 @@ import type {
   DesktopBootstrapState
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from '@/lib/icons'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, iconSize, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 /**
@@ -109,16 +109,16 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
   const icon = useMemo(() => {
     switch (state) {
       case 'running':
-        return <Loader2 className="h-4 w-4 animate-spin text-primary" />
+        return <Loader2 className={cn(iconSize.md, 'animate-spin text-primary')} />
 
       case 'succeeded':
-        return <Check className="h-4 w-4 text-emerald-600" />
+        return <Check className={cn(iconSize.md, 'text-emerald-600')} />
 
       case 'skipped':
-        return <Check className="h-4 w-4 text-muted-foreground" />
+        return <Check className={cn(iconSize.md, 'text-muted-foreground')} />
 
       case 'failed':
-        return <AlertTriangle className="h-4 w-4 text-destructive" />
+        return <AlertTriangle className={cn(iconSize.md, 'text-destructive')} />
 
       case 'pending':
 
@@ -354,9 +354,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 backdrop-blur-md">
         <div className="w-full max-w-xl rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
           <h2 className="text-2xl font-semibold tracking-tight">{copy.oneTimeTitle}</h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            {copy.unsupportedDesc(platformLabel)}
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">{copy.unsupportedDesc(platformLabel)}</p>
 
           <div className="mt-4">
             <div className="mb-1.5 text-xs font-medium text-muted-foreground">{copy.installCommand}</div>
@@ -407,7 +405,11 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
   const totalCount = stages.length
   const failed = Boolean(state.error)
-  const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
+  // Count the running stage as half-done so the bar advances *during* a long
+  // stage instead of sitting frozen at the last completed step while its logs
+  // stream (e.g. "0 of 2" pinned at 0% for the whole first stage).
+  const progressUnits = completedCount + (!failed && currentStage ? 0.5 : 0)
+  const progressPct = totalCount > 0 ? Math.round((progressUnits / totalCount) * 100) : 0
   const currentStartedAt = currentStage ? state.stages[currentStage]?.startedAt : null
   const currentElapsed = typeof currentStartedAt === 'number' ? formatElapsed(now - currentStartedAt) : ''
 
@@ -419,9 +421,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           <h2 className="text-2xl font-semibold tracking-tight">
             {failed ? copy.failedTitle : state.active ? copy.settingUpTitle : copy.finishingTitle}
           </h2>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            {failed ? copy.failedDesc : copy.activeDesc}
-          </p>
+          <p className="mt-1.5 text-sm text-muted-foreground">{failed ? copy.failedDesc : copy.activeDesc}</p>
         </div>
 
         {/* Scrollable middle: progress, stages, error block, log */}
@@ -455,7 +455,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           {failed && state.error && (
             <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
               <div className="mb-1 flex items-center gap-1.5 font-medium text-destructive">
-                <AlertTriangle className="h-4 w-4" />
+                <AlertTriangle className={iconSize.md} />
                 <span>{copy.error}</span>
               </div>
               <p className="whitespace-pre-wrap break-words text-foreground/90">{state.error}</p>
@@ -484,11 +484,9 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               type="button"
               variant="ghost"
             >
-              {logOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              {logOpen ? <ChevronDown className={iconSize.sm} /> : <ChevronRight className={iconSize.sm} />}
               <span>{logOpen ? copy.hideOutput : copy.showOutput}</span>
-              <span className="ml-1 tabular-nums">
-                ({copy.lines(state.log.length)})
-              </span>
+              <span className="ml-1 tabular-nums">({copy.lines(state.log.length)})</span>
             </Button>
 
             {logOpen && (
@@ -529,7 +527,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 size="sm"
                 variant="ghost"
               >
-                {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {cancelling ? <Loader2 className={cn(iconSize.md, 'animate-spin')} /> : null}
                 {cancelling ? copy.cancelling : copy.cancelInstall}
               </Button>
             </div>

@@ -26,7 +26,6 @@ from hermes_cli.auth import (
     resolve_codex_runtime_credentials,
     resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials,
-    resolve_gemini_oauth_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -171,6 +170,43 @@ def _host_derived_api_key(base_url: str) -> str:
         return ""
     env_name = f"{sanitized}_API_KEY"
     return (_getenv(env_name, "") or "").strip()
+
+
+def _anthropic_base_url_override_ok(base_url: str) -> bool:
+    """Decide whether a configured ``model.base_url`` may back native Anthropic.
+
+    Native ``provider: anthropic`` resolution honors ``model.base_url`` so users
+    can point at Anthropic-compatible endpoints (official Anthropic/Claude hosts,
+    Azure Foundry, MiniMax/Zhipu/LiteLLM-style ``/anthropic`` proxies, Kimi's
+    ``/coding`` route). But a config can carry a *stale* non-Anthropic URL — e.g.
+    ``provider: anthropic`` left with ``base_url: https://openrouter.ai/api/v1``
+    after a provider switch — which would route Anthropic OAuth/setup-token
+    traffic to an OpenAI-compatible aggregator and 404. Ignore those.
+
+    Returns True only when the URL plausibly speaks the Anthropic Messages
+    protocol; otherwise the caller falls back to ``https://api.anthropic.com``.
+    """
+    candidate = (base_url or "").strip()
+    if not candidate:
+        return False
+
+    hostname = (base_url_hostname(candidate) or "").lower()
+    if not hostname:
+        return False
+
+    # Official Anthropic / Claude hosts.
+    if hostname == "api.anthropic.com" or hostname.endswith(".anthropic.com") or hostname.endswith(".claude.com"):
+        return True
+    # Azure Foundry Anthropic endpoints (handled specially downstream).
+    if hostname.endswith(".azure.com"):
+        return True
+    # Anthropic-compatible proxies conventionally expose the native Messages
+    # protocol under a ``/anthropic`` suffix, and Kimi under ``/coding`` — same
+    # signal _detect_api_mode_for_url() uses to pick anthropic_messages.
+    if _detect_api_mode_for_url(candidate) == "anthropic_messages":
+        return True
+    # Bare api.kimi.com without the /coding path is not an Anthropic endpoint.
+    return False
 
 
 def _auto_detect_local_model(base_url: str) -> str:
@@ -331,9 +367,6 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
-    elif provider == "google-gemini-cli":
-        api_mode = "chat_completions"
-        base_url = base_url or "cloudcode-pa://google"
     elif provider == "minimax-oauth":
         # MiniMax OAuth tokens are valid only against the Anthropic Messages
         # compatible endpoint. Do not honor stale model.api_mode values from a
@@ -348,6 +381,8 @@ def _resolve_runtime_from_pool_entry(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
@@ -427,6 +462,9 @@ def _resolve_runtime_from_pool_entry(
     api_mode = _maybe_apply_codex_app_server_runtime(
         provider=provider, api_mode=api_mode, model_cfg=model_cfg
     )
+
+    if provider == "lmstudio":
+        base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
 
     return {
         "provider": provider,
@@ -1251,6 +1289,8 @@ def _resolve_explicit_runtime(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
         if not api_key:
@@ -1404,6 +1444,16 @@ def resolve_runtime_provider(
     """
     requested_provider = resolve_requested_provider(requested)
 
+    if requested_provider == "moa":
+        return {
+            "provider": "moa",
+            "api_mode": "chat_completions",
+            "base_url": "moa://local",
+            "api_key": "moa-virtual-provider",
+            "source": "moa-virtual-provider",
+            "requested_provider": requested_provider,
+        }
+
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
     # return provider="custom" with chat_completions api_mode and no valid key).
@@ -1447,6 +1497,43 @@ def resolve_runtime_provider(
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
+
+    # If provider is "auto" (or unset) but config.yaml has an explicit base_url
+    # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
+    # route through the OpenAI-compatible resolver instead of letting
+    # resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from
+    # the environment and send the request to a cloud API. Fixes #3846.
+    if not explicit_base_url and not explicit_api_key:
+        model_cfg = _get_model_config()
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = str(model_cfg.get("base_url") or "").strip()
+        if cfg_base_url and cfg_provider in ("auto", ""):
+            # Check that base_url isn't one of the well-known cloud API roots
+            # (OpenRouter, Anthropic, OpenAI). If it's something else (Ollama,
+            # LM Studio, vLLM, …) we honour it directly. The full detection
+            # logic lives in _resolve_openrouter_runtime; we just skip the
+            # resolve_provider() call so env-var credentials don't shadow it.
+            # Match on HOST, not substring, so a look-alike base_url
+            # (e.g. http://api.anthropic.com.attacker.test/v1, or one whose
+            # path merely contains "openai.com") cannot evade the bypass and
+            # leak a cloud credential. Mirrors the host-gating used for
+            # API-key selection in _resolve_openrouter_runtime.
+            _known_cloud_hosts = (
+                "openrouter.ai",
+                "anthropic.com",
+                "openai.com",
+            )
+            if not any(
+                base_url_host_matches(cfg_base_url, host)
+                for host in _known_cloud_hosts
+            ):
+                runtime = _resolve_openrouter_runtime(
+                    requested_provider=requested_provider,
+                    explicit_api_key=explicit_api_key,
+                    explicit_base_url=explicit_base_url,
+                )
+                runtime["requested_provider"] = requested_provider
+                return runtime
 
     provider = resolve_provider(
         requested_provider,
@@ -1499,10 +1586,10 @@ def resolve_runtime_provider(
         # For Nous, the pool entry's runtime_api_key is the agent_key
         # compatibility field. It must be an invoke JWT. The pool doesn't
         # refresh it during selection (that would trigger network calls in
-        # non-runtime contexts like `hermes auth list`).  If the key is
-        # expired, clear pool_api_key so we fall through to
-        # resolve_nous_runtime_credentials() which handles refresh.
-        if provider == "nous" and entry is not None and pool_api_key:
+        # non-runtime contexts like `hermes auth list`). If the key is
+        # expired/missing, refresh the selected pool entry before falling back
+        # to singleton auth resolution.
+        if provider == "nous" and entry is not None:
             min_ttl = max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800))
             nous_state = {
                 "agent_key": getattr(entry, "agent_key", None),
@@ -1510,8 +1597,26 @@ def resolve_runtime_provider(
                 "scope": getattr(entry, "scope", None),
             }
             if not _agent_key_is_usable(nous_state, min_ttl):
-                logger.debug("Nous pool entry agent_key expired/missing, falling through to runtime resolution")
-                pool_api_key = ""
+                logger.debug("Nous pool entry agent_key expired/missing, refreshing selected pool entry")
+                try:
+                    refreshed = pool.try_refresh_current()
+                except Exception as exc:
+                    logger.debug("Nous pool entry refresh failed: %s", exc)
+                    refreshed = None
+                if refreshed is not None:
+                    entry = refreshed
+                    pool_api_key = (
+                        getattr(entry, "runtime_api_key", None)
+                        or getattr(entry, "access_token", "")
+                    )
+                    nous_state = {
+                        "agent_key": getattr(entry, "agent_key", None),
+                        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+                        "scope": getattr(entry, "scope", None),
+                    }
+                if not pool_api_key or not _agent_key_is_usable(nous_state, min_ttl):
+                    logger.debug("Nous pool entry agent_key still unavailable, falling through to runtime resolution")
+                    pool_api_key = ""
         if entry is not None and pool_api_key:
             return _resolve_runtime_from_pool_entry(
                 provider=provider,
@@ -1614,26 +1719,6 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
 
-    if provider == "google-gemini-cli":
-        try:
-            creds = resolve_gemini_oauth_runtime_credentials()
-            return {
-                "provider": "google-gemini-cli",
-                "api_mode": "chat_completions",
-                "base_url": creds.get("base_url", ""),
-                "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "google-oauth"),
-                "expires_at_ms": creds.get("expires_at_ms"),
-                "email": creds.get("email", ""),
-                "project_id": creds.get("project_id", ""),
-                "requested_provider": requested_provider,
-            }
-        except AuthError:
-            if requested_provider != "auto":
-                raise
-            logger.info("Google Gemini OAuth credentials failed; "
-                        "falling through to next provider.")
-
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)
         return {
@@ -1656,6 +1741,8 @@ def resolve_runtime_provider(
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if not _anthropic_base_url_override_ok(cfg_base_url):
+                cfg_base_url = ""
         base_url = cfg_base_url or "https://api.anthropic.com"
 
         # For Microsoft Foundry endpoints, use ANTHROPIC_API_KEY directly —
@@ -1756,7 +1843,7 @@ def resolve_runtime_provider(
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
         # feature parity (prompt caching, thinking budgets, adaptive thinking).
         # Non-Claude models use the Converse API for multi-model support.
-        _current_model = str(model_cfg.get("default") or "").strip()
+        _current_model = str(target_model or model_cfg.get("default") or "").strip()
         if is_anthropic_bedrock_model(_current_model):
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
@@ -1830,6 +1917,8 @@ def resolve_runtime_provider(
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
             base_url = re.sub(r"/v1/?$", "", base_url)
+        if provider == "lmstudio":
+            base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
         return {
             "provider": provider,
             "api_mode": api_mode,

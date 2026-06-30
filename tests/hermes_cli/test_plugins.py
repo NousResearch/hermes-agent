@@ -18,6 +18,7 @@ from hermes_cli.plugins import (
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
+    get_pre_verify_continue_message,
     has_middleware,
     resolve_plugin_command_result,
 )
@@ -856,6 +857,73 @@ class TestPreToolCallBlocking:
             ],
         )
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
+
+
+class TestGetPreVerifyContinueMessage:
+    """`pre_verify` directive aggregation — mirrors the pre_tool_call block path."""
+
+    def test_continue_canonical(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "continue", "message": "run checks"}],
+        )
+        assert get_pre_verify_continue_message(session_id="s") == "run checks"
+
+    def test_claude_block_means_continue(self, monkeypatch):
+        # Claude-Code Stop: "block" the stop == keep going; reason → message.
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"decision": "block", "reason": "run the formatter"}],
+        )
+        assert get_pre_verify_continue_message() == "run the formatter"
+
+    def test_first_actionable_directive_wins(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                "noise",                                   # not a dict
+                {"action": "continue"},                     # no message → skipped
+                {"action": "continue", "message": "second"},
+                {"action": "continue", "message": "third"},
+            ],
+        )
+        assert get_pre_verify_continue_message() == "second"
+
+    def test_message_is_trimmed(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "continue", "message": "  tidy up  "}],
+        )
+        assert get_pre_verify_continue_message() == "tidy up"
+
+    def test_invalid_returns_ignored(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "allow"},                        # wrong action
+                {"context": "noise"},                       # not a directive
+                {"action": "continue", "message": "   "},   # blank message
+                {"action": "continue", "message": 42},      # message not str
+            ],
+        )
+        assert get_pre_verify_continue_message() is None
+
+    def test_none_when_no_hooks(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        assert get_pre_verify_continue_message() is None
+
+    def test_forwards_scope_signals_to_hooks(self, monkeypatch):
+        seen = {}
+
+        def capture(hook_name, **kwargs):
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", capture)
+        get_pre_verify_continue_message(coding=True, attempt=2, changed_paths=["a.py"])
+        assert seen["coding"] is True
+        assert seen["attempt"] == 2
+        assert seen["changed_paths"] == ["a.py"]
 
 
 class TestThreadToolWhitelist:
@@ -1867,3 +1935,71 @@ class TestPluginDebugLogging:
             plugins_mod._PLUGINS_DEBUG = original_debug
             plugins_mod.logger.setLevel(original_level)
             plugins_mod.logger.handlers = original_handlers
+
+
+class TestPluginContextProfileName:
+    """ctx.profile_name resolves from HERMES_HOME in every context."""
+
+    def _ctx(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        return PluginContext(manifest, mgr)
+
+    def test_default_profile(self, tmp_path, monkeypatch):
+        """HERMES_HOME at the root resolves to 'default'."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert self._ctx().profile_name == "default"
+
+    def test_named_profile(self, tmp_path, monkeypatch):
+        """HERMES_HOME under profiles/<name> resolves to that name."""
+        prof = tmp_path / ".hermes" / "profiles" / "coder"
+        prof.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(prof))
+        assert self._ctx().profile_name == "coder"
+
+    def test_works_without_cli_ref(self, tmp_path, monkeypatch):
+        """profile_name does not depend on _cli_ref (None in worker sessions)."""
+        prof = tmp_path / ".hermes" / "profiles" / "worker1"
+        prof.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(prof))
+        ctx = self._ctx()
+        assert ctx._manager._cli_ref is None
+        assert ctx.profile_name == "worker1"
+
+
+class TestDispatchToolWithoutCliRef:
+    """ctx.dispatch_tool works in worker/hook contexts (no _cli_ref).
+
+    This pins the contract the plugin docs rely on: a plugin can drive
+    tools from a hook callback even when running in the gateway or a
+    kanban-spawned worker session, where _cli_ref is None.
+    """
+
+    def test_dispatch_tool_invokes_handler_without_cli_ref(self):
+        from tools.registry import registry
+
+        mgr = PluginManager()
+        assert mgr._cli_ref is None  # worker/hook context
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), mgr)
+
+        calls = []
+        registry.register(
+            name="_test_dispatch_probe",
+            toolset="debugging",
+            schema={"name": "_test_dispatch_probe", "description": "probe",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: calls.append((args, kw)) or '{"ok": true}',
+        )
+        try:
+            result = ctx.dispatch_tool("_test_dispatch_probe", {"x": 1})
+            assert result == '{"ok": true}'
+            assert calls and calls[0][0] == {"x": 1}
+            # parent_agent is not forced when there's no CLI agent to resolve.
+            assert calls[0][1].get("parent_agent") is None
+        finally:
+            registry.deregister("_test_dispatch_probe")

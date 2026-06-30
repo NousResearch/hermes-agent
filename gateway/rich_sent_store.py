@@ -25,8 +25,15 @@ _MAX_TEXT_CHARS = 2000
 
 
 def _store_path() -> str:
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    return os.path.join(home, "state", "rich_sent_index.json")
+    # Resolve through get_hermes_home() so the context-local profile override
+    # (set_hermes_home_override) is honored.  Reading os.environ["HERMES_HOME"]
+    # directly bypassed the override and leaked every profile's rich-sent index
+    # into the launch/default profile in single-process multi-profile runtimes
+    # (desktop tui_gateway).
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    return os.path.join(str(home), "state", "rich_sent_index.json")
 
 
 def _key(chat_id, message_id) -> str:

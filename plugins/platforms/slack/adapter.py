@@ -3553,7 +3553,11 @@ class SlackAdapter(BasePlatformAdapter):
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
-        thread_ts = message.get("thread_ts", "")
+        # Inherit the thread so the follow-up stays in the same place. When the
+        # suggestion message is itself a thread reply, message.thread_ts is set;
+        # otherwise fall back to the suggestion message's own ts so the reply
+        # threads under it rather than dropping to the channel root.
+        thread_ts = message.get("thread_ts") or msg_ts
         user_name = body.get("user", {}).get("name", "unknown")
         user_id = body.get("user", {}).get("id", "")
 
@@ -3629,10 +3633,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         from gateway.session import SessionSource, Platform
         from gateway.platforms.base import MessageEvent
+        # Slack DM channel ids start with "D"; anything else is a channel/group.
+        # Hardcoding "dm" mis-keys the synthetic turn into a different session
+        # than the original channel conversation, so derive it from channel_id.
+        chat_type = "dm" if str(channel_id or "").startswith("D") else "group"
         source = SessionSource(
             platform=Platform.SLACK,
             chat_id=channel_id,
-            chat_type="dm",
+            chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts or None,

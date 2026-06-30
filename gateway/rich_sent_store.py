@@ -25,9 +25,7 @@ _MAX_TEXT_CHARS = 2000
 
 
 def _store_path() -> str:
-    # Resolve via get_hermes_home() so the profile override is honored; reading
-    # os.environ["HERMES_HOME"] directly bypassed it and leaked the index into
-    # the launch profile (multi-profile tui_gateway / gateway).
+    # Resolve via get_hermes_home() so the active profile override is honored.
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()

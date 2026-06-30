@@ -248,6 +248,103 @@ def load_hermes_dotenv(
     return loaded
 
 
+def _string_map(value: object) -> dict[str, str]:
+    """Coerce a user config mapping to a clean str->str env-var map."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for source, target in value.items():
+        source_s = str(source).strip()
+        target_s = str(target).strip()
+        if source_s and target_s:
+            out[source_s] = target_s
+    return out
+
+
+def _string_list(value: object) -> list[str]:
+    """Coerce a scalar/list config value to a clean list of strings."""
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return []
+
+
+def _result_list_remove(result: object, attr: str, key: str) -> None:
+    values = getattr(result, attr, None)
+    if isinstance(values, list):
+        while key in values:
+            values.remove(key)
+
+
+def _result_list_append(result: object, attr: str, key: str) -> None:
+    values = getattr(result, attr, None)
+    if isinstance(values, list) and key not in values:
+        values.append(key)
+
+
+def _prune_secret_result_key(result: object, key: str) -> None:
+    os.environ.pop(key, None)
+    secrets = getattr(result, "secrets", None)
+    if isinstance(secrets, dict):
+        secrets.pop(key, None)
+    _result_list_remove(result, "applied", key)
+    _result_list_remove(result, "skipped", key)
+
+
+def _apply_bitwarden_env_map(result: object, bw_cfg: dict, *, override_existing: bool) -> None:
+    """Map BWS secret aliases to runtime env names for profile-specific secrets.
+
+    Example config::
+
+        secrets:
+          bitwarden:
+            env_map:
+              DISCORD_BOT_TOKEN_MEOS_ACADEMIC: DISCORD_BOT_TOKEN
+            prune_env_prefixes:
+              - DISCORD_BOT_TOKEN_
+
+    This lets several profile-specific secrets live in one BWS project without
+    exporting every alias into the long-lived process environment.  The selected
+    alias is materialized as the runtime env var that Hermes already consumes;
+    aliases are then pruned from both ``os.environ`` and the printed/applied
+    result metadata.
+    """
+    mapping = _string_map(bw_cfg.get("env_map"))
+    if not mapping:
+        return
+
+    secrets = getattr(result, "secrets", None)
+    if not isinstance(secrets, dict):
+        secrets = {}
+
+    for source, target in mapping.items():
+        value = secrets.get(source) or os.environ.get(source)
+        if not value:
+            continue
+        if override_existing or not os.environ.get(target):
+            os.environ[target] = str(value)
+            result_secrets = getattr(result, "secrets", None)
+            if isinstance(result_secrets, dict):
+                result_secrets[target] = str(value)
+            _result_list_remove(result, "skipped", target)
+            _result_list_append(result, "applied", target)
+
+    prune_keys = set(mapping) | set(_string_list(bw_cfg.get("prune_env_keys")))
+    prune_prefixes = _string_list(bw_cfg.get("prune_env_prefixes"))
+    if prune_prefixes:
+        for key in list(os.environ):
+            if any(key.startswith(prefix) for prefix in prune_prefixes):
+                prune_keys.add(key)
+        for key in list(secrets):
+            if any(str(key).startswith(prefix) for prefix in prune_prefixes):
+                prune_keys.add(str(key))
+
+    targets = set(mapping.values())
+    for key in sorted(prune_keys - targets):
+        _prune_secret_result_key(result, key)
+
+
 def _apply_managed_env() -> None:
     """Apply the managed-scope .env last, with override, so it beats user/shell.
 
@@ -325,6 +422,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         auto_install=bool(bw_cfg.get("auto_install", True)),
         server_url=str(bw_cfg.get("server_url", "") or "").strip(),
         home_path=home_path,
+    )
+    _apply_bitwarden_env_map(
+        result,
+        bw_cfg,
+        override_existing=bool(bw_cfg.get("override_existing", False)),
     )
 
     if result.applied:

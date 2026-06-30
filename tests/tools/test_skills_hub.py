@@ -1168,6 +1168,28 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_matches_installed_content_hash_with_shared_prefix_paths(self, tmp_path):
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "# Demo\n",
+                "references/styles.md": "flat style notes\n",
+                "references/styles/blueprint.md": "nested blueprint\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        (skill_dir / "references" / "styles").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Demo\n")
+        (skill_dir / "references" / "styles.md").write_text("flat style notes\n")
+        (skill_dir / "references" / "styles" / "blueprint.md").write_text("nested blueprint\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
     def test_bundle_content_hash_accepts_binary_files(self):
         bundle = SkillBundle(
             name="demo-binary-skill",

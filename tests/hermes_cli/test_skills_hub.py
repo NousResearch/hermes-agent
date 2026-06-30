@@ -249,6 +249,96 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
     assert "Updated 1 skill" in output
 
 
+def test_do_update_refreshes_stale_lock_content_hash(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    identifier = "owner/repo/demo-skill"
+    latest_bundle = hub.SkillBundle(
+        name="demo-skill",
+        files={
+            "SKILL.md": "# Demo\n\nlatest content\n",
+            "references/styles.md": "flat style notes\n",
+            "references/styles/blueprint.md": "nested blueprint\n",
+        },
+        source="github",
+        identifier=identifier,
+        trust_level="community",
+        metadata={"preserve": "me"},
+    )
+    expected_hash = hub.bundle_content_hash(latest_bundle)
+
+    lock = hub.HubLockFile(path=hub_env / "lock.json")
+    lock.save({
+        "version": 1,
+        "installed": {
+            "demo-skill": {
+                "source": "github",
+                "identifier": identifier,
+                "trust_level": "community",
+                "scan_verdict": "safe",
+                "content_hash": "sha256:stalehash",
+                "install_path": "demo-skill",
+                "files": ["SKILL.md"],
+                "metadata": {"preserve": "me"},
+                "installed_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+            },
+        },
+    })
+
+    installed_dir = hub.SKILLS_DIR / "demo-skill"
+    installed_dir.mkdir(parents=True)
+    (installed_dir / "SKILL.md").write_text("# Demo\n\nold content\n", encoding="utf-8")
+
+    class _Source:
+        def source_id(self):
+            return "github"
+
+        def inspect(self, _identifier):
+            return hub.SkillMeta(
+                name="demo-skill",
+                description="Demo skill",
+                source="github",
+                identifier=identifier,
+                trust_level="community",
+            )
+
+        def fetch(self, _identifier):
+            return latest_bundle
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: lock)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [_Source()])
+    monkeypatch.setattr(
+        guard,
+        "scan_skill",
+        lambda skill_path, source="community": guard.ScanResult(
+            skill_name="demo-skill",
+            source=source,
+            trust_level="community",
+            verdict="safe",
+        ),
+    )
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (True, "ok"))
+
+    before = hub.check_for_skill_updates(lock=lock, sources=[_Source()])
+    assert before[0]["status"] == "update_available"
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_update(name="demo-skill", console=console)
+
+    assert (hub.SKILLS_DIR / "demo-skill" / "SKILL.md").read_text(encoding="utf-8") == latest_bundle.files["SKILL.md"]
+
+    refreshed = lock.get_installed("demo-skill")
+    assert refreshed["content_hash"] == expected_hash
+    assert refreshed["metadata"] == {"preserve": "me"}
+
+    after = hub.check_for_skill_updates(lock=lock, sources=[_Source()])
+    assert after[0]["status"] == "up_to_date"
+
+
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
     results = [type("R", (), {
         "name": "kubernetes",

@@ -2712,6 +2712,11 @@ DEFAULT_CONFIG = {
     #   deny    — block the command and let the agent find another way (default, safe)
     #   approve — auto-approve all dangerous commands in cron jobs
     #
+    # kanban_mode — same choice, for kanban-dispatched worker subprocesses
+    # (also unattended — no user present to approve):
+    #   deny    — block the command and let the worker find another way (default, safe)
+    #   approve — auto-approve all dangerous commands in kanban workers
+    #
     # timeout — seconds to wait for the user's approve/deny before failing
     # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
     # Messaging approvals arrive as a push notification the user may not see
@@ -2721,6 +2726,7 @@ DEFAULT_CONFIG = {
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
+        "kanban_mode": "deny",
         # User-defined deny rules: fnmatch globs matched against terminal
         # commands. A match blocks the command unconditionally — BEFORE the
         # --yolo / /yolo / mode=off bypass — making this the user-editable

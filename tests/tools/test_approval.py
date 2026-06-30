@@ -2260,6 +2260,7 @@ class TestApprovalTimeoutIsNotConsent:
         self._saved_env = {
             k: os.environ.get(k)
             for k in ("HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION",
+                      "HERMES_KANBAN_SESSION",
                       "HERMES_YOLO_MODE",
                       "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
         }
@@ -2269,6 +2270,8 @@ class TestApprovalTimeoutIsNotConsent:
         # _is_gateway_approval_context(); a leaked value from a parent cron
         # process would force the cron path and break these gateway tests.
         os.environ.pop("HERMES_CRON_SESSION", None)
+        # Same reasoning for a leaked HERMES_KANBAN_SESSION.
+        os.environ.pop("HERMES_KANBAN_SESSION", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
 

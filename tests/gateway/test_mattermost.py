@@ -199,6 +199,87 @@ def _make_adapter():
     return adapter
 
 
+class TestMattermostMaxPostLength:
+    def test_default_max_post_length(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+
+        from plugins.platforms.mattermost.adapter import get_max_post_length
+
+        adapter = _make_adapter()
+        assert get_max_post_length() == 4000
+        assert adapter.max_post_length == 4000
+        assert adapter.MAX_MESSAGE_LENGTH == 4000
+
+    def test_env_override_max_post_length(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "12000")
+
+        from plugins.platforms.mattermost.adapter import get_max_post_length
+
+        adapter = _make_adapter()
+        assert get_max_post_length() == 12000
+        assert adapter.max_post_length == 12000
+        assert adapter.MAX_MESSAGE_LENGTH == 12000
+
+    def test_invalid_max_post_length_uses_default(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "not-a-number")
+
+        from plugins.platforms.mattermost.adapter import get_max_post_length
+
+        assert get_max_post_length() == 4000
+
+    def test_too_small_max_post_length_uses_default(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "999")
+
+        from plugins.platforms.mattermost.adapter import get_max_post_length
+
+        assert get_max_post_length() == 4000
+
+    def test_too_large_max_post_length_is_clamped(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "999999")
+
+        from plugins.platforms.mattermost.adapter import get_max_post_length
+
+        assert get_max_post_length() == 60000
+
+    def test_yaml_max_post_length_sets_env(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_MAX_POST_LENGTH", raising=False)
+
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        _apply_yaml_config({}, {"max_post_length": 12000})
+
+        assert os.environ["MATTERMOST_MAX_POST_LENGTH"] == "12000"
+
+    def test_env_max_post_length_takes_precedence_over_yaml(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "16000")
+
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        _apply_yaml_config({}, {"max_post_length": 12000})
+
+        assert os.environ["MATTERMOST_MAX_POST_LENGTH"] == "16000"
+
+    def test_send_uses_configured_max_post_length(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "12000")
+        adapter = _make_adapter()
+        sent_messages = []
+
+        async def fake_post(_chat_id, payload, _metadata):
+            sent_messages.append(payload["message"])
+            return {"id": f"post_{len(sent_messages)}"}
+
+        adapter._post_preserving_thread = AsyncMock(side_effect=fake_post)
+        adapter._thread_root_for_send = AsyncMock(return_value=None)
+
+        result = asyncio.run(adapter.send("chan_123", "x" * 9000))
+
+        assert result.success is True
+        assert len(sent_messages) == 1
+        assert sent_messages[0] == "x" * 9000
+
+
 class TestMattermostFormatMessage:
     def setup_method(self):
         self.adapter = _make_adapter()

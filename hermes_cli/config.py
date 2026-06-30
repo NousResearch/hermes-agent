@@ -280,6 +280,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
+    "MATTERMOST_MAX_POST_LENGTH",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
@@ -2244,6 +2245,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "max_post_length": 4000,        # Max characters per Mattermost post chunk
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
@@ -3669,6 +3671,13 @@ OPTIONAL_ENV_VARS = {
     "MATTERMOST_FREE_RESPONSE_CHANNELS": {
         "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
         "prompt": "Free-response channel IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_MAX_POST_LENGTH": {
+        "description": "Maximum characters per Mattermost post chunk (default: 4000, range: 1000-60000)",
+        "prompt": "Maximum Mattermost post length",
         "url": None,
         "password": False,
         "category": "messaging",

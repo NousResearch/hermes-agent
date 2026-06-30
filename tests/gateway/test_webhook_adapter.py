@@ -943,6 +943,46 @@ class TestRawTemplateToken:
         assert '"action": "closed"' in result
         assert '"number": 7' in result
 
+    def test_raw_with_explicit_size_param_truncates_to_provided(self):
+        """{__raw__:5000} overrides the default 4000-char truncate length."""
+        adapter = _make_adapter()
+        # Build a payload whose JSON repr is bigger than 4000 but smaller than 5000
+        # so we can observe the size-driven truncation target without ambiguity.
+        payload = {"data": "x" * 4500}
+        result = adapter._render_prompt("{__raw__:5000}", payload, "push", "test")
+        # The dumped JSON starts with '{'; it must be present, with length
+        # strictly greater than the bare default's 4000-char output but at
+        # most 5000 chars (the override).
+        assert result.startswith('{\n')
+        assert len(result) > 4000
+        assert len(result) <= 5000
+
+    def test_raw_with_zero_size_param_disables_truncation(self):
+        """{__raw__:0} disables truncation and emits the full payload."""
+        adapter = _make_adapter()
+        payload = {"data": "x" * 5000}
+        result = adapter._render_prompt("{__raw__:0}", payload, "push", "test")
+        # No truncation: result equals the full ``json.dumps(payload, indent=2)``.
+        assert result == json.dumps(payload, indent=2)
+        assert len(result) > 4000
+
+    def test_raw_size_param_only_applies_to_raw_token_not_nested_keys(self):
+        """The ``:N`` suffix must only affect the ``__raw__} token, not
+        arbitrary dotted keys — nested dict/list JSON still uses the
+        existing 2000-char cap for backwards compatibility."""
+        adapter = _make_adapter()
+        payload = {"item": {"field": "y" * 2500}}
+        # Bare ``{item}`` keeps the 2000-char nested-truncate behaviour.
+        bare = adapter._render_prompt("{item}", payload, "push", "test")
+        assert len(bare) <= 2000
+        # ``{item:99999}`` (suffix on a dot-notation key) does NOT take effect
+        # — the JSON value is still capped at 2000 chars, the ``:N`` group
+        # is consumed by the regex but ignored in the resolver.
+        suffixed = adapter._render_prompt(
+            "{item:99999}", payload, "push", "test"
+        )
+        assert suffixed == bare
+
 
 # ===================================================================
 # Cross-platform delivery thread_id passthrough

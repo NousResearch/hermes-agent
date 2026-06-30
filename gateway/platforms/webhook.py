@@ -851,11 +851,25 @@ class WebhookAdapter(BasePlatformAdapter):
         ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
 
         Special token ``{__raw__}`` dumps the entire payload as indented
-        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
-        any webhook where the agent needs to see the full payload.
+        JSON (truncated to 4000 chars by default). For large payloads from
+        CRMs / ERPs whose formatted JSON exceeds 4000 chars, the truncate
+        length can be overridden per-use with the ``{__raw__:N}`` form
+        where ``N`` is a non-negative integer; ``{__raw__:0}`` disables
+        truncation entirely. Useful for monitoring alerts or any webhook
+        where the agent needs to see the full payload.
         """
+        # Default truncate for the special ``{__raw__}`` token. Override per-use
+        # with the ``{__raw__:N}`` form (N=0 disables truncation entirely).
+        raw_default_max = 4000
+
+        def _truncate_raw(limit: int) -> str:
+            serialized = json.dumps(payload, indent=2)
+            if limit <= 0:
+                return serialized
+            return serialized[:limit]
+
         if not template:
-            truncated = json.dumps(payload, indent=2)[:4000]
+            truncated = _truncate_raw(raw_default_max)
             return (
                 f"Webhook event '{event_type}' on route "
                 f"'{route_name}':\n\n```json\n{truncated}\n```"
@@ -863,9 +877,14 @@ class WebhookAdapter(BasePlatformAdapter):
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
-            # Special token: dump the entire payload as JSON
+            colon_size = match.group(2)
+            # Special token: dump the entire payload as JSON. An optional
+            # ``:N`` suffix overrides the default truncate length; ``:0``
+            # disables truncation entirely. Bare ``{__raw__}`` keeps the
+            # 4000-char default (backward-compatible).
             if key == "__raw__":
-                return json.dumps(payload, indent=2)[:4000]
+                limit = int(colon_size) if colon_size is not None else raw_default_max
+                return _truncate_raw(limit)
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -876,7 +895,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 return json.dumps(value, indent=2)[:2000]
             return str(value)
 
-        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+        # Match ``{key}`` or ``{key:N}`` where ``key`` is alphanumeric/underscore/dot
+        # and ``:N`` is an optional non-negative integer override. The default
+        # ``[a-zA-Z0-9_.]+`` keeps dot-notation access working unchanged.
+        return re.sub(r"\{([a-zA-Z0-9_.]+)(?::(\d+))?\}", _resolve, template)
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict

@@ -214,10 +214,30 @@ function delegateTaskPayloads(
   phase: 'running' | 'complete',
   sourceEventType?: string
 ): Record<string, unknown>[] {
-  if (payload?.name !== 'delegate_task') {
+  // Fast path: gateway-tagged delegate_task events.
+  if (payload?.name === 'delegate_task') {
+    return buildDelegatePayloads(payload, phase, sourceEventType)
+  }
+
+  // Fallback: native Hermes tool calls carry delegation in args (goal/tasks).
+  // The gateway tags them differently than tool responses do.
+  const args = parseMaybeRecord(payload?.args ?? payload?.input)
+  if (!args?.goal && !args?.tasks) {
     return []
   }
 
+  return buildDelegatePayloads(
+    { ...payload, name: 'delegate_task' } as GatewayEventPayload,
+    phase,
+    sourceEventType,
+  )
+}
+
+function buildDelegatePayloads(
+  payload: GatewayEventPayload,
+  phase: 'running' | 'complete',
+  sourceEventType?: string,
+): Record<string, unknown>[] {
   const args = parseMaybeRecord(payload.args ?? payload.input)
   const result = parseMaybeRecord(payload.result)
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []

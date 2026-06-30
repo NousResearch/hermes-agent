@@ -243,6 +243,63 @@ def test_console_parses_bare_and_hermes_prefixed_commands(_isolate_hermes_home):
     assert bare.output.endswith("config.yaml")
 
 
+def test_console_status_hides_cli_next_step_footer(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_hermes_home,
+):
+    import hermes_cli.status as status_mod
+
+    def fake_show_status(_args):
+        print("◆ Sessions")
+        print("Active: 3 session(s)")
+        print()
+        rule = "\u2500" * 60
+        print(f"\x1b[2m{rule}\x1b[0m")
+        print("\x1b[2m  Run 'hermes doctor' for detailed diagnostics\x1b[0m")
+        print("\x1b[2m  Run 'hermes setup' to configure\x1b[0m")
+        print()
+
+    monkeypatch.setattr(status_mod, "show_status", fake_show_status)
+
+    result = HermesConsoleEngine().execute("status")
+
+    assert result.status == "ok"
+    assert "Sessions" in result.output
+    assert "Active: 3 session(s)" in result.output
+    assert "hermes doctor" not in result.output
+    assert "hermes setup" not in result.output
+    assert "\u2500" not in result.output
+
+
+def test_console_help_uses_cli_subcommand_summaries():
+    help_text = HermesConsoleEngine().help_text()
+
+    assert "skills list" in help_text
+    assert "List installed skills" in help_text
+    assert "Show all tools and their enabled/disabled status" in help_text
+    assert "Remove an MCP server" in help_text
+    assert "Check pet setup + terminal graphics support" in help_text
+    assert "Run `hermes skills list`" not in help_text
+    assert "Run `hermes tools list`" not in help_text
+
+
+def test_console_help_table_keeps_long_summaries_compact():
+    help_text = HermesConsoleEngine().help_text()
+
+    slack_line = next(
+        line for line in help_text.splitlines() if line.strip().startswith("slack manifest")
+    )
+
+    assert len(slack_line) <= 112
+    assert slack_line.endswith("...")
+
+
+def test_console_help_for_command_uses_cli_summary():
+    help_text = HermesConsoleEngine().help_text("skills list")
+
+    assert help_text == "skills list\nList installed skills"
+
+
 def test_console_registry_covers_non_admin_cli_surface():
     registered = set(HermesConsoleEngine().commands)
 

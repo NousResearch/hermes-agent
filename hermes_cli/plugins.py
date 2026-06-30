@@ -114,7 +114,7 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
         return
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("[plugins] %(levelname)s %(message)s"))
+    handler.setFormatter(logging.Formatter("[plugins] %(levelname)s %(message)s"))  # Note: RedactingFormatter applied at root handler level
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
     # Don't double-emit through the root logger when the central logging

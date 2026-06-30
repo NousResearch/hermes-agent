@@ -1246,7 +1246,7 @@ class DecodeMiddleware(InboundMiddleware):
             ctx.push.get("msg_id", ""),
             [e.get("msg_type", "") for e in ctx.push.get("msg_body", [])],
         )
-        logger.debug("[%s] Push payload: %s", ctx.adapter.name, ctx.push)
+        logger.debug("[%s] Push payload: %s", ctx.adapter.name, {k: "***" if "token" in k.lower() or "key" in k.lower() or "secret" in k.lower() else v for k, v in ctx.push.items() if isinstance(ctx.push, dict) else ctx.push})
 
         await next_fn()
 

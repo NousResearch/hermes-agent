@@ -230,7 +230,6 @@ try:
             CreateMessageResultWithTools,
             ErrorData,
             SamplingCapability,
-            SamplingToolsCapability,
             TextContent,
             ToolUseContent,
         )
@@ -1085,9 +1084,7 @@ class SamplingHandler:
         """Return kwargs to pass to ClientSession for sampling support."""
         return {
             "sampling_callback": self,
-            "sampling_capabilities": SamplingCapability(
-                tools=SamplingToolsCapability(),
-            ),
+            "sampling_capabilities": SamplingCapability(),
         }
 
     # -- Main callback -------------------------------------------------------

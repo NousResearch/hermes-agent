@@ -1429,6 +1429,9 @@ class FeishuAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
+
+    # Class-level: name→open_id map shared across adapter instances for outbound @mention conversion.
+    _peer_bot_mentions: Dict[str, str] = {}
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -4421,6 +4424,8 @@ class FeishuAdapter(BasePlatformAdapter):
                             "[Feishu] FEISHU_BOT_NAME differs from /bot/v3/info; using hydrated bot name for group @mention gating."
                         )
                     self._bot_name = bot_name
+                if open_id and bot_name:
+                    FeishuAdapter._peer_bot_mentions[bot_name] = open_id
         except Exception:
             logger.debug(
                 "[Feishu] /bot/v3/info probe failed during hydration",
@@ -4522,6 +4527,10 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        if FeishuAdapter._peer_bot_mentions:
+            converted = self._try_mention_post(content)
+            if converted:
+                return converted
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
@@ -4532,6 +4541,26 @@ class FeishuAdapter(BasePlatformAdapter):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    _MENTION_RE = re.compile(r'@([A-Za-z][A-Za-z0-9_\u4e00-\u9fff]+)')
+
+    def _try_mention_post(self, content: str) -> Optional[tuple[str, str]]:
+        """Build a post payload with <at> elements for known peer bot names."""
+        registry = FeishuAdapter._peer_bot_mentions
+        matches = list(self._MENTION_RE.finditer(content))
+        hits = [(m.start(), m.end(), m.group(1)) for m in matches if m.group(1) in registry]
+        if not hits:
+            return None
+        row: list[dict] = []
+        last = 0
+        for start, end, name in hits:
+            if start > last:
+                row.append({"tag": "text", "text": content[last:start]})
+            row.append({"tag": "at", "user_id": registry[name]})
+            last = end
+        if last < len(content):
+            row.append({"tag": "text", "text": content[last:]})
+        return "post", json.dumps({"zh_cn": {"content": [row]}}, ensure_ascii=False)
 
     async def _send_uploaded_file_message(
         self,

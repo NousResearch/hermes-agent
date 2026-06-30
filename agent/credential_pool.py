@@ -2162,12 +2162,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         if _is_source_suppressed(provider, source):
             continue
         active_sources.add(source)
-        # Claude Code OAuth tokens are the only Anthropic credentials that should
-        # flow into the OAuth refresh path. Match the `sk-ant-oat` prefix
-        # positively — matching by negation (everything not `sk-ant-api`) wrongly
-        # tagged admin keys (`sk-ant-admin*`) and any future API-key prefix as
-        # OAuth, which then got immediately marked exhausted on first use because
-        # they have no refresh token.
+        # Claude Code OAuth tokens are the only Anthropic credentials that should flow into the OAuth refresh path.
         auth_type = (
             AUTH_TYPE_OAUTH
             if provider == "anthropic" and token.startswith("sk-ant-oat")

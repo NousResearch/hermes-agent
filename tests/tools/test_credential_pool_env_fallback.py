@@ -248,3 +248,51 @@ class TestAuthCredentialPoolFallback:
         assert key == "sk-dotenv-priority-xyz"
         assert source == "DEEPSEEK_API_KEY"
         mp.assert_not_called()
+
+
+class TestAnthropicEnvAuthTypeClassification:
+    """_seed_from_env must classify Anthropic env tokens by the sk-ant-oat prefix.
+
+    Regression for PR #16733: the previous heuristic tagged any token NOT
+    starting with `sk-ant-api` as OAuth. That misclassified admin keys
+    (`sk-ant-admin-*`), workspace keys, and any future API-key prefix as OAuth.
+    OAuth-typed entries with no refresh token are immediately marked exhausted
+    in _refresh_entry, so a legitimate admin key gets stuck EXHAUSTED on first
+    use and the pool rotates away from a working credential.
+
+    Only real Claude Code OAuth tokens (`sk-ant-oat-…`) should flow into the
+    OAuth refresh path.
+    """
+
+    def _seed(self, env_var, token):
+        from agent.credential_pool import _seed_from_env
+        entries = []
+        _seed_from_env("anthropic", entries)
+        # The seeded entry whose label is the env var we wrote.
+        matching = [e for e in entries if getattr(e, "label", None) == env_var]
+        assert matching, f"expected a seeded entry for {env_var}, got {entries}"
+        return matching[0]
+
+    def test_oauth_token_classified_as_oauth(self, isolated_hermes_home):
+        """sk-ant-oat- token from CLAUDE_CODE_OAUTH_TOKEN → AUTH_TYPE_OAUTH."""
+        from agent.credential_pool import AUTH_TYPE_OAUTH
+        _write_env_file(isolated_hermes_home, CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat-fake-12345")
+        entry = self._seed("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-fake-12345")
+        assert entry.auth_type == AUTH_TYPE_OAUTH
+
+    def test_admin_key_classified_as_api_key(self, isolated_hermes_home):
+        """sk-ant-admin- key from ANTHROPIC_API_KEY → AUTH_TYPE_API_KEY, not OAuth.
+
+        This is the bug the fix targets: previously this was tagged OAuth.
+        """
+        from agent.credential_pool import AUTH_TYPE_API_KEY
+        _write_env_file(isolated_hermes_home, ANTHROPIC_API_KEY="sk-ant-admin-fake-12345")
+        entry = self._seed("ANTHROPIC_API_KEY", "sk-ant-admin-fake-12345")
+        assert entry.auth_type == AUTH_TYPE_API_KEY
+
+    def test_standard_api_key_classified_as_api_key(self, isolated_hermes_home):
+        """sk-ant-api- key → AUTH_TYPE_API_KEY (unchanged behaviour)."""
+        from agent.credential_pool import AUTH_TYPE_API_KEY
+        _write_env_file(isolated_hermes_home, ANTHROPIC_API_KEY="sk-ant-api-fake-12345")
+        entry = self._seed("ANTHROPIC_API_KEY", "sk-ant-api-fake-12345")
+        assert entry.auth_type == AUTH_TYPE_API_KEY

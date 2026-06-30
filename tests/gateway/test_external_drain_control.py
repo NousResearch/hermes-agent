@@ -72,6 +72,64 @@ class TestMarkerContract:
         assert data["action"] == "drain"
 
 
+class TestSuppressNotification:
+    """The generic suppress_notification flag on the drain marker.
+
+    Gates ONLY the gateway's home-channel shutdown broadcast (NAS auto-update
+    sets it true). Default-false so legacy/operator drains behave as before.
+    The reader reuses the NS-570 epoch-staleness check so an orphaned marker
+    can never silence a fresh gateway.
+    """
+
+    def test_default_false(self, home):
+        payload = dc.write_drain_request(principal="nas")
+        assert payload["suppress_notification"] is False
+        assert dc.drain_notification_suppressed() is False
+
+    def test_flag_round_trips_true(self, home):
+        payload = dc.write_drain_request(principal="nas", suppress_notification=True)
+        assert payload["suppress_notification"] is True
+        body = dc.read_drain_request()
+        assert body is not None and body["suppress_notification"] is True
+        assert dc.drain_notification_suppressed() is True
+
+    def test_suppressed_false_when_no_marker(self, home):
+        assert dc.drain_notification_suppressed() is False
+
+    def test_legacy_marker_without_field_not_suppressed(self, home):
+        # A marker written before this change has no suppress_notification key →
+        # must read as not-suppressed (broadcast still fires), while still being
+        # an active drain.
+        import json
+
+        dc.drain_request_path().write_text(
+            json.dumps({"action": "drain", "epoch": dc.current_instantiation_epoch()}),
+            encoding="utf-8",
+        )
+        assert dc.drain_requested() is True
+        assert dc.drain_notification_suppressed() is False
+
+    def test_corrupt_marker_not_suppressed(self, home):
+        # Half-written marker → read_drain_request returns {} → no flag → not
+        # suppressed (fail toward the louder, visible behaviour) even though the
+        # drain itself stays active (fail-safe toward quiescing).
+        dc.drain_request_path().write_text("{not valid json", encoding="utf-8")
+        assert dc.drain_requested() is True
+        assert dc.drain_notification_suppressed() is False
+
+    def test_stale_epoch_marker_not_suppressed(self, home, monkeypatch):
+        # THE NS-570 ANALOGUE for suppression: a suppress_notification:true
+        # marker that survived a machine restart on the durable volume must NOT
+        # silence the freshly-restarted gateway's legitimate shutdown broadcast.
+        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-OLD")
+        dc.write_drain_request(principal="nas", suppress_notification=True)
+        assert dc.drain_notification_suppressed() is True  # same epoch → honoured
+
+        monkeypatch.setattr(dc, "current_instantiation_epoch", lambda: "epoch-NEW")
+        assert dc.drain_request_path().exists() is True
+        assert dc.drain_notification_suppressed() is False  # stale → ignored
+
+
 # ---------------------------------------------------------------------------
 # Instantiation-epoch staleness (NS-570: orphaned marker on durable volume)
 # ---------------------------------------------------------------------------

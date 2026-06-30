@@ -2605,6 +2605,38 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                     },
                 )
 
+        # Seed additional credentials from the optional `credentials` list.
+        # Each item gets its own api_key + base_url, all in the same pool
+        # bucket.  This enables per-credential endpoint rotation for
+        # providers that scope URLs per account (Cloudflare Workers AI,
+        # Azure OpenAI per-deployment, AWS Bedrock per-region, etc.).
+        extra_credentials = cp_config.get("credentials")
+        if isinstance(extra_credentials, list):
+            for idx, cred in enumerate(extra_credentials):
+                if not isinstance(cred, dict):
+                    continue
+                cred_key = str(cred.get("api_key") or "").strip()
+                if not cred_key:
+                    continue
+                cred_url = str(cred.get("base_url") or "").strip().rstrip("/")
+                cred_label = str(cred.get("label") or "").strip()
+                source = f"config:{name}:{idx}"
+                if _is_suppressed(pool_key, source):
+                    continue
+                active_sources.add(source)
+                changed |= _upsert_entry(
+                    entries,
+                    pool_key,
+                    source,
+                    {
+                        "source": source,
+                        "auth_type": AUTH_TYPE_API_KEY,
+                        "access_token": cred_key,
+                        "base_url": cred_url or base_url,
+                        "label": cred_label or f"{name}:{idx}",
+                    },
+                )
+
     # Seed from model.api_key if model.provider=='custom' and model.base_url matches
     try:
         config = _load_config_safe()

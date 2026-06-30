@@ -207,6 +207,12 @@ def auth_add_command(args) -> None:
                 label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
             else:
                 label = default_label
+        # Allow per-credential base_url override for multi-account
+        # same-provider pools (e.g. Cloudflare Workers AI with multiple
+        # account IDs in the URL path).  Falls back to the provider's
+        # default base_url when not specified.
+        override_base_url = (getattr(args, "base_url", None) or "").strip().rstrip("/")
+        entry_base_url = override_base_url or _provider_base_url(provider)
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
@@ -215,7 +221,7 @@ def auth_add_command(args) -> None:
             priority=0,
             source=SOURCE_MANUAL,
             access_token=token,
-            base_url=_provider_base_url(provider),
+            base_url=entry_base_url,
         )
         pool.add_entry(entry)
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')

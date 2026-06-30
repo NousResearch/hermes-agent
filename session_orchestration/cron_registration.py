@@ -47,10 +47,10 @@ def _hermes_agent_root() -> Path:
 
 
 def _find_script_path() -> Optional[str]:
-    """Return the absolute path to the watcher shell script, or None if missing."""
+    """Return the safe relative watcher script token, or None if missing."""
     script = _hermes_agent_root() / _SCRIPT_RELPATH
     if script.exists():
-        return str(script)
+        return _SCRIPT_RELPATH
     return None
 
 
@@ -129,7 +129,7 @@ def ensure_watcher_cron(
             name=job_name,
             script=script_path,
             no_agent=True,
-            deliver="local",  # watcher output is log-only; no Discord delivery
+            deliver="origin",  # normal cron delivery; falls back to configured home channel
         )
         logger.info(
             "ensure_watcher_cron: registered '%s' (id=%s) on schedule '%s'",

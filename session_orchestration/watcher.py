@@ -48,6 +48,7 @@ has access to all state without further DB reads.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import time
@@ -89,6 +90,17 @@ _TERMINAL_STATES = frozenset(
     }
 )
 
+#: User-attention states map directly to stable attention-item reasons.
+_USER_ATTENTION_STATES = frozenset(
+    {
+        SessionLifecycle.WAITING_USER.value,
+        SessionLifecycle.PAUSED_HANDOFF.value,
+    }
+)
+
+#: Stale/frozen attention is a reason on a RUNNING row, not a registry state.
+_ATTENTION_REASON_STALE_FROZEN = "STALE_FROZEN"
+
 
 # ---------------------------------------------------------------------------
 # Fake-capture adapter (allows watcher to be unit-tested without tmux)
@@ -126,17 +138,47 @@ class _TmuxCapture:
 # ---------------------------------------------------------------------------
 
 
+def _reconcile_attention_digest(
+    registry: Optional["SessionOrchestrationRegistry"],
+    *,
+    task_id: str,
+    context: str,
+) -> None:
+    """Best-effort channel-level digest reconciliation for attention changes."""
+    if registry is None:
+        logger.debug(
+            "watcher.%s: no registry available for digest reconcile task_id=%s",
+            context,
+            task_id,
+        )
+        return
+
+    try:
+        from session_orchestration.feed import reconcile_attention_digest
+
+        reconcile_attention_digest(registry)
+    except Exception as exc:
+        logger.error(
+            "watcher.%s: digest reconcile failed for task_id=%s: %s",
+            context,
+            task_id,
+            exc,
+        )
+
+
 def _on_turn_change(
     task_id: str,
     row: Dict[str, Any],
     new_state: str,
     old_state: str,
+    *,
+    registry: Optional["SessionOrchestrationRegistry"] = None,
 ) -> None:
     """Called when a session transitions into a user-attention state.
 
-    Pushes ONCE (debounced) to the feed channel + task thread.
-    Non-transition ticks never reach this hook (the call-site in
-    ``_process_row`` gates on ``new_state != old_state``).
+    Reconciles the channel-level action digest and optionally posts a
+    thread-local notice.  The digest is the sole ``feed_channel_id``
+    projection for attention state.
 
     Parameters
     ----------
@@ -150,6 +192,11 @@ def _on_turn_change(
         task_id,
         old_state,
         new_state,
+    )
+    _reconcile_attention_digest(
+        registry,
+        task_id=task_id,
+        context="_on_turn_change",
     )
     try:
         from session_orchestration.feed import push_turn_change
@@ -314,6 +361,251 @@ def _heartbeat_registry_ref(
         )
 
 
+
+def _load_hang_thresholds() -> tuple[int, int]:
+    """Return ``(hang_idle_ticks, hang_stale_seconds)`` with safe defaults."""
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+
+        cfg = load_session_orchestration_config()
+        return cfg.hang_idle_ticks, cfg.hang_stale_seconds
+    except Exception as exc:
+        logger.debug("watcher: could not read hang thresholds, using defaults: %s", exc)
+        return 3, 300
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_non_negative_int(value: Any) -> int:
+    try:
+        n = int(value)
+        return n if n >= 0 else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _adapter_activity_regex_matches(
+    adapter: Optional["AgentAdapter"],
+    pane_text: str,
+) -> bool:
+    """Return True when the adapter declares a positive active-work match."""
+    if adapter is None or not pane_text:
+        return False
+
+    try:
+        caps = adapter.capabilities()
+    except Exception as exc:
+        logger.debug("watcher: adapter.capabilities() failed during stale guard: %s", exc)
+        return False
+
+    regex = getattr(caps, "idle_indicator_regex", None)
+    return bool(regex is not None and regex.search(pane_text))
+
+
+def _is_stale_frozen_eligible(
+    row: Dict[str, Any],
+    *,
+    previous_pane_hash: Optional[str],
+    current_pane_hash: Optional[str],
+    pane_text: str,
+    adapter: Optional["AgentAdapter"],
+    hang_idle_ticks: int,
+    hang_stale_seconds: int,
+    now: Optional[float] = None,
+) -> bool:
+    """Return True only when deterministic stale/frozen evidence is present.
+
+    The guard is intentionally conservative: a stale/frozen episode requires
+    an unchanged pane hash, enough idle ticks, a stale ``last_output_ts``, and
+    no adapter-declared active-work regex match in the current pane.
+    """
+    if not current_pane_hash or previous_pane_hash != current_pane_hash:
+        return False
+
+    if _coerce_non_negative_int(row.get("idle_ticks")) < hang_idle_ticks:
+        return False
+
+    last_output_ts = _coerce_optional_float(row.get("last_output_ts"))
+    if last_output_ts is None:
+        return False
+
+    observed_now = time.time() if now is None else now
+    if observed_now - last_output_ts < hang_stale_seconds:
+        return False
+
+    if _adapter_activity_regex_matches(adapter, pane_text):
+        return False
+
+    return True
+
+
+def _is_stale_episode_action_eligible(row: Dict[str, Any]) -> bool:
+    """Return True iff no stale/frozen action has fired in this episode."""
+    return _coerce_non_negative_int(row.get("nudge_count")) == 0
+
+
+def _is_omp_nudge_checkin_eligible(
+    row: Dict[str, Any],
+    *,
+    previous_pane_hash: Optional[str],
+    current_pane_hash: Optional[str],
+    pane_text: str,
+    adapter: Optional["AgentAdapter"],
+    hang_idle_ticks: int,
+    hang_stale_seconds: int,
+    now: Optional[float] = None,
+) -> bool:
+    """Return True when the OMP stale nudge/check-in may fire this tick."""
+    return _is_stale_frozen_eligible(
+        row,
+        previous_pane_hash=previous_pane_hash,
+        current_pane_hash=current_pane_hash,
+        pane_text=pane_text,
+        adapter=adapter,
+        hang_idle_ticks=hang_idle_ticks,
+        hang_stale_seconds=hang_stale_seconds,
+        now=now,
+    ) and _is_stale_episode_action_eligible(row)
+
+
+def _intent_task_id(intent: Dict[str, Any]) -> Optional[str]:
+    """Return a task id from an intent row without mutating its payload."""
+    task_id = intent.get("task_id")
+    if task_id:
+        return str(task_id)
+    try:
+        payload = json.loads(intent.get("payload") or "{}")
+    except (TypeError, ValueError):
+        return None
+    payload_task_id = payload.get("task_id")
+    return str(payload_task_id) if payload_task_id else None
+
+
+def _attention_detail(row: Dict[str, Any], reason: str) -> str:
+    """Build compact, stable detail text for an attention item refresh."""
+    agent = row.get("agent", "unknown")
+    state = row.get("state", SessionLifecycle.RUNNING.value)
+    if reason == _ATTENTION_REASON_STALE_FROZEN:
+        idle_ticks = _coerce_non_negative_int(row.get("idle_ticks"))
+        last_output_ts = row.get("last_output_ts")
+        return (
+            f"state={state}; agent={agent}; idle_ticks={idle_ticks}; "
+            f"last_output_ts={last_output_ts}"
+        )
+    return f"state={state}; agent={agent}"
+
+
+def _last_output_advanced(
+    previous_last_output_ts: Optional[float],
+    current_last_output_ts: Optional[float],
+) -> bool:
+    """Return True only for a real observed liveness timestamp advance."""
+    return (
+        previous_last_output_ts is not None
+        and current_last_output_ts is not None
+        and current_last_output_ts > previous_last_output_ts
+    )
+
+
+def _sync_attention_lifecycle(
+    registry: "SessionOrchestrationRegistry",
+    task_id: str,
+    *,
+    old_state: str,
+    new_state: str,
+    fresh_row: Dict[str, Any],
+    stale_frozen_eligible: bool,
+    previous_pane_hash: Optional[str],
+    current_pane_hash: Optional[str],
+    previous_last_output_ts: Optional[float],
+    current_last_output_ts: Optional[float],
+    pane_text: str,
+    adapter: Optional["AgentAdapter"],
+    user_drive_signal: bool = False,
+) -> tuple[bool, bool]:
+    """Sync attention items; return (stale/frozen actionable, digest dirty)."""
+    is_terminal = new_state in _TERMINAL_STATES
+    digest_dirty = False
+
+    if new_state in _USER_ATTENTION_STATES:
+        registry.open_attention_item(
+            task_id,
+            new_state,
+            priority=100,
+            detail=_attention_detail(fresh_row, new_state),
+        )
+        for reason in _USER_ATTENTION_STATES:
+            if reason != new_state:
+                registry.resolve_attention_item(
+                    task_id,
+                    reason,
+                    resolution_reason=f"state_changed_to_{new_state}",
+                )
+    else:
+        for reason in _USER_ATTENTION_STATES:
+            resolved = registry.resolve_attention_item(
+                task_id,
+                reason,
+                resolution_reason=f"state_changed_to_{new_state}",
+            )
+            if resolved and not (
+                old_state in _USER_ATTENTION_STATES and new_state != old_state
+            ):
+                digest_dirty = True
+
+    if is_terminal:
+        if registry.resolve_attention_item(
+            task_id,
+            _ATTENTION_REASON_STALE_FROZEN,
+            resolution_reason=f"state_changed_to_{new_state}",
+        ):
+            digest_dirty = True
+        return False, digest_dirty
+
+    if user_drive_signal and registry.resolve_attention_item(
+        task_id,
+        _ATTENTION_REASON_STALE_FROZEN,
+        resolution_reason="user_drive_signal",
+    ):
+        return False, True
+
+    if stale_frozen_eligible:
+        registry.open_attention_item(
+            task_id,
+            _ATTENTION_REASON_STALE_FROZEN,
+            priority=50,
+            detail=_attention_detail(fresh_row, _ATTENTION_REASON_STALE_FROZEN),
+        )
+        return True, digest_dirty
+
+    pane_hash_changed = (
+        previous_pane_hash is not None
+        and current_pane_hash is not None
+        and previous_pane_hash != current_pane_hash
+    )
+    active_regex_match = _adapter_activity_regex_matches(adapter, pane_text)
+    if (
+        pane_hash_changed
+        or _last_output_advanced(previous_last_output_ts, current_last_output_ts)
+        or active_regex_match
+    ):
+        resolved = registry.resolve_attention_item(
+            task_id,
+            _ATTENTION_REASON_STALE_FROZEN,
+            resolution_reason="liveness_signal_observed",
+        )
+        if resolved:
+            digest_dirty = True
+    return False, digest_dirty
+
+
 def _on_hang(
     task_id: str,
     row: Dict[str, Any],
@@ -321,9 +613,11 @@ def _on_hang(
     registry: Optional["SessionOrchestrationRegistry"] = None,
     adapter: Optional["AgentAdapter"] = None,
     pane_text: str = "",
+    previous_pane_hash: Optional[str] = None,
+    current_pane_hash: Optional[str] = None,
 ) -> None:
     """Called when a session is potentially hung (RUNNING + pane-hash unchanged
-    for N ticks + last_output_ts might be old).
+    for N ticks + stale last_output_ts).
 
     This hook is ONLY called when state is RUNNING (never WAITING_USER
     or PAUSED_HANDOFF) — the call-site in ``_process_row`` gates on
@@ -335,11 +629,11 @@ def _on_hang(
     - ``idle_indicator_regex``: if the adapter declares an active-tool pattern
       and it matches the current pane text, the session is NOT hung.
 
-    On confirmed hang:
-    - ``nudge_count == 0``: push a hang notification + send exactly one
-      auto-nudge message via the relay → increment nudge_count.
-    - ``nudge_count >= 1``: still hung → escalate (push escalation notice);
-      no second nudge.
+    On confirmed hang, the stale episode may produce at most one action:
+    when ``nudge_count == 0`` the watcher reconciles the channel-level digest,
+    optionally posts a thread-local hang notice, sends one auto-nudge/check-in
+    via the relay, and increments ``nudge_count``.  Later ticks in the same
+    unchanged-pane episode return without another feed action or relay nudge.
 
     The heartbeat fast-path (accelerant) can only reset liveness when it
     carries fresh activity (its own freshness TTL tracked externally); this
@@ -349,93 +643,62 @@ def _on_hang(
 
     Parameters
     ----------
-    task_id:    Registry key.
-    row:        Full registry row dict (fresh — post-counter-increment).
-    registry:   Registry instance (injected by _process_row; defaults to
-                a new production instance if absent).
-    adapter:    The adapter for this session (for idle_indicator_regex).
-    pane_text:  Current pane capture text (for active-tool indicator check).
+    task_id:             Registry key.
+    row:                 Full registry row dict (fresh — post-counter-increment).
+    registry:            Registry instance (injected by _process_row; defaults to
+                         a new production instance if absent).
+    adapter:             The adapter for this session (for idle_indicator_regex).
+    pane_text:           Current pane capture text (for active-tool indicator check).
+    previous_pane_hash:  Pane hash observed before this tick's capture/update.
+    current_pane_hash:   Pane hash for this tick's capture.
     """
-    # ------------------------------------------------------------------
-    # 1. Load static thresholds from config
-    # ------------------------------------------------------------------
-    try:
-        from session_orchestration.config import load_session_orchestration_config
+    hang_idle_ticks, hang_stale_seconds = _load_hang_thresholds()
+    if current_pane_hash is None:
+        current_pane_hash = _pane_hash(pane_text) if pane_text else None
+    if previous_pane_hash is None:
+        previous_pane_hash = row.get("last_pane_hash")
 
-        cfg = load_session_orchestration_config()
-        hang_idle_ticks = cfg.hang_idle_ticks
-        hang_stale_seconds = cfg.hang_stale_seconds
-    except Exception as exc:
-        logger.debug("watcher._on_hang: could not read config, using defaults: %s", exc)
-        hang_idle_ticks = 3
-        hang_stale_seconds = 300
-
-    # ------------------------------------------------------------------
-    # 2. Apply idle-tick threshold
-    # ------------------------------------------------------------------
-    idle_ticks = row.get("idle_ticks") or 0
-    if idle_ticks < hang_idle_ticks:
+    if not _is_stale_frozen_eligible(
+        row,
+        previous_pane_hash=previous_pane_hash,
+        current_pane_hash=current_pane_hash,
+        pane_text=pane_text,
+        adapter=adapter,
+        hang_idle_ticks=hang_idle_ticks,
+        hang_stale_seconds=hang_stale_seconds,
+    ):
         logger.debug(
-            "watcher._on_hang: idle_ticks=%d < threshold=%d for task_id=%s — not hung yet",
-            idle_ticks,
-            hang_idle_ticks,
+            "watcher._on_hang: task_id=%s is not stale/frozen eligible",
             task_id,
         )
         return
 
-    # ------------------------------------------------------------------
-    # 3. Apply stale-timestamp threshold (last_output_ts)
-    # ------------------------------------------------------------------
-    last_output_ts = row.get("last_output_ts")
-    if last_output_ts is not None:
-        elapsed = time.time() - float(last_output_ts)
-        if elapsed < hang_stale_seconds:
-            logger.debug(
-                "watcher._on_hang: elapsed=%.1fs < stale_threshold=%ds for task_id=%s — not stale",
-                elapsed,
-                hang_stale_seconds,
-                task_id,
-            )
-            return
-    # If last_output_ts is None we treat it as "no output ever" — proceed.
-
-    # ------------------------------------------------------------------
-    # 4. Active-tool indicator check (positive liveness from adapter)
-    # ------------------------------------------------------------------
-    if adapter is not None and pane_text:
-        caps = None
-        try:
-            caps = adapter.capabilities()
-        except Exception as exc:
-            logger.debug(
-                "watcher._on_hang: capabilities() failed for task_id=%s: %s",
-                task_id,
-                exc,
-            )
-        if caps is not None and caps.idle_indicator_regex is not None:
-            if caps.idle_indicator_regex.search(pane_text):
-                logger.debug(
-                    "watcher._on_hang: active-tool indicator matched for task_id=%s — not hung",
-                    task_id,
-                )
-                return
-
-    # ------------------------------------------------------------------
-    # 5. Confirmed hang — notify + nudge or escalate
-    # ------------------------------------------------------------------
-    nudge_count = row.get("nudge_count") or 0
+    nudge_count = _coerce_non_negative_int(row.get("nudge_count"))
     logger.info(
         "watcher._on_hang: CONFIRMED HANG task_id=%s idle_ticks=%d nudge_count=%d",
         task_id,
-        idle_ticks,
+        _coerce_non_negative_int(row.get("idle_ticks")),
         nudge_count,
     )
 
-    # Push hang notification to feed (always, whether nudging or escalating)
+    if not _is_stale_episode_action_eligible(row):
+        logger.info(
+            "watcher._on_hang: stale episode already acted on for task_id=%s",
+            task_id,
+        )
+        _reconcile_attention_digest(
+            registry,
+            task_id=task_id,
+            context="_on_hang",
+        )
+        return
+
+    # First action in this stale episode: optional thread notice + relay nudge,
+    # then reconcile the digest after nudge_count is advanced.
     try:
         from session_orchestration.feed import push_hang_notification
 
-        push_hang_notification(task_id, row, escalate=(nudge_count >= 1))
+        push_hang_notification(task_id, row, escalate=False)
     except Exception as exc:
         logger.error(
             "watcher._on_hang: push_hang_notification failed for task_id=%s: %s",
@@ -443,26 +706,23 @@ def _on_hang(
             exc,
         )
 
-    if nudge_count == 0:
-        # Exactly one auto-nudge via relay (lock-gated)
-        _send_auto_nudge(task_id, row, registry=registry, adapter=adapter)
-        # Increment nudge_count so next tick escalates instead of re-nudging
-        try:
-            reg = registry or SessionOrchestrationRegistry()
-            reg.increment_counter(task_id, "nudge_count", by=1)
-        except Exception as exc:
-            logger.error(
-                "watcher._on_hang: failed to increment nudge_count for task_id=%s: %s",
-                task_id,
-                exc,
-            )
-    else:
-        # nudge_count >= 1: already nudged — escalate, do not re-nudge
-        logger.info(
-            "watcher._on_hang: ESCALATING (nudge already sent) for task_id=%s",
-            task_id,
-        )
+    _send_auto_nudge(task_id, row, registry=registry, adapter=adapter)
 
+    # Increment nudge_count so later ticks in this episode do not act again.
+    try:
+        reg = registry or SessionOrchestrationRegistry()
+        reg.increment_counter(task_id, "nudge_count", by=1)
+    except Exception as exc:
+        logger.error(
+            "watcher._on_hang: failed to increment nudge_count for task_id=%s: %s",
+            task_id,
+            exc,
+        )
+    _reconcile_attention_digest(
+        registry,
+        task_id=task_id,
+        context="_on_hang",
+    )
 
 def _send_auto_nudge(
     task_id: str,
@@ -523,7 +783,7 @@ def _build_handle_from_row(row: Dict[str, Any]) -> "SessionHandle":
     from datetime import datetime, timezone
 
     tmux_session = row.get("tmux_session") or ""
-    pane = f"{tmux_session}:0.0" if tmux_session else ""
+    pane = tmux_session if tmux_session else ""
     return SessionHandle(
         session_id=row.get("task_id", ""),
         tmux_session=tmux_session,
@@ -613,6 +873,13 @@ class SessionWatcher:
 
         # Step 1 — drain intent queue (single-writer responsibility)
         intents = self._registry.drain_intents()
+        drive_signal_task_ids = {
+            task_id
+            for intent in intents
+            if intent.get("intent") == "drive"
+            for task_id in [_intent_task_id(intent)]
+            if task_id
+        }
         for intent in intents:
             try:
                 self._registry._apply_intent(intent)
@@ -643,7 +910,12 @@ class SessionWatcher:
                 continue
 
             try:
-                did_process = self._process_row(task_id, row, adapter)
+                did_process = self._process_row(
+                    task_id,
+                    row,
+                    adapter,
+                    user_drive_signal=task_id in drive_signal_task_ids,
+                )
                 if did_process:
                     processed += 1
             except Exception as exc:
@@ -651,6 +923,7 @@ class SessionWatcher:
                     "watcher.tick: error processing task_id=%s: %s",
                     task_id,
                     exc,
+                    exc_info=True,
                 )
 
         return processed
@@ -664,6 +937,8 @@ class SessionWatcher:
         task_id: str,
         row: Dict[str, Any],
         adapter: AgentAdapter,
+        *,
+        user_drive_signal: bool = False,
     ) -> bool:
         """Process a single registry row in one tick.
 
@@ -673,7 +948,7 @@ class SessionWatcher:
         # The registry has tmux_session but not a separate pane column;
         # derive the pane target using the same logic as _build_handle.
         tmux_session = row.get("tmux_session") or ""
-        pane = f"{tmux_session}:0.0" if tmux_session else ""
+        pane = tmux_session if tmux_session else ""
         holder = f"watcher:pid:{os.getpid()}:{time.time():.3f}"
 
         # Acquire per-session lock — BEFORE any capture-pane call
@@ -710,27 +985,30 @@ class SessionWatcher:
 
         new_state = new_lifecycle.value
         old_state = row.get("state", SessionLifecycle.RUNNING.value)
+        previous_last_output_ts = _coerce_optional_float(row.get("last_output_ts"))
 
         # Compute pane hash for hang-detection (T009 consumes this)
-        pane_hash = _pane_hash(pane_text) if pane_text else None
+        if pane_text:
+            pane_hash = hashlib.sha256(pane_text.encode(errors="replace")).hexdigest()[:16]
+        else:
+            pane_hash = None
 
-        # Determine idle-tick increment
-        pane_changed = pane_hash != row.get("last_pane_hash")
-        idle_tick_delta = 0 if pane_changed else 1
+        previous_pane_hash = row.get("last_pane_hash")
+        captured_pane_hash = pane_hash is not None
+        pane_changed = captured_pane_hash and pane_hash != previous_pane_hash
+        idle_tick_delta = 1 if captured_pane_hash and not pane_changed else 0
 
         # Build update fields
         update_fields: Dict[str, Any] = {
             "state": new_state,
             "updated_at": "datetime('now')",  # handled by upsert
         }
-        if pane_hash is not None:
+        if captured_pane_hash:
             update_fields["last_pane_hash"] = pane_hash
         if pane_changed:
             update_fields["last_output_ts"] = time.time()
             update_fields["idle_ticks"] = 0
-        else:
-            # Atomic increment — done via registry.increment_counter
-            pass  # handled below
+            update_fields["nudge_count"] = 0
 
         # Write state update (single writer)
         self._registry.upsert(
@@ -751,17 +1029,47 @@ class SessionWatcher:
 
         # Re-read fresh row for hook calls (reflects counters just written)
         fresh_row = self._registry.get(task_id) or row
-
-        # Fire transition hook if state changed into a user-attention state
-        _ATTENTION_STATES = frozenset(
-            {
-                SessionLifecycle.WAITING_USER.value,
-                SessionLifecycle.PAUSED_HANDOFF.value,
-            }
+        current_last_output_ts = _coerce_optional_float(fresh_row.get("last_output_ts"))
+        hang_idle_ticks, hang_stale_seconds = _load_hang_thresholds()
+        stale_frozen_eligible = (
+            new_state == SessionLifecycle.RUNNING.value
+            and _is_stale_frozen_eligible(
+                fresh_row,
+                previous_pane_hash=previous_pane_hash,
+                current_pane_hash=pane_hash,
+                pane_text=pane_text,
+                adapter=adapter,
+                hang_idle_ticks=hang_idle_ticks,
+                hang_stale_seconds=hang_stale_seconds,
+            )
         )
-        if new_state != old_state and new_state in _ATTENTION_STATES:
-            _on_turn_change(task_id, fresh_row, new_state, old_state)
-        elif new_state != old_state and old_state in _ATTENTION_STATES:
+        stale_frozen_actionable, attention_digest_dirty = _sync_attention_lifecycle(
+            self._registry,
+            task_id,
+            old_state=old_state,
+            new_state=new_state,
+            fresh_row=fresh_row,
+            stale_frozen_eligible=stale_frozen_eligible,
+            previous_pane_hash=previous_pane_hash,
+            current_pane_hash=pane_hash,
+            previous_last_output_ts=previous_last_output_ts,
+            current_last_output_ts=current_last_output_ts,
+            pane_text=pane_text,
+            adapter=adapter,
+            user_drive_signal=user_drive_signal,
+        )
+        transition_digest_reconciled = False
+
+        if new_state != old_state and new_state in _USER_ATTENTION_STATES:
+            _on_turn_change(
+                task_id,
+                fresh_row,
+                new_state,
+                old_state,
+                registry=self._registry,
+            )
+            transition_digest_reconciled = True
+        elif new_state != old_state and old_state in _USER_ATTENTION_STATES:
             # Transitioning OUT of an attention state — re-arm the debounce
             # so the NEXT transition back fires as a new notification.
             try:
@@ -774,22 +1082,43 @@ class SessionWatcher:
                     task_id,
                     exc,
                 )
+            _reconcile_attention_digest(
+                self._registry,
+                task_id=task_id,
+                context="_process_row",
+            )
+            transition_digest_reconciled = True
 
-        # Heartbeat hook (T008 decides whether to actually edit based on counter)
-        _on_heartbeat_tick(task_id, fresh_row)
-
-        # Hang hook — only when state is RUNNING (never WAITING_USER / PAUSED_HANDOFF)
+        if attention_digest_dirty and not transition_digest_reconciled:
+            _reconcile_attention_digest(
+                self._registry,
+                task_id=task_id,
+                context="_process_row",
+            )
+            transition_digest_reconciled = True
         if (
-            new_state == SessionLifecycle.RUNNING.value
-            and not pane_changed
-            and (fresh_row.get("idle_ticks") or 0) > 0
+            new_state in _USER_ATTENTION_STATES
+            or stale_frozen_actionable
+            or transition_digest_reconciled
         ):
+            logger.debug(
+                "watcher._process_row: digest owns channel projection; skipping heartbeat task_id=%s",
+                task_id,
+            )
+        else:
+            # Heartbeat hook (T008 decides whether to actually edit based on counter)
+            _on_heartbeat_tick(task_id, fresh_row)
+
+        # Hang hook — only when deterministic stale/frozen evidence is present.
+        if stale_frozen_actionable:
             _on_hang(
                 task_id,
                 fresh_row,
                 registry=self._registry,
                 adapter=adapter,
                 pane_text=pane_text,
+                previous_pane_hash=previous_pane_hash,
+                current_pane_hash=pane_hash,
             )
 
         return True
@@ -807,7 +1136,7 @@ class SessionWatcher:
         which is the default for single-pane sessions created by adapters.
         """
         tmux_session = row.get("tmux_session") or ""
-        pane = f"{tmux_session}:0.0" if tmux_session else ""
+        pane = tmux_session if tmux_session else ""
         return SessionHandle(
             session_id=row.get("task_id", ""),
             tmux_session=tmux_session,

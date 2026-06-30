@@ -2443,7 +2443,8 @@ DEFAULT_CONFIG = {
     #
     # All session-orchestration behaviour is gated behind ``enabled``.
     # Disabled (the default) ⇒ byte-identical prior behaviour: no watcher cron
-    # runs, no ingest route processes, no /so-* commands surface in the gateway.
+    # runs, no ingest route processes, and no session-orchestration gateway
+    # commands surface.
     #
     # See session_orchestration/config.py for the typed accessor.
     # ---------------------------------------------------------------------------
@@ -2452,9 +2453,10 @@ DEFAULT_CONFIG = {
         # session-orchestration behaviour.
         "enabled": False,
 
-        # Discord channel id for the unified session feed.  All state
-        # transitions and watchdog alerts are posted here with deep-links
-        # to the per-project thread.  No feed pushes when empty.
+        # Discord channel id for the session action feed.  Hosts a single
+        # edited checklist digest for unresolved attention items; thread-local
+        # notices are optional/best-effort when a task has a thread.
+        # No digest/notices when empty.
         "feed_channel_id": "",
 
         # Discord channel id for runs adopted from external sources
@@ -2462,13 +2464,15 @@ DEFAULT_CONFIG = {
         # Defaults to feed_channel_id when empty.
         "external_runs_channel_id": "",
 
-        # Static stale threshold (seconds).  A session in RUNNING state
-        # whose last_output_ts is older than this AND whose pane hash has
-        # not changed for ``hang_idle_ticks`` ticks is declared hung.
+        # Deterministic stale/frozen guard threshold (seconds).  A RUNNING
+        # session opens stale/frozen attention only when last_output_ts is
+        # older than this, the pane hash is unchanged for ``hang_idle_ticks``
+        # ticks, and the current pane does not match the adapter's active-work
+        # regex.
         "hang_stale_seconds": 300,
 
-        # N pane-hash-unchanged ticks before a RUNNING session is
-        # declared hung.  Each tick is ~1–2 min depending on cron cadence.
+        # N consecutive unchanged pane-hash ticks required by the stale/frozen
+        # guard.  Each tick is ~1–2 min depending on cron cadence.
         "hang_idle_ticks": 3,
     },
 }

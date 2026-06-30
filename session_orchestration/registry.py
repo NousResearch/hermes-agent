@@ -50,6 +50,7 @@ Queue intent kinds
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -59,6 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+_UNSET = object()
 
 # ---------------------------------------------------------------------------
 # Default busy-timeout: how long SQLite waits for a write lock before
@@ -114,6 +116,55 @@ CREATE TABLE IF NOT EXISTS session_orchestration_queue (
 
 CREATE INDEX IF NOT EXISTS idx_soq_task
     ON session_orchestration_queue(task_id);
+
+CREATE TABLE IF NOT EXISTS session_orchestration_attention_items (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id               TEXT NOT NULL,
+    reason                TEXT NOT NULL,
+    state                 TEXT NOT NULL DEFAULT 'unresolved',
+    priority              INTEGER NOT NULL DEFAULT 0,
+    detail                TEXT,
+    opened_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at           TEXT,
+    resolution_reason     TEXT,
+    FOREIGN KEY(task_id) REFERENCES session_orchestration(task_id) ON DELETE CASCADE,
+    CHECK (
+        (
+            state = 'unresolved'
+            AND resolved_at IS NULL
+            AND resolution_reason IS NULL
+        )
+        OR
+        (
+            state = 'resolved'
+            AND resolved_at IS NOT NULL
+            AND resolution_reason IS NOT NULL
+        )
+    )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_soai_unresolved_task_reason
+    ON session_orchestration_attention_items(task_id, reason)
+    WHERE resolved_at IS NULL;
+DROP INDEX IF EXISTS idx_soai_unresolved_lookup;
+CREATE INDEX IF NOT EXISTS idx_soai_unresolved_lookup
+    ON session_orchestration_attention_items(state, priority DESC, opened_at)
+    WHERE resolved_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS session_orchestration_projection (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id            TEXT NOT NULL,
+    projection_name       TEXT NOT NULL,
+    message_id            TEXT,
+    content_hash          TEXT,
+    payload               TEXT NOT NULL DEFAULT '{}',
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(channel_id, projection_name)
+);
+DROP INDEX IF EXISTS idx_sop_channel_projection;
+
 """
 
 # ---------------------------------------------------------------------------
@@ -307,8 +358,257 @@ class SessionOrchestrationRegistry:
         finally:
             conn.close()
 
+    def list_unresolved_attention_items(self) -> List[Dict[str, Any]]:
+        """Return currently unresolved attention items in render-stable order."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT *
+                  FROM session_orchestration_attention_items
+                 WHERE state = 'unresolved'
+                   AND resolved_at IS NULL
+                 ORDER BY priority DESC, opened_at ASC, id ASC
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_projection(
+        self,
+        channel_id: str,
+        projection_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return projection metadata for a channel/projection pair, if present."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT *
+                  FROM session_orchestration_projection
+                 WHERE channel_id = ?
+                   AND projection_name = ?
+                """,
+                (channel_id, projection_name),
+            ).fetchone()
+            if row is None:
+                return None
+            projection = dict(row)
+            projection["payload"] = json.loads(projection["payload"] or "{}")
+            return projection
+        finally:
+            conn.close()
+
     # ------------------------------------------------------------------
-    # Public API — cron-watcher-only mutations
+    # Public API — watcher-owned attention/projection mutations
+    # ------------------------------------------------------------------
+
+    def open_attention_item(
+        self,
+        task_id: str,
+        reason: str,
+        *,
+        priority: int = 0,
+        detail: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Open or refresh an unresolved attention item for ``task_id``/``reason``.
+
+        Watcher-owned API: external actors must not use this as an authority
+        for session state.  Reopening the same unresolved reason refreshes only
+        attention lifecycle fields instead of inserting a duplicate.
+        """
+        def _do(conn: sqlite3.Connection) -> Dict[str, Any]:
+            existing = conn.execute(
+                """
+                SELECT id
+                  FROM session_orchestration_attention_items
+                 WHERE task_id = ?
+                   AND reason = ?
+                   AND resolved_at IS NULL
+                """,
+                (task_id, reason),
+            ).fetchone()
+            if existing is None:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO session_orchestration_attention_items (
+                        task_id, reason, state, priority, detail
+                    ) VALUES (?, ?, 'unresolved', ?, ?)
+                    """,
+                    (task_id, reason, priority, detail),
+                )
+                item_id = cursor.lastrowid
+            else:
+                item_id = existing["id"]
+                conn.execute(
+                    """
+                    UPDATE session_orchestration_attention_items
+                       SET priority = ?,
+                           detail = ?,
+                           updated_at = datetime('now')
+                     WHERE id = ?
+                    """,
+                    (priority, detail, item_id),
+                )
+
+            row = conn.execute(
+                "SELECT * FROM session_orchestration_attention_items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            return dict(row)
+
+        return self._write(_do)
+
+    def update_attention_item(
+        self,
+        task_id: str,
+        reason: str,
+        *,
+        priority: Optional[int] = None,
+        detail: Any = _UNSET,
+    ) -> Optional[Dict[str, Any]]:
+        """Refresh lifecycle fields on an unresolved attention item."""
+        set_parts: List[str] = ["updated_at = datetime('now')"]
+        values: List[Any] = []
+        if priority is not None:
+            set_parts.append("priority = ?")
+            values.append(priority)
+        if detail is not _UNSET:
+            set_parts.append("detail = ?")
+            values.append(detail)
+
+        def _do(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
+            update_values = [*values, task_id, reason]
+            conn.execute(
+                f"""
+                UPDATE session_orchestration_attention_items
+                   SET {', '.join(set_parts)}
+                 WHERE task_id = ?
+                   AND reason = ?
+                   AND resolved_at IS NULL
+                """,
+                update_values,
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                  FROM session_orchestration_attention_items
+                 WHERE task_id = ?
+                   AND reason = ?
+                   AND resolved_at IS NULL
+                """,
+                (task_id, reason),
+            ).fetchone()
+            return dict(row) if row else None
+
+        return self._write(_do)
+
+    def resolve_attention_item(
+        self,
+        task_id: str,
+        reason: str,
+        resolution_reason: str,
+    ) -> bool:
+        """Resolve the currently unresolved attention item for one reason."""
+        def _do(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                """
+                UPDATE session_orchestration_attention_items
+                   SET state = 'resolved',
+                       resolved_at = datetime('now'),
+                       resolution_reason = ?,
+                       updated_at = datetime('now')
+                 WHERE task_id = ?
+                   AND reason = ?
+                   AND resolved_at IS NULL
+                """,
+                (resolution_reason, task_id, reason),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._write(_do))
+
+    def upsert_projection(
+        self,
+        channel_id: str,
+        projection_name: str,
+        *,
+        message_id: Optional[str] | object = _UNSET,
+        content_hash: Optional[str] | object = _UNSET,
+        payload: Optional[Dict[str, Any]] | object = _UNSET,
+    ) -> Dict[str, Any]:
+        """Insert or update watcher-owned projection metadata.
+
+        Omitted optional fields preserve existing values on update; passing
+        ``None`` explicitly clears nullable fields and resets ``payload`` to
+        ``{}``.
+        """
+
+        def _do(conn: sqlite3.Connection) -> Dict[str, Any]:
+            existing = conn.execute(
+                """
+                SELECT id
+                  FROM session_orchestration_projection
+                 WHERE channel_id = ?
+                   AND projection_name = ?
+                """,
+                (channel_id, projection_name),
+            ).fetchone()
+            if existing is None:
+                insert_message_id = None if message_id is _UNSET else message_id
+                insert_content_hash = None if content_hash is _UNSET else content_hash
+                insert_payload = {} if payload is _UNSET else (payload or {})
+                cursor = conn.execute(
+                    """
+                    INSERT INTO session_orchestration_projection (
+                        channel_id, projection_name, message_id, content_hash, payload
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        channel_id,
+                        projection_name,
+                        insert_message_id,
+                        insert_content_hash,
+                        json.dumps(insert_payload, sort_keys=True),
+                    ),
+                )
+                projection_id = cursor.lastrowid
+            else:
+                projection_id = existing["id"]
+                set_parts: List[str] = ["updated_at = datetime('now')"]
+                values: List[Any] = []
+                if message_id is not _UNSET:
+                    set_parts.append("message_id = ?")
+                    values.append(message_id)
+                if content_hash is not _UNSET:
+                    set_parts.append("content_hash = ?")
+                    values.append(content_hash)
+                if payload is not _UNSET:
+                    set_parts.append("payload = ?")
+                    values.append(json.dumps(payload or {}, sort_keys=True))
+                values.append(projection_id)
+                conn.execute(
+                    f"""
+                    UPDATE session_orchestration_projection
+                       SET {', '.join(set_parts)}
+                     WHERE id = ?
+                    """,
+                    values,
+                )
+
+            row = conn.execute(
+                "SELECT * FROM session_orchestration_projection WHERE id = ?",
+                (projection_id,),
+            ).fetchone()
+            projection = dict(row)
+            projection["payload"] = json.loads(projection["payload"] or "{}")
+            return projection
+
+        return self._write(_do)
+
+    # ------------------------------------------------------------------
+    # Public API — core cron-watcher-only session mutations
     # ------------------------------------------------------------------
 
     def upsert(

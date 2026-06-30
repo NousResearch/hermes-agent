@@ -9,11 +9,15 @@ Config section (config.yaml):
 
     session_orchestration:
       enabled: false                       # master gate — default OFF
-      feed_channel_id: ""                  # Discord channel id for the unified feed
+      feed_channel_id: ""                  # Discord channel for single edited checklist digest
       external_runs_channel_id: ""         # Discord channel for adopted external runs
-      hang_stale_seconds: 300              # static stale threshold (seconds) before hang
-      hang_idle_ticks: 3                   # N idle ticks before hang is declared
+      hang_stale_seconds: 300              # min last_output_ts age for stale/frozen guard
+      hang_idle_ticks: 3                   # unchanged-pane ticks before stale/frozen guard
 
+Stale/frozen attention is deterministic: ``last_output_ts`` age beyond
+``hang_stale_seconds`` plus unchanged pane hashes for ``hang_idle_ticks`` and
+no adapter active-work regex match.
+Thread-local notices are optional/best-effort when a task has a thread.
 Disabled ⇒ byte-identical prior behaviour: no watcher tick runs, no ingest
 route processes, no commands surface in the gateway.
 """
@@ -34,8 +38,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENABLED: bool = False
 _DEFAULT_FEED_CHANNEL_ID: Optional[str] = None
 _DEFAULT_EXTERNAL_RUNS_CHANNEL_ID: Optional[str] = None
-_DEFAULT_HANG_STALE_SECONDS: int = 300  # 5 min static stale threshold
-_DEFAULT_HANG_IDLE_TICKS: int = 3       # N ticks of pane-hash unchanged before hang
+_DEFAULT_HANG_STALE_SECONDS: int = 300  # min last_output_ts age for guard
+_DEFAULT_HANG_IDLE_TICKS: int = 3       # N unchanged hashes before guard
 
 
 @dataclass(frozen=True)

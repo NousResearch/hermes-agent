@@ -287,3 +287,5 @@ class TestSignatureBeforeRateLimit:
             assert resp.status == 429
 
         assert len(captured_events) == 3
+
+        assert len(captured_events) == 0

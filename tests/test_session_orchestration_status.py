@@ -12,6 +12,7 @@ Verifies the snapshot builder against a seeded in-memory/temp registry:
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,12 @@ from typing import Any, Dict, List
 import pytest
 
 from session_orchestration.registry import SessionOrchestrationRegistry
-from session_orchestration.status import _age_seconds, _format_age, build_snapshot
+from session_orchestration.status import (
+    _age_seconds,
+    _format_age,
+    build_registry_snapshot,
+    build_snapshot,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +236,152 @@ class TestBuildSnapshotOrdering:
         # WAITING_USER rows sort before RUNNING rows
         assert pos_waiting < pos_running
 
+# ---------------------------------------------------------------------------
+# build_snapshot — unresolved attention items
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSnapshotAttentionItems:
+    def test_attention_items_include_reason_priority_and_age(self) -> None:
+        now_dt = datetime(2026, 6, 29, 2, 0, tzinfo=timezone.utc)
+        now = now_dt.timestamp()
+        rows: List[Dict[str, Any]] = [
+            {
+                "task_id": "task-1",
+                "agent": "claude",
+                "state": "RUNNING",
+                "project": "hermes-agent",
+                "last_output_ts": now - 60,
+            }
+        ]
+        attention_items: List[Dict[str, Any]] = [
+            {
+                "id": 1,
+                "task_id": "task-1",
+                "reason": "FROZEN_STALE",
+                "priority": 9,
+                "detail": "pane hash unchanged",
+                "opened_at": "2026-06-29T01:30:00+00:00",
+            }
+        ]
+
+        snapshot = build_snapshot(rows, now=now, attention_items=attention_items)
+
+        assert "Unresolved attention items" in snapshot
+        assert "task-1" in snapshot
+        assert "reason `FROZEN_STALE`" in snapshot
+        assert "pane hash unchanged" in snapshot
+        assert "P9/frozen/stuck" in snapshot
+        assert "opened 30m ago" in snapshot
+
+    def test_oldest_actionable_uses_priority_then_opened_at_not_waiting_rows(self) -> None:
+        now_dt = datetime(2026, 6, 29, 2, 0, tzinfo=timezone.utc)
+        now = now_dt.timestamp()
+        rows: List[Dict[str, Any]] = [
+            {
+                "task_id": "task-waiting-old",
+                "agent": "omp",
+                "state": "WAITING_USER",
+                "last_output_ts": now - 7200,
+            }
+        ]
+        attention_items: List[Dict[str, Any]] = [
+            {
+                "id": 1,
+                "task_id": "task-low-oldest",
+                "reason": "WAITING_USER",
+                "priority": 1,
+                "opened_at": "2026-06-29T00:30:00+00:00",
+            },
+            {
+                "id": 2,
+                "task_id": "task-high-later",
+                "reason": "STALE",
+                "priority": 5,
+                "opened_at": "2026-06-29T01:30:00+00:00",
+            },
+            {
+                "id": 3,
+                "task_id": "task-high-earlier",
+                "reason": "STALE",
+                "priority": 5,
+                "opened_at": "2026-06-29T01:00:00+00:00",
+            },
+        ]
+
+        snapshot = build_snapshot(rows, now=now, attention_items=attention_items)
+
+        assert "Oldest WAITING_USER" not in snapshot
+        highlight = snapshot.split("**Oldest actionable item:**", 1)[1]
+        assert "task-high-earlier" in highlight
+        assert "task-high-later" not in highlight
+        assert "task-low-oldest" not in highlight
+        assert "task-waiting-old" not in highlight
+
+    def test_empty_rows_with_attention_items_render_safely(self) -> None:
+        now_dt = datetime(2026, 6, 29, 2, 0, tzinfo=timezone.utc)
+        snapshot = build_snapshot(
+            [],
+            now=now_dt.timestamp(),
+            attention_items=[
+                {
+                    "id": 1,
+                    "task_id": "task-attn",
+                    "reason": "WAITING_USER",
+                    "priority": 1,
+                    "opened_at": "2026-06-29T01:59:00+00:00",
+                }
+            ],
+        )
+
+        assert "No active tasks." in snapshot
+        assert "task-attn" in snapshot
+        assert "reason `WAITING_USER`" in snapshot
+        assert "opened 1m ago" in snapshot
+
+
+class TestBuildRegistrySnapshotAttentionItems:
+    def test_registry_snapshot_reads_attention_without_mutating(
+        self, registry: SessionOrchestrationRegistry
+    ) -> None:
+        now_dt = datetime(2026, 6, 29, 2, 0, tzinfo=timezone.utc)
+        now = now_dt.timestamp()
+        registry.upsert(
+            "task-reg",
+            agent="claude",
+            state="RUNNING",
+            project="hermes-agent",
+            last_output_ts=now - 120,
+        )
+        registry.open_attention_item(
+            "task-reg",
+            "STALE_FROZEN",
+            priority=50,
+            detail="pane hash unchanged",
+        )
+        conn = sqlite3.connect(str(registry._db_path))
+        try:
+            conn.execute(
+                """
+                UPDATE session_orchestration_attention_items
+                   SET opened_at = ?
+                 WHERE task_id = ? AND reason = ?
+                """,
+                ("2026-06-29T01:00:00+00:00", "task-reg", "STALE_FROZEN"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        before = registry.list_unresolved_attention_items()
+
+        snapshot = build_registry_snapshot(registry, now=now)
+
+        assert registry.list_unresolved_attention_items() == before
+        assert "task-reg" in snapshot
+        assert "claude/hermes-agent" in snapshot
+        assert "reason `STALE_FROZEN`" in snapshot
+        assert "P50/frozen/stuck" in snapshot
+        assert "opened 1h ago" in snapshot
 
 # ---------------------------------------------------------------------------
 # Integration: registry → build_snapshot round-trip

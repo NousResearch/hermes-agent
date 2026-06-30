@@ -316,6 +316,9 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_handoff_pending
+    ON sessions(handoff_state, started_at);
 """
 
 FTS_SQL = """
@@ -785,8 +788,8 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
-        # Deferred indexes that reference the reconciler-added ``active``
-        # column (idx_messages_session_active) — same ordering constraint.
+        # Deferred indexes that reference reconciler-added columns — same
+        # ordering constraint as idx_messages_platform_msg_id above.
         cursor.executescript(DEFERRED_INDEX_SQL)
 
         fts5_available = self._sqlite_supports_fts5(cursor)
@@ -4303,12 +4306,13 @@ class SessionDB:
         no handoff record.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT handoff_state, handoff_platform, handoff_error "
-                "FROM sessions WHERE id = ?",
-                (session_id,),
-            )
-            row = cur.fetchone()
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT handoff_state, handoff_platform, handoff_error "
+                    "FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+                row = cur.fetchone()
             if not row:
                 return None
             return {
@@ -4325,12 +4329,13 @@ class SessionDB:
         Used by the gateway's handoff watcher.
         """
         try:
-            cur = self._conn.execute(
-                "SELECT * FROM sessions "
-                "WHERE handoff_state = 'pending' "
-                "ORDER BY started_at ASC"
-            )
-            return [dict(r) for r in cur.fetchall()]
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT * FROM sessions "
+                    "WHERE handoff_state = 'pending' "
+                    "ORDER BY started_at ASC"
+                )
+                return [dict(r) for r in cur.fetchall()]
         except Exception:
             return []
 

@@ -546,6 +546,39 @@ def _normalize_profile(profile: Optional[str]) -> Optional[str]:
     resolve_profile_env(normalized)
     return normalized
 
+def _builtin_scripts_dir() -> Path:
+    """Installed hermes-agent built-in scripts directory."""
+    return (Path(__file__).parent.parent / "scripts").resolve()
+
+
+def _normalize_script_path(script: Optional[str], *, no_agent: bool = False) -> Optional[str]:
+    """Normalize cron script storage without changing user-script semantics.
+
+    User scripts are stored exactly as supplied.  For no-agent jobs, absolute
+    paths that point at Hermes-owned built-in scripts are stored as the safe
+    repo-relative token ``scripts/<name>`` so new registrations do not persist
+    machine-specific hermes-agent paths.
+    """
+    if script is None:
+        return None
+    raw = str(script).strip()
+    if not raw:
+        return None
+    if not no_agent:
+        return raw
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return raw
+
+    builtins = _builtin_scripts_dir()
+    try:
+        rel = path.resolve().relative_to(builtins)
+    except ValueError:
+        return raw
+    return str(Path("scripts") / rel)
+
+
 
 def create_job(
     prompt: Optional[str],
@@ -586,9 +619,11 @@ def create_job(
                 ``no_agent=True`` the script IS the job — its stdout is
                 delivered verbatim. Without ``no_agent``, its stdout is
                 injected into the agent's prompt as context (data-collection /
-                change-detection pattern). Paths resolve under
-                ~/.hermes/scripts/; ``.sh`` / ``.bash`` files run via bash,
-                anything else via Python.
+                change-detection pattern). User scripts resolve under
+                ~/.hermes/scripts/; no-agent jobs may also run Hermes-owned
+                built-in scripts from the installed hermes-agent scripts/
+                directory. ``.sh`` / ``.bash`` files run via bash, anything
+                else via Python.
         context_from: Optional job ID (or list of job IDs) whose most recent output
                       is injected into the prompt as context before each run.
                       Useful for chaining cron jobs: job A finds data, job B processes it.
@@ -642,13 +677,12 @@ def create_job(
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
-    normalized_script = str(script).strip() if isinstance(script, str) else None
-    normalized_script = normalized_script or None
+    normalized_no_agent = bool(no_agent)
+    normalized_script = _normalize_script_path(script, no_agent=normalized_no_agent)
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
-    normalized_no_agent = bool(no_agent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -800,6 +834,21 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = None
             else:
                 updates["profile"] = _normalize_profile(_profile)
+
+        # Normalize Hermes built-in no-agent scripts at create/update time so
+        # new watcher registrations don't persist machine-specific absolute
+        # hermes-agent paths. User script paths are otherwise kept unchanged.
+        if "script" in updates or "no_agent" in updates:
+            target_no_agent = bool(updates.get("no_agent", job.get("no_agent", False)))
+            target_script = updates.get("script", job.get("script"))
+            normalized_script = _normalize_script_path(
+                target_script,
+                no_agent=target_no_agent,
+            )
+            if "script" in updates:
+                updates["script"] = normalized_script
+            elif target_no_agent:
+                updates["script"] = normalized_script
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

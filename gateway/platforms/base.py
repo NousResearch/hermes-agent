@@ -4235,6 +4235,8 @@ class BasePlatformAdapter(ABC):
                         _thread_metadata["notify"] = True
                     else:
                         _thread_metadata = {"notify": True}
+                    if hasattr(event.raw_message, "edit_original_response"):
+                        _thread_metadata["raw_message"] = event.raw_message
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,

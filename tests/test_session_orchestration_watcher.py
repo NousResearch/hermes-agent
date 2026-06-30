@@ -1,21 +1,18 @@
 """
-Unit tests for session_orchestration/watcher.py (T006).
+Unit tests for session_orchestration/watcher.py session-orchestration flow.
 
 Coverage
 --------
-1. A tick iterating seeded rows writes state without spurious notifications —
-   state updates reach the registry; no Discord/network calls.
-2. A tick whose target session is locked by the relay skips capture — the
-   tmux_capture callable is NOT called when the lock is held.
-3. Intent-queue drain is applied: an intent enqueued before the tick is
-   processed and the row is updated.
-4. Unavailable-adapter rows are skipped: a row whose agent name is absent
-   from the verified adapters set is never processed.
-5. Lock is acquired BEFORE capture and released AFTER — the lock holder is
-   cleared from the registry before _process_row returns.
-6. startup_verify is idempotent — calling it twice does not re-probe adapters.
-7. Config-gate: _is_session_orchestration_enabled returns False when config
-   key is absent.
+1. Core tick mechanics: state updates, lock handling, intent drain,
+   unavailable-adapter skips, startup verification, and config gate.
+2. Attention lifecycle: WAITING_USER / PAUSED_HANDOFF open, refresh, resolve,
+   and direct user-attention transitions close the prior reason.
+3. Stale/frozen lifecycle: deterministic eligibility, empty-capture safety,
+   ambiguous RUNNING persistence, drive/progress resolution, and one nudge per
+   stale episode.
+4. Watcher-to-feed projection: digest reconciliation on attention entry,
+   resolution, stale/frozen escalation, already-nudged stale episodes, and
+   missing digest message recovery.
 
 All tests use:
 - An in-memory SQLite DB (via tmp_path fixture).
@@ -26,20 +23,29 @@ All tests use:
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+import session_orchestration.feed as feed_mod
 
 from session_orchestration.adapters.base import AgentAdapter
 from session_orchestration.adapters.verify import AdapterProbeSpec
 from session_orchestration.registry import SessionOrchestrationRegistry
 from session_orchestration.types import Capabilities, SessionHandle, SessionLifecycle
-from session_orchestration.watcher import SessionWatcher, _pane_hash, run_tick
+from session_orchestration.watcher import (
+    SessionWatcher,
+    _is_omp_nudge_checkin_eligible,
+    _is_stale_frozen_eligible,
+    _on_hang,
+    _pane_hash,
+    run_tick,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -50,12 +56,17 @@ from session_orchestration.watcher import SessionWatcher, _pane_hash, run_tick
 class FakeAdapter(AgentAdapter):
     """Adapter that returns a fixed lifecycle value and records detect() calls."""
 
-    def __init__(self, lifecycle: SessionLifecycle = SessionLifecycle.RUNNING):
+    def __init__(
+        self,
+        lifecycle: SessionLifecycle = SessionLifecycle.RUNNING,
+        idle_indicator_regex: re.Pattern[str] | None = None,
+    ):
         self._lifecycle = lifecycle
+        self._idle_indicator_regex = idle_indicator_regex
         self.detect_calls: List[SessionHandle] = []
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(idle_indicator_regex=self._idle_indicator_regex)
 
     def launch(self, workdir: str, prompt: str) -> SessionHandle:
         raise NotImplementedError
@@ -174,7 +185,14 @@ class TestTickWritesState:
         capture = FakeCapture("❯ ")
         watcher = _make_watcher(registry, adapter, capture)
 
-        processed = watcher.tick()
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "posted"},
+            ),
+            patch("session_orchestration.feed.push_turn_change", return_value=False),
+        ):
+            processed = watcher.tick()
 
         assert processed == 1, "expected exactly one row processed"
         row = registry.get(task_id)
@@ -211,6 +229,553 @@ class TestTickWritesState:
         # capture was never called for terminal rows
         assert capture.calls == []
 
+
+
+class TestAttentionLifecycle:
+    """Watcher-owned attention items mirror lifecycle without new states."""
+
+    def test_waiting_user_attention_open_refresh_resolve(self, registry, db_path):
+        task_id = "t-attn-waiting"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        watcher = _make_watcher(registry, adapter, FakeCapture("❯ "))
+
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+            patch("session_orchestration.feed.push_turn_change", return_value=True) as thread_notice,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            reconcile_digest.assert_called_once_with(registry)
+            thread_notice.assert_called_once()
+            first_items = registry.list_unresolved_attention_items()
+            waiting_items = [
+                item for item in first_items if item["reason"] == "WAITING_USER"
+            ]
+            assert len(waiting_items) == 1
+            first_id = waiting_items[0]["id"]
+
+            watcher.tick()
+            assert reconcile_digest.call_count == 1
+            refreshed_items = registry.list_unresolved_attention_items()
+            waiting_items = [
+                item for item in refreshed_items if item["reason"] == "WAITING_USER"
+            ]
+            assert [item["id"] for item in waiting_items] == [first_id]
+
+            adapter._lifecycle = SessionLifecycle.RUNNING
+            watcher.tick()
+            assert reconcile_digest.call_count == 2
+            heartbeat_tick.assert_not_called()
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "WAITING_USER"
+        ]
+
+    def test_paused_handoff_attention_open_refresh_resolve(self, registry, db_path):
+        task_id = "t-attn-handoff"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        adapter = FakeAdapter(SessionLifecycle.PAUSED_HANDOFF)
+        watcher = _make_watcher(registry, adapter, FakeCapture("HERMES_HANDOFF\n❯ "))
+
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+            patch("session_orchestration.feed.push_turn_change", return_value=True) as thread_notice,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            reconcile_digest.assert_called_once_with(registry)
+            thread_notice.assert_called_once()
+            first_items = registry.list_unresolved_attention_items()
+            handoff_items = [
+                item for item in first_items if item["reason"] == "PAUSED_HANDOFF"
+            ]
+            assert len(handoff_items) == 1
+            first_id = handoff_items[0]["id"]
+
+            watcher.tick()
+            assert reconcile_digest.call_count == 1
+            refreshed_items = registry.list_unresolved_attention_items()
+            handoff_items = [
+                item for item in refreshed_items if item["reason"] == "PAUSED_HANDOFF"
+            ]
+            assert [item["id"] for item in handoff_items] == [first_id]
+
+            adapter._lifecycle = SessionLifecycle.RUNNING
+            watcher.tick()
+            assert reconcile_digest.call_count == 2
+            heartbeat_tick.assert_not_called()
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "PAUSED_HANDOFF"
+        ]
+
+    def test_leaving_user_attention_state_rearms_turn_change_debounce(
+        self, registry, db_path
+    ):
+        import session_orchestration.feed as feed_mod
+
+        task_id = "t-attn-debounce"
+        _seed_row(registry, task_id=task_id, state="WAITING_USER")
+        feed_mod._last_notified[task_id] = "WAITING_USER"
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture("working"))
+        with patch(
+            "session_orchestration.feed.reconcile_attention_digest",
+            return_value={"status": "edited"},
+        ) as reconcile_digest:
+            watcher.tick()
+
+        reconcile_digest.assert_called_once_with(registry)
+
+        assert task_id not in feed_mod._last_notified
+
+    def test_stale_frozen_attention_opens_on_running_row(self, registry, db_path):
+        task_id = "t-attn-stale-open"
+        pane_text = "unchanged frozen pane"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=1,
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "RUNNING"
+        assert [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+    def test_stale_frozen_escalation_reconciles_attention_digest(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-digest"
+        pane_text = "unchanged frozen pane for digest"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=0,
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+
+        with (
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+            patch("session_orchestration.feed.push_hang_notification", return_value=False) as thread_notice,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+            patch("session_orchestration.watcher._send_auto_nudge") as auto_nudge,
+        ):
+            watcher.tick()
+
+        reconcile_digest.assert_called_once_with(registry)
+        thread_notice.assert_called_once()
+        auto_nudge.assert_called_once()
+        heartbeat_tick.assert_not_called()
+        assert [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+    def test_stale_frozen_not_resolved_by_default_running_detect(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-running"
+        pane_text = "same pane without enough stale evidence"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash(pane_text),
+            idle_ticks=0,
+        )
+        stale_item = registry.open_attention_item(task_id, "STALE_FROZEN")
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        watcher.tick()
+
+        unresolved = registry.list_unresolved_attention_items()
+        stale_ids = [
+            item["id"] for item in unresolved if item["reason"] == "STALE_FROZEN"
+        ]
+        assert stale_ids == [stale_item["id"]]
+
+    def test_empty_capture_does_not_resolve_stale_frozen_or_reset_counters(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-empty-capture"
+        old_text = "old frozen pane"
+        old_hash = _pane_hash(old_text)
+        old_last_output_ts = time.time() - 999
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=old_hash,
+            last_output_ts=old_last_output_ts,
+            idle_ticks=3,
+            nudge_count=1,
+        )
+        stale_item = registry.open_attention_item(task_id, "STALE_FROZEN")
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(""))
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["last_pane_hash"] == old_hash
+        assert row["last_output_ts"] == pytest.approx(old_last_output_ts)
+        assert row["idle_ticks"] == 3
+        assert row["nudge_count"] == 1
+        stale_ids = [
+            item["id"]
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+        assert stale_ids == [stale_item["id"]]
+
+    def test_stale_frozen_resolves_on_drive_signal_when_represented(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-drive"
+        pane_text = "still frozen but user replied"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=0,
+        )
+        registry.open_attention_item(task_id, "STALE_FROZEN")
+        registry.enqueue_intent(
+            "drive",
+            task_id=task_id,
+            payload={"task_id": task_id},
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        with (
+            patch("session_orchestration.watcher._on_hang") as on_hang,
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "edited"},
+            ) as reconcile_digest,
+        ):
+            watcher.tick()
+            on_hang.assert_not_called()
+
+        reconcile_digest.assert_called_once_with(registry)
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+    def test_stale_frozen_resolves_on_pane_hash_change(self, registry, db_path):
+        task_id = "t-attn-stale-resolve"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash("old frozen pane"),
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+        )
+        registry.open_attention_item(task_id, "STALE_FROZEN")
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture("new active output"))
+        with patch(
+            "session_orchestration.feed.reconcile_attention_digest",
+            return_value={"status": "edited"},
+        ) as reconcile_digest:
+            watcher.tick()
+
+        reconcile_digest.assert_called_once_with(registry)
+
+        assert not [
+            item
+            for item in registry.list_unresolved_attention_items()
+            if item["reason"] == "STALE_FROZEN"
+        ]
+
+
+    def test_waiting_user_digest_removes_item_after_progress(self, registry, db_path):
+        task_id = "t-attn-digest-progress"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        posted: List[str] = []
+        edited: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        def fake_edit(channel_id: str, message_id: str, content: str, *, token=None):
+            edited.append(content)
+            return feed_mod._EDIT_OK
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        watcher = _make_watcher(registry, adapter, FakeCapture("waiting at prompt"))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed._edit_discord_message", side_effect=fake_edit),
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            assert len(posted) == 1
+            assert task_id in posted[0]
+            assert "reason `WAITING_USER`" in posted[0]
+            assert registry.get_projection(
+                "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+            )["payload"] == {"item_count": 1, "task_ids": [task_id]}
+
+            adapter._lifecycle = SessionLifecycle.RUNNING
+            watcher._tmux_capture = FakeCapture("agent made progress")
+            watcher.tick()
+
+        assert edited == ["**Hermes action feed**\nNo unresolved attention items."]
+        assert registry.list_unresolved_attention_items() == []
+        assert registry.get_projection(
+            "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+        )["payload"] == {"item_count": 0, "task_ids": []}
+        heartbeat_tick.assert_not_called()
+
+    def test_stale_frozen_digest_persists_across_running_then_drive_removes(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-digest-drive"
+        pane_text = "unchanged ambiguous running pane"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash(pane_text),
+            idle_ticks=0,
+        )
+        registry.open_attention_item(
+            task_id,
+            "STALE_FROZEN",
+            priority=50,
+            detail="existing unresolved stale/frozen item",
+        )
+
+        posted: List[str] = []
+        edited: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        def fake_edit(channel_id: str, message_id: str, content: str, *, token=None):
+            edited.append(content)
+            return feed_mod._EDIT_OK
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed._edit_discord_message", side_effect=fake_edit),
+            patch("session_orchestration.watcher._on_heartbeat_tick"),
+        ):
+            feed_mod.reconcile_attention_digest(registry)
+            assert len(posted) == 1
+            assert task_id in posted[0]
+            assert "reason `STALE_FROZEN`" in posted[0]
+
+            watcher.tick()
+            unresolved = registry.list_unresolved_attention_items()
+            assert [item["reason"] for item in unresolved] == ["STALE_FROZEN"]
+            assert edited == []
+
+            registry.enqueue_intent("drive", task_id=task_id, payload={"task_id": task_id})
+            watcher.tick()
+
+        assert edited == ["**Hermes action feed**\nNo unresolved attention items."]
+        assert registry.list_unresolved_attention_items() == []
+
+    def test_missing_digest_message_recreated_with_current_attention_item(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-missing-digest"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.open_attention_item(task_id, "WAITING_USER", priority=100)
+        registry.upsert_projection(
+            "feed-1",
+            feed_mod._ATTENTION_DIGEST_PROJECTION_NAME,
+            message_id="missing-digest-msg",
+            content_hash="stale-hash",
+            payload={"item_count": 0, "task_ids": []},
+        )
+
+        posted: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "replacement-digest-msg"
+
+        with (
+            patch(
+                "session_orchestration.feed._edit_discord_message",
+                return_value=feed_mod._EDIT_MISSING,
+            ) as edit_message,
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+        ):
+            result = feed_mod.reconcile_attention_digest(
+                registry,
+                feed_channel_id="feed-1",
+                now="2026-06-29T02:00:00+00:00",
+            )
+
+        assert result["status"] == "recreated"
+        edit_message.assert_called_once()
+        assert len(posted) == 1
+        assert task_id in posted[0]
+        projection = registry.get_projection(
+            "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+        )
+        assert projection["message_id"] == "replacement-digest-msg"
+        assert projection["payload"] == {"item_count": 1, "task_ids": [task_id]}
+
+    def test_already_nudged_stale_episode_still_reconciles_digest(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-stale-already-nudged-digest"
+        pane_text = "unchanged stale pane after earlier nudge"
+        pane_hash = _pane_hash(pane_text)
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=pane_hash,
+            last_output_ts=time.time() - 999,
+            idle_ticks=3,
+            nudge_count=1,
+        )
+
+        posted: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed.push_hang_notification") as hang_notice,
+            patch("session_orchestration.watcher._send_auto_nudge") as auto_nudge,
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+
+        assert len(posted) == 1
+        assert task_id in posted[0]
+        assert "reason `STALE_FROZEN`" in posted[0]
+        assert registry.get_projection(
+            "feed-1", feed_mod._ATTENTION_DIGEST_PROJECTION_NAME
+        )["payload"] == {"item_count": 1, "task_ids": [task_id]}
+        hang_notice.assert_not_called()
+        auto_nudge.assert_not_called()
+        heartbeat_tick.assert_not_called()
+
+    def test_direct_user_attention_transition_closes_prior_reason_and_updates_digest(
+        self, registry, db_path
+    ):
+        task_id = "t-attn-direct-transition"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+
+        posted: List[str] = []
+        edited: List[str] = []
+
+        def fake_post(channel_id: str, content: str, *, token=None):
+            posted.append(content)
+            return "digest-msg-1"
+
+        def fake_edit(channel_id: str, message_id: str, content: str, *, token=None):
+            edited.append(content)
+            return feed_mod._EDIT_OK
+
+        adapter = FakeAdapter(SessionLifecycle.WAITING_USER)
+        watcher = _make_watcher(registry, adapter, FakeCapture("waiting"))
+        with (
+            patch("session_orchestration.feed._get_feed_channel_id", return_value="feed-1"),
+            patch("session_orchestration.feed._post_discord_message", side_effect=fake_post),
+            patch("session_orchestration.feed._edit_discord_message", side_effect=fake_edit),
+            patch("session_orchestration.watcher._on_heartbeat_tick") as heartbeat_tick,
+        ):
+            watcher.tick()
+            adapter._lifecycle = SessionLifecycle.PAUSED_HANDOFF
+            watcher._tmux_capture = FakeCapture("handoff")
+            watcher.tick()
+
+        assert len(posted) == 1
+        assert "reason `WAITING_USER`" in posted[0]
+        assert len(edited) == 1
+        assert "reason `PAUSED_HANDOFF`" in edited[0]
+        assert "reason `WAITING_USER`" not in edited[0]
+        unresolved = registry.list_unresolved_attention_items()
+        assert [item["reason"] for item in unresolved] == ["PAUSED_HANDOFF"]
+        heartbeat_tick.assert_not_called()
 
 class TestLockSkipsCapture:
     """A tick whose target session is locked skips capture entirely."""
@@ -477,3 +1042,292 @@ class TestIdleTickIncrement:
         watcher.tick()
         row = registry.get(task_id)
         assert (row.get("idle_ticks") or 0) == 0
+
+    def test_pane_change_resets_stale_episode_action_counter(self, registry, db_path):
+        task_id = "t-idle-003"
+        old_text = "old frozen output"
+        _seed_row(registry, task_id=task_id, tmux_session="reset-session")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash(old_text),
+            last_output_ts=time.time() - 999,
+            idle_ticks=5,
+            nudge_count=1,
+        )
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("new output after progress")
+        watcher = _make_watcher(registry, adapter, capture)
+
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["nudge_count"] == 0
+
+
+class TestRunTickEntrypoint:
+    """run_tick remains a single tick-driven cron entrypoint."""
+
+    def test_run_tick_processes_one_cron_tick(self, registry, db_path):
+        task_id = "t-run-tick-001"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("single tick output")
+
+        processed = run_tick(
+            registry=registry,
+            adapters={"fake": adapter},
+            tmux_capture=capture,
+            probe_runner=FakeProbeRunner(),
+            probe_specs={type(adapter).__name__: _fake_probe_spec(adapter)},
+        )
+
+        assert processed == 1
+        assert len(capture.calls) == 1
+
+
+class TestStaleFrozenGuards:
+    """Deterministic stale/frozen and OMP action eligibility guards."""
+
+    def test_eligible_with_static_hash_idle_threshold_stale_output_and_no_activity(self):
+        now = time.time()
+        pane_text = "unchanged pane output"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 0,
+        }
+
+        assert _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+        assert _is_omp_nudge_checkin_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_not_eligible_when_active_regex_matches(self):
+        now = time.time()
+        pane_text = "Running tool: cargo build"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 0,
+        }
+        adapter = FakeAdapter(
+            SessionLifecycle.RUNNING,
+            idle_indicator_regex=re.compile(r"Running tool"),
+        )
+
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=adapter,
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_not_eligible_when_output_is_fresh(self):
+        now = time.time()
+        pane_text = "unchanged but recent"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 30,
+            "nudge_count": 0,
+        }
+
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_not_eligible_without_last_output_timestamp(self):
+        now = time.time()
+        pane_text = "unchanged but undated"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "nudge_count": 0,
+        }
+
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_tick_does_not_fire_stale_actions_without_last_output_timestamp(
+        self, registry, db_path
+    ):
+        task_id = "t-stale-no-output-ts"
+        pane_text = "unchanged but no timestamp"
+        _seed_row(registry, task_id=task_id, state="RUNNING")
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            last_pane_hash=_pane_hash(pane_text),
+            idle_ticks=3,
+            nudge_count=0,
+        )
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        watcher = _make_watcher(registry, adapter, FakeCapture(pane_text))
+        notifications: List[str] = []
+        nudges: List[str] = []
+
+        with (
+            patch(
+                "session_orchestration.config.load_session_orchestration_config",
+                return_value=type(
+                    "Cfg",
+                    (),
+                    {"hang_idle_ticks": 3, "hang_stale_seconds": 300},
+                )(),
+            ),
+            patch(
+                "session_orchestration.feed.push_hang_notification",
+                side_effect=lambda tid, *_a, **_kw: notifications.append(tid),
+            ),
+            patch(
+                "session_orchestration.watcher._send_auto_nudge",
+                side_effect=lambda tid, *_a, **_kw: nudges.append(tid),
+            ),
+        ):
+            watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["nudge_count"] == 0
+        assert notifications == []
+        assert nudges == []
+
+    def test_not_eligible_when_pane_hash_changed(self):
+        now = time.time()
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 0,
+        }
+
+        assert not _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=_pane_hash("old output"),
+            current_pane_hash=_pane_hash("new output"),
+            pane_text="new output",
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_omp_action_not_eligible_when_episode_already_nudged(self):
+        now = time.time()
+        pane_text = "unchanged pane output"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "nudge_count": 1,
+        }
+
+        assert _is_stale_frozen_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+        assert not _is_omp_nudge_checkin_eligible(
+            row,
+            previous_pane_hash=pane_hash,
+            current_pane_hash=pane_hash,
+            pane_text=pane_text,
+            adapter=FakeAdapter(SessionLifecycle.RUNNING),
+            hang_idle_ticks=3,
+            hang_stale_seconds=300,
+            now=now,
+        )
+
+    def test_on_hang_skips_actions_but_reconciles_when_episode_already_nudged(
+        self, registry
+    ):
+        now = time.time()
+        pane_text = "unchanged pane output"
+        pane_hash = _pane_hash(pane_text)
+        row = {
+            "task_id": "t-stale-already-nudged",
+            "agent": "fake",
+            "state": "RUNNING",
+            "idle_ticks": 3,
+            "last_output_ts": now - 301,
+            "last_pane_hash": pane_hash,
+            "nudge_count": 1,
+        }
+        notifications: List[str] = []
+        nudges: List[str] = []
+
+        with (
+            patch(
+                "session_orchestration.feed.push_hang_notification",
+                side_effect=lambda tid, *_a, **_kw: notifications.append(tid),
+            ),
+            patch(
+                "session_orchestration.watcher._send_auto_nudge",
+                side_effect=lambda tid, *_a, **_kw: nudges.append(tid),
+            ),
+            patch(
+                "session_orchestration.feed.reconcile_attention_digest",
+                return_value={"status": "unchanged"},
+            ) as reconcile_digest,
+        ):
+            _on_hang(
+                "t-stale-already-nudged",
+                row,
+                registry=registry,
+                adapter=FakeAdapter(SessionLifecycle.RUNNING),
+                pane_text=pane_text,
+                previous_pane_hash=pane_hash,
+                current_pane_hash=pane_hash,
+            )
+
+        assert notifications == []
+        assert nudges == []
+        reconcile_digest.assert_called_once_with(registry)

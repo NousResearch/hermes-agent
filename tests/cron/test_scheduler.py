@@ -2204,6 +2204,141 @@ class TestRunJobWakeGate:
         agent_cls.assert_called_once()
 
 
+
+class TestRunJobScriptBuiltInScripts:
+    """Regression coverage for Hermes-owned built-in no-agent cron scripts."""
+
+    def _builtin_watch_script(self):
+        import cron.scheduler as scheduler
+
+        return scheduler._get_builtin_scripts_dir() / "session-orchestration-watch.sh"
+
+    def _completed_script(self, stdout="watch ok\n"):
+        return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+    def test_no_agent_run_job_accepts_absolute_builtin_session_watch_path(self, tmp_path):
+        import cron.scheduler as scheduler
+
+        script = self._builtin_watch_script()
+        assert script.exists()
+        job = {
+            "id": "session-watch",
+            "name": "session-orchestration-watch",
+            "prompt": "",
+            "script": str(script),
+            "no_agent": True,
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch(
+                 "cron.scheduler.subprocess.run",
+                 return_value=self._completed_script(),
+             ) as run_script:
+            success, _doc, final_response, error = scheduler.run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "watch ok"
+        assert str(script) in run_script.call_args.args[0]
+
+    def test_builtin_script_path_rejected_without_no_agent_allowance(self, tmp_path):
+        import cron.scheduler as scheduler
+
+        script = self._builtin_watch_script()
+        assert script.exists()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.subprocess.run") as run_script:
+            success, output = scheduler._run_job_script(str(script))
+
+        assert success is False
+        assert "outside" in output.lower() or "blocked" in output.lower()
+        run_script.assert_not_called()
+
+    def test_unrelated_absolute_path_rejected_even_when_builtin_allowed(self, tmp_path):
+        import cron.scheduler as scheduler
+
+        outside_script = tmp_path / "outside.sh"
+        outside_script.write_text("echo should-not-run\n")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.subprocess.run") as run_script:
+            success, output = scheduler._run_job_script(
+                str(outside_script),
+                allow_builtin_scripts=True,
+            )
+
+        assert success is False
+        assert "outside" in output.lower() or "blocked" in output.lower()
+        run_script.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "script_ref",
+        [
+            "scripts/session-orchestration-watch.sh",
+            "session-orchestration-watch.sh",
+        ],
+    )
+    def test_relative_builtin_session_watch_paths_resolve_to_builtin_root(self, tmp_path, script_ref):
+        import cron.scheduler as scheduler
+
+        script = self._builtin_watch_script()
+        assert script.exists()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch(
+                 "cron.scheduler.subprocess.run",
+                 return_value=self._completed_script("relative ok\n"),
+             ) as run_script:
+            success, output = scheduler._run_job_script(
+                script_ref,
+                allow_builtin_scripts=True,
+            )
+
+        assert success is True
+        assert output == "relative ok"
+        assert str(script) in run_script.call_args.args[0]
+
+
+
+class TestSessionOrchestrationCronRegistration:
+    """Registration should store safe built-in script tokens, not repo absolutes."""
+
+    def test_watcher_registration_uses_relative_builtin_script_and_origin_delivery(self):
+        from session_orchestration.cron_registration import (
+            WATCHER_JOB_NAME,
+            ensure_watcher_cron,
+        )
+
+        created = {}
+
+        def fake_create_job(**kwargs):
+            created.update(kwargs)
+            return {"id": "watch-job", "name": kwargs["name"], **kwargs}
+
+        job = ensure_watcher_cron(
+            _jobs_loader=lambda: [],
+            _jobs_creator=fake_create_job,
+        )
+
+        assert job["name"] == WATCHER_JOB_NAME
+        assert created["script"] == "scripts/session-orchestration-watch.sh"
+        assert not os.path.isabs(created["script"])
+        assert created["no_agent"] is True
+        assert created["deliver"] == "origin"
+
+    def test_create_update_normalizer_converts_builtin_absolute_no_agent_script(self):
+        from cron.jobs import _builtin_scripts_dir, _normalize_script_path
+
+        script = _builtin_scripts_dir() / "session-orchestration-watch.sh"
+        assert script.exists()
+
+        assert _normalize_script_path(str(script), no_agent=True) == (
+            "scripts/session-orchestration-watch.sh"
+        )
+        assert _normalize_script_path(str(script), no_agent=False) == str(script)
+
+
 class TestBuildJobPromptMissingSkill:
     """Verify that a missing skill logs a warning and does not crash the job."""
 

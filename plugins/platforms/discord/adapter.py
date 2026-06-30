@@ -30,6 +30,7 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_READY_TIMEOUT_SECONDS_DEFAULT = 30.0
 
 try:
     import discord
@@ -68,6 +69,34 @@ from gateway.platforms.base import (
 from tools.url_safety import is_safe_url
 
 
+def _discord_ready_timeout_seconds() -> float:
+    """Return how long to wait for Discord's ready event during connect."""
+    for env_name in (
+        "HERMES_DISCORD_READY_TIMEOUT",
+        "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
+    ):
+        raw = os.getenv(env_name, "").strip()
+        if not raw:
+            continue
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r", env_name, raw)
+    return _DISCORD_READY_TIMEOUT_SECONDS_DEFAULT
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Ignoring invalid %s=%r", name, raw)
+    return default
+
+
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
     """Return discord.py's bundled Windows opus DLL path when present."""
     if sys.platform != "win32":
@@ -103,6 +132,88 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _check_so_auth(payload: dict) -> tuple[bool, str]:
+    """Check auth for a raw ``so`` message. Returns (ok, reason)."""
+    repo_root = str(payload.get("z_harness_repo") or "/Users/zeke/dev/z-harness")
+    scripts_dir = str(_Path(repo_root) / "scripts")
+    code = r'''
+import json
+import sys
+sys.path.insert(0, __import__("os").environ["SCRIPTS_DIR"])
+from hermes.config import load_config
+
+def allowed(value, allowed_values):
+    return not allowed_values or str(value) in allowed_values
+
+payload = json.loads(sys.argv[1])
+cfg = load_config(payload.get("repo_root", "."))
+so_cfg = cfg.discord.so
+allowed_users = set(so_cfg.allowed_user_ids or [])
+allowed_channels = set(so_cfg.allowed_channel_ids or [])
+if not allowed(payload.get("requester_user_id", ""), allowed_users):
+    print(json.dumps({"ok": False, "message": "User not authorized"}))
+elif not allowed(payload.get("channel_id", ""), allowed_channels):
+    print(json.dumps({"ok": False, "message": "Channel not authorized"}))
+else:
+    print(json.dumps({"ok": True}))
+'''
+    env = dict(os.environ)
+    env["SCRIPTS_DIR"] = scripts_dir
+    env["PYTHONPATH"] = scripts_dir
+    payload = dict(payload)
+    payload["repo_root"] = repo_root
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code, json.dumps(payload)],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        return False, "so auth check failed"
+    if not data.get("ok"):
+        return False, str(data.get("message") or "not authorized")
+    return True, ""
+
+
+def _drain_so_signal_events(repo_root: Optional[str] = None) -> list[dict]:
+    """Drain Hermes so MCP signals from the z-harness backend."""
+    root = str(repo_root or os.getenv("Z_HARNESS_REPO") or "/Users/zeke/dev/z-harness")
+    scripts_dir = str(_Path(root) / "scripts")
+    code = r'''
+import json
+import os
+import sys
+sys.path.insert(0, os.environ["SCRIPTS_DIR"])
+from hermes.config import load_config
+from hermes.mcp_hermes_orchestrator import drain_signal_events
+cfg = load_config(os.environ.get("Z_HARNESS_REPO", "."))
+print(json.dumps(drain_signal_events(cfg)))
+'''
+    env = dict(os.environ)
+    env["SCRIPTS_DIR"] = scripts_dir
+    env["PYTHONPATH"] = scripts_dir
+    env["Z_HARNESS_REPO"] = root
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "so signal drain failed").strip())
+    raw = proc.stdout.strip()
+    if not raw:
+        return []
+    events = json.loads(raw.splitlines()[-1])
+    return events if isinstance(events, list) else []
 
 
 def check_discord_requirements() -> bool:
@@ -616,6 +727,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        self._so_signal_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -699,7 +811,10 @@ class DiscordAdapter(BasePlatformAdapter):
             # bot from coming online at all, so avoid requesting members intent
             # unless it is actually necessary.
             intents = Intents.default()
-            intents.message_content = True
+            intents.message_content = _env_bool(
+                "HERMES_DISCORD_MESSAGE_CONTENT_INTENT",
+                True,
+            )
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = (
@@ -757,6 +872,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     adapter_self._run_post_connect_initialization()
                 )
 
+                if adapter_self._so_signal_task and not adapter_self._so_signal_task.done():
+                    adapter_self._so_signal_task.cancel()
+                adapter_self._so_signal_task = asyncio.create_task(
+                    adapter_self._poll_so_signals()
+                )
+
             @self._client.event
             async def on_message(message: DiscordMessage):
                 # Block until _resolve_allowed_usernames has swapped
@@ -764,7 +885,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 # IDs (otherwise on_message's author.id lookup can miss).
                 if not adapter_self._ready_event.is_set():
                     try:
-                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
+                        await asyncio.wait_for(
+                            adapter_self._ready_event.wait(),
+                            timeout=_discord_ready_timeout_seconds(),
+                        )
                     except asyncio.TimeoutError:
                         pass
 
@@ -895,7 +1019,10 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
 
             # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            await asyncio.wait_for(
+                self._ready_event.wait(),
+                timeout=_discord_ready_timeout_seconds(),
+            )
 
             self._running = True
             return True
@@ -908,6 +1035,48 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
             self._release_platform_lock()
             return False
+
+    async def _poll_so_signals(self) -> None:
+        """Drain Hermes so MCP signals and route them back to Discord."""
+        while self._client is not None and not self._client.is_closed():
+            try:
+                for event in await asyncio.to_thread(_drain_so_signal_events):
+                    await self._route_so_signal(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[%s] so signal routing failed: %s", self.name, exc)
+            await asyncio.sleep(10)
+
+    async def _route_so_signal(self, event: dict) -> None:
+        target = event.get("discord_thread_id") or event.get("discord_channel_id")
+        if not target:
+            return
+        session_id = str(event.get("session_id") or event.get("job_id") or "")
+        kind = str(event.get("event") or "so_signal")
+        text = str(event.get("text") or "").strip()
+        if kind == "so_needs_input":
+            body = f"Hermes `so` session `{session_id}` needs input."
+            if text:
+                body += f"\n\n```text\n{text[-1500:]}\n```"
+        elif kind in {"so_session_dead", "so_session_expired"}:
+            label = "expired" if kind == "so_session_expired" else "ended"
+            body = f"Hermes `so` session `{session_id}` {label}."
+            if text:
+                body += f"\n\n{text[-1500:]}"
+        else:
+            body = f"Hermes `so` session `{session_id}` emitted `{kind}`."
+            if text:
+                body += f"\n\n{text[-1500:]}"
+        result = await self.send(str(target), body)
+        if not getattr(result, "success", False):
+            logger.warning(
+                "[%s] failed to route so signal %s to %s: %s",
+                self.name,
+                kind,
+                target,
+                getattr(result, "error", "unknown error"),
+            )
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
@@ -931,10 +1100,18 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        if self._so_signal_task and not self._so_signal_task.done():
+            self._so_signal_task.cancel()
+            try:
+                await self._so_signal_task
+            except asyncio.CancelledError:
+                pass
+
         self._running = False
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
+        self._so_signal_task = None
 
         self._release_platform_lock()
 
@@ -1428,6 +1605,34 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            interaction = metadata.get("raw_message") if metadata else None
+            if (
+                interaction is not None
+                and hasattr(interaction, "edit_original_response")
+                and str(getattr(interaction, "channel_id", "")) == str(chat_id)
+                and not (metadata and metadata.get("thread_id"))
+            ):
+                formatted = self.format_message(content)
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+                message_ids = []
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        msg = await interaction.edit_original_response(content=chunk)
+                        try:
+                            setattr(interaction, "_hermes_original_response_used", True)
+                        except Exception:
+                            pass
+                    else:
+                        msg = await interaction.followup.send(chunk, ephemeral=True)
+                    mid = getattr(msg, "id", None)
+                    if mid is not None:
+                        message_ids.append(str(mid))
+                return SendResult(
+                    success=True,
+                    message_id=message_ids[0] if message_ids else None,
+                    raw_response={"message_ids": message_ids, "interaction_response": True},
+                )
+
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -3166,7 +3371,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             if followup_msg:
                 await interaction.edit_original_response(content=followup_msg)
-            else:
+            elif not getattr(interaction, "_hermes_original_response_used", False):
                 await interaction.delete_original_response()
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
@@ -4764,6 +4969,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if "*" in ignored_channels or (channel_ids & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
+
+            # so messages fall through to the normal LLM handler.
+            # The LLM will parse "so ..." naturally and call MCP tools
+            # (so_start_session, so_send, etc.) directly.
 
             free_channels = self._discord_free_response_channels()
             if parent_channel_id:

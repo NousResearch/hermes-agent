@@ -65,6 +65,8 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_HANDOFF_DB_CALL_TIMEOUT_SECS_DEFAULT = 2.0
+_HANDOFF_DB_CIRCUIT_BREAK_SECS_DEFAULT = 30.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -2047,6 +2049,10 @@ class GatewayRunner:
 
         # Initialize session database for session_search tool support
         self._session_db = None
+        self._handoff_db_timeout_secs = _HANDOFF_DB_CALL_TIMEOUT_SECS_DEFAULT
+        self._handoff_db_circuit_break_secs = _HANDOFF_DB_CIRCUIT_BREAK_SECS_DEFAULT
+        self._handoff_db_circuit_open_until = 0.0
+        self._handoff_db_inflight_task: Optional[asyncio.Task] = None
         try:
             from hermes_state import SessionDB
             self._session_db = SessionDB()
@@ -4852,6 +4858,99 @@ class GatewayRunner:
         
         return True
 
+    async def _run_handoff_db_call(self, operation: str, func, *args) -> Any:
+        """Run a synchronous SessionDB handoff call off the gateway loop.
+
+        SQLite can block behind filesystem or WAL locks. Handoff polling is
+        auxiliary work, so a stuck DB call must not pin Discord heartbeats on
+        the main asyncio loop. ``shield`` leaves the worker thread to finish
+        after a timeout while the watcher opens a short circuit and skips
+        additional handoff DB calls instead of piling up concurrent work on
+        the shared SessionDB connection.
+        """
+        now = time.monotonic()
+        inflight = getattr(self, "_handoff_db_inflight_task", None)
+        if inflight is not None and not inflight.done():
+            logger.warning(
+                "Handoff DB call %s skipped; previous handoff DB call is still "
+                "running after timeout",
+                operation,
+            )
+            raise asyncio.TimeoutError(
+                f"previous handoff DB call still running; skipped {operation}"
+            )
+
+        circuit_open_until = float(
+            getattr(self, "_handoff_db_circuit_open_until", 0.0) or 0.0
+        )
+        if circuit_open_until > now:
+            remaining = circuit_open_until - now
+            logger.warning(
+                "Handoff DB call %s skipped; circuit open for %.1fs more",
+                operation,
+                remaining,
+            )
+            raise asyncio.TimeoutError(
+                f"handoff DB circuit open for {remaining:.1f}s; skipped {operation}"
+            )
+
+        timeout = max(
+            0.001,
+            float(
+                getattr(
+                    self,
+                    "_handoff_db_timeout_secs",
+                    _HANDOFF_DB_CALL_TIMEOUT_SECS_DEFAULT,
+                )
+                or _HANDOFF_DB_CALL_TIMEOUT_SECS_DEFAULT
+            ),
+        )
+        cooldown = max(
+            0.0,
+            float(
+                getattr(
+                    self,
+                    "_handoff_db_circuit_break_secs",
+                    _HANDOFF_DB_CIRCUIT_BREAK_SECS_DEFAULT,
+                )
+                or _HANDOFF_DB_CIRCUIT_BREAK_SECS_DEFAULT
+            ),
+        )
+
+        task = asyncio.create_task(asyncio.to_thread(func, *args))
+        self._handoff_db_inflight_task = task
+
+        def _clear_inflight(done_task: asyncio.Task) -> None:
+            if getattr(self, "_handoff_db_inflight_task", None) is done_task:
+                self._handoff_db_inflight_task = None
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug(
+                    "Handoff DB call %s finished after watcher moved on: %s",
+                    operation,
+                    exc,
+                    exc_info=True,
+                )
+
+        task.add_done_callback(_clear_inflight)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            self._handoff_db_circuit_open_until = 0.0
+            return result
+        except asyncio.TimeoutError:
+            self._handoff_db_circuit_open_until = time.monotonic() + cooldown
+            logger.warning(
+                "Handoff DB call %s timed out after %.3fs; opening circuit for "
+                "%.1fs so gateway heartbeats stay responsive",
+                operation,
+                timeout,
+                cooldown,
+            )
+            raise
+
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
 
@@ -4879,23 +4978,45 @@ class GatewayRunner:
                 if self._session_db is None:
                     await asyncio.sleep(interval)
                     continue
-                pending = self._session_db.list_pending_handoffs()
+                pending = await self._run_handoff_db_call(
+                    "list_pending_handoffs",
+                    self._session_db.list_pending_handoffs,
+                )
                 for row in pending:
                     session_id = row.get("id")
                     if not session_id:
                         continue
-                    if not self._session_db.claim_handoff(session_id):
+                    claimed = await self._run_handoff_db_call(
+                        "claim_handoff",
+                        self._session_db.claim_handoff,
+                        session_id,
+                    )
+                    if not claimed:
                         # Another tick or another gateway already claimed it.
                         continue
+                    handoff_error: Optional[Exception] = None
                     try:
                         await self._process_handoff(row)
-                        self._session_db.complete_handoff(session_id)
                     except Exception as exc:
+                        handoff_error = exc
                         logger.warning(
                             "Handoff for session %s failed: %s",
                             session_id, exc, exc_info=True,
                         )
-                        self._session_db.fail_handoff(session_id, str(exc))
+
+                    if handoff_error is None:
+                        await self._run_handoff_db_call(
+                            "complete_handoff",
+                            self._session_db.complete_handoff,
+                            session_id,
+                        )
+                    else:
+                        await self._run_handoff_db_call(
+                            "fail_handoff",
+                            self._session_db.fail_handoff,
+                            session_id,
+                            str(handoff_error),
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -10740,18 +10861,16 @@ class GatewayRunner:
         """Handle /control-status — read-only snapshot of all active session-orchestration tasks."""
         try:
             from session_orchestration.registry import SessionOrchestrationRegistry
-            from session_orchestration.status import build_snapshot
+            from session_orchestration.status import build_registry_snapshot
         except ImportError as exc:
             return f"Session orchestration is not available: {exc}"
 
         try:
             registry = SessionOrchestrationRegistry()
-            rows = registry.list()
+            return build_registry_snapshot(registry)
         except Exception as exc:
             logger.warning("control-status: registry read failed: %s", exc)
             return f"Could not read session-orchestration registry: {exc}"
-
-        return build_snapshot(rows)
 
     async def _handle_so_spawn_command(self, event: MessageEvent) -> str:
         """Handle /so-spawn — spawn a managed coding-agent session from Discord."""

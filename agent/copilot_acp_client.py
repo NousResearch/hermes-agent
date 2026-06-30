@@ -74,21 +74,46 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _norm_home_for_compare(path: str) -> str:
+    try:
+        return str(Path(path).expanduser().resolve(strict=False))
+    except Exception:
+        return os.path.abspath(os.path.expanduser(path))
+
+
+def _is_profile_home_candidate(path: str) -> bool:
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if not hermes_home or not path:
+        return False
+    return _norm_home_for_compare(path) == _norm_home_for_compare(str(Path(hermes_home) / "home"))
+
+
 def _resolve_home_dir() -> str:
-    """Return a stable HOME for child ACP processes."""
+    """Return a stable real HOME for child ACP processes.
+
+    Copilot ACP stores OAuth/device-login state under the user's OS home, not
+    Hermes' per-profile home. Prefer the caller's current HOME when it is not
+    the Hermes profile-home; otherwise use HERMES_REAL_HOME/fallbacks. This
+    also prevents an inherited stale HERMES_REAL_HOME from overriding a test or
+    subprocess that deliberately set HOME to a different real directory.
+    """
     home = os.environ.get("HOME", "").strip()
-    if home:
+    if home and not _is_profile_home_candidate(home):
         return home
 
+    explicit = os.environ.get("HERMES_REAL_HOME", "").strip()
+    if explicit and not _is_profile_home_candidate(explicit):
+        return explicit
+
     expanded = os.path.expanduser("~")
-    if expanded and expanded != "~":
+    if expanded and expanded != "~" and not _is_profile_home_candidate(expanded):
         return expanded
 
     try:
         import pwd
 
         resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
-        if resolved:
+        if resolved and not _is_profile_home_candidate(resolved):
             return resolved
     except Exception:
         pass
@@ -106,6 +131,7 @@ def _build_subprocess_env() -> dict[str, str]:
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
+    env["HERMES_REAL_HOME"] = home
     # Copilot's OAuth/device-login state lives under the user's real HOME (for
     # example ~/.config/github-copilot), not Hermes' per-profile HOME. The
     # generic subprocess policy intentionally maps HOME to {HERMES_HOME}/home in

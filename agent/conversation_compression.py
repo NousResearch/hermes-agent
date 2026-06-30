@@ -88,6 +88,14 @@ class _CompressionLockLeaseRefresher:
         if refresh_interval_seconds is None:
             refresh_interval_seconds = max(1.0, min(60.0, ttl_seconds / 2.0))
         self._refresh_interval_seconds = max(0.1, float(refresh_interval_seconds))
+        # Tolerate transient refresh failures for at most one lease's worth of
+        # time, so the give-up window is genuinely bounded by the TTL the
+        # acquirer set (a single blip recovers on the next tick; a persistent
+        # failure stops before the lease could outlive its TTL). Floor of 1 so a
+        # degenerate interval >= ttl still tolerates one blip.
+        self._max_consecutive_failures = max(
+            1, int(self._ttl_seconds / self._refresh_interval_seconds)
+        )
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -101,10 +109,25 @@ class _CompressionLockLeaseRefresher:
 
     def stop(self) -> None:
         self._stop.set()
+        # join() may time out while the refresher is mid-UPDATE; that's safe —
+        # it's a daemon thread, and a late refresh on an already-released lock
+        # matches rowcount 0 (a no-op). stop() returning does not guarantee the
+        # thread has fully quiesced, only that we've signalled it and waited
+        # briefly.
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=1.0)
 
     def _run(self) -> None:
+        # A single falsy refresh must NOT permanently kill the lease: a
+        # transient DB blip (write contention escaping _execute_write's retry
+        # budget, a momentary "database is locked") returns False just like a
+        # genuine lost-ownership, but only the latter should stop the loop.
+        # Tolerate consecutive failures for at most one lease's worth of time
+        # (_max_consecutive_failures = ttl / interval), so a one-off blip
+        # recovers on the next tick while the total give-up window stays bounded
+        # by the TTL the acquirer set — the lock can never be held past its TTL
+        # by a stuck refresher.
+        consecutive_failures = 0
         while not self._stop.wait(self._refresh_interval_seconds):
             try:
                 refreshed = self._db.refresh_compression_lock(
@@ -113,9 +136,18 @@ class _CompressionLockLeaseRefresher:
                     ttl_seconds=self._ttl_seconds,
                 )
             except Exception as exc:
-                logger.debug("compression lock refresh failed: %s", exc)
+                logger.debug("compression lock refresh raised: %s", exc)
                 refreshed = False
-            if not refreshed:
+            if refreshed:
+                consecutive_failures = 0
+                continue
+            consecutive_failures += 1
+            if consecutive_failures >= self._max_consecutive_failures:
+                logger.debug(
+                    "compression lock refresh failed %d times in a row; "
+                    "stopping lease refresher for session %s",
+                    consecutive_failures, self._session_id,
+                )
                 break
 
 

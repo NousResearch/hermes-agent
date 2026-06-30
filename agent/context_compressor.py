@@ -737,8 +737,8 @@ class ContextCompressor(ContextEngine):
             recorder(session_id, cooldown_until, error)
         except sqlite3.Error as exc:
             logger.debug("compression failure cooldown persist failed: %s", exc)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
@@ -756,8 +756,8 @@ class ContextCompressor(ContextEngine):
             clearer(session_id)
         except sqlite3.Error as exc:
             logger.debug("compression failure cooldown clear failed: %s", exc)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("compression failure cooldown clear failed (non-sqlite): %s", exc)
 
     def update_model(
         self,

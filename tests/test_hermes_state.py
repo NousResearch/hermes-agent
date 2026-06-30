@@ -3565,6 +3565,80 @@ class TestCompressionChainProjection:
         assert row["end_reason"] == "compression"
 
 
+    def test_list_surfaces_tip_when_root_archived(self, db):
+        """When only the compression root is archived, the live (non-archived)
+        tip must still appear in the default session list.
+
+        Regression test for #55588: the archive filter at SQL level removed
+        the archived root before the projection logic could walk the chain,
+        hiding the entire conversation.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+        root_id, _, _, tip_id = self._build_compression_chain(db, t0)
+
+        # Archive only the root (not the tip) to simulate the issue state.
+        db._conn.execute(
+            "UPDATE sessions SET archived = 1 WHERE id = ?", (root_id,)
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+
+        # The tip (projected from the archived root) must be visible.
+        assert tip_id in ids
+        # The archived root must NOT appear raw.
+        assert root_id not in ids
+
+        tip_row = next(s for s in sessions if s["id"] == tip_id)
+        assert tip_row["_lineage_root_id"] == root_id
+        # The projected row carries the tip's archived status (0), not the
+        # root's (1).
+        assert tip_row["archived"] == 0
+
+    def test_list_hides_chain_when_tip_archived(self, db):
+        """When the tip is archived (and root via cascade), the entire chain
+        must be hidden from the default list.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+        root_id, _, _, tip_id = self._build_compression_chain(db, t0)
+
+        # Archive the tip — set_session_archived cascades to the root.
+        db.set_session_archived(tip_id, True)
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+
+        assert tip_id not in ids
+        assert root_id not in ids
+
+    def test_list_shows_archived_chain_with_include_archived(self, db):
+        """With include_archived=True, archived compression chains are
+        visible and projected correctly.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+        root_id, _, _, tip_id = self._build_compression_chain(db, t0)
+
+        db._conn.execute(
+            "UPDATE sessions SET archived = 1 WHERE id = ?", (root_id,)
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(
+            source="cli", limit=20, include_archived=True
+        )
+        ids = [s["id"] for s in sessions]
+
+        assert tip_id in ids
+        assert root_id not in ids
+
+        tip_row = next(s for s in sessions if s["id"] == tip_id)
+        assert tip_row["_lineage_root_id"] == root_id
+
+
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)
 # =========================================================================

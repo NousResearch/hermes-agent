@@ -2679,9 +2679,20 @@ class SessionDB:
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
+        # When projecting compression tips, defer the archive filter to
+        # post-projection so archived compression roots can still seed the
+        # chain walk.  Without this, an archived root is filtered out at
+        # SQL level, its live (non-archived) tip never gets projected, and
+        # the entire conversation disappears from the listing.  (Issue #55588)
+        _defer_archive = (
+            project_compression_tips
+            and not include_children
+            and not include_archived
+            and not archived_only
+        )
         if archived_only:
             where_clauses.append("s.archived = 1")
-        elif not include_archived:
+        elif not include_archived and not _defer_archive:
             where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
@@ -2840,12 +2851,22 @@ class SessionDB:
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "archived",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
+                # Ensure archived is always set (tip_row may lack it for
+                # very old sessions without the column default).
+                merged.setdefault("archived", s.get("archived", 0))
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
+
+        # Post-projection archive filter: when the archive filter was deferred
+        # to let archived roots seed the compression chain walk, remove
+        # sessions whose projected tip is archived.  (Issue #55588)
+        if _defer_archive:
+            sessions = [s for s in sessions if not s.get("archived")]
 
         return sessions
 

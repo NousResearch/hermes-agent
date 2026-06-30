@@ -8558,9 +8558,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
+            # Respect display.streaming config — when disabled, skip the
+            # streaming callback so run_conversation() uses the non-streaming
+            # API path.  Without this, the TUI always passes _stream which
+            # makes _has_stream_consumers() return True, forcing the streaming
+            # path even when the user explicitly disabled it.  This crashes
+            # MoA + Codex aggregator because it returns a SimpleNamespace
+            # instead of an iterable stream.
+            _display_cfg = (_load_cfg().get("display") or {})
+            _stream_cb = _stream if _display_cfg.get("streaming", True) else None
+
             run_kwargs = {
                 "conversation_history": list(history),
-                "stream_callback": _stream,
+                "stream_callback": _stream_cb,
             }
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:

@@ -460,7 +460,9 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._agent_id = "hermes"
         self._lock = threading.Lock()
 
-        # Prefetch caches
+        # Prefetch caches — keyed to _prefetch_query so a stale result from
+        # the previous turn is not injected when the topic changes.
+        self._prefetch_query: str = ""
         self._context_result = ""
         self._dialectic_result = ""
         self._agent_model: dict = {}
@@ -547,6 +549,11 @@ class RetainDBMemoryProvider(MemoryProvider):
         # Prevents thread accumulation if turns fire faster than prefetches complete.
         for t in self._prefetch_threads:
             t.join(timeout=2.0)
+        with self._lock:
+            self._prefetch_query = query
+            self._context_result = ""
+            self._dialectic_result = ""
+            self._agent_model = {}
         threads = [
             threading.Thread(target=self._prefetch_context, args=(query,), name="retaindb-ctx", daemon=True),
             threading.Thread(target=self._prefetch_dialectic, args=(query,), name="retaindb-dialectic", daemon=True),
@@ -595,14 +602,26 @@ class RetainDBMemoryProvider(MemoryProvider):
         return "high"
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Consume prefetched results and return them as a context block."""
+        """Consume prefetched results and return them as a context block.
+
+        Only returns cached results when they were prefetched for *this exact
+        query* — returning results from a prior turn's background prefetch on
+        a topic-shifted question injects stale, irrelevant context.  Mirrors
+        the fix applied to the mem0 provider in c6eb7f9e7.
+        """
         with self._lock:
+            if self._prefetch_query != query:
+                self._context_result = ""
+                self._dialectic_result = ""
+                self._agent_model = {}
+                return ""
             context = self._context_result
             dialectic = self._dialectic_result
             agent_model = self._agent_model
             self._context_result = ""
             self._dialectic_result = ""
             self._agent_model = {}
+            self._prefetch_query = ""
 
         parts: list[str] = []
         if context:

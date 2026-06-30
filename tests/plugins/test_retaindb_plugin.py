@@ -556,8 +556,11 @@ class TestPrefetch:
 
     def test_prefetch_consumes_context_result(self, tmp_path, monkeypatch):
         p = self._make_initialized_provider(tmp_path, monkeypatch)
-        # Manually set the cached result
+        # Manually set the cached result, tagged for the query we're about
+        # to consume it with — prefetch() only returns the cache when it
+        # matches the in-flight query (staleness guard).
         with p._lock:
+            p._prefetch_query = "test"
             p._context_result = "[RetainDB Context]\nProfile:\n- User likes tests"
         result = p.prefetch("test")
         assert "User likes tests" in result
@@ -568,6 +571,7 @@ class TestPrefetch:
     def test_prefetch_consumes_dialectic_result(self, tmp_path, monkeypatch):
         p = self._make_initialized_provider(tmp_path, monkeypatch)
         with p._lock:
+            p._prefetch_query = "test"
             p._dialectic_result = "User is a software engineer who prefers Python."
         result = p.prefetch("test")
         assert "[RetainDB User Synthesis]" in result
@@ -577,6 +581,7 @@ class TestPrefetch:
     def test_prefetch_consumes_agent_model(self, tmp_path, monkeypatch):
         p = self._make_initialized_provider(tmp_path, monkeypatch)
         with p._lock:
+            p._prefetch_query = "test"
             p._agent_model = {
                 "memory_count": 5,
                 "persona": "Helpful coding assistant",
@@ -593,6 +598,7 @@ class TestPrefetch:
     def test_prefetch_skips_empty_agent_model(self, tmp_path, monkeypatch):
         p = self._make_initialized_provider(tmp_path, monkeypatch)
         with p._lock:
+            p._prefetch_query = "test"
             p._agent_model = {"memory_count": 0}
         result = p.prefetch("test")
         assert "Agent Self-Model" not in result
@@ -736,3 +742,53 @@ class TestRegister:
         ctx.register_memory_provider.assert_called_once()
         arg = ctx.register_memory_provider.call_args[0][0]
         assert isinstance(arg, RetainDBMemoryProvider)
+
+
+class TestPrefetchStaleness:
+    """prefetch(query) must not return cached results from a prior turn's
+    background prefetch when the topic has changed.  Mirrors the fix applied
+    to the mem0 provider in c6eb7f9e7.
+    """
+
+    def _provider(self, hermes_home, monkeypatch):
+        monkeypatch.setenv("RETAINDB_API_KEY", "test-key")
+        p = RetainDBMemoryProvider()
+        p.initialize("sess", hermes_home=str(hermes_home))
+        return p
+
+    def test_matching_query_returns_cached_result(self, tmp_path, monkeypatch):
+        p = self._provider(tmp_path, monkeypatch)
+        with p._lock:
+            p._prefetch_query = "what is X?"
+            p._context_result = "X is a thing"
+        assert "X is a thing" in p.prefetch("what is X?")
+
+    def test_mismatched_query_returns_empty(self, tmp_path, monkeypatch):
+        """Prior turn prefetched for topic A; current turn asks about topic B
+        — stale context must not be injected."""
+        p = self._provider(tmp_path, monkeypatch)
+        with p._lock:
+            p._prefetch_query = "what is X?"
+            p._context_result = "X is a thing"
+            p._dialectic_result = "user likes X"
+        assert p.prefetch("what is Y?") == ""
+
+    def test_cache_cleared_after_consume(self, tmp_path, monkeypatch):
+        """Consumed cache must not persist for the next call."""
+        p = self._provider(tmp_path, monkeypatch)
+        with p._lock:
+            p._prefetch_query = "same question"
+            p._context_result = "some context"
+        p.prefetch("same question")
+        assert p.prefetch("same question") == ""
+
+    def test_queue_prefetch_stores_query(self, tmp_path, monkeypatch):
+        """queue_prefetch must record which query it will fetch for."""
+        p = self._provider(tmp_path, monkeypatch)
+        with (
+            patch.object(p, "_prefetch_context"),
+            patch.object(p, "_prefetch_dialectic"),
+            patch.object(p, "_prefetch_agent_model"),
+        ):
+            p.queue_prefetch("new question")
+        assert p._prefetch_query == "new question"

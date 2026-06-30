@@ -82,6 +82,7 @@ _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 _DEFAULT_RECALL_LIMIT = 6
 _DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
 _DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
+_DEFAULT_PROFILE_MAX_CHARS = 4000
 _DEFAULT_RECALL_TIMEOUT_SECONDS = 4.0
 _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS = 3.0
 _DEFAULT_RECALL_FULL_READ_LIMIT = 2
@@ -89,6 +90,12 @@ _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
+_PROFILE_READS = (
+    ("viking://user/memories/profile.md", "full"),
+)
+_PREFERENCES_OVERVIEW_URI = "viking://user/memories/preferences/"
+_ENTITIES_OVERVIEW_URI = "viking://user/memories/entities/"
+_SESSION_START_TRUNCATION_SUFFIX = "[...] truncated"
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -1842,6 +1849,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._runtime_start_thread: Optional[threading.Thread] = None
         self._memory_write_lock = threading.Lock()
         self._memory_write_threads: Set[threading.Thread] = set()
+        self._profile_prefetched_sessions: Set[str] = set()
         # Set on shutdown so deferred-commit / writer finalizers stop issuing
         # network writes against a torn-down provider.
         self._shutting_down = False
@@ -1914,6 +1922,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "description": "Maximum total characters injected by recall",
                 "default": _DEFAULT_RECALL_MAX_INJECTED_CHARS,
                 "env_var": "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
+            },
+            {
+                "key": "profile_max_chars",
+                "description": "Maximum session-start memory characters injected",
+                "default": _DEFAULT_PROFILE_MAX_CHARS,
+                "env_var": "OPENVIKING_PROFILE_MAX_CHARS",
             },
             {
                 "key": "recall_timeout_seconds",
@@ -2170,6 +2184,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 hermes_home = str(Path.home() / ".hermes")
         self._hermes_home = hermes_home
         self._acquire_run_lock()
+        self._profile_prefetched_sessions.clear()
         warning_callback = (
             kwargs.get("warning_callback")
             if kwargs.get("platform") == "cli"
@@ -2250,7 +2265,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "# OpenViking Knowledge Base\n"
                 f"Active. Endpoint: {self._endpoint}\n"
                 "Use viking_search, viking_read, viking_browse, "
-                "viking_remember, viking_forget, viking_add_resource. "
+                "viking_remember, viking_forget, "
+                "viking_add_resource. "
                 "If repeated searches "
                 "return the same evidence or no stronger evidence, answer "
                 "from available evidence and state uncertainty if needed."
@@ -2259,17 +2275,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return recall context for this query/session."""
         query_text = _derive_openviking_user_text(query).strip()
-        if not self._client or len(query_text) < _RECALL_QUERY_MIN_CHARS:
+        if not self._client:
             return ""
 
         effective_session_id = str(session_id or self._session_id or "").strip()
-        result = self._search_prefetch_context(
-            query_text,
-            session_id=effective_session_id,
-        )
-        if not result:
+        parts: List[str] = []
+        session_memory = self._session_start_memory_context(effective_session_id)
+        if session_memory:
+            parts.append(session_memory)
+        if len(query_text) >= _RECALL_QUERY_MIN_CHARS:
+            result = self._search_prefetch_context(
+                query_text,
+                session_id=effective_session_id,
+            )
+            if result:
+                parts.append(result)
+        if not parts:
             return ""
-        return f"## OpenViking Context\n{result}"
+        return "## OpenViking Context\n" + "\n\n".join(parts)
 
     @staticmethod
     def _remaining_recall_timeout(deadline: float, per_request_timeout: float) -> float:
@@ -2946,6 +2969,262 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "resources": self._env_bool("OPENVIKING_RECALL_RESOURCES", False),
         }
 
+    def _profile_max_chars(self) -> int:
+        return self._env_int(
+            "OPENVIKING_PROFILE_MAX_CHARS",
+            _DEFAULT_PROFILE_MAX_CHARS,
+            minimum=200,
+            maximum=50000,
+        )
+
+    @staticmethod
+    def _extract_text_content(resp: Any) -> str:
+        result = OpenVikingMemoryProvider._unwrap_result(resp)
+        if isinstance(result, str):
+            return result.strip()
+        if isinstance(result, dict):
+            return str(result.get("content") or result.get("text") or "").strip()
+        return ""
+
+    @staticmethod
+    def _is_placeholder_overview(content: str) -> bool:
+        normalized = " ".join((content or "").strip().lower().split())
+        return normalized in {
+            "[directory overview is not ready]",
+            "[directory overview is not generated]",
+            "[directory abstract is not ready]",
+            "[directory abstract is not generated]",
+        } or normalized.endswith((
+            "[directory overview is not ready]",
+            "[directory overview is not generated]",
+            "[directory abstract is not ready]",
+            "[directory abstract is not generated]",
+        ))
+
+    @staticmethod
+    def _weighted_context_len(content: str) -> int:
+        total = 0
+        for ch in content:
+            total += 2 if ord(ch) >= 0x3000 else 1
+        return total
+
+    @classmethod
+    def _take_weighted_prefix(cls, content: str, max_chars: int) -> str:
+        if max_chars <= 0:
+            return ""
+        used = 0
+        end = 0
+        for end, ch in enumerate(content):
+            used += 2 if ord(ch) >= 0x3000 else 1
+            if used > max_chars:
+                return content[:end]
+        return content
+
+    @classmethod
+    def _take_weighted_suffix(cls, content: str, max_chars: int) -> str:
+        if max_chars <= 0:
+            return ""
+        used = 0
+        start = len(content)
+        for idx in range(len(content) - 1, -1, -1):
+            ch = content[idx]
+            used += 2 if ord(ch) >= 0x3000 else 1
+            if used > max_chars:
+                return content[start:]
+            start = idx
+        return content
+
+    @classmethod
+    def _truncate_text_content(cls, content: str, max_chars: int) -> str:
+        content = content.strip()
+        if cls._weighted_context_len(content) <= max_chars:
+            return content
+        suffix = f"\n\n{_SESSION_START_TRUNCATION_SUFFIX}"
+        suffix_len = cls._weighted_context_len(suffix)
+        if max_chars <= suffix_len:
+            return cls._take_weighted_prefix(content, max_chars)
+        return cls._take_weighted_prefix(content, max_chars - suffix_len).rstrip() + suffix
+
+    @classmethod
+    def _truncate_profile_content(cls, content: str, max_chars: int) -> str:
+        content = content.strip()
+        if cls._weighted_context_len(content) <= max_chars:
+            return content
+        marker = f"\n\n{_SESSION_START_TRUNCATION_SUFFIX}\n\n"
+        marker_len = cls._weighted_context_len(marker)
+        if max_chars <= marker_len + 40:
+            return cls._truncate_text_content(content, max_chars)
+        remaining = max_chars - marker_len
+        head_budget = max(1, remaining // 2)
+        tail_budget = max(1, remaining - head_budget)
+        head = cls._take_weighted_prefix(content, head_budget).rstrip()
+        tail = cls._take_weighted_suffix(content, tail_budget).lstrip()
+        if not head or not tail:
+            return cls._truncate_text_content(content, max_chars)
+        return f"{head}{marker}{tail}"
+
+    def _read_session_start_text(
+        self,
+        client: _VikingClient,
+        endpoint: str,
+        uri: str,
+        *,
+        skip_placeholder: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Optional[str]:
+        try:
+            kwargs = {"timeout": timeout} if timeout is not None else {}
+            resp = client.get(endpoint, params={"uri": uri}, **kwargs)
+        except Exception as e:
+            if _status_code_from_error(e) in {404, 410}:
+                return ""
+            return None
+        content = self._extract_text_content(resp)
+        if skip_placeholder and self._is_placeholder_overview(content):
+            return ""
+        return content
+
+    def _read_session_start_memory_parts(
+        self,
+        *,
+        client: Optional[_VikingClient] = None,
+        request_timeout: Optional[float] = None,
+    ) -> Dict[str, Optional[str]]:
+        active_client = client or self._client
+        if not active_client:
+            return {}
+
+        profile_uri, _level = _PROFILE_READS[0]
+        return {
+            "profile": self._read_session_start_text(
+                active_client,
+                "/api/v1/content/read",
+                profile_uri,
+                timeout=request_timeout,
+            ),
+            "preferences": self._read_session_start_text(
+                active_client,
+                "/api/v1/content/overview",
+                _PREFERENCES_OVERVIEW_URI,
+                skip_placeholder=True,
+                timeout=request_timeout,
+            ),
+            "entities": self._read_session_start_text(
+                active_client,
+                "/api/v1/content/overview",
+                _ENTITIES_OVERVIEW_URI,
+                skip_placeholder=True,
+                timeout=request_timeout,
+            ),
+        }
+
+    @staticmethod
+    def _format_session_start_memory_block(
+        *,
+        profile: str = "",
+        preferences: str = "",
+        entities: str = "",
+    ) -> str:
+        lines: List[str] = ["## Session Memory"]
+        if profile:
+            lines.extend([
+                '  <user-profile uri="viking://user/memories/profile.md">',
+                profile,
+                "  </user-profile>",
+            ])
+        if preferences or entities:
+            lines.append("  <available-memories>")
+            if preferences:
+                lines.extend([
+                    f'    <preferences uri="{_PREFERENCES_OVERVIEW_URI}">',
+                    preferences,
+                    "    </preferences>",
+                ])
+            if entities:
+                lines.extend([
+                    f'    <entities uri="{_ENTITIES_OVERVIEW_URI}">',
+                    entities,
+                    "    </entities>",
+                ])
+            lines.append("  </available-memories>")
+        if len(lines) == 1:
+            return ""
+        return "\n".join(lines)
+
+    def _budget_session_start_memory_parts(self, parts: Dict[str, str], max_chars: int) -> Dict[str, str]:
+        profile = parts.get("profile", "").strip()
+        preferences = parts.get("preferences", "").strip()
+        entities = parts.get("entities", "").strip()
+        full = self._format_session_start_memory_block(
+            profile=profile,
+            preferences=preferences,
+            entities=entities,
+        )
+        if not full or self._weighted_context_len(full) <= max_chars:
+            return {"profile": profile, "preferences": preferences, "entities": entities}
+
+        placeholder = "\0"
+        placeholder_block = self._format_session_start_memory_block(
+            profile=placeholder if profile else "",
+            preferences=placeholder if preferences else "",
+            entities=placeholder if entities else "",
+        )
+        present_count = sum(1 for value in (profile, preferences, entities) if value)
+        overhead = self._weighted_context_len(placeholder_block) - present_count
+        content_budget = max_chars - overhead
+        if content_budget <= 0:
+            return {"profile": "", "preferences": "", "entities": ""}
+
+        has_listings = bool(preferences or entities)
+        result = {"profile": "", "preferences": "", "entities": ""}
+        remaining = content_budget
+        if profile:
+            profile_budget = remaining if not has_listings else min(
+                self._weighted_context_len(profile),
+                max(0, int(content_budget * 0.6)),
+            )
+            result["profile"] = self._truncate_profile_content(profile, profile_budget)
+            remaining -= self._weighted_context_len(result["profile"])
+
+        listing_values = {"preferences": preferences, "entities": entities}
+        listing_keys = [key for key, value in listing_values.items() if value]
+        for idx, key in enumerate(listing_keys):
+            if remaining <= 0:
+                break
+            value = listing_values[key]
+            budget = remaining if idx == len(listing_keys) - 1 else max(0, remaining // 2)
+            result[key] = self._truncate_text_content(value, budget)
+            remaining -= self._weighted_context_len(result[key])
+        return result
+
+    def _session_start_memory_context(self, session_id: str) -> str:
+        session_key = session_id or self._session_id or "__openviking_default_session__"
+        if session_key in self._profile_prefetched_sessions:
+            return ""
+        try:
+            cfg = self._recall_config()
+            raw_parts = self._read_session_start_memory_parts(
+                request_timeout=cfg["request_timeout_seconds"],
+            )
+        except Exception as e:
+            logger.debug("OpenViking session-start memory prefetch failed: %s", e)
+            return ""
+        profile_failed = raw_parts.get("profile") is None
+        parts = {key: value or "" for key, value in raw_parts.items()}
+        if not any(value.strip() for value in parts.values()):
+            if not profile_failed:
+                self._profile_prefetched_sessions.add(session_key)
+            return ""
+        budgeted = self._budget_session_start_memory_parts(parts, self._profile_max_chars())
+        block = self._format_session_start_memory_block(**budgeted)
+        if not block:
+            if not profile_failed:
+                self._profile_prefetched_sessions.add(session_key)
+            return ""
+        if not profile_failed:
+            self._profile_prefetched_sessions.add(session_key)
+        return block
+
     @staticmethod
     def _clamp_score(value: Any) -> float:
         try:
@@ -3580,6 +3859,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         rewound = bool(kwargs.get("rewound"))
+        compression = kwargs.get("reason") == "compression"
 
         # Rotate cached session state synchronously (cheap, in-memory) and
         # snapshot the old session under the lock so a concurrent sync_turn
@@ -3595,6 +3875,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if rotate:
                 self._session_id = new_id
                 self._turn_count = 0
+
+        if compression:
+            self._profile_prefetched_sessions.discard(old_session_id or new_id)
 
         if not rotate:
             # Same-session rewind (/undo) or no-op rotation: no commit and no

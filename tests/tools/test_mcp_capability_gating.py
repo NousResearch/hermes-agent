@@ -348,21 +348,49 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
 
-    async def test_no_ping_no_tools_propagates_method_not_found(self):
-        """A server advertising neither working ping nor tools has no cheaper
-        probe — the -32601 must propagate rather than calling list_tools on a
-        server that doesn't support it."""
+    async def test_falls_back_to_list_prompts_for_prompt_only_server(self):
+        """Prompt-only servers get a cheap list_prompts probe instead of
+        reconnect-looping because they don't implement ping."""
         task = MCPServerTask("test")
-        task.initialize_result = _caps(prompts=SimpleNamespace())  # not tool-capable
+        task.initialize_result = _caps(prompts=SimpleNamespace())
         task.session = SimpleNamespace(
             send_ping=AsyncMock(side_effect=_mcp_error(-32601)),
-            list_tools=AsyncMock(),
+            list_prompts=AsyncMock(return_value=SimpleNamespace(prompts=[])),
+        )
+
+        await task._keepalive_probe()
+
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_prompts.assert_awaited_once()
+        assert task._ping_unsupported is True
+
+    async def test_falls_back_to_list_resources_for_resource_only_server(self):
+        """Resource-only servers get a cheap list_resources probe instead of
+        reconnect-looping because they don't implement ping."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(resources=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=_mcp_error(-32601)),
+            list_resources=AsyncMock(return_value=SimpleNamespace(resources=[])),
+        )
+
+        await task._keepalive_probe()
+
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_resources.assert_awaited_once()
+        assert task._ping_unsupported is True
+
+    async def test_no_ping_no_probeable_capability_propagates_method_not_found(self):
+        """A server advertising no working ping, tools, prompts, or resources
+        has no cheaper probe — the -32601 must propagate."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps()  # no capabilities
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=_mcp_error(-32601)),
         )
 
         with pytest.raises(Exception):
             await task._keepalive_probe()
-
-        task.session.list_tools.assert_not_called()
 
     async def test_discover_resets_latch(self):
         """A fresh connection (_discover_tools) re-enables the cheap ping path."""

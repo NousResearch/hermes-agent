@@ -337,6 +337,8 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    from hermes_state import resolve_session_source
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -345,7 +347,7 @@ def _run_agent(
         model=effective_model,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
-        platform="cli",
+        platform=resolve_session_source("cli"),
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,

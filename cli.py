@@ -3562,7 +3562,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
-        self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # If the user explicitly chose a provider on the CLI but didn't pass
+        # --model, fall back to that provider's `default_model` from
+        # `providers.<name>.default_model` in config.yaml. Otherwise the global
+        # model.default leaks in and gets sent to a provider that doesn't know
+        # it (e.g. `--provider longcat` with `default: hy3-preview`).
+        _explicit_provider_arg = provider
+        _provider_default_model = ""
+        if _explicit_provider_arg and _explicit_provider_arg not in ("auto", "default"):
+            _providers_cfg = CLI_CONFIG.get("providers") or {}
+            if isinstance(_providers_cfg, dict):
+                _pentry = _providers_cfg.get(_explicit_provider_arg) or {}
+                if isinstance(_pentry, dict):
+                    _provider_default_model = (str(_pentry.get("default_model") or "").strip())
+        self.model = model or _provider_default_model or _config_model or _DEFAULT_CONFIG_MODEL
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -3608,6 +3621,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.api_mode = "chat_completions"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
+
+        # MoA preset CLI syntax: -m moa:<preset> selects the MoA virtual provider
+        # and the named preset. Resolve it after provider/config defaults are read
+        # so we can override both model and provider in one place.
+        if isinstance(self.model, str) and self.model.lower().startswith("moa:"):
+            from hermes_cli.config import load_config as _load_config_for_moa
+            from hermes_cli.moa_config import normalize_moa_config
+
+            _moa_cfg = normalize_moa_config(_load_config_for_moa().get("moa") or {})
+            _preset_name = self.model[4:].strip()
+            if _preset_name in _moa_cfg.get("presets", {}):
+                self.model = _preset_name
+                self.requested_provider = "moa"
+                self.provider = "moa"
+            else:
+                raise ValueError(
+                    f"Unknown MoA preset: {_preset_name}. "
+                    f"Run `hermes moa list` to see configured presets."
+                )
+
         self.base_url = (
             base_url
             or CLI_CONFIG["model"].get("base_url", "")

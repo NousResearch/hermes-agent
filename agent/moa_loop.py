@@ -94,12 +94,17 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
         resolved_provider = str(rt.get("provider") or provider).strip().lower()
-        # call_llm treats an explicit base_url as a custom endpoint. That is
-        # correct for ordinary OpenAI-compatible targets, but wrong for OAuth /
-        # provider-backed targets whose provider branch adds auth refresh,
-        # request metadata, or request-shape adapters. Keep those providers
-        # identified by name.
-        if resolved_provider in {"nous", "openai-codex", "xai-oauth"}:
+        resolved_api_mode = str(rt.get("api_mode") or "").strip().lower()
+        # call_llm treats an explicit base_url as a bare custom endpoint and
+        # builds an OpenAI client against it. That is correct for ordinary
+        # OpenAI-compatible targets, but wrong for provider-backed targets
+        # whose adapter branch adds auth refresh, request metadata, or a
+        # non-OpenAI wire format (e.g. opencode-go's anthropic_messages mode
+        # needs /v1/messages, not /v1/chat/completions). Keep those providers
+        # identified by name and let call_llm resolve the real client.
+        # OAuth providers always need this; any provider whose resolved api_mode
+        # is not plain chat_completions also needs it.
+        if resolved_provider in {"nous", "openai-codex", "xai-oauth"} or resolved_api_mode != "chat_completions":
             return out
         # Pass the resolved endpoint through so call_llm builds the request for
         # the provider's actual API surface instead of auto-detecting. base_url

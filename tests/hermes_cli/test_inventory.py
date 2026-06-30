@@ -165,9 +165,7 @@ def test_build_models_payload_returns_expected_shape():
     assert set(payload.keys()) == {"providers", "model", "provider"}
     assert payload["model"] == "m1"
     assert payload["provider"] == "openrouter"
-    assert payload["providers"][0]["slug"] == "moa"
-    assert payload["providers"][0]["models"] == ["default"]
-    assert payload["providers"][1:] == rows
+    assert payload["providers"] == rows
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():
@@ -588,7 +586,7 @@ def test_aggregator_dedup_no_user_providers_unchanged():
     with _list_auth_returning(rows):
         payload = build_models_payload(ctx)
 
-    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    or_row = payload["providers"][0]
     assert len(or_row["models"]) == 2
 
 

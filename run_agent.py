@@ -614,6 +614,8 @@ class AIAgent:
         )
         target_session_id = new_session_id or getattr(self, "session_id", "") or ""
         if should_start and target_session_id and hasattr(engine, "on_session_start"):
+            from hermes_state import resolve_session_source
+
             start_context = {
                 "old_session_id": old_session_id,
                 "carry_over_context": carry_over_context,
@@ -1182,19 +1184,6 @@ class AIAgent:
         env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
         if env_timeout is not None:
             return float(env_timeout), False
-
-        # Reasoning-model floor: auto-mitigation for known reasoning models
-        # (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x thinking,
-        # DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud
-        # gateways idle-kill before the model's thinking phase ends.
-        # uses_implicit_default is False here so the local-endpoint
-        # short-circuit in _compute_non_stream_stale_timeout does not
-        # disable stale detection for users running reasoning models on a
-        # local NIM endpoint.
-        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-        reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
-        if reasoning_floor is not None:
-            return reasoning_floor, False
 
         return 90.0, True
 
@@ -3821,8 +3810,6 @@ class AIAgent:
         from unittest.mock import Mock
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
-        if self.provider == "moa":
-            return primary_client
         if isinstance(primary_client, Mock):
             return primary_client
         with self._openai_client_lock():
@@ -5437,7 +5424,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
-        moa_config: Optional[dict[str, Any]] = None,
+        moa_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
@@ -5449,7 +5436,7 @@ class AIAgent:
             task_id,
             stream_callback,
             persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
+            persist_user_timestamp,
             moa_config=moa_config,
         )
 

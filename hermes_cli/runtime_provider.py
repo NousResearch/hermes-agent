@@ -355,6 +355,23 @@ def _resolve_runtime_from_pool_entry(
     # opencode-zen /v1 to be stripped for chat_completions requests when
     # config.default was still a Claude model.
     effective_model = (target_model or model_cfg.get("default") or "")
+    # If neither target_model nor the global default match anything in this
+    # provider's `models` block, fall back to the provider's own `default_model`
+    # in config.yaml. Without this, a global `default: hy3-preview` leaks into
+    # a custom provider that doesn't know it and 400s (e.g. longcat).
+    if not target_model and effective_model:
+        try:
+            from hermes_cli.config import load_config as _load_cfg_for_provider
+            _full_cfg = _load_cfg_for_provider() or {}
+            _providers_cfg = _full_cfg.get("providers") or {}
+            _pentry = _providers_cfg.get(provider) or {}
+            if isinstance(_pentry, dict):
+                _declared_models = _pentry.get("models") or {}
+                _provider_default = (str(_pentry.get("default_model") or "").strip())
+                if _declared_models and effective_model not in _declared_models and _provider_default:
+                    effective_model = _provider_default
+        except Exception:
+            pass
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"

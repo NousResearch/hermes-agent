@@ -2,7 +2,7 @@ import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@h
 import { atom } from 'nanostores'
 
 import { HermesGateway } from '@/hermes'
-import { setGatewayState } from '@/store/session'
+import { $attentionSessionIds, $sessions, $workingSessionIds, setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -256,6 +256,29 @@ export function touchSecondaryGateways(): void {
     if (entry.wantOpen) {
       void desktop?.touchBackend?.(entry.profile).catch(() => undefined)
     }
+  }
+}
+
+// Touch every profile still running a blocked session, even when a
+// secondary socket was never opened because the user is focused elsewhere.
+export function touchWorkingProfileBackends(): void {
+  const desktop = window.hermesDesktop
+  if (!desktop) {
+    return
+  }
+
+  const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
+  const touched = new Set<string>()
+  for (const session of $sessions.get()) {
+    if (!live.has(session.id)) {
+      continue
+    }
+    const key = normKey(session.profile)
+    if (touched.has(key)) {
+      continue
+    }
+    touched.add(key)
+    void desktop.touchBackend?.(key).catch(() => undefined)
   }
 }
 

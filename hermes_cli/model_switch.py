@@ -814,10 +814,31 @@ def switch_model(
     target_provider = current_provider
     resolved_moa_preset = False
 
+    # Early MoA preset syntax: "moa:<preset>" (e.g. hermes chat -m moa:klo).
+    # This must be resolved before any alias/catalog logic so the virtual
+    # provider is selected instead of treating "moa:klo" as a real model name
+    # on the current provider.
+    if not explicit_provider and new_model.lower().startswith("moa:"):
+        from hermes_cli.config import load_config as _load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        moa_cfg = normalize_moa_config(_load_config().get("moa") or {})
+        preset_name = new_model[4:].strip()
+        if preset_name in moa_cfg.get("presets", {}):
+            target_provider = "moa"
+            new_model = preset_name
+            resolved_moa_preset = True
+        else:
+            return ModelSwitchResult(
+                success=False,
+                is_global=is_global,
+                error_message=f"Unknown MoA preset: {preset_name}. Run `hermes moa list` to see configured presets.",
+            )
+
     # =================================================================
     # PATH A: Explicit --provider given
     # =================================================================
-    if explicit_provider:
+    if explicit_provider and not resolved_moa_preset:
         # Resolve the provider
         pdef = resolve_provider_full(
             explicit_provider,
@@ -1407,6 +1428,70 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     t = _threading.Thread(target=_warm, daemon=True, name="picker-cache-prewarm")
     t.start()
     return t
+
+
+def _provider_cfg_model_ids(ep_cfg: dict) -> list[str]:
+    """Model ids explicitly configured on a ``providers:`` entry."""
+    models_list: list[str] = []
+
+    default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
+    if default_model:
+        models_list.append(str(default_model))
+
+    cfg_models = ep_cfg.get("models", [])
+    if isinstance(cfg_models, dict):
+        for model_id in cfg_models:
+            if model_id and model_id not in models_list:
+                models_list.append(str(model_id))
+    elif isinstance(cfg_models, list):
+        for model_id in cfg_models:
+            if model_id and model_id not in models_list:
+                models_list.append(str(model_id))
+
+    return models_list
+
+
+def _union_preserve_order_model_ids(primary: list[str], extra: list[str]) -> list[str]:
+    """Append ``extra`` model ids not already present, case-insensitively."""
+    seen = {m.lower() for m in primary if m}
+    merged = list(primary)
+    for model_id in extra:
+        if not model_id:
+            continue
+        key = model_id.lower()
+        if key in seen:
+            continue
+        merged.append(model_id)
+        seen.add(key)
+    return merged
+
+
+def _merge_user_provider_models_into_results(
+    results: list[dict], user_providers: dict | None
+) -> None:
+    """Fold configured ``providers:`` model IDs into already-emitted rows."""
+    if not user_providers or not isinstance(user_providers, dict):
+        return
+
+    for ep_name, ep_cfg in user_providers.items():
+        if not isinstance(ep_cfg, dict):
+            continue
+        cfg_models = _provider_cfg_model_ids(ep_cfg)
+        if not cfg_models:
+            continue
+        slug_lower = str(ep_name).lower()
+        existing = next(
+            (r for r in results if str(r.get("slug", "")).lower() == slug_lower),
+            None,
+        )
+        if existing is None:
+            continue
+        before = list(existing.get("models") or [])
+        merged = _union_preserve_order_model_ids(before, cfg_models)
+        if merged == before:
+            continue
+        existing["models"] = merged
+        existing["total_models"] = len(merged)
 
 
 def list_authenticated_providers(
@@ -2272,6 +2357,8 @@ def list_authenticated_providers(
     # provider's row (matched by slug) so it is selectable and shown. Done as a
     # post-pass so it covers every provider section uniformly, regardless of
     # which branch emitted the row.
+    _merge_user_provider_models_into_results(results, user_providers)
+
     if current_model:
         for _row in results:
             if not _row.get("is_current"):

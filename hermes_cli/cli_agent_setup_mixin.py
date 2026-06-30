@@ -340,6 +340,8 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
+            from hermes_state import resolve_session_source
+
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
@@ -369,7 +371,7 @@ class CLIAgentSetupMixin:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id,
-                platform="cli",
+                platform=resolve_session_source("cli"),
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),

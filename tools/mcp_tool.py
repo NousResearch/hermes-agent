@@ -1508,6 +1508,22 @@ class MCPServerTask:
             return True
         return getattr(caps, "tools", None) is not None
 
+    def _advertises_resources(self) -> bool:
+        """Whether the server advertises the ``resources`` capability."""
+        init_result = self.initialize_result
+        caps = getattr(init_result, "capabilities", None) if init_result is not None else None
+        if caps is None:
+            return False
+        return getattr(caps, "resources", None) is not None
+
+    def _advertises_prompts(self) -> bool:
+        """Whether the server advertises the ``prompts`` capability."""
+        init_result = self.initialize_result
+        caps = getattr(init_result, "capabilities", None) if init_result is not None else None
+        if caps is None:
+            return False
+        return getattr(caps, "prompts", None) is not None
+
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
     async def _refresh_tools_task(self):
@@ -1663,19 +1679,26 @@ class MCPServerTask:
                 # a real liveness failure — propagate so we reconnect.
                 if not _is_method_not_found_error(exc):
                     raise
-                if not self._advertises_tools():
-                    # No ping, no tools → no cheaper probe to fall back to.
-                    raise
                 self._ping_unsupported = True
                 logger.info(
                     "MCP server '%s': does not implement the optional 'ping' "
-                    "utility (-32601); using 'list_tools' for keepalive on "
-                    "this connection.",
+                    "utility (-32601); falling back to capability probe for "
+                    "keepalive on this connection.",
                     self.name,
                 )
 
-        # Fallback probe for servers without ping support.
-        await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+        # Fallback probe for servers without ping support. Use the cheapest
+        # advertised capability probe so prompt-only / resource-only servers
+        # (e.g. agentmemory) don't reconnect-loop when they don't implement ping.
+        if self._advertises_tools():
+            await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+        elif self._advertises_resources():
+            await asyncio.wait_for(self.session.list_resources(), timeout=30.0)
+        elif self._advertises_prompts():
+            await asyncio.wait_for(self.session.list_prompts(), timeout=30.0)
+        else:
+            # No ping, no probeable capability → no cheaper probe to fall back to.
+            raise RuntimeError("MCP server has no ping, tools, resources, or prompts capability")
 
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.

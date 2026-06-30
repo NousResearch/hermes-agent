@@ -863,9 +863,11 @@ class CLICommandsMixin:
         # /sessions even after the parent is reopened and re-ended with a
         # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
+            from hermes_state import resolve_session_source
+
             self._session_db.create_session(
                 session_id=new_session_id,
-                source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=resolve_session_source(getattr(self, "platform", None) or "cli"),
                 model=self.model,
                 model_config={
                     "max_iterations": self.max_turns,

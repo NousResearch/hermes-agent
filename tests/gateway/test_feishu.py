@@ -4944,3 +4944,405 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+class TestFeishuTokenRefresh(unittest.TestCase):
+    """Tests for token cache eviction, force-refresh, warmup, and retry logic."""
+
+    def _make_adapter(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+        adapter._app_id = "cli_test_app"
+        adapter._app_secret = "test_secret"
+        adapter._domain_name = "feishu"
+        adapter._client = Mock()
+        return adapter
+
+    # ------------------------------------------------------------------
+    # _response_succeeded
+    # ------------------------------------------------------------------
+
+    def test_response_succeeded_returns_true_on_success(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        resp = SimpleNamespace(success=lambda: True)
+        self.assertTrue(FeishuAdapter._response_succeeded(resp))
+
+    def test_response_succeeded_returns_false_on_failure(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        resp = SimpleNamespace(success=lambda: False)
+        self.assertFalse(FeishuAdapter._response_succeeded(resp))
+
+    def test_response_succeeded_returns_false_for_none(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        self.assertFalse(FeishuAdapter._response_succeeded(None))
+
+    def test_response_succeeded_returns_false_when_no_success_attr(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        resp = object()
+        self.assertFalse(FeishuAdapter._response_succeeded(resp))
+
+    # ------------------------------------------------------------------
+    # _evict_feishu_token
+    # ------------------------------------------------------------------
+
+    @patch("lark_oapi.core.cache.local_cache.LocalCache")
+    def test_evict_token_removes_from_cache(self, mock_local_cache_cls):
+        adapter = self._make_adapter()
+        mock_cache = Mock()
+        mock_cache.cache = Mock(pop=Mock())
+        mock_local_cache_cls.instance.return_value = mock_cache
+
+        adapter._evict_feishu_token()
+
+        mock_cache.cache.pop.assert_called_once_with(
+            "self_tenant_token:cli_test_app", None,
+        )
+
+    @patch("lark_oapi.core.cache.local_cache.LocalCache")
+    def test_evict_token_fallback_set_expired(self, mock_local_cache_cls):
+        adapter = self._make_adapter()
+        mock_cache = Mock()
+        # Make cache.cache.pop raise AttributeError to test fallback
+        mock_cache.cache.pop.side_effect = AttributeError("no .cache")
+        mock_local_cache_cls.instance.return_value = mock_cache
+
+        with patch("plugins.platforms.feishu.adapter.time") as mock_time:
+            mock_time.time.return_value = 1000
+            adapter._evict_feishu_token()
+
+        mock_cache.set.assert_called_once_with(
+            "self_tenant_token:cli_test_app", "", 999,
+        )
+
+    @patch("lark_oapi.core.cache.local_cache.LocalCache")
+    def test_evict_token_noop_when_app_id_empty(self, mock_local_cache_cls):
+        adapter = self._make_adapter()
+        adapter._app_id = ""
+        mock_cache = Mock()
+        mock_local_cache_cls.instance.return_value = mock_cache
+
+        adapter._evict_feishu_token()
+
+        mock_cache.instance.assert_not_called()
+
+    def test_evict_token_handles_exception_gracefully(self):
+        adapter = self._make_adapter()
+
+        with (
+            patch("lark_oapi.core.cache.local_cache.LocalCache") as mock_cls,
+            patch.object(adapter, "_app_id", "cli_test_app"),
+        ):
+            mock_cls.instance.side_effect = RuntimeError("unexpected")
+            # Should not raise
+            adapter._evict_feishu_token()
+
+    # ------------------------------------------------------------------
+    # _force_refresh_token
+    # ------------------------------------------------------------------
+
+    def test_force_refresh_token_success(self):
+        adapter = self._make_adapter()
+
+        mock_resp = Mock()
+        mock_resp.success.return_value = True
+
+        async def _run():
+            with (
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread",
+                      new=AsyncMock(return_value=mock_resp)),
+                patch("lark_oapi.core.model.BaseRequest"),
+                patch("lark_oapi.core.AccessTokenType"),
+                patch("lark_oapi.core.HttpMethod"),
+            ):
+                result = await adapter._force_refresh_token()
+                self.assertTrue(result)
+
+        asyncio.run(_run())
+
+    def test_force_refresh_token_failure_nonzero_code(self):
+        adapter = self._make_adapter()
+
+        mock_resp = Mock()
+        mock_resp.success.return_value = False
+        mock_resp.code = 99991663
+
+        async def _run():
+            with (
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread",
+                      new=AsyncMock(return_value=mock_resp)),
+                patch("lark_oapi.core.model.BaseRequest"),
+                patch("lark_oapi.core.AccessTokenType"),
+                patch("lark_oapi.core.HttpMethod"),
+            ):
+                result = await adapter._force_refresh_token()
+                self.assertFalse(result)
+
+        asyncio.run(_run())
+
+    def test_force_refresh_token_fallback_on_exception(self):
+        adapter = self._make_adapter()
+
+        async def _run():
+            with (
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread",
+                      new=AsyncMock(side_effect=OSError("connection lost"))),
+                patch("lark_oapi.core.model.BaseRequest"),
+                patch("lark_oapi.core.AccessTokenType"),
+                patch("lark_oapi.core.HttpMethod"),
+                patch.object(adapter, "_force_refresh_token_http_fallback",
+                             new=AsyncMock(return_value=True)),
+            ):
+                result = await adapter._force_refresh_token()
+                self.assertTrue(result)
+
+        asyncio.run(_run())
+
+    # ------------------------------------------------------------------
+    # _force_refresh_token_http_fallback
+    # ------------------------------------------------------------------
+
+    @patch("lark_oapi.core.token.TokenManager")
+    def test_http_fallback_success(self, mock_tm):
+        adapter = self._make_adapter()
+
+        mock_body = '{"tenant_access_token": "new_token", "expire": 7200}'
+        mock_resp = Mock()
+        mock_resp.read.return_value = mock_body.encode()
+        mock_urlopen_cm = Mock()
+        mock_urlopen_cm.__enter__ = Mock(return_value=mock_resp)
+        mock_urlopen_cm.__exit__ = Mock(return_value=None)
+
+        with (
+            patch("urllib.request.urlopen", return_value=mock_urlopen_cm),
+            patch("plugins.platforms.feishu.adapter.FEISHU_DOMAIN", "https://open.feishu.cn"),
+        ):
+
+            async def _run():
+                result = await adapter._force_refresh_token_http_fallback()
+                self.assertTrue(result)
+
+            asyncio.run(_run())
+
+        mock_tm.cache.set.assert_called_once()
+        args = mock_tm.cache.set.call_args
+        self.assertEqual(args[0][0], "self_tenant_token:cli_test_app")
+        self.assertEqual(args[0][1], "new_token")
+        # expire is time.time() + 7200 - 600; just verify it's in the future
+        self.assertGreater(args[0][2], 0)
+
+    def test_http_fallback_returns_false_when_no_credentials(self):
+        adapter = self._make_adapter()
+        adapter._app_id = ""
+        adapter._app_secret = ""
+
+        async def _run():
+            result = await adapter._force_refresh_token_http_fallback()
+            self.assertFalse(result)
+
+        asyncio.run(_run())
+
+    @patch("lark_oapi.core.token.TokenManager")
+    def test_http_fallback_returns_false_when_no_token_in_response(self, mock_tm):
+        adapter = self._make_adapter()
+
+        mock_body = '{"msg": "error", "code": 99991663}'
+        mock_resp = Mock()
+        mock_resp.read.return_value = mock_body.encode()
+        mock_urlopen_cm = Mock()
+        mock_urlopen_cm.__enter__ = Mock(return_value=mock_resp)
+        mock_urlopen_cm.__exit__ = Mock(return_value=None)
+
+        with (
+            patch("urllib.request.urlopen", return_value=mock_urlopen_cm),
+            patch("plugins.platforms.feishu.adapter.FEISHU_DOMAIN", "https://open.feishu.cn"),
+        ):
+
+            async def _run():
+                result = await adapter._force_refresh_token_http_fallback()
+                self.assertFalse(result)
+
+            asyncio.run(_run())
+
+        mock_tm.cache.set.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # _warmup_token_cache
+    # ------------------------------------------------------------------
+
+    def test_warmup_success(self):
+        adapter = self._make_adapter()
+
+        async def _run():
+            with (
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread",
+                      new=AsyncMock(return_value=SimpleNamespace())),
+                patch("lark_oapi.core.model.BaseRequest"),
+                patch("lark_oapi.core.AccessTokenType"),
+                patch("lark_oapi.core.HttpMethod"),
+            ):
+                result = await adapter._warmup_token_cache()
+                self.assertTrue(result)
+
+        asyncio.run(_run())
+
+    def test_warmup_returns_false_when_no_client(self):
+        adapter = self._make_adapter()
+        adapter._client = None
+
+        async def _run():
+            result = await adapter._warmup_token_cache()
+            self.assertFalse(result)
+
+        asyncio.run(_run())
+
+    def test_warmup_retries_and_gives_up(self):
+        adapter = self._make_adapter()
+
+        async def _run():
+            with (
+                patch("plugins.platforms.feishu.adapter.asyncio.to_thread",
+                      new=AsyncMock(side_effect=OSError("timeout"))),
+                patch("plugins.platforms.feishu.adapter.asyncio.sleep",
+                      new=AsyncMock()),
+                patch("lark_oapi.core.model.BaseRequest"),
+                patch("lark_oapi.core.AccessTokenType"),
+                patch("lark_oapi.core.HttpMethod"),
+            ):
+                result = await adapter._warmup_token_cache()
+                self.assertFalse(result)
+
+        asyncio.run(_run())
+
+    # ------------------------------------------------------------------
+    # Token-invalid retry in edit_message
+    # ------------------------------------------------------------------
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_retries_on_token_invalid(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        call_count = 0
+
+        class _MessageAPI:
+            def update(self, request):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=99991663,
+                        msg="token invalid",
+                    )
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())),
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with (
+            patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct),
+            patch("plugins.platforms.feishu.adapter.asyncio.sleep", new=AsyncMock()),
+            patch.object(adapter, "_evict_feishu_token", return_value=None),
+            patch.object(adapter, "_force_refresh_token", new=AsyncMock(return_value=True)),
+        ):
+            result = asyncio.run(
+                adapter.edit_message(chat_id="oc_chat", message_id="om_1", content="hello")
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(call_count, 2)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_fails_after_exhausting_retries(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _MessageAPI:
+            def update(self, request):
+                return SimpleNamespace(
+                    success=lambda: False,
+                    code=99991663,
+                    msg="token invalid",
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())),
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        sleeps = []
+
+        with (
+            patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct),
+            patch("plugins.platforms.feishu.adapter.asyncio.sleep",
+                  side_effect=lambda delay: sleeps.append(delay)),
+            patch.object(adapter, "_evict_feishu_token", return_value=None),
+            patch.object(adapter, "_force_refresh_token", new=AsyncMock(return_value=True)),
+        ):
+            result = asyncio.run(
+                adapter.edit_message(chat_id="oc_chat", message_id="om_1", content="hello")
+            )
+
+        self.assertFalse(result.success)
+
+    # ------------------------------------------------------------------
+    # Token-invalid retry in _feishu_send_with_retry
+    # ------------------------------------------------------------------
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_with_retry_evicts_and_refreshes_on_token_invalid(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        call_count = 0
+
+        class _MessageAPI:
+            def create(self, request):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=99991664,
+                        msg="token invalid",
+                    )
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())),
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with (
+            patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct),
+            patch("plugins.platforms.feishu.adapter.asyncio.sleep", new=AsyncMock()),
+            patch.object(adapter, "_evict_feishu_token", return_value=None),
+            patch.object(adapter, "_force_refresh_token", new=AsyncMock(return_value=True)),
+        ):
+            result = asyncio.run(
+                adapter._feishu_send_with_retry(
+                    chat_id="oc_chat",
+                    msg_type="text",
+                    payload=json.dumps({"text": "hello"}, ensure_ascii=False),
+                    reply_to=None,
+                    metadata=None,
+                )
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(call_count, 2)

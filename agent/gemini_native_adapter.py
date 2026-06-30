@@ -305,17 +305,16 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
             continue
 
         if role in {"tool", "function"}:
-            contents.append(
-                {
-                    "role": "user",
-                    "parts": [
-                        _translate_tool_result_to_gemini(
-                            msg,
-                            tool_name_by_call_id=tool_name_by_call_id,
-                        )
-                    ],
-                }
+            result_part = _translate_tool_result_to_gemini(
+                msg,
+                tool_name_by_call_id=tool_name_by_call_id,
             )
+            # Merge into the previous user entry if it is also a tool
+            # result block.  Gemini rejects consecutive same-role turns.
+            if contents and contents[-1]["role"] == "user":
+                contents[-1]["parts"].append(result_part)
+            else:
+                contents.append({"role": "user", "parts": [result_part]})
             continue
 
         gemini_role = "model" if role == "assistant" else "user"
@@ -335,7 +334,12 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                     parts.append(_translate_tool_call_to_gemini(tool_call))
 
         if parts:
-            contents.append({"role": gemini_role, "parts": parts})
+            # Merge into previous entry if same role to avoid Gemini
+            # "must alternate" 400 errors on merged assistant turns.
+            if contents and contents[-1]["role"] == gemini_role:
+                contents[-1]["parts"].extend(parts)
+            else:
+                contents.append({"role": gemini_role, "parts": parts})
 
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()

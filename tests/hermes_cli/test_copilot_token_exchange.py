@@ -157,3 +157,23 @@ class TestCallerIntegration:
         assert token == "exchanged_jwt"
         assert source == "GH_TOKEN"
         mock_exchange.assert_called_once_with("gho_raw")
+
+    @patch("hermes_cli.copilot_auth.get_copilot_api_token")
+    @patch("hermes_cli.copilot_auth.validate_copilot_token", return_value=(True, ""))
+    @patch("hermes_cli.auth.read_credential_pool")
+    @patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no env"))
+    def test_catalog_resolve_falls_back_on_exchange_failure(
+        self, mock_env, mock_pool, mock_validate, mock_get_token,
+    ):
+        """_resolve_copilot_catalog_api_key must use get_copilot_api_token
+        (which falls back to raw token) so Business/Enterprise accounts
+        that get 404 on the exchange endpoint still work."""
+        from hermes_cli.models import _resolve_copilot_catalog_api_key
+
+        mock_pool.return_value = [{"access_token": "gho_biz_token"}]
+        # Simulate exchange failure → raw token returned
+        mock_get_token.return_value = "gho_biz_token"
+
+        result = _resolve_copilot_catalog_api_key()
+        assert result == "gho_biz_token"
+        mock_get_token.assert_called_once_with("gho_biz_token")

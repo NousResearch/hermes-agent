@@ -329,3 +329,30 @@ class TestFirstThreatMessage:
         assert msg is not None
         assert "U+200B" in msg
         assert "invisible unicode" in msg.lower()
+
+
+# =========================================================================
+# NFKC homograph folding
+# =========================================================================
+
+
+class TestNFKCNormalisation:
+    def test_fullwidth_homograph_is_caught(self):
+        # Full-width latin letters (ｃ U+FF43 etc.) are compatibility variants
+        # that NFKC folds to ASCII; without normalisation they bypass the
+        # keyword-based exfil patterns.
+        findings = scan_for_threats("ｃａｔ ~/.hermes/.env", scope="all")
+        assert "read_secrets" in findings
+
+    def test_ascii_equivalent_still_caught(self):
+        findings = scan_for_threats("cat ~/.hermes/.env", scope="all")
+        assert "read_secrets" in findings
+
+    def test_invisible_chars_detected_before_normalisation(self):
+        # NFKC strips some codepoints; invisible-char detection must run on
+        # the raw content so they're still surfaced.
+        findings = scan_for_threats("hello\u200bworld", scope="all")
+        assert any(f.startswith("invisible_unicode_U+200B") for f in findings)
+
+    def test_benign_content_not_flagged_by_normalisation(self):
+        assert scan_for_threats("Refactor the parser module.", scope="context") == []

@@ -1104,10 +1104,8 @@ class DiscordAdapter(BasePlatformAdapter):
                         if hasattr(message.channel, "parent_id") and message.channel.parent_id:
                             _parent_id = str(message.channel.parent_id)
                         _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_ids = {_channel_id}
-                        if _parent_id:
-                            _channel_ids.add(_parent_id)
-                        if "*" not in _free_channels and not (_channel_ids & _free_channels):
+                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
+                        if "*" not in _free_channels and not (_channel_keys & _free_channels):
                             return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
@@ -1275,6 +1273,71 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._liveness_task = None
+
+    async def cancel_background_tasks(self) -> None:
+        """Cancel background tasks, but first flush any pending text-batch sends.
+
+        The base-class implementation only cancels tasks in self._background_tasks.
+        Discord keeps its own _pending_text_batch_tasks dict for the message-merge
+        logic, and those tasks are NOT in _background_tasks. On shutdown/restart
+        this caused a race where in-flight response deliveries were cancelled before
+        Discord had a chance to actually send them, resulting in silent dropped
+        messages visible to the user as tool-log-only replies with no text.
+
+        Fix: await all pending text-batch tasks before delegating to the base
+        cancel. The flush deadline is clamped below the gateway's per-adapter
+        disconnect budget (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``, default
+        5s) so the gateway's outer ``wait_for`` can't hard-cancel us mid-flush —
+        we cancel our own stragglers cleanly inside the budget instead.
+        """
+        pending = list(self._pending_text_batch_tasks.values())
+        if pending:
+            logger.info(
+                "[%s] Flushing %d pending text-batch task(s) before shutdown",
+                self.name, len(pending),
+            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    timeout=self._text_batch_flush_deadline_seconds(),
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Text-batch flush timed out; cancelling remaining tasks",
+                    self.name,
+                )
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+        self._pending_text_batch_tasks.clear()
+        self._pending_text_batches.clear()
+        await super().cancel_background_tasks()
+
+    def _text_batch_flush_deadline_seconds(self) -> float:
+        """Deadline for flushing pending text batches during shutdown.
+
+        Kept strictly below the gateway's per-adapter disconnect budget so the
+        gateway's outer ``asyncio.wait_for`` (which wraps this whole method) does
+        not cancel an in-progress flush before we get a chance to cancel our own
+        stragglers gracefully. Mirrors the env var the gateway reads in
+        ``GatewayRunner._adapter_disconnect_timeout_secs``.
+        """
+        budget = 5.0  # mirrors gateway _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+        raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
+        if raw:
+            try:
+                parsed = float(raw)
+                if parsed > 0:
+                    budget = parsed
+            except ValueError:
+                pass
+        # Stay strictly below the budget so the gateway's outer wait_for can't
+        # pre-empt our own straggler cancellation. Reserve ~20% (min 0.5s) of
+        # headroom, and never let the floor push us back up to/over the budget
+        # on tiny budgets — cap at 90% of the budget as a hard ceiling.
+        headroom = max(0.5, budget * 0.2)
+        deadline = max(1.0, budget - headroom)
+        return min(deadline, budget * 0.9)
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
@@ -2037,7 +2100,19 @@ class DiscordAdapter(BasePlatformAdapter):
         *,
         finalize: bool = False,
     ) -> SendResult:
-        """Edit a previously sent Discord message."""
+        """Edit a previously sent Discord message.
+
+        Discord caps single-message text at 2,000 chars.  Edits that grow
+        past this limit must NOT be silently truncated (the stream consumer
+        would believe the full reply was delivered and stop) and must NOT
+        return failure (the consumer would re-send and create a duplicate).
+
+        Mid-stream (``finalize=False``) we keep editing the original message
+        with a truncated preview — splitting mid-stream would move the edit
+        target to a continuation and the next accumulated-token tick would
+        re-split, looping forever (the Telegram #48648 lesson).  The complete
+        text is delivered when ``finalize=True`` via ``_edit_overflow_split``.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
@@ -2046,13 +2121,158 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
+
+            # Pre-flight: oversized payload.  Final edits split-and-deliver;
+            # streaming edits truncate a one-message preview in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
-            await msg.edit(content=formatted)
+                if finalize:
+                    return await self._edit_overflow_split(
+                        channel, msg, message_id, content,
+                    )
+                formatted = self.truncate_message(
+                    formatted, self.MAX_MESSAGE_LENGTH,
+                )[0]
+
+            try:
+                await msg.edit(content=formatted)
+            except Exception as edit_err:
+                # Reactive split-and-deliver: format_message inflation (or a
+                # server-side rule change) can push the payload past 2,000
+                # even when the pre-flight check passed.  Discord reports this
+                # as "error code: 50035 ... Must be 2000 or fewer in length".
+                if self._is_length_overflow_error(edit_err):
+                    if finalize:
+                        return await self._edit_overflow_split(
+                            channel, msg, message_id, content,
+                        )
+                    # Mid-stream: truncate and retry in place (no split).
+                    truncated = self.truncate_message(
+                        formatted, self.MAX_MESSAGE_LENGTH,
+                    )[0]
+                    await msg.edit(content=truncated)
+                else:
+                    raise
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    @staticmethod
+    def _is_length_overflow_error(err: Exception) -> bool:
+        """True when a Discord edit/send failed because text exceeded 2,000.
+
+        Discord returns ``error code: 50035`` with a ``Must be 2000 or fewer
+        in length`` validation detail.  We match on the stable error code plus
+        the length phrasing so unrelated 50035 validation errors (e.g. a bad
+        reply reference) don't get mistaken for an overflow.
+        """
+        text = str(err).lower()
+        return "error code: 50035" in text and (
+            "2000 or fewer" in text or "fewer in length" in text
+        )
+
+    async def _edit_overflow_split(
+        self,
+        channel: Any,
+        msg: Any,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Deliver an oversized final edit across message + continuations.
+
+        Edit the original ``message_id`` with chunk 1 (fence-aware, with the
+        usual ``(1/N)`` indicator), then send chunks 2..N as new messages each
+        threaded as a reply to the previous chunk so Discord groups them
+        visually.  Returns ``SendResult(success=True, message_id=<last-id>,
+        continuation_message_ids=(...))`` so the stream consumer keeps editing
+        the most recent visible message and can clean up every chunk on a
+        fresh-final.
+
+        On a mid-stream continuation send failure we still report success with
+        however many continuations landed AND a ``partial_overflow``
+        raw_response so the consumer can deliver the missing tail rather than
+        treating a clipped reply as complete — dropping chunks the user already
+        saw would be the worse outcome.  Only a first-chunk edit failure
+        returns ``success=False`` (a real adapter problem, not overflow).
+        """
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        if len(chunks) <= 1:
+            # Defensive: caller's pre-flight should guarantee >1 chunk, but if
+            # not, just edit normally.
+            await msg.edit(content=chunks[0] if chunks else formatted)
+            return SendResult(success=True, message_id=message_id)
+
+        # Step 1 — edit the existing message with the first chunk.
+        try:
+            await msg.edit(content=chunks[0])
+        except Exception as e:
+            logger.error(
+                "[%s] Overflow split: first-chunk edit failed: %s",
+                self.name, e, exc_info=True,
+            )
+            return SendResult(success=False, error=str(e))
+
+        # Step 2 — send each remaining chunk threaded as a reply to the prior.
+        continuation_ids: list[str] = []
+        delivered = 1
+        prev_msg = msg
+        for chunk in chunks[1:]:
+            reference = None
+            if hasattr(prev_msg, "to_reference"):
+                try:
+                    reference = prev_msg.to_reference(fail_if_not_exists=False)
+                except Exception:
+                    reference = None
+            try:
+                sent = await channel.send(content=chunk, reference=reference)
+            except Exception as send_err:
+                # Drop the reply anchor and retry once — a deleted/expired
+                # anchor (10008) or system-message reply (50035) shouldn't lose
+                # the chunk.
+                logger.warning(
+                    "[%s] Overflow continuation send failed (%s); retrying without reply reference",
+                    self.name, send_err,
+                )
+                try:
+                    sent = await channel.send(content=chunk, reference=None)
+                except Exception as retry_err:
+                    logger.warning(
+                        "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
+                        self.name, delivered, len(chunks), retry_err,
+                    )
+                    last_id = continuation_ids[-1] if continuation_ids else message_id
+                    return SendResult(
+                        success=True,
+                        message_id=last_id,
+                        continuation_message_ids=tuple(continuation_ids),
+                        raw_response={
+                            "partial_overflow": True,
+                            "delivered_chunks": delivered,
+                            "total_chunks": len(chunks),
+                            "last_message_id": last_id,
+                            "continuation_message_ids": tuple(continuation_ids),
+                        },
+                    )
+            new_id = str(sent.id)
+            continuation_ids.append(new_id)
+            delivered += 1
+            prev_msg = sent
+
+        last_id = continuation_ids[-1] if continuation_ids else message_id
+        # Keep the history-backfill fast path pointed at the final visible
+        # chunk so a later non-streaming send threads below the full reply.
+        if not _looks_like_nonconversational_history_message(content):
+            self._last_self_message_id[str(channel.id)] = last_id
+        logger.debug(
+            "[%s] Overflow split delivered %d chunks; last_id=%s",
+            self.name, delivered, last_id,
+        )
+        return SendResult(
+            success=True,
+            message_id=last_id,
+            continuation_message_ids=tuple(continuation_ids),
+        )
 
     async def _send_file_attachment(
         self,
@@ -2993,6 +3213,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     if parent_id:
                         channel_ids.add(str(parent_id))
 
+            # Name-form keys (ID + bare name + #name + parent) so allow/ignore
+            # lists configured by channel name work for slash-command
+            # interactions too, matching the on_message gates.
+            channel_keys = self._discord_channel_keys_from_channel(
+                chan_obj,
+                self._get_parent_channel_id(chan_obj)
+                if isinstance(chan_obj, discord.Thread)
+                else None,
+            )
+
             allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_raw:
                 allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
@@ -3004,7 +3234,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             False,
                             "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
                         )
-                    if not (channel_ids & allowed):
+                    if not (channel_keys & allowed):
                         return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
 
             # Ignored beats allowed: even when a thread's parent channel
@@ -3013,7 +3243,7 @@ class DiscordAdapter(BasePlatformAdapter):
             ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             if ignored_raw and channel_ids:
                 ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
-                if "*" in ignored or (channel_ids & ignored):
+                if "*" in ignored or (channel_keys & ignored):
                     return (False, "channel in DISCORD_IGNORED_CHANNELS")
 
         # ── User / role allowlist (mirrors on_message line 681) ──
@@ -4336,7 +4566,7 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required.
+        """Return Discord channel IDs/names where no bot mention is required.
 
         A single ``"*"`` entry (either from a list or a comma-separated
         string) is preserved in the returned set so callers can short-circuit
@@ -4375,6 +4605,50 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
+        """Return channel identifiers accepted by Discord channel config gates.
+
+        Users commonly configure channels by Discord snowflake ID, bare name, or
+        ``#name``. Include the current channel and, for threads, the parent
+        channel so free-response/no-thread/allow/ignore rules work with either
+        form.
+        """
+        channel = getattr(message, "channel", None)
+        return self._discord_channel_keys_from_channel(channel, parent_channel_id)
+
+    def _discord_channel_keys_from_channel(
+        self, channel: Any, parent_channel_id: Optional[str] = None
+    ) -> set[str]:
+        """Build channel-config gate keys directly from a channel object.
+
+        Same key set as :meth:`_discord_channel_keys` (ID, bare name, ``#name``,
+        and the parent channel for threads) but takes the channel directly so
+        callers holding an ``interaction.channel`` (slash-command authorization)
+        get name-form matching too — not just the ``on_message`` path.
+        """
+        keys: set[str] = set()
+
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            keys.add(str(channel_id))
+
+        channel_name = str(getattr(channel, "name", "")).strip()
+        if channel_name:
+            keys.add(channel_name)
+            keys.add(f"#{channel_name}")
+
+        parent_id = parent_channel_id or getattr(channel, "parent_id", None)
+        if parent_id:
+            keys.add(str(parent_id))
+
+        parent_channel = getattr(channel, "parent", None)
+        parent_name = str(getattr(parent_channel, "name", "")).strip() if parent_channel else ""
+        if parent_name:
+            keys.add(parent_name)
+            keys.add(f"#{parent_name}")
+
+        return keys
 
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
@@ -5371,25 +5645,24 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
+            channel_keys = self._discord_channel_keys(message, parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
+                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
+                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
                     return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if "*" in ignored_channels or (channel_ids & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
+            if "*" in ignored_channels or (channel_keys & ignored_channels):
+                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return
 
             free_channels = self._discord_free_response_channels()
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
 
             require_mention = self._discord_require_mention()
             # Voice-linked text channels act as free-response while voice is active.
@@ -5399,7 +5672,7 @@ class DiscordAdapter(BasePlatformAdapter):
             is_voice_linked_channel = current_channel_id in voice_linked_ids
             is_free_channel = (
                 "*" in free_channels
-                or bool(channel_ids & free_channels)
+                or bool(channel_keys & free_channels)
                 or is_voice_linked_channel
             )
 
@@ -5427,8 +5700,8 @@ class DiscordAdapter(BasePlatformAdapter):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             auto_thread_channels = self._discord_auto_thread_channels()
-            force_auto_thread = "*" in auto_thread_channels or bool(channel_ids & auto_thread_channels)
-            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not force_auto_thread)
+            force_auto_thread = "*" in auto_thread_channels or bool(channel_keys & auto_thread_channels)
+            skip_thread = bool(channel_keys & no_thread_channels) or (is_free_channel and not force_auto_thread)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

@@ -1532,8 +1532,8 @@ class AIAgent:
             review_memory=review_memory,
             review_skills=review_skills,
         )
-        # Propagate the profile override into the review thread, else it writes
-        # MEMORY.md / skill review into the launch profile (#54937).
+        # Carry the active profile into the review thread so MEMORY.md / skill
+        # review writes land in the right profile (#54937).
         t = threading.Thread(
             target=propagate_context_to_thread(target), daemon=True, name="bg-review"
         )

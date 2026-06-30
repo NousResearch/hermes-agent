@@ -568,10 +568,11 @@ class TestFinalCleanupEditFloodControl:
         consumer.finish()
         await task
 
-        # The final cosmetic edit failed, so final_response_sent stays false;
-        # the important signal is that content_delivered suppresses the
-        # gateway's normal full final send and prevents a duplicate answer.
-        assert consumer.final_response_sent is False
+        # The final cosmetic edit failed and immediately entered fallback;
+        # the fallback recognised the full answer is already visible and
+        # marked it delivered so the gateway suppresses its normal final
+        # send and prevents a duplicate answer.
+        assert consumer.final_response_sent is True
         assert consumer.final_content_delivered is True
         assert adapter.send.call_count == 1
         assert adapter.edit_message.call_count >= 1

@@ -1592,6 +1592,22 @@ class GatewayStreamConsumer:
                                 self._MAX_FLOOD_STRIKES,
                                 self._current_edit_interval,
                             )
+                            if finalize:
+                                # A rate-limited finalize-d edit cannot wait for a
+                                # later streaming tick to recover: whether this is
+                                # the turn-final edit (is_turn_final=True) or the
+                                # overflow-split first-chunk edit
+                                # (is_turn_final=False), retrying wastes flood
+                                # budget — the content is already visible and the
+                                # gateway's normal final-send path would resend the
+                                # full response, duplicating the visible preview.
+                                # Preserve the already-visible prefix and let
+                                # got_done send only the missing tail.
+                                self._fallback_prefix = self._visible_prefix()
+                                self._fallback_final_send = True
+                                self._edit_supported = False
+                                self._already_sent = True
+                                return False
                             if self._flood_strikes < self._MAX_FLOOD_STRIKES:
                                 # Don't disable edits yet — just slow down.
                                 # Update _last_edit_time so the next edit

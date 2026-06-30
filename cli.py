@@ -3728,7 +3728,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._resumed = False
         # Per-prompt elapsed timer — started at the beginning of each chat turn,
         # frozen when the agent thread completes, displayed in the status bar.
-        self._prompt_start_time: Optional[float] = None  # time.time() when turn started
+        self._prompt_start_time: Optional[float] = None  # time.monotonic() when turn started
         self._prompt_duration: float = 0.0  # frozen duration of last completed turn
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
@@ -4270,7 +4270,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         if prompt_start_time is None and prompt_duration == 0.0:
             return "⏲ 0s"
-        elapsed = time.time() - prompt_start_time if prompt_start_time is not None else prompt_duration
+        elapsed = time.monotonic() - prompt_start_time if prompt_start_time is not None else prompt_duration
         elapsed = max(0.0, elapsed)
 
         days = int(elapsed // 86400)
@@ -4536,6 +4536,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
             elapsed = time.monotonic() - t0
+            # Guard against a torn read across the unlocked UI fields: _spinner_text
+            # and _tool_start_time are best-effort UI state updated by different
+            # events without a lock, so a render can briefly observe a fresh label
+            # paired with a stale start timestamp from a prior turn. A negative
+            # value (reset/clock-edge race) or an implausibly large one (>24h for a
+            # single tool) means the pairing is untrustworthy this frame; show the
+            # label without a timer rather than flashing an absurd number.
+            if elapsed < 0 or elapsed > 86400:
+                return f"  {txt}"
             if elapsed >= 60:
                 _m, _s = int(elapsed // 60), int(elapsed % 60)
                 # Fixed-width timer to avoid status-line wrap jitter while
@@ -11899,7 +11908,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # exits the main thread and daemon threads are reaped automatically).
             # Start per-prompt elapsed timer — frozen after the agent thread
             # finishes; reset on the next turn.
-            self._prompt_start_time = time.time()
+            self._prompt_start_time = time.monotonic()
             self._prompt_duration = 0.0
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
@@ -11980,7 +11989,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Freeze per-prompt elapsed timer once the agent thread has
             # exited (or been abandoned as a daemon after interrupt).
             if self._prompt_start_time is not None:
-                self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
+                self._prompt_duration = max(0.0, time.monotonic() - self._prompt_start_time)
                 self._prompt_start_time = None
             # Record when this agent loop finished so the status bar can show
             # idle time since the last final response.
@@ -14596,7 +14605,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if not self._app:
                     time.sleep(0.1)
                     continue
-                if self._command_running:
+                # Repaint on a fixed cadence whenever a live timer is on screen:
+                # slow slash commands (_command_running) OR an agent turn with a
+                # running tool (_agent_running + non-empty _spinner_text). The old
+                # condition only checked _command_running, so during agent tool
+                # calls the elapsed timer was never repainted on a clock — it only
+                # advanced when an agent event happened to fire _invalidate(),
+                # which is why the seconds appeared to "jump" by whole tool
+                # durations instead of ticking smoothly.
+                if self._command_running or (self._agent_running and self._spinner_text):
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:

@@ -21,6 +21,7 @@ on the real OS.
 from unittest.mock import patch
 
 
+from tools.environments import base as base_mod
 from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
@@ -94,6 +95,14 @@ class TestResolveSafeCwdWindows:
             local_mod, "_msys_to_windows_path", return_value=native
         ):
             assert _resolve_safe_cwd("/c/whatever") == native
+
+
+class TestWindowsCdPathQuoting:
+    def test_native_windows_cwd_is_rewritten_for_bash_cd(self, monkeypatch):
+        monkeypatch.setattr(base_mod, "_IS_WINDOWS", True)
+        assert base_mod.BaseEnvironment._quote_cwd_for_cd(
+            r"C:\Users\alice\my project"
+        ) == "'C:/Users/alice/my project'"
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import codecs
 import json
 import logging
 import os
+import platform
 import select
 import shlex
 import subprocess
@@ -25,6 +26,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
+_IS_WINDOWS = platform.system() == "Windows"
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
 # HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
@@ -435,6 +437,8 @@ class BaseEnvironment(ABC):
             return "$HOME"
         if cwd.startswith("~/"):
             return f"$HOME/{shlex.quote(cwd[2:])}"
+        if _IS_WINDOWS and len(cwd) >= 3 and cwd[1] == ":" and cwd[2] in ("\\", "/"):
+            return shlex.quote(cwd.replace("\\", "/"))
         return shlex.quote(cwd)
 
     def _wrap_command(self, command: str, cwd: str) -> str:

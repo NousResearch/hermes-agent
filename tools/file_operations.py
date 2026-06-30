@@ -28,6 +28,7 @@ Usage:
 import os
 import re
 import difflib
+import platform
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -54,6 +55,7 @@ WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+_IS_WINDOWS = platform.system() == "Windows"
 
 
 def _strip_terminal_fence_leaks(text: str) -> str:
@@ -931,6 +933,8 @@ class ShellFileOperations(FileOperations):
     
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands."""
+        if _IS_WINDOWS and len(arg) >= 3 and arg[1] == ":" and arg[2] in ("\\", "/"):
+            arg = arg.replace("\\", "/")
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 

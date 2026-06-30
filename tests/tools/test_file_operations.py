@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import tools.file_operations as file_ops_mod
 from tools.file_operations import (
     _is_write_denied,
     ReadResult,
@@ -467,6 +468,10 @@ class TestShellFileOpsHelpers:
         # Should be safely escaped
         assert result.count("'") >= 4  # wrapping + escaping
 
+    def test_escape_shell_arg_normalizes_windows_drive_paths(self, monkeypatch, file_ops):
+        monkeypatch.setattr(file_ops_mod, "_IS_WINDOWS", True)
+        assert file_ops._escape_shell_arg(r"C:\Users\alice\notes.txt") == "'C:/Users/alice/notes.txt'"
+
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
         assert file_ops._is_likely_binary("data.db") is True
@@ -553,6 +558,32 @@ class TestShellFileOpsHelpers:
         assert "\x1b]" not in result.content
         assert "\x07" not in result.content
         assert "1|print('ok')" in result.content
+
+    def test_read_file_uses_bash_safe_windows_paths(self, mock_env, monkeypatch):
+        monkeypatch.setattr(file_ops_mod, "_IS_WINDOWS", True)
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if command.startswith("wc -c"):
+                return {"output": "5\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "hello", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": "hello\n", "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file(r"C:\Users\alice\notes.txt")
+
+        assert result.error is None
+        assert commands[0] == "wc -c < 'C:/Users/alice/notes.txt' 2>/dev/null"
+        assert commands[1] == "head -c 1000 'C:/Users/alice/notes.txt' 2>/dev/null"
+        assert commands[2] == "sed -n '1,500p' 'C:/Users/alice/notes.txt'"
+        assert commands[3] == "wc -l < 'C:/Users/alice/notes.txt'"
 
     def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
         leaked = (

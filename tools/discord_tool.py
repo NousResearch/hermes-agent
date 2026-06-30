@@ -581,10 +581,17 @@ def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any
 def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
+    initial_message: str = "",
     auto_archive_duration: int = 1440,
     **_kwargs: Any,
 ) -> str:
     """Create a thread in a channel."""
+    initial_message = str(initial_message or "").strip()
+    if initial_message and len(initial_message) > 2000:
+        return json.dumps({
+            "error": "create_thread initial_message exceeds Discord's 2000 character limit.",
+        })
+
     if message_id:
         # Create thread from an existing message
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
@@ -601,10 +608,20 @@ def _create_thread(
             "type": 11,  # PUBLIC_THREAD
         }
     thread = _discord_request("POST", path, token, body=body)
+    starter_message = None
+    if initial_message:
+        starter_message = _discord_request(
+            "POST",
+            f"/channels/{thread['id']}/messages",
+            token,
+            body={"content": initial_message},
+        )
     return json.dumps({
         "success": True,
         "thread_id": thread["id"],
         "name": thread.get("name"),
+        "starter_message_sent": bool(starter_message),
+        "starter_message_id": starter_message.get("id") if isinstance(starter_message, dict) else None,
     })
 
 
@@ -853,6 +870,13 @@ def _build_schema(
             "type": "string",
             "description": "New thread name (create_thread).",
         },
+        "initial_message": {
+            "type": "string",
+            "description": (
+                "Optional starter message to post inside the new standalone thread after creation. "
+                "Required for operational handoff threads whose title names an exact teammate such as Алекс/Ивчо."
+            ),
+        },
         "limit": {
             "type": "integer",
             "minimum": 1,
@@ -999,6 +1023,7 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    initial_message: str = "",
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -1037,6 +1062,7 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "initial_message": initial_message,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -1048,7 +1074,12 @@ def _run_discord_action(
     if action == "create_thread":
         try:
             from gateway.support_ops_routing import lint_discord_thread_create_target
-            target_lint = lint_discord_thread_create_target(name, channel_id=channel_id)
+            target_lint = lint_discord_thread_create_target(
+                name,
+                channel_id=channel_id,
+                message_id=message_id,
+                initial_message=initial_message,
+            )
         except Exception as e:
             return json.dumps({"error": f"Discord Support Ops thread target lint failed: {e}"})
         if not target_lint.ok:
@@ -1075,6 +1106,7 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            initial_message=initial_message,
             limit=limit,
             before=before,
             after=after,
@@ -1107,6 +1139,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "thread_id": "", "role_id": "", "message_id": "", "query": "", "name": "",
+    "initial_message": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 

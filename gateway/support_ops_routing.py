@@ -137,6 +137,8 @@ def lint_discord_thread_create_target(
     name: str,
     *,
     channel_id: str,
+    message_id: str | None = None,
+    initial_message: str | None = None,
 ) -> DiscordTargetLintResult:
     """Validate explicit resolver thread titles against the chosen channel.
 
@@ -157,6 +159,13 @@ def lint_discord_thread_create_target(
         return DiscordTargetLintResult(
             ok=False,
             blocked_reason="blocked_backend_resolver_thread_wrong_discord_lane",
+            expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+        )
+
+    if not str(message_id or "").strip() and not str(initial_message or "").strip():
+        return DiscordTargetLintResult(
+            ok=False,
+            blocked_reason="blocked_backend_resolver_thread_missing_initial_message",
             expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
         )
 

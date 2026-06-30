@@ -291,6 +291,84 @@ class TestMemoryStoreAdd:
         assert result["success"] is True  # No error, just a note
         assert len(store.memory_entries) == 1  # Not duplicated
 
+    def test_pre_memory_write_hook_can_reject_add(self, store, monkeypatch):
+        calls = []
+
+        def fake_has_hook(name):
+            return name == "pre_memory_write"
+
+        def fake_invoke_hook(name, **kwargs):
+            calls.append((name, kwargs))
+            return [{"action": "reject", "response": {"success": False, "error": "blocked by test hook"}}]
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", fake_has_hook)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+        result = store.add("memory", "blocked fact")
+
+        assert result == {"success": False, "error": "blocked by test hook"}
+        assert store.memory_entries == []
+        assert calls[0][0] == "pre_memory_write"
+        assert calls[0][1]["stage"] == "before_add"
+        assert calls[0][1]["target"] == "memory"
+
+    def test_pre_memory_write_hook_can_skip_duplicate_like_add(self, store, monkeypatch):
+        def fake_has_hook(name):
+            return name == "pre_memory_write"
+
+        def fake_invoke_hook(name, **kwargs):
+            return [{"action": "skip", "message": "normalized duplicate"}]
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", fake_has_hook)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+        result = store.add("memory", "duplicate-ish fact")
+
+        assert result["success"] is True
+        assert "normalized duplicate" in result["message"]
+        assert store.memory_entries == []
+
+    def test_pre_memory_write_hook_can_retry_after_over_limit_cleanup(self, store, monkeypatch):
+        store.memory_entries = ["x" * 480]
+        store.save_to_disk("memory")
+
+        def fake_has_hook(name):
+            return name == "pre_memory_write"
+
+        def fake_invoke_hook(name, **kwargs):
+            if kwargs["stage"] != "over_limit":
+                return []
+            store.memory_entries = []
+            store.save_to_disk("memory")
+            return [{"action": "retry", "response_metadata": {"hook_retry": True}}]
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", fake_has_hook)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+        result = store.add("memory", "new fact after cleanup")
+
+        assert result["success"] is True
+        assert result["hook_retry"] is True
+        assert store.memory_entries == ["new fact after cleanup"]
+
+    def test_post_memory_write_hook_runs_after_successful_add(self, store, monkeypatch):
+        calls = []
+
+        def fake_has_hook(name):
+            return name == "post_memory_write"
+
+        def fake_invoke_hook(name, **kwargs):
+            calls.append((name, kwargs))
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", fake_has_hook)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+        result = store.add("memory", "stored fact")
+
+        assert result["success"] is True
+        assert calls == [("post_memory_write", {"action": "add", "target": "memory", "content": "stored fact", "store": store})]
+
     def test_add_exceeding_limit_rejected(self, store):
         # Fill up to near limit
         store.add("memory", "x" * 490)

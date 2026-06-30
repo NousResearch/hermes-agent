@@ -135,6 +135,11 @@ _install_plugin_debug_handler()
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
+    # Generic memory write governance hooks. Observers may reject/skip/transform
+    # a write before it is persisted, or request one deterministic retry on
+    # over-limit writes. Keep hook semantics generic; plugins decide policy.
+    "pre_memory_write",
+    "post_memory_write",
     "transform_terminal_output",
     "transform_tool_result",
     # Transform LLM output before it's returned to the user.

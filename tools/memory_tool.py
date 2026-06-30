@@ -344,6 +344,23 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
+        def _invoke_memory_hooks(stage: str, **extra: Any) -> list:
+            try:
+                from hermes_cli.plugins import has_hook, invoke_hook
+                if not has_hook("pre_memory_write"):
+                    return []
+                return invoke_hook(
+                    "pre_memory_write",
+                    action="add",
+                    target=target,
+                    content=content,
+                    store=self,
+                    stage=stage,
+                    **extra,
+                )
+            except Exception:
+                return []
+
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
             # For add (append-only), we skip the drift guard — appending never
@@ -356,7 +373,27 @@ class MemoryStore:
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
+            for hook_result in _invoke_memory_hooks(
+                "before_add",
+                entries=list(entries),
+                limit=limit,
+                already_locked=True,
+            ):
+                if not isinstance(hook_result, dict):
+                    continue
+                action = hook_result.get("action")
+                if isinstance(hook_result.get("content"), str):
+                    content = hook_result["content"].strip()
+                    if not content:
+                        return {"success": False, "error": "Content cannot be empty."}
+                if action == "reject":
+                    response = hook_result.get("response")
+                    return response if isinstance(response, dict) else {"success": False, "error": hook_result.get("message", "Memory write rejected by plugin.")}
+                if action == "skip":
+                    return self._success_response(target, str(hook_result.get("message") or "Entry already exists (no duplicate added)."))
+
+            # Core keeps backward-compatible exact duplicate behavior. Plugins
+            # may add normalized/semantic duplicate policy via pre_memory_write.
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
@@ -366,7 +403,32 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return self._consolidation_failure({
+                retry_metadata: Dict[str, Any] = {}
+                for hook_result in _invoke_memory_hooks(
+                    "over_limit",
+                    entries=list(entries),
+                    limit=limit,
+                    current_chars=current,
+                    new_total=new_total,
+                    already_locked=True,
+                ):
+                    if isinstance(hook_result, dict):
+                        metadata = hook_result.get("response_metadata")
+                        if isinstance(metadata, dict):
+                            retry_metadata.update(metadata)
+                        if hook_result.get("action") == "retry":
+                            entries = self._entries_for(target)
+                            new_entries = entries + [content]
+                            new_total = len(ENTRY_DELIMITER.join(new_entries))
+                            if new_total <= limit:
+                                entries.append(content)
+                                self._set_entries(target, entries)
+                                self.save_to_disk(target)
+                                response = self._success_response(target, "Entry added after memory write hook retry.")
+                                response.update(retry_metadata)
+                                return response
+
+                result = self._consolidation_failure({
                     "success": False,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
@@ -378,10 +440,19 @@ class MemoryStore:
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 })
+                result.update(retry_metadata)
+                return result
 
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if has_hook("post_memory_write"):
+                invoke_hook("post_memory_write", action="add", target=target, content=content, store=self)
+        except Exception:
+            pass
 
         return self._success_response(target, "Entry added.")
 

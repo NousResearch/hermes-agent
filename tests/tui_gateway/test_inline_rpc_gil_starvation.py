@@ -65,7 +65,6 @@ def capture(server):
 
 FRONTEND_POLLED_RPCS = [
     "session.list",   # loads session list — SQLite query
-    "session.info",   # loads session detail — agent state read
     "pet.info",       # petdex poll — file/network read
     "process.list",   # background process status — process registry scan
 ]

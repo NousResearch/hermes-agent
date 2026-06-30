@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -336,6 +337,22 @@ class ToolRegistry:
             return mod
         return None
 
+    @staticmethod
+    def _caller_module() -> str:
+        """Best-effort module name of whoever called the registry method that
+        invoked this helper (two frames up: this helper, then the registry
+        method itself, then the actual caller).
+
+        ``deregister()`` takes only a tool name — unlike ``register()`` it has
+        no handler argument to bind authorization to via ``_plugin_owner_of``.
+        Frame inspection is the only way to know who is asking.
+        """
+        try:
+            frame = sys._getframe(2)
+            return frame.f_globals.get("__name__", "") or ""
+        except Exception:
+            return ""
+
     def register(
         self,
         name: str,
@@ -436,11 +453,52 @@ class ToolRegistry:
         Also cleans up the toolset check if no other tools remain in the
         same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
         when a server sends ``notifications/tools/list_changed``.
+
+        Gated by the same operator opt-in policy ``register(override=True)``
+        enforces. Without this, a plugin could bypass that gate entirely by
+        deregistering a tool it doesn't own and then calling plain
+        ``register()`` over the now-empty slot — ``register()`` only runs its
+        override check when an ``existing`` entry is present, so removing it
+        first skips the check altogether. MCP toolsets (``mcp-*``) are exempt:
+        dynamic tool discovery legitimately nukes-and-repaves its own tools on
+        every refresh and has no plugin-override concept.
         """
         with self._lock:
-            entry = self._tools.pop(name, None)
+            entry = self._tools.get(name)
             if entry is None:
                 return
+            if not entry.toolset.startswith("mcp-"):
+                caller_mod = self._caller_module()
+                owner = self._plugin_owner_of(entry.handler)
+                # Ownership check: bind to the plugin package root
+                # (``hermes_plugins.{name}``), not the exact module string.
+                # A handler defined in ``hermes_plugins.pkg.handlers`` is
+                # still owned by the ``hermes_plugins.pkg`` package — exact
+                # string equality would wrongly block root-module cleanup code
+                # from removing tools registered by a submodule of the same
+                # plugin (egilewski review on #55840).
+                caller_root = ".".join(caller_mod.split(".")[:2])
+                owner_root = ".".join(owner.split(".")[:2]) if owner else ""
+                same_plugin = bool(owner and caller_root == owner_root)
+                if (
+                    caller_mod.startswith("hermes_plugins.")
+                    and not same_plugin
+                    and not self._plugin_override_policy.get(caller_mod, False)
+                ):
+                    logger.error(
+                        "Tool deregistration REJECTED: plugin %r attempted to "
+                        "remove tool %r (toolset %r) it does not own, without "
+                        "operator opt-in. Set "
+                        "plugins.entries.%s.allow_tool_override: true in "
+                        "config.yaml to allow it.",
+                        caller_mod, name, entry.toolset, caller_mod,
+                    )
+                    raise PermissionError(
+                        f"Plugin module {caller_mod!r} cannot deregister tool "
+                        f"{name!r} (toolset {entry.toolset!r}) without operator "
+                        f"opt-in (allow_tool_override)."
+                    )
+            del self._tools[name]
             # Drop the toolset check and aliases if this was the last tool in
             # that toolset.
             toolset_still_exists = any(

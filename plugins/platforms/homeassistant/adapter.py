@@ -38,6 +38,41 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+_HA_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+_HA_ERROR_SNIPPET_CHARS = 500
+
+
+async def _read_error_text_limited(
+    response: Any,
+    *,
+    limit: int = _HA_ERROR_BODY_LIMIT_BYTES,
+) -> str:
+    content = getattr(response, "content", None)
+    read = getattr(content, "read", None)
+    if callable(read):
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit:
+            size = min(4096, limit + 1 - total)
+            chunk = await read(size)
+            if not chunk:
+                break
+            data = bytes(chunk)
+            chunks.append(data)
+            total += len(data)
+        if total > limit:
+            release = getattr(response, "release", None)
+            if callable(release):
+                release()
+        return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
+
+    text = await response.text()
+    return str(text)[:limit]
+
+
+def _error_snippet(text: str) -> str:
+    return text[:_HA_ERROR_SNIPPET_CHARS]
+
 
 def check_ha_requirements() -> bool:
     """Check if Home Assistant dependencies are available and configured."""
@@ -416,8 +451,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     if resp.status < 300:
                         return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
                     else:
-                        body = await resp.text()
-                        return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
+                        body = await _read_error_text_limited(resp)
+                        return SendResult(
+                            success=False,
+                            error=f"HTTP {resp.status}: {_error_snippet(body)}",
+                        )
             else:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -429,8 +467,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                         if resp.status < 300:
                             return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
                         else:
-                            body = await resp.text()
-                            return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
+                            body = await _read_error_text_limited(resp)
+                            return SendResult(
+                                success=False,
+                                error=f"HTTP {resp.status}: {_error_snippet(body)}",
+                            )
 
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending notification to HA")
@@ -508,10 +549,11 @@ async def _standalone_send(
         ) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:
-                    body = await resp.text()
+                    body = await _read_error_text_limited(resp)
                     return {
                         "error": (
-                            f"Home Assistant API error ({resp.status}): {body}"
+                            "Home Assistant API error "
+                            f"({resp.status}): {_error_snippet(body)}"
                         )
                     }
         return {

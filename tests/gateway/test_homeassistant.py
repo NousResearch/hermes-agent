@@ -16,6 +16,9 @@ from gateway.config import (
 )
 from plugins.platforms.homeassistant.adapter import (
     HomeAssistantAdapter,
+    _HA_ERROR_BODY_LIMIT_BYTES,
+    _HA_ERROR_SNIPPET_CHARS,
+    _standalone_send,
     check_ha_requirements,
 )
 
@@ -474,6 +477,55 @@ class TestConfigIntegration:
 # ---------------------------------------------------------------------------
 
 
+class _FakeAiohttpContent:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self._offset = 0
+        self.bytes_read = 0
+
+    async def read(self, size: int = -1):
+        if size is None or size < 0:
+            size = len(self._payload) - self._offset
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        self.bytes_read += len(chunk)
+        return chunk
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, status: int, text: str):
+        self.status = status
+        self._text = text
+        self.content = _FakeAiohttpContent(text.encode("utf-8"))
+        self.released = False
+        self.text_calls = 0
+
+    async def text(self):
+        self.text_calls += 1
+        return self._text
+
+    def release(self):
+        self.released = True
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeAiohttpSession:
+    def __init__(self, response: _FakeAiohttpResponse):
+        self.response = response
+        self.post = MagicMock(return_value=response)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 class TestSendViaRestApi:
     """send() uses REST API (not WebSocket) to avoid race conditions."""
 
@@ -488,6 +540,7 @@ class TestSendViaRestApi:
         """
         mock_response = MagicMock()
         mock_response.status = response_status
+        mock_response.content = None
         mock_response.text = AsyncMock(return_value=response_text)
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
@@ -498,6 +551,14 @@ class TestSendViaRestApi:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         return mock_session
+
+    @staticmethod
+    def _assert_limited_error_response(response, error: str):
+        assert "tail-marker" not in error
+        assert len(error) <= _HA_ERROR_SNIPPET_CHARS + 64
+        assert response.text_calls == 0
+        assert response.content.bytes_read == _HA_ERROR_BODY_LIMIT_BYTES + 1
+        assert response.released is True
 
     @pytest.mark.asyncio
     async def test_send_success(self):
@@ -531,6 +592,57 @@ class TestSendViaRestApi:
 
         assert result.success is False
         assert "401" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_with_rest_session_limits_error_body(self):
+        adapter = _make_adapter()
+        large_body = ("home assistant failure " * 1000) + "tail-marker"
+        response = _FakeAiohttpResponse(500, large_body)
+        adapter._rest_session = _FakeAiohttpSession(response)
+
+        result = await adapter.send("ha_events", "Test")
+
+        assert result.success is False
+        assert "500" in result.error
+        self._assert_limited_error_response(response, result.error)
+
+    @pytest.mark.asyncio
+    async def test_send_with_temporary_session_limits_error_body(self):
+        adapter = _make_adapter()
+        large_body = ("home assistant failure " * 1000) + "tail-marker"
+        response = _FakeAiohttpResponse(502, large_body)
+        session = _FakeAiohttpSession(response)
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+
+            result = await adapter.send("ha_events", "Test")
+
+        assert result.success is False
+        assert "502" in result.error
+        self._assert_limited_error_response(response, result.error)
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_limits_error_body(self):
+        large_body = ("home assistant failure " * 1000) + "tail-marker"
+        response = _FakeAiohttpResponse(503, large_body)
+        session = _FakeAiohttpSession(response)
+        config = PlatformConfig(
+            enabled=True,
+            token="tok",
+            extra={"url": "http://ha.local:8123"},
+        )
+
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
+            mock_aiohttp.ClientSession = MagicMock(return_value=session)
+            mock_aiohttp.ClientTimeout = lambda total: total
+
+            result = await _standalone_send(config, "ha_events", "Test")
+
+        assert "error" in result
+        assert "503" in result["error"]
+        self._assert_limited_error_response(response, result["error"])
 
     @pytest.mark.asyncio
     async def test_send_truncates_long_message(self):

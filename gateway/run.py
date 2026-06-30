@@ -10513,6 +10513,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _proactive_turn_block = build_proactive_context_prompt(
                 self.proactive_event_store,
                 session_key,
+                mark_introduced=False,
             ) if getattr(self, "proactive_event_store", None) is not None else ""
         except Exception as _proactive_err:
             logger.debug("Proactive event context injection failed: %s", _proactive_err)
@@ -11115,7 +11116,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if _proactive_turn_block:
             try:
-                from gateway.proactive_events import wrap_user_message_with_proactive_context
+                from gateway.proactive_events import proactive_context_new_event_ids, wrap_user_message_with_proactive_context
 
                 if persist_user_message is None:
                     persist_user_message = message_text
@@ -11123,6 +11124,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     _proactive_turn_block,
                 )
+                if getattr(self, "proactive_event_store", None) is not None:
+                    _proactive_new_event_ids = proactive_context_new_event_ids(_proactive_turn_block)
+                    self.proactive_event_store.mark_introduced(_proactive_new_event_ids)
             except Exception as _proactive_wrap_err:
                 logger.debug("Proactive event turn wrapping failed: %s", _proactive_wrap_err)
 

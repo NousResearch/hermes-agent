@@ -3,6 +3,7 @@ import json
 from gateway.proactive_events import (
     ProactiveEventStore,
     build_proactive_context_prompt,
+    proactive_context_new_event_ids,
     wrap_user_message_with_proactive_context,
 )
 
@@ -138,6 +139,41 @@ def test_context_prompt_injects_full_alert_once_then_stops_repeating(tmp_path):
     assert introduced is not None
     assert introduced.injection_count == 1
     assert introduced.introduced_at is not None
+
+
+def test_context_prompt_can_defer_introduction_until_wrapped(tmp_path):
+    store = ProactiveEventStore(tmp_path / "proactive.sqlite3")
+    event = store.create_or_get_event(
+        conversation_id="whatsapp:dm:chat:user",
+        platform="whatsapp",
+        chat_id="chat",
+        user_id="user",
+        event_type="email_alert",
+        alert_id="mail_alert_deferred",
+        idempotency_key="deferred",
+        canonical_summary="Jira ticket changed status.",
+        rendered_message="jira ticket changed status",
+    )
+    store.mark_sent(event.event_id)
+    store.mark_attached(event.event_id)
+    store.mark_context_ready(event.event_id)
+
+    block = build_proactive_context_prompt(store, event.conversation_id, mark_introduced=False)
+
+    assert proactive_context_new_event_ids(block) == [event.event_id]
+    not_yet_introduced = store.get_event(event.event_id)
+    assert not_yet_introduced is not None
+    assert not_yet_introduced.introduced_at is None
+    assert not_yet_introduced.injection_count == 0
+
+    wrapped = wrap_user_message_with_proactive_context("nah skip that jira email", block)
+    store.mark_introduced(proactive_context_new_event_ids(block))
+
+    assert "nah skip that jira email" in wrapped
+    introduced = store.get_event(event.event_id)
+    assert introduced is not None
+    assert introduced.introduced_at is not None
+    assert introduced.injection_count == 1
 
 
 def test_resolved_proactive_events_are_not_injected(tmp_path):

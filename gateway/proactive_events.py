@@ -395,6 +395,7 @@ def build_proactive_context_prompt(
     *,
     limit: int = 5,
     breadcrumb_limit: int = 3,
+    mark_introduced: bool = True,
 ) -> str:
     new_events = store.list_unintroduced(conversation_id, limit=limit)
     new_event_ids = {event.event_id for event in new_events}
@@ -408,7 +409,8 @@ def build_proactive_context_prompt(
     payload: dict[str, Any] = {}
     if new_events:
         payload["new_alerts"] = [_context_event_dict(event) for event in new_events]
-        store.mark_introduced(new_event_ids)
+        if mark_introduced:
+            store.mark_introduced(new_event_ids)
     if breadcrumbs:
         payload["active_alert_breadcrumbs"] = [_breadcrumb_event_dict(event) for event in breadcrumbs]
     return (
@@ -418,6 +420,22 @@ def build_proactive_context_prompt(
         + "\n"
         + _CONTEXT_FOOTER
     )
+
+
+def proactive_context_new_event_ids(proactive_context: str) -> list[str]:
+    """Return new-alert event IDs from a rendered proactive context block."""
+
+    if not proactive_context:
+        return []
+    try:
+        payload = json.loads(proactive_context.split("\n", 2)[1])
+    except Exception:
+        return []
+    ids: list[str] = []
+    for item in payload.get("new_alerts") or []:
+        if isinstance(item, dict) and item.get("event_id"):
+            ids.append(str(item["event_id"]))
+    return ids
 
 
 def wrap_user_message_with_proactive_context(message: Any, proactive_context: str) -> Any:

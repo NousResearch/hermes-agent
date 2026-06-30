@@ -1412,8 +1412,8 @@ from contextlib import contextmanager as _contextmanager
 # multiplexer the default profile owns the single shared listener and serves
 # every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
 # enabling one of these is always a misconfiguration: it would try to bind a
-# port already held by the default's listener. We hard-error on it rather than
-# silently dropping the adapter (see _start_one_profile_adapters).
+# port already held by the default's listener. Skip that secondary profile so a
+# single bad profile cannot take down the whole multiplexer.
 # Stored as platform .value strings since the Platform enum is imported below.
 _PORT_BINDING_PLATFORM_VALUES = frozenset({
     "webhook",
@@ -1429,12 +1429,16 @@ _PORT_BINDING_PLATFORM_VALUES = frozenset({
 
 
 class MultiplexConfigError(RuntimeError):
-    """A profile multiplexer config is invalid (fail-fast at startup).
+    """A profile multiplexer config is invalid.
 
-    Distinct from a transient adapter-connect failure: a transient error is
-    logged and the gateway stays alive to retry, but a config error means the
-    operator must fix config.yaml, so it aborts startup cleanly.
+    Distinct from a transient adapter-connect failure: a config error means the
+    operator must fix config.yaml. Fatal configuration errors propagate to the
+    startup guard instead of being treated as retryable adapter noise.
     """
+
+
+class SecondaryPortBindingConfigError(MultiplexConfigError):
+    """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
 @_contextmanager
@@ -8620,10 +8624,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 connected += await self._start_one_profile_adapters(
                     profile_name, profile_home, claimed
                 )
+            except SecondaryPortBindingConfigError as e:
+                logger.warning(
+                    "Skipping secondary profile '%s' due to port-binding config error: %s",
+                    profile_name,
+                    e,
+                )
             except MultiplexConfigError:
-                # Config error (e.g. a secondary profile binding a port) is not
-                # transient — propagate so startup aborts cleanly instead of
-                # limping along with a half-configured multiplexer.
                 raise
             except Exception as e:
                 logger.error(
@@ -8665,26 +8672,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "'open'."
             )
 
+        port_binding_platforms = sorted(
+            platform.value
+            for platform, platform_config in profile_cfg.platforms.items()
+            if platform_config.enabled and platform.value in _PORT_BINDING_PLATFORM_VALUES
+        )
+        if port_binding_platforms:
+            joined = ", ".join(port_binding_platforms)
+            raise SecondaryPortBindingConfigError(
+                f"Profile '{profile_name}' enables port-binding platform(s) "
+                f"{joined}, but gateway.multiplex_profiles is on. The default "
+                f"profile owns the single shared HTTP listener and serves every "
+                f"profile through the /p/{profile_name}/ URL prefix. Remove "
+                f"these platform entries from profile '{profile_name}'s config.yaml "
+                f"or configure them only on the default profile."
+            )
+
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
-            # A secondary profile must NOT enable a port-binding platform: the
-            # default profile's listener already serves every profile via the
-            # /p/<profile>/ prefix, so a second bind can only collide. This is a
-            # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
-                raise MultiplexConfigError(
-                    f"Profile '{profile_name}' enables the port-binding platform "
-                    f"'{platform.value}', but gateway.multiplex_profiles is on. The "
-                    f"default profile owns the single shared HTTP listener and "
-                    f"serves every profile through the /p/{profile_name}/ URL "
-                    f"prefix — a secondary profile cannot bind its own port. "
-                    f"Remove platforms.{platform.value} from profile "
-                    f"'{profile_name}'s config.yaml (configure it only on the "
-                    f"default profile)."
-                )
             with _profile_runtime_scope(profile_home):
                 adapter = self._create_adapter(platform, platform_config)
             if not adapter:

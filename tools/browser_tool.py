@@ -904,7 +904,7 @@ def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any
     # result. Session-management commands (close, record) are tied to the
     # engine's daemon and can't be retried on a different engine.
     _FALLBACK_ELIGIBLE = {"open", "snapshot", "screenshot", "eval", "click",
-                          "fill", "scroll", "back", "press", "console", "errors"}
+                          "fill", "type", "scroll", "back", "press", "console", "errors"}
     if command not in _FALLBACK_ELIGIBLE:
         return None
 
@@ -2996,8 +2996,18 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
-    # Use fill command (clears then types)
-    result = _run_browser_command(effective_task_id, "fill", [ref, text])
+    # ``fill`` mutates DOM values directly, which can leave React/Vue state
+    # stale. Clear with real key events, then type with the native command.
+    select_all = "Meta+a" if sys.platform == "darwin" else "Control+a"
+    _run_browser_command(effective_task_id, "click", [ref])
+    _run_browser_command(effective_task_id, "press", [select_all])
+    clear_result = _run_browser_command(effective_task_id, "press", ["Backspace"])
+
+    result = clear_result if text == "" else _run_browser_command(
+        effective_task_id,
+        "type",
+        [ref, text],
+    )
 
     from agent.display import (
         redact_browser_typed_text_for_display,

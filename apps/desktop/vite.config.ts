@@ -42,18 +42,28 @@ export default defineConfig({
     postcss: { plugins: [] }
   },
   build: {
-    // Keep desktop packaging stable: Shiki ships many dynamic chunks by
-    // default, and electron-builder can OOM scanning thousands of files.
-    // Collapsing to a single chunk is intentional, so the renderer bundle is
-    // large by design (~22 MB). Raise the warning ceiling above that so the
-    // cosmetic "chunk larger than 500 kB" nag stays quiet, while still acting
-    // as a regression alarm if the bundle balloons well past today's size.
+    // Re-enable code splitting to reduce initial load. Shiki's dynamic
+    // grammar/theme chunks are grouped via manualChunks so electron-builder
+    // doesn't OOM scanning thousands of tiny files.
     chunkSizeWarningLimit: 25000,
     rolldownOptions: {
       output: {
-        codeSplitting: false
-      }
-    }
+        manualChunks(id) {
+          if (id.includes('shiki') || id.includes('react-shiki')) {
+            return 'shiki-vendor';
+          }
+          if (id.includes('katex')) {
+            return 'katex-vendor';
+          }
+          if (id.includes('@codemirror')) {
+            return 'codemirror-vendor';
+          }
+          if (id.includes('mermaid')) {
+            return 'mermaid-vendor';
+          }
+        },
+      },
+    },
   },
   resolve: {
     alias: {

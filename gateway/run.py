@@ -144,6 +144,18 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_MODEL_UNAVAILABLE_RE = re.compile(
+    r"("
+    r"model[_\s-]*not[_\s-]*found"
+    r"|unknown\s+model"
+    r"|no\s+such\s+model"
+    r"|unsupported\s+model"
+    r"|invalid\s+model"
+    r"|model\s+['\"]?[^'\"]+['\"]?\s+does\s+not\s+exist"
+    r")",
+    re.IGNORECASE,
+)
+
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -352,6 +364,11 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
+    if _GATEWAY_MODEL_UNAVAILABLE_RE.search(text):
+        return (
+            "⚠️ The configured model is unavailable. Ask an operator to switch "
+            "to an available model; retrying or /new will not fix this."
+        )
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
             "⚠️ Provider authentication failed. Check the configured credentials; "

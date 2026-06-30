@@ -175,6 +175,22 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
     assert "req_abc" not in sanitized
 
 
+def test_telegram_final_response_reports_model_unavailable_actionably():
+    """Retired or renamed models need a config change, not retry or /new."""
+    raw = (
+        "API call failed after 3 retries: HTTP 404: model_not_found: "
+        "The model 'gpt-old-preview' does not exist"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "configured model is unavailable" in sanitized.lower()
+    assert "switch" in sanitized.lower()
+    assert "/new will not fix this" in sanitized
+    assert "gpt-old-preview" not in sanitized
+    assert "HTTP 404" not in sanitized
+
+
 def test_telegram_final_response_redacts_auth_secrets():
     """Authentication errors should be useful without leaking key material."""
     raw = (

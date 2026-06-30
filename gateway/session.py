@@ -110,7 +110,14 @@ class SessionSource:
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
-    guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
+    # Platform-neutral SCOPE discriminator (Discord guild / Slack workspace /
+    # Matrix server). Drives server/workspace isolation + the relay δ/ε/ζ gate.
+    # Wire migration (D-Q2.5): `scope_id` is the canonical name; `guild_id` is a
+    # deprecated legacy alias kept during the cross-repo dual-read/dual-write
+    # overlap. Both are written by to_dict and read by from_dict (scope_id wins);
+    # the `guild_id` alias is dropped in a follow-up once both repos deploy.
+    scope_id: Optional[str] = None
+    guild_id: Optional[str] = None  # @deprecated legacy alias for scope_id (D-Q2.5)
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
@@ -132,6 +139,16 @@ class SessionSource:
     # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
+
+    def __post_init__(self) -> None:
+        # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`
+        # is the deprecated alias. Mirror whichever was provided onto the other
+        # (scope_id wins on conflict) so internal readers of EITHER field see the
+        # same value during the cross-repo wire migration overlap.
+        if self.scope_id is None and self.guild_id is not None:
+            self.scope_id = self.guild_id
+        elif self.scope_id is not None:
+            self.guild_id = self.scope_id
 
     @property
     def description(self) -> str:
@@ -169,8 +186,14 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
-        if self.guild_id:
-            d["guild_id"] = self.guild_id
+        # D-Q2.5 dual-write: emit BOTH the canonical `scope_id` and the
+        # deprecated `guild_id` alias (mirrored in __post_init__) so a connector
+        # on either side of the migration resolves the scope. Drop `guild_id`
+        # in the follow-up once both repos are on `scope_id`.
+        scope = self.scope_id if self.scope_id is not None else self.guild_id
+        if scope:
+            d["scope_id"] = scope
+            d["guild_id"] = scope
         if self.parent_chat_id:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
@@ -192,7 +215,9 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
-            guild_id=data.get("guild_id"),
+            # D-Q2.5 dual-read: prefer the canonical `scope_id`, fall back to the
+            # deprecated `guild_id` alias (a peer not yet migrated still sends it).
+            scope_id=data.get("scope_id", data.get("guild_id")),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
             profile=data.get("profile"),

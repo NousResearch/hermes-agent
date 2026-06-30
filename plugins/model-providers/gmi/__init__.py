@@ -24,6 +24,7 @@ gmi = ProviderProfile(
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
         "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-5",
         "openai/gpt-5.4",
     ),
 )

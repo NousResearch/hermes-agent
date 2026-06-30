@@ -1331,9 +1331,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     budget = parsed
             except ValueError:
                 pass
-        # Leave ~20% headroom (min 0.5s) so the outer wait_for can't pre-empt our
-        # own straggler cancellation, and never go below 1s for the happy path.
-        return max(1.0, budget - max(0.5, budget * 0.2))
+        # Stay strictly below the budget so the gateway's outer wait_for can't
+        # pre-empt our own straggler cancellation. Reserve ~20% (min 0.5s) of
+        # headroom, and never let the floor push us back up to/over the budget
+        # on tiny budgets — cap at 90% of the budget as a hard ceiling.
+        headroom = max(0.5, budget * 0.2)
+        deadline = max(1.0, budget - headroom)
+        return min(deadline, budget * 0.9)
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""

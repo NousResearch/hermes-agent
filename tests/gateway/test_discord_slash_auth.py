@@ -128,13 +128,15 @@ _SENTINEL = object()
 
 def _make_interaction(
     user_id, *, channel_id=12345, guild_id=42, in_dm=False, in_thread=False,
-    parent_channel_id=None, user=_SENTINEL,
+    parent_channel_id=None, user=_SENTINEL, channel_name=None,
 ):
     """Build a mock Discord Interaction with a still-unresponded response.
 
     ``channel_id`` may be set to ``None`` to simulate a guild interaction
     payload missing a resolvable channel id (fail-closed exercise).
     Pass ``user=None`` to simulate a payload missing the user object.
+    ``channel_name`` attaches a ``.name`` to the channel so channel-name /
+    ``#name`` allow/ignore matching can be exercised (mirrors on_message).
     """
     import discord
 
@@ -146,10 +148,14 @@ def _make_interaction(
         channel = discord.Thread()
         channel.id = channel_id
         channel.parent_id = parent_channel_id
+        if channel_name is not None:
+            channel.name = channel_name
     elif channel_id is None:
         channel = None
     else:
         channel = SimpleNamespace(id=channel_id)
+        if channel_name is not None:
+            channel.name = channel_name
 
     if user is _SENTINEL:
         user_obj = SimpleNamespace(id=int(user_id), name=f"user_{user_id}")
@@ -276,6 +282,26 @@ async def test_channel_allowlist_wildcard_passes(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_allowlist_matches_by_name(adapter, monkeypatch):
+    """Allowlist configured by channel NAME matches slash interactions too —
+    the same name-form matching on_message gained. Without it, a deployment
+    using DISCORD_ALLOWED_CHANNELS=cypher (by name) would reject every slash
+    command even though messages in that channel pass.
+    """
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "cypher")
+    interaction = _make_interaction("100200300", channel_id=9999, channel_name="cypher")
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
+async def test_channel_allowlist_matches_by_hash_name(adapter, monkeypatch):
+    """``#name`` form in the allowlist also matches slash interactions."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "#cypher")
+    interaction = _make_interaction("100200300", channel_id=9999, channel_name="cypher")
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
 async def test_channel_allowlist_does_not_apply_to_dms(adapter, monkeypatch):
     """DMs aren't channel-gated — they go through on_message's DM lockdown."""
     monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111")
@@ -301,6 +327,14 @@ async def test_ignored_channel_rejected(adapter, monkeypatch, caplog):
 async def test_ignored_channel_wildcard_blocks_all(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "*")
     interaction = _make_interaction("100200300", channel_id=9999)
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+
+
+@pytest.mark.asyncio
+async def test_ignored_channel_matches_by_name(adapter, monkeypatch):
+    """Ignore list configured by channel NAME blocks slash interactions too."""
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "cypher")
+    interaction = _make_interaction("100200300", channel_id=9999, channel_name="cypher")
     assert await adapter._check_slash_authorization(interaction, "/help") is False
 
 

@@ -26,7 +26,6 @@ class TestResolveCdpOverride:
 
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
-
     def test_resolves_bare_ws_hostport_to_discovery_websocket(self):
         from tools.browser_tool import _resolve_cdp_override
 
@@ -45,6 +44,51 @@ class TestResolveCdpOverride:
 
         with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
             assert _resolve_cdp_override(HTTP_URL) == HTTP_URL
+
+    def test_redacts_secret_query_params_in_success_log(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        raw = "https://cdp.example/json/version?access_token=super-secret-token-123456"
+        resolved_ws = "wss://cdp.example/devtools/browser/abc?token=super-secret-token-123456"
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"webSocketDebuggerUrl": resolved_ws}
+
+        with patch("tools.browser_tool.requests.get", return_value=response), \
+                patch("tools.browser_tool.logger.info") as mock_info:
+            resolved = _resolve_cdp_override(raw)
+
+        assert resolved == resolved_ws
+        mock_info.assert_called_once()
+        _, logged_raw, logged_ws = mock_info.call_args.args
+        assert "super-secret-token-123456" not in logged_raw
+        assert "super-secret-token-123456" not in logged_ws
+        assert "access_token=***" in logged_raw
+        assert "token=***" in logged_ws
+
+    def test_redacts_secret_query_params_in_failure_log(self):
+        from tools.browser_tool import _resolve_cdp_override
+
+        raw = "https://cdp.example?access_token=super-secret-token-123456"
+        secret_error = RuntimeError(
+            "upstream rejected https://cdp.example/json/version?access_token=super-secret-token-123456"
+        )
+
+        with patch("tools.browser_tool.requests.get", side_effect=secret_error), \
+                patch("tools.browser_tool.logger.warning") as mock_warning:
+            resolved = _resolve_cdp_override(raw)
+
+        assert resolved == raw
+        mock_warning.assert_called_once()
+        _, logged_raw, logged_version_url, logged_error = mock_warning.call_args.args
+        assert "super-secret-token-123456" not in logged_raw
+        assert "super-secret-token-123456" not in logged_version_url
+        assert "super-secret-token-123456" not in logged_error
+        assert "access_token=***" in logged_raw
+        assert "access_token=***" in logged_version_url
+        assert "access_token=***" in logged_error
+        assert logged_version_url.startswith("https://cdp.example")
 
     def test_normalizes_provider_returned_http_cdp_url_when_creating_session(self, monkeypatch):
         import tools.browser_tool as browser_tool

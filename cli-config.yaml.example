@@ -646,6 +646,14 @@ agent:
   # force it on or off; the HERMES_VERIFY_ON_STOP env var (1/0) takes precedence.
   # verify_on_stop: auto
 
+  # Standing operator instructions for the coding posture (when Hermes is in a
+  # code workspace). Appended to the coding brief as an extra system block, so
+  # you can pin project-wide workflow rules without editing the shipped brief.
+  # Accepts a string or a list of strings. Takes effect next session.
+  # coding_instructions:
+  #   - "For UI work, don't run tsc/lint until I approve the look."
+  #   - "Clean the diff before you commit and push."
+
   # When verify-on-stop finds edited code without fresh verification evidence,
   # append guidance for creative UI work (avoid broad tsc/lint/test before visual
   # approval) and clean-diff expectations. Set false to keep that nudge terse.

@@ -129,6 +129,32 @@ def test_unresolved_repo_returns_error_without_calling_spawn():
 
 
 # ---------------------------------------------------------------------------
+# (b2) Missing repo → asks for a repo, spawn_session NOT called
+# ---------------------------------------------------------------------------
+
+
+def test_missing_repo_asks_for_repo_without_calling_spawn():
+    """No repo supplied (e.g. "so omp 'fix blah'") must return a plain-language
+    ask for a repo and must NOT call spawn_session — never break, just ask."""
+    spawn_called = []
+
+    def mock_spawn(request: SpawnRequest, **_kw) -> SpawnResult:
+        spawn_called.append(request)
+        return _make_fake_spawn_result()
+
+    # repo key absent entirely; a valid prompt is present
+    result = spawn_tool_handler(
+        {"prompt": "fix the flaky test", "agent": "omp"},
+        _repo_registry=_make_fake_registry(_make_resolved_repo()),
+        _spawn_fn=mock_spawn,
+    )
+
+    assert spawn_called == [], "spawn_session must NOT be called when repo is missing"
+    assert "repo" in result.lower(), "ask should mention 'repo'"
+    assert "?" in result, "ask should be phrased as a question, not an error"
+
+
+# ---------------------------------------------------------------------------
 # (c) agent defaults to DEFAULT_AGENT ("omp") when omitted
 # ---------------------------------------------------------------------------
 

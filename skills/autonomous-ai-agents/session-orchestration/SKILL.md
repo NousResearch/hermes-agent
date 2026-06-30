@@ -45,6 +45,8 @@ Spawn launches the tmux session, injects `HERMES_MARKER_FILE` (the agent writes 
 
 Pick the agent deliberately: **omp** for autonomous `--auto-approve` runs and z-harness workflows; **claude / claude-code** for interactive Claude Code. Default to omp if the user doesn't say.
 
+**Repo is mandatory — ask, never guess.** A spawn cannot run without a repo. If the user's request doesn't name one (e.g. "@hermes so omp 'fix the flaky test'" with no repo), do **not** call `session_spawn` with a placeholder or a guessed repo — ask the user which repo (a name/alias the registry knows, or an absolute path) and spawn once they answer. The tool enforces this too: called with no repo, or with a repo it can't resolve, it returns a plain-language question for you to relay rather than an error — surface that question to the user and wait for their answer.
+
 ### 2. Let the watcher check in (automatic — do not poll manually)
 
 Once spawned, the watcher cron drives everything each tick. You don't loop or scrape; you react to what it surfaces. **The primary surfaces are the unified feed channel and the session's project thread** — every state transition posts to both (once, debounced), with per-state icons (🔔 needs input, ⏸️ handoff, ✅ done, ▶ running). A **DM** is only an *extra* ping layered on top in the attention cases below; it is not the main channel.

@@ -56,7 +56,9 @@ SPAWN_TOOL_SCHEMA: Dict[str, Any] = {
         "Hermes relays the agent's questions to this thread and routes your "
         "replies back. Supply the repo name (alias or basename such as "
         "'hermes-agent') or an absolute path. The agent defaults to 'omp' "
-        "when not specified."
+        "when not specified. If the user has not said which repo to run on, "
+        "do NOT guess and do NOT call this tool with a placeholder — ask the "
+        "user which repo (a name or an absolute path) first, then spawn."
     ),
     "parameters": {
         "type": "object",
@@ -152,17 +154,25 @@ def spawn_tool_handler(
     z_command: Optional[str] = str(args.get("z_command") or "").strip() or None
 
     if not repo:
-        return "session_spawn: `repo` is required."
+        return (
+            "Which repo should I run this on? Tell me a repo name "
+            "(alias or basename like 'hermes-agent') or an absolute path, "
+            "and I'll spawn the session."
+        )
     if not prompt:
-        return "session_spawn: `prompt` is required."
+        return (
+            "What should the session work on? Give me a task prompt and "
+            "I'll spawn the session."
+        )
 
     # ---- Resolve repo → workdir ------------------------------------------
     resolution = _repo_registry.resolve(repo)
     if isinstance(resolution, UnresolvedRepo):
         return (
-            f"Cannot resolve repo '{resolution.name}' to a local path. "
-            "Please supply an absolute path (e.g. '/home/user/dev/myrepo') "
-            "or configure an alias in `session_orchestration.repos`."
+            f"I couldn't find a repo matching '{resolution.name}'. "
+            "Which repo should I use? Give me an absolute path "
+            "(e.g. '/home/user/dev/myrepo') or configure an alias in "
+            "`session_orchestration.repos`."
         )
 
     workdir: str = resolution.path

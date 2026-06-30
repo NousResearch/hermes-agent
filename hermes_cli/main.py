@@ -5617,6 +5617,24 @@ def cmd_gui(args: argparse.Namespace):
 
     from hermes_constants import find_node_executable, with_hermes_node_path
 
+    source_mode = getattr(args, "source", False)
+    skip_build = getattr(args, "skip_build", False)
+    force_build = getattr(args, "force_build", False)
+
+    # When a build may run, make node/npm discoverable *before* the env
+    # snapshot below. A desktop rebuild launched from the GUI (Finder/launchd,
+    # e.g. the installer's `hermes desktop --build-only` update step) inherits a
+    # stripped PATH that omits version-manager and Homebrew Node (~/.nvm,
+    # ~/.fnm, /opt/homebrew/bin), so npm — and the `node` its shebang needs —
+    # are invisible even though a terminal launch finds them. Repairing
+    # os.environ["PATH"] here (via the same node-bootstrap cascade the TUI uses)
+    # fixes both npm resolution *and* the build subprocess, which runs with the
+    # `env` snapshotted just below: resolving npm alone is not enough, because
+    # npm's `#!/usr/bin/env node` shebang fails (exit 127) when `node`'s dir is
+    # absent from that env. No-op when node+npm are already on PATH.
+    if source_mode or not skip_build:
+        _ensure_tui_node()
+
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
     if getattr(args, "fake_boot", False):
@@ -5637,10 +5655,6 @@ def cmd_gui(args: argparse.Namespace):
     config_electron_flags, config_disable_gpu = _desktop_launch_options()
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
-
-    source_mode = getattr(args, "source", False)
-    skip_build = getattr(args, "skip_build", False)
-    force_build = getattr(args, "force_build", False)
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 

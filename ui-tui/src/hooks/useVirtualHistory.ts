@@ -463,7 +463,36 @@ export function useVirtualHistory(
     // If clamp used immediate bounds, render-node-to-output's drain-gate
     // would drain past the deferred children's span → viewport lands in
     // spacer → white flash.
+    //
+    // Resume/cold-start guard: when many items in the mounted window still
+    // carry estimated heights, the offset array can be off by orders of
+    // magnitude from the real Yoga-measured total. Setting clamp bounds from
+    // those wrong offsets locks the viewport to a narrow span and leaves the
+    // top/bottom of a long transcript blank (#54587). Defer clamping until
+    // the mounted range has been measured, so clamp bounds reflect reality.
+    let allMountedHeightsMeasured = false
+
     if (s && shouldSetVirtualClamp({ itemCount: n, liveTailActive, sticky, viewportHeight: vp })) {
+      allMountedHeightsMeasured = true
+
+      for (let i = effStart; i < effEnd; i++) {
+        const k = items[i]?.key
+
+        if (!k) {
+          continue
+        }
+
+        // A seeded estimate is indistinguishable from a cached estimate in
+        // heights.current; check whether this key has a live measured node.
+        if (!nodes.current.has(k)) {
+          allMountedHeightsMeasured = false
+          
+          break
+        }
+      }
+    }
+
+    if (s && allMountedHeightsMeasured) {
       const effTopSpacer = offsets[effStart] ?? 0
       const effBottom = offsets[effEnd] ?? total
       // At effEnd=n there's no bottomSpacer — use Infinity so render-node-

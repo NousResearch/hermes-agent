@@ -109,6 +109,21 @@ from utils import base_url_host_matches, base_url_hostname, env_float, model_for
 logger = logging.getLogger(__name__)
 
 
+# ── resolve_provider_client dedup (silent-fix option d) ──────────────────
+# Both warning sites in resolve_provider_client (the "unknown provider" and
+# "unhandled auth_type" fall-throughs) were demoted to logger.debug so they
+# don't spam logs on every retry loop. We still want the first occurrence to
+# surface — that one carrys real diagnostic value (typo in a provider name,
+# PROVIDER_REGISTRY/auth_type drift bug). Subsequent identical messages are
+# suppressed for the lifetime of the process.
+#
+# Two independent sets keep the per-call branch linear (no tuple packing at
+# warning #1 where auth_type is unknown) and let each set be cleared
+# independently by tests if needed.
+_LOGGED_UNKNOWN_PROVIDER_KEYS: set = set()
+_LOGGED_UNHANDLED_AUTHTYPE_KEYS: set = set()
+
+
 # ── Interrupt protection for atomic auxiliary tasks ──────────────────────
 # Some auxiliary tasks must NOT be aborted mid-flight by a gateway interrupt
 # (e.g. an incoming user message while the agent is busy). Context
@@ -4272,7 +4287,11 @@ def resolve_provider_client(
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig is None:
-        logger.warning("resolve_provider_client: unknown provider %r", provider)
+        # Demoted from logger.warning to debug; dedup keyed by provider name
+        # so the first occurrence surfaces but repeated retries stay silent.
+        if provider not in _LOGGED_UNKNOWN_PROVIDER_KEYS:
+            _LOGGED_UNKNOWN_PROVIDER_KEYS.add(provider)
+            logger.debug("resolve_provider_client: unknown provider %r", provider)
         return None, None
 
     if pconfig.auth_type == "api_key":
@@ -4464,8 +4483,14 @@ def resolve_provider_client(
                        "directly supported, try 'auto'", provider)
         return None, None
 
-    logger.warning("resolve_provider_client: unhandled auth_type %s for %s",
-                   pconfig.auth_type, provider)
+    # Demoted from logger.warning to debug; dedup keyed on (auth_type,
+    # provider) so the first occurrence surfaces (real schema-drift bug)
+    # but per-call retries stay silent.
+    _auth_dedup_key = (pconfig.auth_type, provider)
+    if _auth_dedup_key not in _LOGGED_UNHANDLED_AUTHTYPE_KEYS:
+        _LOGGED_UNHANDLED_AUTHTYPE_KEYS.add(_auth_dedup_key)
+        logger.debug("resolve_provider_client: unhandled auth_type %s for %s",
+                     pconfig.auth_type, provider)
     return None, None
 
 

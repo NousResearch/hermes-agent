@@ -1,9 +1,11 @@
 """Tests that invalid context_length values in config produce visible warnings."""
 
+import pytest
 from unittest.mock import patch
 
 
-def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-4.6"):
+def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-4.6",
+                 mock_context_length=128_000):
     """Build an AIAgent with the given model config."""
     cfg = {"model": model_cfg}
     if custom_providers is not None:
@@ -13,7 +15,7 @@ def _build_agent(model_cfg, custom_providers=None, model="anthropic/claude-opus-
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("agent.model_metadata.get_model_context_length", return_value=128_000),
+        patch("agent.model_metadata.get_model_context_length", return_value=mock_context_length),
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
@@ -38,7 +40,6 @@ def test_valid_integer_context_length_no_warning():
                               "base_url": "http://localhost:4000/v1",
                               "context_length": 256000})
     assert agent._config_context_length == 256000
-    # No warning about invalid context_length
     for c in mock_logger.warning.call_args_list:
         assert "Invalid" not in str(c)
 
@@ -50,7 +51,6 @@ def test_string_k_suffix_context_length_warns():
                               "base_url": "http://localhost:4000/v1",
                               "context_length": "256K"})
     assert agent._config_context_length is None
-    # Should have warned
     warning_calls = [c for c in mock_logger.warning.call_args_list
                      if "Invalid" in str(c) and "256K" in str(c)]
     assert len(warning_calls) == 1
@@ -118,14 +118,34 @@ def test_explicit_context_length_override_skips_minimum_check():
     """When user explicitly sets context_length < 64K, the minimum check
     should be skipped. Regression test for #8430.
     """
-    # Build agent with explicit context_length below MINIMUM_CONTEXT_LENGTH
-    agent = _build_agent({
-        "default": "qwen3-235b",
-        "provider": "custom",
-        "base_url": "http://localhost:4000/v1",
-        "context_length": 32768,
-    })
+    # Mock model metadata to return a small context (below 64K minimum)
+    # but user explicitly overrides via config — should NOT raise ValueError
+    agent = _build_agent(
+        {
+            "default": "qwen3-235b",
+            "provider": "custom",
+            "base_url": "http://localhost:4000/v1",
+            "context_length": 32768,
+        },
+        mock_context_length=32768,  # Simulate model with small context
+    )
     # Should have stored the explicit value
     assert agent._config_context_length == 32768
-    # The agent should build successfully without raising ValueError
-    # about "context window below minimum"
+    # Agent built successfully — no ValueError raised
+    # (without the fix, this would raise ValueError about context below minimum)
+
+
+def test_no_explicit_context_length_raises_on_small_model():
+    """When user does NOT set context_length and model context is below 64K,
+    ValueError should be raised. This is the negative case.
+    """
+    with pytest.raises(ValueError, match="context window.*below the minimum"):
+        _build_agent(
+            {
+                "default": "small-model",
+                "provider": "custom",
+                "base_url": "http://localhost:4000/v1",
+                # No context_length override — should trigger the check
+            },
+            mock_context_length=32_000,  # Model with small context
+        )

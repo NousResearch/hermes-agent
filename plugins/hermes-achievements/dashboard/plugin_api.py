@@ -115,6 +115,18 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
     {"id": "image_whisperer", "name": "Image Whisperer", "description": "Use image generation or vision tools enough for visual work.", "category": "Tool Mastery", "kind": "lifetime", "icon": "eye", "threshold_metric": "image_vision_calls", "tiers": tiers([100, 300, 1000, 3000, 8000])},
     {"id": "voice_of_the_machine", "name": "Voice Of The Machine", "description": "Use text-to-speech or voice tooling repeatedly.", "category": "Tool Mastery", "kind": "lifetime", "icon": "wave", "threshold_metric": "tts_calls", "tiers": tiers([10, 30, 100, 300, 800])},
 
+    # Operational Quality — rewards helpful, safe, verified agent behavior rather than raw volume.
+    {"id": "verified_shipper", "name": "Verified Shipper", "description": "Change something, then prove it works with tests, builds, or explicit verification.", "category": "Operational Quality", "kind": "lifetime", "icon": "check", "threshold_metric": "verified_shipper_events", "tiers": tiers([5, 20, 75, 200, 600])},
+    {"id": "source_first_operator", "name": "Source-First Operator", "description": "Read files, docs, web, browser state, or live systems before making claims.", "category": "Operational Quality", "kind": "lifetime", "icon": "compass", "threshold_metric": "source_first_events", "tiers": tiers([10, 50, 200, 600, 1500])},
+    {"id": "correction_propagator", "name": "Correction Propagator", "description": "Turn user corrections into durable memory, skill, or documented system behavior.", "category": "Operational Quality", "kind": "lifetime", "icon": "anvil", "threshold_metric": "correction_propagation_events", "tiers": tiers([1, 5, 20, 75, 200])},
+    {"id": "no_empty_final", "name": "No Empty Final", "description": "After using tools, end with a useful final response instead of making the user ask what happened.", "category": "Operational Quality", "kind": "lifetime", "icon": "speech", "threshold_metric": "non_empty_tool_final_events", "tiers": tiers([25, 100, 400, 1200, 3000])},
+    {"id": "delivery_accuracy", "name": "Delivery Accuracy", "description": "Send the requested message or attachment to the right channel with concrete delivery evidence.", "category": "Operational Quality", "kind": "lifetime", "icon": "paper_plane", "threshold_metric": "delivery_accuracy_events", "tiers": tiers([5, 25, 100, 300, 800])},
+    {"id": "dry_run_disciple", "name": "Dry-Run Disciple", "description": "Preview risky sends, writes, batches, or financial operations before going live.", "category": "Operational Quality", "kind": "lifetime", "icon": "shield", "threshold_metric": "dry_run_events", "tiers": tiers([5, 25, 100, 300, 800])},
+    {"id": "same_thread_samurai", "name": "Same Thread Samurai", "description": "Reply in the existing email/message thread instead of creating avoidable context splits.", "category": "Operational Quality", "kind": "lifetime", "icon": "thread", "threshold_metric": "same_thread_events", "tiers": tiers([3, 15, 60, 200, 500])},
+    {"id": "silent_watchdog", "name": "Silent Watchdog", "description": "Build or run watchdogs that stay quiet when healthy and alert only when action is needed.", "category": "Operational Quality", "kind": "lifetime", "icon": "daemon", "threshold_metric": "silent_watchdog_events", "tiers": tiers([3, 15, 60, 200, 500])},
+    {"id": "recovery_loop_closed", "name": "Recovery Loop Closed", "description": "Find root cause, fix it, verify it, and add prevention so the same failure does not recur.", "category": "Operational Quality", "kind": "lifetime", "icon": "loop", "threshold_metric": "recovery_loop_events", "tiers": tiers([3, 15, 60, 200, 500])},
+    {"id": "evidence_locker", "name": "Evidence Locker", "description": "Leave behind durable proof: reports, PDFs, screenshots, logs, audits, or docs.", "category": "Operational Quality", "kind": "lifetime", "icon": "archive", "threshold_metric": "evidence_locker_events", "tiers": tiers([10, 50, 200, 600, 1500])},
+
     # Model Lore
     {"id": "model_hopper", "name": "Model Hopper", "description": "Switch or inspect providers/models enough to count as a habit.", "category": "Model Lore", "kind": "lifetime", "icon": "swap", "threshold_metric": "model_events", "tiers": tiers([10000, 30000, 80000, 200000, 500000])},
     {"id": "openrouter_enjoyer", "name": "OpenRouter Enjoyer", "description": "Route model work through OpenRouter repeatedly.", "category": "Model Lore", "kind": "lifetime", "icon": "router", "threshold_metric": "openrouter_events", "tiers": tiers([250, 750, 2000, 6000, 15000])},
@@ -356,6 +368,34 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
     memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember", "memory")
 
+    source_tools = {"read_file", "search_files", "web_search", "web_extract", "browser_navigate", "browser_snapshot", "browser_console", "session_search"}
+    mutation_tools = {"write_file", "patch", "skill_manage", "cronjob"}
+    source_first_events = 1 if tool_sequence and any(any(source in name.lower() for source in source_tools) for name in tool_sequence) else 0
+    verified_shipper_events = 1 if (
+        any(any(mut in name.lower() for mut in mutation_tools) for name in tool_sequence)
+        and (re.search(r"pytest|unittest|vitest|playwright|npm test|pnpm test|py_compile|node --check|tests? passed|verified|verification|exit_code[\"']?\s*[:=]\s*0", full_text, re.I))
+    ) else 0
+    correction_signal = re.search(r"\b(wrong|incorrect|correction|corrected|fix(ed)?|no\s+[^\n]{0,30}\s+not|you missed|you forgot|empty response|basura|didn't|did not)\b", full_text, re.I)
+    correction_propagation_events = 1 if correction_signal and (memory_write_events or skill_manage_events or re.search(r"ERRORS\.md|SOUL\.md|memory|skill", full_text, re.I)) else 0
+    last_assistant = next((_content(m).strip() for m in reversed(messages) if m.get("role") == "assistant"), "")
+    empty_final_complaint = re.search(r"empty response|returned an empty response|last response was empty", full_text, re.I)
+    non_empty_tool_final_events = 1 if tool_sequence and len(last_assistant) >= 20 and not empty_final_complaint else 0
+    delivery_accuracy_events = 1 if (
+        re.search(r"\b(sent|delivered)\b", full_text, re.I)
+        and re.search(r"hermes send|send_message|MEDIA:", full_text, re.I)
+        and not re.search(r"wrong recipient|wrong file|forgot|not what i asked|no era|no pudiste|basura", full_text, re.I)
+    ) else 0
+    dry_run_events = len(re.findall(r"--dry-run|dry run|dry-run|preview before|draft only|no_agent\s*=\s*true", full_text, re.I))
+    same_thread_events = len(re.findall(r"reply-to|reply_to|thread_id|same thread|existing thread|gog send[^\n]+--reply-to", full_text, re.I))
+    silent_watchdog_events = 1 if re.search(r"silent on success|silent \(empty output\)|watchdog|no_agent", full_text, re.I) and not ERROR_RE.search(full_text) else 0
+    recovery_loop_events = 1 if (
+        re.search(r"root cause|ra[ií]z|caused by", full_text, re.I)
+        and re.search(r"fix(ed)?|patched|resolved", full_text, re.I)
+        and re.search(r"verified|tests? passed|green|exit_code[\"']?\s*[:=]\s*0", full_text, re.I)
+        and re.search(r"prevention|guardrail|memory|skill|ERRORS\.md|SOUL\.md", full_text, re.I)
+    ) else 0
+    evidence_locker_events = len(re.findall(r"MEDIA:|\.pdf\b|\.png\b|screenshot|audit report|docs/|reports/|saved:|written to|artifact", full_text, re.I))
+
     return {
         "session_id": session_id,
         "title": title or "Untitled session",
@@ -382,6 +422,16 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         "skill_manage_events": skill_manage_events,
         "memory_events": memory_events,
         "memory_write_events": memory_write_events,
+        "verified_shipper_events": verified_shipper_events,
+        "source_first_events": source_first_events,
+        "correction_propagation_events": correction_propagation_events,
+        "non_empty_tool_final_events": non_empty_tool_final_events,
+        "delivery_accuracy_events": delivery_accuracy_events,
+        "dry_run_events": dry_run_events,
+        "same_thread_events": same_thread_events,
+        "silent_watchdog_events": silent_watchdog_events,
+        "recovery_loop_events": recovery_loop_events,
+        "evidence_locker_events": evidence_locker_events,
         "port_conflict": bool(PORT_RE.search(full_text)),
         "port_conflict_events": 1 if PORT_RE.search(full_text) else 0,
         "traceback_events": len(re.findall(r"traceback|exception", full_text, re.I)),
@@ -491,6 +541,16 @@ METRIC_LABELS = {
     "skill_manage_events": "skill_manage create/patch/delete operations",
     "memory_events": "memory or Mnemosyne tool events",
     "memory_write_events": "durable memory writes",
+    "verified_shipper_events": "sessions that changed something and verified the result",
+    "source_first_events": "sessions that used source-reading tools before claims",
+    "correction_propagation_events": "user corrections propagated into durable memory, skills, or docs",
+    "non_empty_tool_final_events": "tool-using sessions that ended with a useful final response",
+    "delivery_accuracy_events": "successful sends with concrete message or attachment evidence",
+    "dry_run_events": "dry-run, preview, or draft-before-live safety steps",
+    "same_thread_events": "same-thread replies or explicit thread/reply identifiers",
+    "silent_watchdog_events": "silent-on-success watchdog or no-agent operations",
+    "recovery_loop_events": "root-cause → fix → verify → prevention loops",
+    "evidence_locker_events": "durable artifacts such as PDFs, screenshots, reports, or docs",
     "context_events": "context, compression, token, or cache-pressure mentions",
     "gateway_events": "gateway/API/chat-platform activity",
     "plugin_events": "dashboard plugin development or usage signals",
@@ -702,7 +762,7 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
         "night_sessions": 0,
     }
     sum_keys = [
-        "traceback_events", "log_read_events", "port_conflict_events", "permission_denied_events", "install_error_events", "install_success_events", "restart_after_error_events", "env_var_error_events", "yaml_error_events", "docker_conflict_events", "frontend_activity_events", "css_activity_events", "git_events", "tiny_patch_after_errors_events", "skill_events", "skill_manage_events", "memory_events", "memory_write_events", "context_events", "gateway_events", "plugin_events", "rollback_events", "docs_activity_events", "model_events", "openrouter_events", "codex_events", "claude_events", "gemini_events", "local_model_events", "toolset_events", "config_events", "git_history_events", "test_events", "screenshot_events", "release_events", "cache_events",
+        "traceback_events", "log_read_events", "port_conflict_events", "permission_denied_events", "install_error_events", "install_success_events", "restart_after_error_events", "env_var_error_events", "yaml_error_events", "docker_conflict_events", "frontend_activity_events", "css_activity_events", "git_events", "tiny_patch_after_errors_events", "skill_events", "skill_manage_events", "memory_events", "memory_write_events", "verified_shipper_events", "source_first_events", "correction_propagation_events", "non_empty_tool_final_events", "delivery_accuracy_events", "dry_run_events", "same_thread_events", "silent_watchdog_events", "recovery_loop_events", "evidence_locker_events", "context_events", "gateway_events", "plugin_events", "rollback_events", "docs_activity_events", "model_events", "openrouter_events", "codex_events", "claude_events", "gemini_events", "local_model_events", "toolset_events", "config_events", "git_history_events", "test_events", "screenshot_events", "release_events", "cache_events",
     ]
     for key in sum_keys:
         agg[key] = 0

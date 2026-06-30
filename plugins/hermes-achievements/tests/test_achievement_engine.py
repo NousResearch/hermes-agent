@@ -151,6 +151,51 @@ class AchievementEngineTests(unittest.TestCase):
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
 
+    def test_operational_quality_metrics_detect_verified_source_first_work(self):
+        messages = [
+            {"role": "assistant", "tool_calls": [{"function": {"name": "read_file"}}]},
+            {"role": "tool", "tool_name": "read_file", "content": "1|old code"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "patch"}}]},
+            {"role": "tool", "tool_name": "patch", "content": "files_modified: app.py"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "terminal"}}]},
+            {"role": "tool", "tool_name": "terminal", "content": "pytest: 3 tests passed, exit_code: 0"},
+            {"role": "assistant", "content": "Fixed and verified: pytest passed."},
+        ]
+
+        stats = plugin_api.analyze_messages("s_quality", "Fix bug", messages)
+
+        self.assertEqual(stats["source_first_events"], 1)
+        self.assertEqual(stats["verified_shipper_events"], 1)
+        self.assertEqual(stats["non_empty_tool_final_events"], 1)
+
+    def test_empty_final_complaint_blocks_no_empty_final_metric(self):
+        messages = [
+            {"role": "assistant", "tool_calls": [{"function": {"name": "terminal"}}]},
+            {"role": "tool", "tool_name": "terminal", "content": "sent"},
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "You just executed tool calls but returned an empty response."},
+        ]
+
+        stats = plugin_api.analyze_messages("s_empty", "Empty final", messages)
+
+        self.assertEqual(stats["non_empty_tool_final_events"], 0)
+
+    def test_operational_quality_achievements_present(self):
+        ids = {achievement["id"] for achievement in plugin_api.ACHIEVEMENTS}
+        for achievement_id in {
+            "verified_shipper",
+            "source_first_operator",
+            "correction_propagator",
+            "no_empty_final",
+            "delivery_accuracy",
+            "dry_run_disciple",
+            "same_thread_samurai",
+            "silent_watchdog",
+            "recovery_loop_closed",
+            "evidence_locker",
+        }:
+            self.assertIn(achievement_id, ids)
+
 
 if __name__ == "__main__":
     unittest.main()

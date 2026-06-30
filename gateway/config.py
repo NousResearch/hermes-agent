@@ -1026,6 +1026,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
+                if plat == Platform.WHATSAPP and "mode" in platform_cfg:
+                    bridged["mode"] = platform_cfg["mode"]
                 if "allow_from" in platform_cfg:
                     bridged["allow_from"] = platform_cfg["allow_from"]
                 if "allow_admin_from" in platform_cfg:

@@ -1948,6 +1948,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
                     raise
+                # Evict cached token before retry
+                try:
+                    self._evict_feishu_token()
+                except Exception:
+                    pass
                 await asyncio.sleep(2 ** attempt)
                 continue
         err_msg = str(_last_edit_error) if _last_edit_error else "edit message failed after all retries"
@@ -4841,6 +4846,13 @@ class FeishuAdapter(BasePlatformAdapter):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise
+                # Evict cached token before retry so verify() fetches a
+                # fresh one instead of reusing a stale token that just
+                # caused a 401 (HTTP or response-code).
+                try:
+                    self._evict_feishu_token()
+                except Exception:
+                    pass
                 wait_seconds = 2 ** attempt
                 logger.warning(
                     "[Feishu] Send attempt %d/%d failed for chat %s; retrying in %ds: %s",

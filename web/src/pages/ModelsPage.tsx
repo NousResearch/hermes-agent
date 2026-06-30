@@ -1069,6 +1069,8 @@ export default function ModelsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saveKey, setSaveKey] = useState(0);
+  // Track whether any providers are configured — used to tailor the empty state.
+  const [hasProviders, setHasProviders] = useState<boolean | null>(null);
   // Gate the token/cost UI on `dashboard.show_token_analytics`.  See
   // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
   // calls and retries, so they're misleading next to provider billing.
@@ -1095,10 +1097,14 @@ export default function ModelsPage() {
     Promise.all([
       api.getModelsAnalytics(days),
       api.getAuxiliaryModels().catch(() => null),
+      // Check whether any providers are configured — the empty state differs
+      // when there's no model usage vs. no providers at all.
+      api.getModelOptions().then((r) => (r.providers ?? []).some((p) => p.authenticated !== false)).catch(() => false),
     ])
-      .then(([models, auxData]) => {
+      .then(([models, auxData, provAvailable]) => {
         setData(models);
         setAux(auxData);
+        setHasProviders(provAvailable);
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
@@ -1284,6 +1290,25 @@ export default function ModelsPage() {
                 />
               ))}
             </div>
+          ) : hasProviders === false ? (
+            <Card>
+              <CardContent className="py-12">
+                <div className="flex flex-col items-center text-muted-foreground max-w-md mx-auto text-center">
+                  <Cpu className="h-8 w-8 mb-3 opacity-40" />
+                  <p className="text-sm font-medium">
+                    No model providers configured
+                  </p>
+                  <p className="text-xs mt-1 text-text-tertiary leading-relaxed">
+                    Add an API key in{" "}
+                    <a href="/env" className="underline hover:text-foreground">
+                      Environment settings
+                    </a>{" "}
+                    to activate model providers. Once configured, you can pick a
+                    model and start a conversation.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
           ) : (
             <Card>
               <CardContent className="py-12">

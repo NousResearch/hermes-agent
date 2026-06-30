@@ -405,6 +405,21 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # messages are only adjacent here when nothing (no tool result, no
     # user turn) separates them — an intervening ``tool`` message means
     # two distinct, valid tool-call rounds that must NOT be merged.
+    #
+    # Codex Responses interim turns are exempt: the codex_responses
+    # api_mode legitimately keeps multiple consecutive incomplete
+    # assistant turns in history, each carrying its own encrypted
+    # continuation state (codex_reasoning_items / codex_message_items)
+    # that must be replayed verbatim. Collapsing them corrupts the
+    # Responses replay chain (the duplicate-detection logic at
+    # conversation_loop.py already de-dups identical codex interims).
+    def _is_codex_interim(m: Dict) -> bool:
+        return bool(
+            m.get("codex_reasoning_items")
+            or m.get("codex_message_items")
+            or m.get("finish_reason") == "incomplete"
+        )
+
     collapsed: List[Dict] = []
     for msg in messages:
         if (
@@ -413,6 +428,8 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and msg.get("role") == "assistant"
             and isinstance(collapsed[-1], dict)
             and collapsed[-1].get("role") == "assistant"
+            and not _is_codex_interim(msg)
+            and not _is_codex_interim(collapsed[-1])
         ):
             prev = collapsed[-1]
             # Union tool_calls (preserve order, both may carry them).

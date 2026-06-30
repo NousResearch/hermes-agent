@@ -498,3 +498,29 @@ def test_repair_noop_on_valid_parallel_format():
 
     assert repairs == 0
     assert len(messages) == original_len
+
+
+def test_repair_does_NOT_merge_codex_interim_assistants():
+    """Codex Responses interim turns stay separate (encrypted replay state).
+
+    The codex_responses api_mode keeps multiple consecutive incomplete
+    assistant turns, each carrying distinct codex_reasoning_items /
+    codex_message_items that must replay verbatim. Pass 0 must exempt them.
+    Refs test_run_agent_codex_responses.py duplicate-detection tests.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "think hard"},
+        {"role": "assistant", "content": "", "finish_reason": "incomplete",
+         "codex_reasoning_items": [{"encrypted_content": "enc_first"}]},
+        {"role": "assistant", "content": "", "finish_reason": "incomplete",
+         "codex_reasoning_items": [{"encrypted_content": "enc_second"}]},
+        {"role": "assistant", "content": "Final answer."},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    interim = [m for m in messages if m.get("finish_reason") == "incomplete"]
+    assert len(interim) == 2
+    encs = [m["codex_reasoning_items"][0]["encrypted_content"] for m in interim]
+    assert "enc_first" in encs and "enc_second" in encs

@@ -174,26 +174,6 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     return None
 
 
-def _uses_local_terminal_backend(task_id: str = "default") -> bool:
-    """Return True when file paths are interpreted on the Hermes host.
-
-    ``_resolve_path_for_task`` resolves paths in the Hermes process namespace
-    (host cwd, host symlinks). That is correct for the local terminal backend,
-    but wrong for remote/sandboxed backends where ``ShellFileOperations`` will
-    interpret paths inside Docker/SSH/Modal/etc. Keep failures conservative: if
-    terminal config cannot be imported, preserve the historical local behavior.
-    """
-    try:
-        from tools.terminal_tool import _get_env_config, resolve_task_overrides
-
-        config = _get_env_config()
-        overrides = resolve_task_overrides(task_id)
-        env_type = overrides.get("env_type") or config.get("env_type", "local")
-    except Exception:
-        env_type = os.environ.get("TERMINAL_ENV", "local")
-    return str(env_type or "local").lower() == "local"
-
-
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
@@ -372,19 +352,11 @@ def _get_hermes_config_resolved() -> str | None:
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
-    if _uses_local_terminal_backend(task_id):
-        normalized = os.path.normpath(os.path.expanduser(filepath))
-        try:
-            resolved = str(_resolve_path_for_task(filepath, task_id))
-        except (OSError, ValueError):
-            resolved = filepath
-    else:
-        # Non-local backends interpret paths inside their own filesystem.
-        # Resolving or expanding here would follow host cwd/symlinks/home and
-        # can turn a valid sandbox path into an invalid host path before the
-        # backend sees it.
-        normalized = os.path.normpath(filepath)
-        resolved = normalized
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = filepath
+    normalized = os.path.normpath(os.path.expanduser(filepath))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
@@ -481,17 +453,12 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         return None
 
     # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
-    # in a local session that cd'd into ``~/.hermes/profiles/other/`` is
-    # classified against the right base. For non-local backends, leave the
-    # path in backend coordinates; host-side resolution can corrupt it before
-    # ShellFileOperations sees it.
-    if _uses_local_terminal_backend(task_id):
-        try:
-            resolved = str(_resolve_path_for_task(filepath, task_id))
-        except (OSError, ValueError):
-            resolved = filepath
-    else:
-        resolved = os.path.normpath(filepath)
+    # in a session that cd'd into ``~/.hermes/profiles/other/`` is
+    # classified against the right base.
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = filepath
 
     warning = get_cross_profile_warning(resolved)
     if warning is not None:
@@ -1240,24 +1207,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             "Re-read the file or reconstruct the intended file contents before writing."
         )
     try:
-        if not _uses_local_terminal_backend(task_id):
-            # Remote/sandboxed backends resolve relative paths, cwd, and symlinks
-            # in the backend filesystem. Do not pre-resolve in the Hermes host
-            # process or we can hand ShellFileOperations a host path that does
-            # not exist in Docker/SSH/Modal/etc.
-            with file_state.lock_path(path):
-                cross_warning = file_state.check_stale(task_id, path)
-                file_ops = _get_file_ops(task_id)
-                result = file_ops.write_file(path, content)
-                result_dict = result.to_dict()
-                if cross_warning:
-                    result_dict["_warning"] = cross_warning
-                _update_read_timestamp(path, task_id)
-                if not result_dict.get("error"):
-                    result_dict.setdefault("files_modified", [path])
-                    file_state.note_write(task_id, path)
-            return json.dumps(result_dict, ensure_ascii=False)
-
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.

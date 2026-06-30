@@ -314,39 +314,3 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     assert "WORKSPACE_PATCHED" in (workspace / "target.py").read_text()
     # And the decoy copy is untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
-
-
-def test_write_file_nonlocal_backend_does_not_host_resolve(monkeypatch):
-    """Non-local write_file paths must be handed to the backend unchanged."""
-    import json
-
-    from tools.file_operations import WriteResult
-
-    calls = []
-
-    class FakeOps:
-        def write_file(self, path, content):
-            calls.append((path, content))
-            return WriteResult(bytes_written=len(content.encode("utf-8")))
-
-    def fail_resolve(*args, **kwargs):
-        raise AssertionError("host resolver must not run for non-local write_file")
-
-    monkeypatch.setenv("TERMINAL_ENV", "docker")
-    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": FakeOps())
-    monkeypatch.setattr(ft, "_resolve_path_for_task", fail_resolve)
-    monkeypatch.setattr(ft, "_mark_verification_stale", lambda *args, **kwargs: None)
-
-    out = json.loads(
-        ft.write_file_tool(
-            "relative/link.txt",
-            "hello",
-            task_id="docker-task",
-            cross_profile=True,
-        )
-    )
-
-    assert not out.get("error"), out
-    assert calls == [("relative/link.txt", "hello")]
-    assert out.get("files_modified") == ["relative/link.txt"]
-    assert "resolved_path" not in out

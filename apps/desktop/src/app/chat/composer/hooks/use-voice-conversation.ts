@@ -1,8 +1,10 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
+  isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
   playSpeechText,
   type SpeechStreamSession,
@@ -10,6 +12,7 @@ import {
   stopVoicePlayback
 } from '@/lib/voice-playback'
 import { notify, notifyError } from '@/store/notifications'
+import { $voicePlayback } from '@/store/voice-playback'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -25,7 +28,7 @@ interface VoiceConversationOptions {
   busy: boolean
   enabled: boolean
   onFatalError?: () => void
-  onSubmit: (text: string) => Promise<void> | void
+  onSubmit: (text: string) => Promise<boolean | void> | boolean | void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
@@ -43,6 +46,7 @@ export function useVoiceConversation({
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level } = useMicRecorder(voiceCopy)
+  const voicePlayback = useStore($voicePlayback)
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
@@ -106,7 +110,13 @@ export function useVoiceConversation({
         const result = await handle.stop()
 
         if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
-          if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
+          if (
+            enabledRef.current &&
+            !mutedRef.current &&
+            !busyRef.current &&
+            statusRef.current !== 'speaking' &&
+            !isVoicePlaybackActive()
+          ) {
             pendingStartRef.current = true
           }
 
@@ -119,7 +129,7 @@ export function useVoiceConversation({
           const transcript = (await onTranscribeAudio(result.audio)).trim()
 
           if (!transcript) {
-            if (enabledRef.current) {
+            if (enabledRef.current && !mutedRef.current && !busyRef.current && !isVoicePlaybackActive()) {
               pendingStartRef.current = true
             }
 
@@ -130,12 +140,25 @@ export function useVoiceConversation({
 
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
-          await onSubmit(transcript)
+          const accepted = await onSubmit(transcript)
+
+          if (accepted === false) {
+            awaitingSpokenResponseRef.current = false
+
+            if (enabledRef.current && !mutedRef.current) {
+              pendingStartRef.current = true
+            }
+
+            setStatus('idle')
+
+            return
+          }
+
           setStatus('thinking')
         } catch (error) {
           notifyError(error, voiceCopy.transcriptionFailed)
 
-          if (enabledRef.current && !mutedRef.current && !busyRef.current) {
+          if (enabledRef.current && !mutedRef.current && !busyRef.current && !isVoicePlaybackActive()) {
             pendingStartRef.current = true
           }
 
@@ -149,9 +172,7 @@ export function useVoiceConversation({
   )
 
   const startListening = useCallback(async () => {
-    pendingStartRef.current = false
-
-    if (!enabledRef.current || mutedRef.current || busyRef.current) {
+    if (!enabledRef.current || mutedRef.current || busyRef.current || isVoicePlaybackActive()) {
       return
     }
 
@@ -162,6 +183,8 @@ export function useVoiceConversation({
     if (statusRef.current !== 'idle') {
       return
     }
+
+    pendingStartRef.current = false
 
     try {
       // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
@@ -251,7 +274,20 @@ export function useVoiceConversation({
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
-        await onSubmit(transcript)
+        const accepted = await onSubmit(transcript)
+
+        if (accepted === false) {
+          awaitingSpokenResponseRef.current = false
+
+          if (enabledRef.current && !mutedRef.current) {
+            pendingStartRef.current = true
+          }
+
+          setStatus('idle')
+
+          return
+        }
+
         setStatus('thinking')
       } catch (error) {
         notifyError(error, voiceCopy.transcriptionFailed)
@@ -474,7 +510,7 @@ export function useVoiceConversation({
         clearTurnTimeout()
         handle.cancel()
         setStatus('idle')
-      } else if (enabledRef.current && !busyRef.current && statusRef.current === 'idle') {
+      } else if (enabledRef.current && !busyRef.current && statusRef.current === 'idle' && !isVoicePlaybackActive()) {
         pendingStartRef.current = true
       }
 
@@ -537,10 +573,10 @@ export function useVoiceConversation({
       return
     }
 
-    if (pendingStartRef.current) {
+    if (pendingStartRef.current && !isVoicePlaybackActive()) {
       void startListening()
     }
-  }, [busy, enabled, muted, openLiveSpeech, pendingResponse, startListening, status])
+  }, [busy, enabled, muted, openLiveSpeech, pendingResponse, startListening, status, voicePlayback.status])
 
   useEffect(() => {
     if (enabled && !wasEnabledRef.current) {

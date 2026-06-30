@@ -2086,7 +2086,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             entry["function"]["arguments"] += tc_delta.function.arguments
                     extra = getattr(tc_delta, "extra_content", None)
                     if extra is None and hasattr(tc_delta, "model_extra"):
-                        extra = (tc_delta.model_extra or {}).get("extra_content")
+                        extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
                     if extra is not None:
                         if hasattr(extra, "model_dump"):
                             extra = extra.model_dump()

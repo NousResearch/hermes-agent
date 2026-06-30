@@ -773,6 +773,11 @@ def _model_flow_custom(config):
         return
 
     effective_key = api_key or current_key
+    # Remove any trailing "/models" from the effective_url
+    if effective_url.endswith("/models"):
+        effective_url = effective_url[:-len("/models")]
+        if base_url:
+            base_url = effective_url
 
     # Hint: most local model servers (Ollama, vLLM, llama.cpp) require /v1
     # in the base URL for OpenAI-compatible chat completions.  Prompt the

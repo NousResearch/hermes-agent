@@ -37,6 +37,9 @@ class TestFuzzyPatchSkill:
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
         monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
+        # No skills-shared/ under tmp_path → creates auto-detect the legacy local
+        # path these tests assert (author-to-shared engages only with a shared tree).
+        monkeypatch.setattr("tools.skill_manager_tool.HERMES_HOME", tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self.skills_dir = skills_dir
 

@@ -25,9 +25,14 @@ from tools.skill_manager_tool import (
 
 @contextmanager
 def _skill_dir(tmp_path):
-    """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
-    only the temp directory — not the real ~/.hermes/skills/."""
+    """Patch SKILLS_DIR, HERMES_HOME, and get_all_skills_dirs so _find_skill
+    searches only the temp directory — not the real ~/.hermes/skills/.
+
+    HERMES_HOME is pointed at the temp tree (which has no skills-shared/ subdir),
+    so skill creation auto-detects the legacy local-tree path these tests assert
+    (the author-to-shared default only engages when a skills-shared/ tree exists)."""
     with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+         patch("tools.skill_manager_tool.HERMES_HOME", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield
 
@@ -742,6 +747,7 @@ def _two_roots(local_dir: Path, external_dir: Path):
     """Patch the skill manager so local SKILLS_DIR = local_dir and
     get_all_skills_dirs() returns [local_dir, external_dir] in order."""
     with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
+         patch("tools.skill_manager_tool.HERMES_HOME", local_dir.parent), \
          patch("agent.skill_utils.get_all_skills_dirs",
                return_value=[local_dir, external_dir]):
         yield
@@ -1173,6 +1179,7 @@ def _curator_pass(tmp_path, *, monkeypatch):
     skills_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     with patch("tools.skill_manager_tool.SKILLS_DIR", skills_root), \
+         patch("tools.skill_manager_tool.HERMES_HOME", hermes_home), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
          patch("tools.skill_provenance.is_background_review", return_value=True):
         yield skills_root

@@ -399,7 +399,7 @@ def _validate_name(name: str) -> Optional[str]:
         return "Skill name is required."
     if len(name) > MAX_NAME_LENGTH:
         return f"Skill name exceeds {MAX_NAME_LENGTH} characters."
-    if not VALID_NAME_RE.match(name):
+    if not VALID_NAME_RE.fullmatch(name):
         return (
             f"Invalid skill name '{name}'. Use lowercase letters, numbers, "
             f"hyphens, dots, and underscores. Must start with a letter or digit."
@@ -424,7 +424,7 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
         )
     if len(category) > MAX_NAME_LENGTH:
         return f"Category exceeds {MAX_NAME_LENGTH} characters."
-    if not VALID_NAME_RE.match(category):
+    if not VALID_NAME_RE.fullmatch(category):
         return (
             f"Invalid category '{category}'. Use lowercase letters, numbers, "
             "hyphens, dots, and underscores. Categories must be a single directory name."
@@ -486,11 +486,157 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
-def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
-    if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+class SkillCreateError(ValueError):
+    """Raised when a skill create cannot resolve a valid destination directory.
+
+    Carries an actionable message (e.g. the valid shared-group list) that the
+    caller surfaces verbatim to the agent so it can retry with a real group.
+    """
+
+
+def _shared_skills_root() -> Path:
+    """The git-backed shared-skills tree for the active profile's HERMES_HOME."""
+    return HERMES_HOME / "skills-shared"
+
+
+def _valid_shared_groups() -> List[str]:
+    """Live subdirs of skills-shared/ that are real groups.
+
+    Self-maintaining (a new group needs no code edit): reads the directory.
+    Reuses the index's own EXCLUDED_SKILL_DIRS as the single source of truth for
+    "not a real skill dir" so a dir the indexer ignores can never be a selectable
+    group. Dotfiles are always excluded.
+    """
+    shared = _shared_skills_root()
+    if not shared.is_dir():
+        return []
+    try:
+        from agent.skill_utils import EXCLUDED_SKILL_DIRS
+        excluded = set(EXCLUDED_SKILL_DIRS)
+    except Exception:
+        excluded = {".git", ".archive", ".hub", "__pycache__"}
+    groups = []
+    try:
+        for d in shared.iterdir():
+            if not d.is_dir():
+                continue
+            if d.name.startswith(".") or d.name in excluded:
+                continue
+            groups.append(d.name)
+    except OSError:
+        return []
+    return sorted(groups)
+
+
+def _author_to_shared_setting() -> Optional[bool]:
+    """Read skills.author_to_shared from config.
+
+    Returns True/False when set, or None when unset (caller auto-detects).
+    Behavioral setting → config.yaml (never an env var). Mirrors the config
+    path _guard_agent_created_enabled() uses.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        raw = cfg_get(cfg, "skills", "author_to_shared")
+        if raw is None:
+            return None
+        return is_truthy_value(raw, default=False)
+    except Exception:
+        return None
+
+
+def _shared_authoring_enabled() -> bool:
+    """Author new skills into skills-shared/ by default?
+
+    Explicit config wins; otherwise auto-detect: enabled iff a skills-shared
+    tree exists (the fleet has one; a vanilla Hermes user does not → unchanged
+    legacy-local behavior, upstream-safe).
+    """
+    setting = _author_to_shared_setting()
+    if setting is not None:
+        return setting
+    return _shared_skills_root().is_dir()
+
+
+def _invalid_group_msg(category: Optional[str], groups: List[str]) -> str:
+    grouplist = ", ".join(groups) if groups else "(none found under skills-shared/)"
+    if not category:
+        return (
+            "A shared group is required when authoring into the git-backed "
+            f"skills-shared/ tree. Pass category=<group>, one of: {grouplist}. "
+            "See the skill-hygiene skill for which group a skill belongs in, or "
+            "pass local=true to author a single-agent skill into the local tree."
+        )
+    return (
+        f"category '{category}' is not a shared group. Pick one of: {grouplist}. "
+        "See the skill-hygiene skill for which group a skill belongs in, or pass "
+        "local=true to author a single-agent skill into the local tree."
+    )
+
+
+def _resolve_skill_dir(name: str, category: str = None, *, local: bool = False) -> Path:
+    """Build the directory path for a new skill.
+
+    Two modes:
+      * shared (default when a skills-shared/ tree exists and not local): authors
+        into the git-backed HERMES_HOME/skills-shared/<group>/<name>/. <category>
+        is REQUIRED and validated against the live group set (raises
+        SkillCreateError listing the valid groups otherwise).
+      * legacy local (local=True, or no skills-shared/ tree → upstream-safe):
+        authors into the gitignored SKILLS_DIR/<category>/<name>/ exactly as
+        before.
+
+    NOTE: ``name`` is already validated by _validate_name (VALID_NAME_RE via
+    fullmatch) in _create_skill BEFORE this is called, so it cannot contain a
+    path separator, a leading dot, or a trailing newline on either path.
+    """
+    if local or not _shared_authoring_enabled():
+        if category:
+            return SKILLS_DIR / category / name
+        return SKILLS_DIR / name
+    groups = _valid_shared_groups()
+    if not category or category not in groups:
+        raise SkillCreateError(_invalid_group_msg(category, groups))
+    return _shared_skills_root() / category / name
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """True if ``path`` is inside ``root`` (best-effort, no resolve required)."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _active_profile_name() -> str:
+    """Best-effort active profile name for the local-skill allowlist key.
+
+    Returns 'default' for the top-level ~/.hermes tree, else the profile name.
+    """
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+        return _resolve_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
+def _record_create_metric(name: str, category: Optional[str], *, shared: bool) -> None:
+    """Best-effort success-path observability for skill creates.
+
+    Bumps a counter so 'prevention works' is distinguishable from 'nobody
+    created skills', and a creeping local-create bypass is visible. Telemetry
+    failures never break the create.
+    """
+    try:
+        from tools import skill_usage
+        recorder = getattr(skill_usage, "record_create_destination", None)
+        if callable(recorder):
+            recorder(name, category=category, shared=shared,
+                     profile=_active_profile_name())
+    except Exception:
+        logger.debug("create-destination metric failed for %s", name, exc_info=True)
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -700,8 +846,13 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
-    """Create a new user skill with SKILL.md content."""
+def _create_skill(name: str, content: str, category: str = None, *, local: bool = False) -> Dict[str, Any]:
+    """Create a new user skill with SKILL.md content.
+
+    By default (when a git-backed skills-shared/ tree exists) authors into
+    skills-shared/<group>/ so the skill is backed up and fleet-shareable; pass
+    local=True for a genuine single-agent skill in the gitignored local tree.
+    """
     # Validate name
     err = _validate_name(name)
     if err:
@@ -711,7 +862,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Validate content
+    # Validate content (runs BEFORE mkdir, so a frontmatter/size failure can
+    # never leave an orphan directory behind on either tree).
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
@@ -728,8 +880,13 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
-    # Create the skill directory
-    skill_dir = _resolve_skill_dir(name, category)
+    # Resolve the destination (shared by default, local on request). A bad/missing
+    # group in shared mode fails loud here, BEFORE any directory is created.
+    try:
+        skill_dir = _resolve_skill_dir(name, category, local=local)
+    except SkillCreateError as e:
+        return {"success": False, "error": str(e)}
+    authored_shared = _is_within(skill_dir, _shared_skills_root())
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically
@@ -752,15 +909,38 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     except Exception:
         pass
 
+    # Relative path for display: relative to whichever root it landed in.
+    try:
+        rel_root = _shared_skills_root() if authored_shared else SKILLS_DIR
+        rel_path = str(skill_dir.relative_to(rel_root))
+    except ValueError:
+        rel_path = str(skill_dir)
+
+    _record_create_metric(name, category, shared=authored_shared)
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": rel_path,
         "skill_md": str(skill_md),
+        "authored_to": "shared" if authored_shared else "local",
         "_change": {"description": _desc},
     }
     if category:
         result["category"] = category
+    if authored_shared:
+        result["message"] = f"Skill '{name}' created in skills-shared/{category}/ (git-backed, fleet-shared)."
+    else:
+        # Local tree is gitignored: warn so a permanent local skill is a
+        # positive, auditable act (allowlist it) rather than a silent leak.
+        profile_key = f"{_active_profile_name()}/{name}"
+        result["warning"] = (
+            "Authored to the gitignored local skills tree (single-copy-on-disk, "
+            "NOT backed up). If this is a permanent single-agent skill, add "
+            f"'{profile_key}' to "
+            "skills-shared/general/skill-hygiene/local-skills-allowlist.txt with a "
+            "reason, or the local-skill-leak guard will flag it on its next run."
+        )
     result["hint"] = (
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
@@ -1192,6 +1372,7 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             new_string=payload.get("new_string"),
             replace_all=payload.get("replace_all", False),
             absorbed_into=payload.get("absorbed_into"),
+            local=payload.get("local", False),
         )
     finally:
         _skill_gate_bypass.reset(token)
@@ -1208,6 +1389,7 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    local: bool = False,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -1227,6 +1409,7 @@ def skill_manage(
         file_path=file_path, file_content=file_content,
         old_string=old_string, new_string=new_string,
         replace_all=replace_all, absorbed_into=absorbed_into,
+        local=local,
     )
     if gate_result is not None:
         return gate_result
@@ -1234,7 +1417,7 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _create_skill(name, content, category, local=local)
 
     elif action == "edit":
         if not content:
@@ -1307,8 +1490,11 @@ SKILL_MANAGE_SCHEMA = {
     "description": (
         "Manage skills (create, update, delete). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
-        "Actions: create (full SKILL.md + optional category), "
+        f"New skills are authored into {display_hermes_home()}/skills-shared/<group>/ by default "
+        "(git-backed + shared across agents) when a shared tree exists, so `category` must be a real "
+        f"shared group; pass local=true for a single-agent skill in {display_hermes_home()}/skills/. "
+        "Existing skills can be modified wherever they live.\n\n"
+        "Actions: create (full SKILL.md + a shared-group category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "
         "delete, write_file, remove_file.\n\n"
@@ -1379,9 +1565,11 @@ SKILL_MANAGE_SCHEMA = {
             "category": {
                 "type": "string",
                 "description": (
-                    "Optional category/domain for organizing the skill (e.g., 'devops', "
-                    "'data-science', 'mlops'). Creates a subdirectory grouping. "
-                    "Only used with 'create'."
+                    "The skill's group/domain (e.g., 'devops', 'research', 'general'). "
+                    "Only used with 'create'. When authoring into the shared tree "
+                    "(the default), this MUST be a real shared group "
+                    "(skills-shared/<group>/); an unknown group is rejected with the "
+                    "valid list. With local=true it is an optional local subdirectory."
                 )
             },
             "file_path": {
@@ -1411,6 +1599,17 @@ SKILL_MANAGE_SCHEMA = {
                     "rewriting) will have to guess at intent."
                 )
             },
+            "local": {
+                "type": "boolean",
+                "description": (
+                    "For 'create' only. Default false: when a shared skills "
+                    "tree exists, new skills are authored into "
+                    "skills-shared/<category>/ (git-backed, shared across "
+                    "agents) and `category` must be a real shared group. Set "
+                    "true ONLY for a genuine single-agent skill that should "
+                    "live in the local (gitignored, not-backed-up) tree."
+                )
+            },
         },
         "required": ["action", "name"],
     },
@@ -1434,6 +1633,7 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        local=args.get("local", False)),
     emoji="📝",
 )

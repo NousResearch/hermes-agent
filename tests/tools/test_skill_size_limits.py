@@ -23,6 +23,10 @@ def isolate_skills(tmp_path, monkeypatch):
     skills_dir.mkdir()
     monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+    # Point the skill manager's module-global HERMES_HOME at the temp tree (no
+    # skills-shared/ there) so creates auto-detect the legacy local path these
+    # size tests assert (author-to-shared only engages with a skills-shared tree).
+    monkeypatch.setattr("tools.skill_manager_tool.HERMES_HOME", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     return skills_dir
 

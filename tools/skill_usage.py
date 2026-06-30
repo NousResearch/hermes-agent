@@ -945,3 +945,92 @@ def usage_report() -> List[Dict[str, Any]]:
         row["activity_count"] = activity_count(row)
         rows.append(row)
     return sorted(rows, key=lambda r: r["name"])
+
+# ---------------------------------------------------------------------------
+# Create-destination metrics — success-path observability for skill creation
+# ---------------------------------------------------------------------------
+# Distinguishes "prevention works" (creates land in the git-backed shared tree)
+# from "nobody created skills", and makes a creeping local-create bypass visible.
+# Stored as small aggregate counters in a sibling file (NOT per-skill records,
+# since these are global metrics). Best-effort: never raises into the create.
+
+
+def _create_metrics_file() -> Path:
+    return _usage_file().with_name(".create_metrics.json")
+
+
+def load_create_metrics() -> Dict[str, Any]:
+    """Read the create-destination metrics map. {} on missing/corrupt."""
+    path = _create_metrics_file()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.debug("Failed to read %s: %s", path, e)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_create_destination(
+    skill_name: str,
+    *,
+    category: Optional[str] = None,
+    shared: bool = True,
+    profile: str = "default",
+) -> None:
+    """Bump the shared/local create counters. Best-effort observability."""
+    try:
+        with _usage_file_lock():
+            data = load_create_metrics()
+            data["create_to_shared"] = int(data.get("create_to_shared") or 0) + (1 if shared else 0)
+            data["create_local"] = int(data.get("create_local") or 0) + (0 if shared else 1)
+            data["last_create_at"] = _now_iso()
+            last = {
+                "name": skill_name,
+                "category": category,
+                "shared": bool(shared),
+                "profile": profile,
+                "at": _now_iso(),
+            }
+            data["last_create"] = last
+            if not shared:
+                # keep a small ring of recent local-create keys for audit
+                recent = data.get("recent_local") or []
+                if not isinstance(recent, list):
+                    recent = []
+                recent.append(f"{profile}/{skill_name}")
+                data["recent_local"] = recent[-20:]
+            path = _create_metrics_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".create_metrics_", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+    except Exception as e:
+        logger.debug("record_create_destination(%s) failed: %s", skill_name, e, exc_info=True)
+
+
+def create_metrics_summary() -> Dict[str, Any]:
+    """Return {create_to_shared, create_local, local_create_rate, ...} for the dashboard."""
+    data = load_create_metrics()
+    shared = int(data.get("create_to_shared") or 0)
+    local = int(data.get("create_local") or 0)
+    total = shared + local
+    rate = round(local / total, 4) if total else 0.0
+    return {
+        "create_to_shared": shared,
+        "create_local": local,
+        "local_create_rate": rate,
+        "last_create": data.get("last_create"),
+        "recent_local": data.get("recent_local") or [],
+    }

@@ -1316,7 +1316,6 @@ def test_discord_toolsets_not_available_on_other_platforms():
     assert _toolset_allowed_for_platform("discord_admin", "discord")
 
 
-
 def test_google_chat_toolset_not_available_on_other_platforms():
     from hermes_cli.tools_config import _toolset_allowed_for_platform
 
@@ -1345,7 +1344,6 @@ def test_save_platform_tools_strips_restricted_toolsets():
     assert "discord_admin" not in saved
     assert "web" in saved
     assert "terminal" in saved
-
 
 
 def test_save_platform_tools_strips_google_chat_toolset_from_non_google_chat():

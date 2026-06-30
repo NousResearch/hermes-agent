@@ -804,6 +804,21 @@ html.hermes-mobile-standalone [data-slot='page-search-filters'] > button[data-ac
   background: var(--chrome-action-hover);
 }
 
+/* Tap-target minimum: 44pt (2.75rem) for every interactive row inside the
+   mobile drawer + list surfaces. Excludes inline switches/toggles which
+   carry their own intrinsic size and would otherwise become awkward bars. */
+html.hermes-mobile-standalone [data-slot='sheet-content'] button:not([role='switch']):not([data-slot='switch']):not([data-no-tap-min]),
+html.hermes-mobile-standalone [data-slot='sheet-content'] [data-slot='sidebar-menu-button'],
+html.hermes-mobile-standalone [data-slot='sheet-content'] a[role='button'],
+html.hermes-mobile-standalone [data-slot='overlay-sidebar'] button:not([role='switch']):not([data-slot='switch']):not([data-no-tap-min]),
+html.hermes-mobile-standalone [data-slot='overlay-main'] [data-slot='page-search-filters'] button {
+  min-height: 2.75rem;
+}
+/* Session rows in the drawer get the same floor. */
+html.hermes-mobile-standalone [data-slot='sheet-content'] [data-session-row] {
+  min-height: 2.75rem;
+}
+
 img,
 picture,
 video,

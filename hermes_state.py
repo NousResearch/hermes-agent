@@ -2028,6 +2028,32 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def close_stale_sessions(self, end_reason: str = "process_restart",
+                             source: Optional[str] = None) -> int:
+        """Close sessions left open by a previous process lifecycle.
+
+        Updates all rows where ``ended_at IS NULL``, setting
+        ``ended_at = started_at`` and ``end_reason`` to *end_reason*.
+        Optionally scoped to a single ``source`` column value.
+
+        Returns the number of rows updated.
+        """
+        def _do(conn):
+            if source:
+                cursor = conn.execute(
+                    """UPDATE sessions SET ended_at = started_at,
+                       end_reason = ? WHERE ended_at IS NULL AND source = ?""",
+                    (end_reason, source),
+                )
+            else:
+                cursor = conn.execute(
+                    """UPDATE sessions SET ended_at = started_at,
+                       end_reason = ? WHERE ended_at IS NULL""",
+                    (end_reason,),
+                )
+            return cursor.rowcount if cursor.rowcount >= 0 else 0
+        return self._execute_write(_do)
+
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
         def _do(conn):

@@ -228,6 +228,47 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["end_reason"] == "user_exit"
 
+    def test_close_stale_sessions_closes_only_unended(self, db):
+        """close_stale_sessions should close sessions with ended_at IS NULL,
+        skip already-ended sessions, and respect the source filter."""
+        # Create mix of sessions
+        db.create_session("cron_open", source="cron")          # should close
+        db.create_session("cron_done", source="cron")          # already ended — skip
+        db.end_session("cron_done", end_reason="cron_complete")
+        db.create_session("cli_open", source="cli")             # wrong source — skip
+        db.create_session("cron_open2", source="cron")         # should close
+
+        count = db.close_stale_sessions(
+            end_reason="process_restart", source="cron"
+        )
+        assert count == 2
+
+        assert db.get_session("cron_open")["end_reason"] == "process_restart"
+        assert db.get_session("cron_open2")["end_reason"] == "process_restart"
+        assert db.get_session("cron_done")["end_reason"] == "cron_complete"
+        assert db.get_session("cli_open")["ended_at"] is None
+
+    def test_close_stale_sessions_no_source_closes_all(self, db):
+        """Without a source filter, close_stale_sessions closes all unended rows."""
+        db.create_session("c1", source="cron")
+        db.create_session("c2", source="cli")
+        db.create_session("c3", source="telegram")
+        db.end_session("c3", end_reason="user_exit")
+
+        count = db.close_stale_sessions(end_reason="process_restart")
+        assert count == 2
+        assert db.get_session("c1")["end_reason"] == "process_restart"
+        assert db.get_session("c2")["end_reason"] == "process_restart"
+        assert db.get_session("c3")["end_reason"] == "user_exit"
+
+    def test_close_stale_sessions_idempotent(self, db):
+        """Second call should be a no-op (return 0)."""
+        db.create_session("s1", source="cron")
+        count1 = db.close_stale_sessions(source="cron")
+        assert count1 == 1
+        count2 = db.close_stale_sessions(source="cron")
+        assert count2 == 0
+
     def test_update_system_prompt(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_system_prompt("s1", "You are a helpful assistant.")

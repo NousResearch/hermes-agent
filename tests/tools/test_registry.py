@@ -731,3 +731,70 @@ class TestGetEntryOverlaySemantics:
             merged = {**reg._tools, **reg._scoped_tools.get(scope or reg.current_scope_key(), {})}
             for name in names:
                 assert reg.get_entry(name, scope=scope) is merged.get(name), (scope, name)
+
+
+class TestInputSchemaAlias:
+    """A plugin that writes the Anthropic/MCP ``input_schema`` key instead of
+    ``parameters`` should still expose its schema to the model, with a warning."""
+
+    def test_input_schema_is_aliased_to_parameters(self, caplog):
+        reg = ToolRegistry()
+        schema = {
+            "name": "legacy",
+            "description": "declares input_schema like an Anthropic tool spec",
+            "input_schema": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x"],
+            },
+        }
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.register(
+                name="legacy",
+                toolset="s1",
+                schema=schema,
+                handler=_dummy_handler,
+            )
+
+        fn = reg.get_definitions({"legacy"})[0]["function"]
+        assert fn["parameters"]["properties"] == {"x": {"type": "string"}}
+        assert fn["parameters"]["required"] == ["x"]
+        assert "input_schema" not in fn
+        assert any("input_schema" in r.getMessage() for r in caplog.records)
+
+    def test_parameters_wins_over_stray_input_schema(self, caplog):
+        reg = ToolRegistry()
+        schema = {
+            "name": "both",
+            "description": "has both keys",
+            "parameters": {"type": "object", "properties": {"p": {"type": "string"}}},
+            "input_schema": {"type": "object", "properties": {"i": {"type": "string"}}},
+        }
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.register(
+                name="both",
+                toolset="s1",
+                schema=schema,
+                handler=_dummy_handler,
+            )
+
+        fn = reg.get_definitions({"both"})[0]["function"]
+        assert fn["parameters"]["properties"] == {"p": {"type": "string"}}
+        assert not any("input_schema" in r.getMessage() for r in caplog.records)
+
+    def test_caller_schema_dict_not_mutated(self):
+        reg = ToolRegistry()
+        schema = {
+            "name": "legacy2",
+            "description": "d",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        reg.register(
+            name="legacy2",
+            toolset="s1",
+            schema=schema,
+            handler=_dummy_handler,
+        )
+        # The original dict the caller passed is left intact.
+        assert "input_schema" in schema
+        assert "parameters" not in schema

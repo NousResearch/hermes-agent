@@ -6357,6 +6357,26 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "copilot":
+        # Resolve the Copilot API base URL from the token-exchange response
+        # (endpoints.api, with a proxy-ep fallback), which is authoritative
+        # for Enterprise / proxied accounts. Falls back to the registry
+        # default and is guarded non-empty below so chat inference never
+        # resolves an empty base URL (#50252).
+        base_url = env_url.rstrip("/") if env_url else pconfig.inference_base_url
+        try:
+            from hermes_cli.copilot_auth import (
+                resolve_copilot_token,
+                get_copilot_api_token,
+            )
+            raw_token, _ = resolve_copilot_token()
+            if raw_token:
+                _, resolved = get_copilot_api_token(raw_token)
+                resolved = (resolved or "").strip()
+                if resolved:
+                    base_url = resolved
+        except Exception as exc:
+            logger.debug("Copilot base URL resolution fell back to default: %s", exc)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
@@ -6364,6 +6384,12 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "lmstudio":
         base_url = _normalize_lmstudio_runtime_base_url(base_url)
+
+    # Last-resort guard: an API-key provider must never hand back an empty
+    # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override
+    # otherwise wedges chat inference — #50252).
+    if not (isinstance(base_url, str) and base_url.strip()):
+        base_url = pconfig.inference_base_url
 
     return {
         "provider": provider_id,

@@ -77,8 +77,9 @@ const telemetry = /^(1|true|yes|on)$/i.test(
 // balloon a single NDJSON line. Override via PHOTON_MAX_INLINE_ATTACHMENT_BYTES.
 const MAX_INLINE_ATTACHMENT_BYTES =
   Number(process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES) || 20 * 1024 * 1024;
-const DM_CHAT_GUID_RE = /^any;-;(\+\d{6,})$/;
-const E164_RE = /^\+\d{6,}$/;
+const DM_CHAT_GUID_RE = /^any;-;(.+)$/;
+const E164_RE = /^\+\d{6,15}$/;
+const CHILD_MESSAGE_ID_RE = /^p:(\d+)\/(.+)$/;
 const nativeEffectsEnabled = /^(1|true|yes|on)$/i.test(
   (process.env.PHOTON_NATIVE_EFFECTS || "").trim()
 );
@@ -384,6 +385,16 @@ function advancedChatId(space) {
   if (phone) return `any;-;${phone}`;
   if (id) return id;
   throw new Error("could not resolve advanced iMessage chat id");
+}
+
+function advancedTargetMessage(messageId) {
+  const id = String(messageId || "").trim();
+  const child = id.match(CHILD_MESSAGE_ID_RE);
+  if (!child) return { messageGuid: id, options: undefined };
+  return {
+    messageGuid: child[2],
+    options: { partIndex: Number(child[1]) },
+  };
 }
 
 async function withAdvancedIMessageClient(space, fn) {
@@ -963,12 +974,28 @@ const server = http.createServer(async (req, res) => {
       }
       const content =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      if (advancedCreateClient) {
+        const targetMsg = advancedTargetMessage(messageId);
+        const advancedResult = await withAdvancedIMessageClient(space, (client) =>
+          client.messages.edit(advancedChatId(space), targetMsg.messageGuid, text, {
+            ...targetMsg.options,
+            backwardCompatText: text,
+            clientMessageId: clientMessageId("edit"),
+          })
+        );
+        rememberKnownMessage(advancedResult);
+        return ok(res, {
+          messageId,
+          edited: true,
+          method: "advanced.messages.edit",
+        });
+      }
       if (typeof target.edit === "function") {
         await target.edit(content);
-      } else {
-        await space.send(editContent(content, target));
+        return ok(res, { messageId, edited: true, method: "message.edit" });
       }
-      return ok(res, { messageId, edited: true });
+      await space.send(editContent(content, target));
+      return ok(res, { messageId, edited: true, method: "space.send(edit)" });
     }
     if (req.url === "/unsend") {
       if (!nativeUnsendEnabled) {
@@ -993,13 +1020,29 @@ const server = http.createServer(async (req, res) => {
       if (target.direction && target.direction !== "outbound") {
         return badRequest(res, "only outbound messages can be unsent");
       }
+      if (advancedCreateClient) {
+        const targetMsg = advancedTargetMessage(messageId);
+        await withAdvancedIMessageClient(space, (client) =>
+          client.messages.unsend(advancedChatId(space), targetMsg.messageGuid, {
+            ...targetMsg.options,
+            clientMessageId: clientMessageId("unsend"),
+          })
+        );
+        knownMessages.delete(messageId);
+        return ok(res, {
+          messageId,
+          unsent: true,
+          method: "advanced.messages.unsend",
+        });
+      }
       if (typeof target.unsend === "function") {
         await target.unsend();
-      } else {
-        await space.send(unsendContent(target));
+        knownMessages.delete(messageId);
+        return ok(res, { messageId, unsent: true, method: "message.unsend" });
       }
+      await space.send(unsendContent(target));
       knownMessages.delete(messageId);
-      return ok(res, { messageId, unsent: true });
+      return ok(res, { messageId, unsent: true, method: "space.send(unsend)" });
     }
     if (req.url === "/send-poll") {
       if (!nativePollsEnabled) {

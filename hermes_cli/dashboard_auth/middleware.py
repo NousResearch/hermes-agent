@@ -16,7 +16,10 @@ binds.
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
+import time as _time
 from typing import Awaitable, Callable
 
 from fastapi import Request
@@ -34,6 +37,26 @@ from hermes_cli.dashboard_auth.cookies import (
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
+
+# In-process replay cache for rotated refresh tokens.
+#
+# When the browser discovers an expired access-token cookie it can fire a
+# burst of parallel fetch() calls (session, profile, status, ws-ticket …).
+# Each carries the same old ``hermes_session_rt`` cookie.  The first request
+# rotates the RT and gets new cookies back via ``Set-Cookie``, but sibling
+# in-flight requests still carry the *old* RT.  Without coalescing, each of
+# those replays the now-stale RT and the provider's reuse-detection revokes
+# the whole session — kicking the remote UI back to login.
+#
+# ``_refresh_cache`` maps ``sha256(old_refresh_token)`` to
+# ``(new_session, provider_name, monotonic_timestamp)``.  A hit within
+# ``_REFRESH_CACHE_TTL_S`` seconds means "another in-process request already
+# rotated this exact RT — use the fresh session instead of hitting the
+# provider again."  The asyncio lock serializes concurrent misses so at most
+# one request per old-RT ever reaches the provider.
+_refresh_cache: dict[str, tuple] = {}
+_refresh_cache_lock = asyncio.Lock()
+_REFRESH_CACHE_TTL_S = 120  # seconds
 
 # Prefixes that bypass the auth gate. Match via ``path == prefix`` or
 # ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
@@ -350,7 +373,7 @@ async def gated_auth_middleware(
         # one). On success we re-set the rotated cookies on the response and
         # serve the request transparently; on RefreshExpiredError (RT dead /
         # revoked / reuse-detected) we fall through to clear-and-relogin.
-        refreshed = _attempt_refresh(request, refresh_token=_rt)
+        refreshed = await _attempt_refresh(request, refresh_token=_rt)
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session
@@ -416,7 +439,7 @@ def _expires_in_seconds(session) -> int:
     return max(60, int(session.expires_at) - int(time.time()))
 
 
-def _attempt_refresh(request: Request, *, refresh_token):
+async def _attempt_refresh(request: Request, *, refresh_token):
     """Try to rotate an expired session via the refresh token.
 
     Returns ``(new_session, provider_name)`` on success, or ``None`` if
@@ -427,35 +450,75 @@ def _attempt_refresh(request: Request, *, refresh_token):
     here — re-raising would 500 the request; instead we log and return None so
     the caller forces a clean re-login, which is the safer UX than a hard
     error on a transient network blip during the narrow refresh window.
+
+    **Refresh-token replay cache**: concurrent requests carrying the same
+    stale RT are coalesced.  The first request to reach the provider rotates
+    the RT and caches the result; siblings with the same old RT receive the
+    cached fresh session instead of replaying the now-rotated token (which
+    would trip reuse detection and revoke the session).
     """
     if not refresh_token:
         return None
-    for provider in list_session_providers():
-        try:
-            new_session = provider.refresh_session(refresh_token=refresh_token)
-        except RefreshExpiredError:
-            # This provider owns the RT but it's dead — stop trying others
-            # (an RT belongs to exactly one provider) and force re-login.
-            audit_log(
-                AuditEvent.REFRESH_FAILURE,
-                provider=provider.name,
-                reason="refresh_expired",
-                ip=_client_ip(request),
+
+    rt_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+    now_mono = _time.monotonic()
+
+    # Fast path — another request already refreshed this exact RT recently.
+    cached = _refresh_cache.get(rt_hash)
+    if cached is not None:
+        cached_session, cached_provider, cached_ts = cached
+        if now_mono - cached_ts < _REFRESH_CACHE_TTL_S:
+            _log.debug(
+                "dashboard-auth: refresh cache hit for RT hash %s…",
+                rt_hash[:12],
             )
-            return None
-        except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: provider %r unreachable during refresh: %s",
-                provider.name, e,
-            )
-            audit_log(
-                AuditEvent.REFRESH_FAILURE,
-                provider=provider.name,
-                reason="provider_unreachable",
-                ip=_client_ip(request),
-            )
-            return None
-        if new_session is not None:
-            return new_session, provider.name
+            return cached_session, cached_provider
+
+    # Slow path — serialize so only one request per old-RT hits the provider.
+    async with _refresh_cache_lock:
+        # Double-check after acquiring the lock (another request may have
+        # populated the cache while we were waiting).
+        cached = _refresh_cache.get(rt_hash)
+        if cached is not None:
+            cached_session, cached_provider, cached_ts = cached
+            if now_mono - cached_ts < _REFRESH_CACHE_TTL_S:
+                _log.debug(
+                    "dashboard-auth: refresh cache hit (post-lock) for RT hash %s…",
+                    rt_hash[:12],
+                )
+                return cached_session, cached_provider
+
+        for provider in list_session_providers():
+            try:
+                new_session = provider.refresh_session(refresh_token=refresh_token)
+            except RefreshExpiredError:
+                # This provider owns the RT but it's dead — stop trying others
+                # (an RT belongs to exactly one provider) and force re-login.
+                audit_log(
+                    AuditEvent.REFRESH_FAILURE,
+                    provider=provider.name,
+                    reason="refresh_expired",
+                    ip=_client_ip(request),
+                )
+                return None
+            except ProviderError as e:
+                _log.warning(
+                    "dashboard-auth: provider %r unreachable during refresh: %s",
+                    provider.name, e,
+                )
+                audit_log(
+                    AuditEvent.REFRESH_FAILURE,
+                    provider=provider.name,
+                    reason="provider_unreachable",
+                    ip=_client_ip(request),
+                )
+                return None
+            if new_session is not None:
+                # Cache the rotated session so concurrent siblings don't
+                # replay the old RT and trip reuse detection.
+                _refresh_cache[rt_hash] = (
+                    new_session, provider.name, _time.monotonic(),
+                )
+                return new_session, provider.name
     return None
 

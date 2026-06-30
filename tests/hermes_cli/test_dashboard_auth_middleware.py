@@ -20,7 +20,8 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
+from hermes_cli.dashboard_auth.base import RefreshExpiredError
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -593,3 +594,112 @@ def test_unverifiable_token_with_reachable_providers_redirects(_gated_state):
     r = client.get("/api/auth/me")
     assert r.status_code == 401
     assert "unreachable" not in r.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Refresh-token replay cache
+# ---------------------------------------------------------------------------
+
+
+class ReuseDetectingProvider(StubAuthProvider):
+    """Simulates a provider with refresh-token reuse detection.
+
+    On the *first* call to ``refresh_session`` with a given RT, it returns a
+    fresh session and records the RT.  On the *second* call with the same RT
+    (i.e. a concurrent sibling replayed the old token before the browser
+    applied the first response's ``Set-Cookie``), it raises
+    ``RefreshExpiredError`` — exactly what a real rotating-RT provider does
+    when it detects reuse.
+    """
+
+    def __init__(self, default_ttl: int = 3600):
+        super().__init__(default_ttl=default_ttl)
+        self._seen_rts: set[str] = set()
+        self.refresh_call_count = 0
+
+    def refresh_session(self, *, refresh_token: str):
+        self.refresh_call_count += 1
+        if refresh_token in self._seen_rts:
+            # Reuse detected — real providers revoke the whole session family.
+            raise RefreshExpiredError("reuse detected (stub)")
+        self._seen_rts.add(refresh_token)
+        return super().refresh_session(refresh_token=refresh_token)
+
+
+def test_refresh_token_replay_cache_prevents_reuse_detection():
+    """Consequent requests with the same stale RT must NOT replay it.
+
+    Regression for #55712: the browser sends a burst of parallel fetch()
+    calls when the access-token cookie expires.  The first request rotates
+    the RT; siblings carrying the old RT must hit the replay cache instead
+    of the provider, avoiding reuse-detection revocation.
+
+    Uses ``ReuseDetectingProvider`` which raises ``RefreshExpiredError`` on
+    the second call with the same RT — exactly the reuse-detection behaviour
+    that kills remote dashboard sessions.
+    """
+    from hermes_cli.dashboard_auth.middleware import _refresh_cache
+
+    _refresh_cache.clear()
+    provider = ReuseDetectingProvider(default_ttl=0)  # AT born expired
+    clear_providers()
+    register_provider(provider)
+
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+
+    try:
+        client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+
+        # Walk the full OAuth round trip.  Because default_ttl=0, the AT is
+        # born expired — every subsequent request forces a refresh.
+        r1 = client.get("/auth/login?provider=stub", follow_redirects=False)
+        assert r1.status_code == 302
+        state = r1.headers["location"].split("state=")[1]
+        r2 = client.get(
+            f"/auth/callback?code=stub_code&state={state}",
+            follow_redirects=False,
+        )
+        assert r2.status_code == 302
+
+        # The AT is expired (default_ttl=0).  Verify we hold an RT cookie.
+        # HTTPS deploy uses __Host- prefix.
+        rt_val = (
+            client.cookies.get("__Host-" + SESSION_RT_COOKIE)
+            or client.cookies.get(SESSION_RT_COOKIE)
+        )
+        assert rt_val, "Expected a refresh-token cookie after login"
+
+        # First gated request: AT expired → middleware refreshes via provider.
+        r3 = client.get("/api/auth/me")
+        assert r3.status_code == 200, (
+            f"First request after AT-expiry should refresh transparently; "
+            f"got {r3.status_code}: {r3.text}"
+        )
+        assert provider.refresh_call_count == 1, (
+            f"Provider should be called once, got {provider.refresh_call_count}"
+        )
+
+        # Second gated request: AT is again expired (default_ttl=0), so the
+        # middleware will try to refresh again.  The replay cache must serve
+        # the previously-rotated session without calling the provider a second
+        # time (which would trip reuse detection).
+        r4 = client.get("/api/auth/me")
+        assert r4.status_code == 200, (
+            f"Second request should use cached refresh result; "
+            f"got {r4.status_code}: {r4.text}"
+        )
+        assert provider.refresh_call_count == 1, (
+            f"Provider should still have been called only once (cache hit); "
+            f"got {provider.refresh_call_count} calls"
+        )
+    finally:
+        _refresh_cache.clear()
+        clear_providers()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.bound_port = prev_port
+        web_server.app.state.auth_required = prev_required

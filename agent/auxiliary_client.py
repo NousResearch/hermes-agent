@@ -391,21 +391,6 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "zai": "glm-5v-turbo",
 }
 
-# Providers whose endpoint does not accept image input, even though the
-# provider's broader ecosystem has vision models available elsewhere.  When
-# `auxiliary.vision.provider: auto` sees one of these as the main provider,
-# it must skip straight to the aggregator chain instead of returning a client
-# that will 404 on every vision request.
-#
-# kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
-# api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
-# describe as having no image_in capability. Vision lives on the separate
-# Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
-_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
-    "kimi-coding",
-    "kimi-coding-cn",
-})
-
 # OpenRouter app attribution headers (base — always sent).
 # `X-Title` is the canonical attribution header OpenRouter's dashboard
 # reads; the previous `X-OpenRouter-Title` label was not recognized there.
@@ -4735,19 +4720,6 @@ def resolve_vision_provider_client(
                         main_provider, default_model or resolved_model or main_model,
                     )
                     return _finalize(main_provider, sync_client, default_model)
-            elif main_provider in _PROVIDERS_WITHOUT_VISION:
-                # Kimi Coding Plan's /coding endpoint (Anthropic Messages wire)
-                # does not accept image input — Kimi's own docs say "Current
-                # model does not support image input, switch to a model with
-                # image_in capability" and vision lives on the separate Kimi
-                # Platform (api.moonshot.ai). Skip the main provider and fall
-                # through to the aggregator chain instead of returning a
-                # client that will 404 on every vision request (#17076).
-                logger.debug(
-                    "Vision auto-detect: skipping main provider %s (no "
-                    "vision support) — falling through to aggregator chain",
-                    main_provider,
-                )
             elif not _main_model_supports_vision(main_provider, vision_model):
                 # The main model is known to be text-only (e.g. DeepSeek V4,
                 # gpt-oss-120b without vision). Building a client and sending
@@ -4755,9 +4727,8 @@ def resolve_vision_provider_client(
                 # ``unknown variant `image_url`, expected `text``` (#31179).
                 # Fall through to the aggregator chain instead.
                 #
-                # Only log the provider name (not the model) — mirrors the
-                # sibling _PROVIDERS_WITHOUT_VISION branch above, and avoids
-                # CodeQL py/clear-text-logging-sensitive-data heuristic false
+                # Only log the provider name (not the model) — avoids CodeQL
+                # py/clear-text-logging-sensitive-data heuristic false
                 # positives on multi-value interpolations.
                 logger.debug(
                     "Vision auto-detect: skipping main provider %s "

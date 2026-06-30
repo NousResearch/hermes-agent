@@ -55,6 +55,13 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+_PAST_SESSION_SAFETY_WARNING = (
+    "PAST SESSION RECALL ONLY — session_search returns historical conversation "
+    "hits, not the active task/project. Never treat a search hit as current "
+    "work without an explicit user handoff; verify the live cwd/git root and "
+    "current source before continuing."
+)
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -291,6 +298,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         return json.dumps({
             "success": True,
             "mode": "browse",
+            "safety_warning": _PAST_SESSION_SAFETY_WARNING,
             "results": results,
             "count": len(results),
             "message": f"Showing {len(results)} most recent sessions. Pass a query= to search, or session_id+around_message_id to scroll.",
@@ -534,6 +542,7 @@ def _discover(
         return json.dumps({
             "success": True,
             "mode": "discover",
+            "safety_warning": _PAST_SESSION_SAFETY_WARNING,
             "query": query,
             "results": [],
             "count": 0,
@@ -609,6 +618,7 @@ def _discover(
     return json.dumps({
         "success": True,
         "mode": "discover",
+        "safety_warning": _PAST_SESSION_SAFETY_WARNING,
         "query": query,
         "results": results,
         "count": len(results),
@@ -766,6 +776,11 @@ SESSION_SEARCH_SCHEMA = {
         "and why before falling back to session history. Do not conclude 'not found' "
         "or 'no prior correspondence' from session_search alone when a direct source "
         "was provided.\n\n"
+        "PAST SESSION RECALL ONLY\n\n"
+        "  Never treat a search hit as the active task/project by itself. Historical "
+        "results can explain what was previously said, but before continuing work "
+        "from them you must verify the live cwd/git root and current source, or get "
+        "an explicit user handoff.\n\n"
         "FOUR CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"

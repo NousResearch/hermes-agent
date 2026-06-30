@@ -30,7 +30,18 @@ VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # task description, and active lists are a handful of items, not hundreds.
 MAX_TODO_CONTENT_CHARS = 4000
 MAX_TODO_ITEMS = 256
+_TODO_INJECTION_PREFIX = "[Your active task list was preserved across context compression]"
 _TRUNCATION_MARKER = "… [truncated]"
+
+
+def is_todo_injection_content(content: object) -> bool:
+    """Return True for Hermes' internal post-compression todo snapshot.
+
+    These snapshots are agent state, not user-authored chat content. They are
+    kept in model replay so long tasks survive compression, but UI/session
+    readers should never treat them as the user's latest message.
+    """
+    return isinstance(content, str) and content.startswith(_TODO_INJECTION_PREFIX)
 
 
 class TodoStore:
@@ -130,7 +141,7 @@ class TodoStore:
         if not active_items:
             return None
 
-        lines = ["[Your active task list was preserved across context compression]"]
+        lines = [_TODO_INJECTION_PREFIX]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")

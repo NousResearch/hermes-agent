@@ -88,6 +88,13 @@ function buildDesktopBackendEnv({
 
   return {
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
+    // Desktop-spawned Python backends should never inherit a Windows ANSI
+    // code page for text-mode subprocess pipes. A non-UTF-8 locale surfaced
+    // as `_readerthread` UnicodeDecodeError crashes in desktop.log when child
+    // tools emitted UTF-8 bytes. Pin UTF-8 unless the caller deliberately set
+    // a different value.
+    PYTHONUTF8: currentEnv?.PYTHONUTF8 || '1',
+    PYTHONIOENCODING: currentEnv?.PYTHONIOENCODING || 'utf-8',
     [key]: buildDesktopBackendPath({
       hermesHome,
       venvRoot,

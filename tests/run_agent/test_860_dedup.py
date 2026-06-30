@@ -201,6 +201,7 @@ class TestAppendToTranscriptSkipDb:
         # SQLite should NOT have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
+        db.close()
 
     def test_default_writes_to_sqlite(self, tmp_path):
         """Without skip_db, message appears in SQLite."""
@@ -226,6 +227,7 @@ class TestAppendToTranscriptSkipDb:
         # SQLite should have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 1
+        db.close()
 
 
 # ---------------------------------------------------------------------------

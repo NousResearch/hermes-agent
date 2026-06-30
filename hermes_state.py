@@ -1152,6 +1152,13 @@ class SessionDB:
                 self._conn.close()
                 self._conn = None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
         """Extract expected columns per table from SCHEMA_SQL.
@@ -1488,6 +1495,8 @@ class SessionDB:
         thread_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        git_branch: str = None,
+        git_repo_root: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -1502,12 +1511,28 @@ class SessionDB:
         can't clobber a real source/model).
         """
         def _do(conn):
+            effective_cwd = cwd
+            effective_git_branch = git_branch
+            effective_git_repo_root = git_repo_root
+            if parent_session_id and (
+                not effective_cwd or not effective_git_branch or not effective_git_repo_root
+            ):
+                parent = conn.execute(
+                    "SELECT cwd, git_branch, git_repo_root FROM sessions WHERE id = ?",
+                    (parent_session_id,),
+                ).fetchone()
+                if parent is not None:
+                    effective_cwd = effective_cwd or parent["cwd"]
+                    effective_git_branch = effective_git_branch or parent["git_branch"]
+                    effective_git_repo_root = effective_git_repo_root or parent["git_repo_root"]
+
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                   model, model_config, system_prompt, parent_session_id, cwd,
+                   git_branch, git_repo_root, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -1517,7 +1542,9 @@ class SessionDB:
                        chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                        thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
+                       cwd = COALESCE(sessions.cwd, excluded.cwd),
+                       git_branch = COALESCE(sessions.git_branch, excluded.git_branch),
+                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root)""",
                 (
                     session_id,
                     source,
@@ -1530,7 +1557,9 @@ class SessionDB:
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
                     parent_session_id,
-                    cwd,
+                    effective_cwd,
+                    effective_git_branch,
+                    effective_git_repo_root,
                     time.time(),
                 ),
             )
@@ -2576,6 +2605,136 @@ class SessionDB:
             current = child_id
         return current
 
+    @staticmethod
+    def _looks_like_home_cwd(cwd: Optional[str]) -> bool:
+        if not cwd:
+            return False
+        normalized = str(cwd).replace("\\", "/").rstrip("/").lower()
+        return bool(
+            re.match(r"^[a-z]:/users/[^/]+$", normalized)
+            or re.match(r"^/home/[^/]+$", normalized)
+            or re.match(r"^/users/[^/]+$", normalized)
+        )
+
+    def _nearest_lineage_workspace_ancestor(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Find the nearest compression-lineage ancestor with workspace metadata."""
+        current = session_id
+        seen = set()
+        with self._lock:
+            for _ in range(100):
+                if not current or current in seen:
+                    return None
+                seen.add(current)
+                row = self._conn.execute(
+                    """
+                    SELECT child.parent_session_id,
+                           parent.id AS ancestor_id,
+                           parent.end_reason AS ancestor_end_reason,
+                           parent.cwd AS target_cwd,
+                           parent.git_branch AS target_git_branch,
+                           parent.git_repo_root AS target_git_repo_root
+                    FROM sessions child
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE child.id = ?
+                    """,
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    return None
+                target_cwd = row["target_cwd"]
+                target_repo = row["target_git_repo_root"]
+                target_is_project = bool(target_repo) or bool(
+                    target_cwd and not self._looks_like_home_cwd(target_cwd)
+                )
+                if row["ancestor_end_reason"] == "compression" and target_is_project:
+                    return dict(row)
+                current = row["parent_session_id"]
+        return None
+
+    def find_weak_lineage_project_bindings(self) -> List[Dict[str, Any]]:
+        """Report compression-continuation rows that lost project metadata.
+
+        Older Desktop/TUI continuations could be created with NULL or home cwd
+        even though their compression parent had a real project cwd/repo root.
+        Those rows make the same logical chat appear outside its Desktop Project.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT s.id, s.cwd, s.git_branch, s.git_repo_root, s.parent_session_id
+                FROM sessions s
+                WHERE s.parent_session_id IS NOT NULL
+                  AND json_extract(COALESCE(s.model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(s.source, '') != 'tool'
+                ORDER BY s.started_at ASC, s.id ASC
+                """
+            ).fetchall()
+
+        weak: List[Dict[str, Any]] = []
+        for row in rows:
+            child = dict(row)
+            ancestor = self._nearest_lineage_workspace_ancestor(child["id"])
+            if not ancestor:
+                continue
+            target_cwd = ancestor.get("target_cwd")
+            target_repo = ancestor.get("target_git_repo_root")
+            child_cwd = child.get("cwd")
+            child_repo = child.get("git_repo_root")
+
+            missing = not child_cwd and not child_repo
+            home_cwd = self._looks_like_home_cwd(child_cwd) and not child_repo
+            if not missing and not home_cwd:
+                continue
+
+            reason = "missing workspace metadata" if missing else "home cwd without git_repo_root"
+            weak.append({
+                "id": child["id"],
+                "ancestor_id": ancestor["ancestor_id"],
+                "parent_session_id": child.get("parent_session_id"),
+                "cwd": child_cwd,
+                "git_branch": child.get("git_branch"),
+                "git_repo_root": child_repo,
+                "target_cwd": target_cwd,
+                "target_git_branch": ancestor.get("target_git_branch"),
+                "target_git_repo_root": target_repo,
+                "reason": reason,
+            })
+        return weak
+
+    def repair_weak_lineage_project_bindings(self, apply: bool = False) -> Dict[str, Any]:
+        """Backfill weak compression-continuation project metadata.
+
+        ``apply=False`` is check-only. ``apply=True`` mutates only rows returned
+        by :meth:`find_weak_lineage_project_bindings`.
+        """
+        weak = self.find_weak_lineage_project_bindings()
+        result = {"checked": len(weak), "updated": 0, "weak": weak}
+        if not apply or not weak:
+            return result
+
+        def _do(conn):
+            updated = 0
+            for item in weak:
+                cursor = conn.execute(
+                    """
+                    UPDATE sessions
+                    SET cwd = ?, git_branch = ?, git_repo_root = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        item.get("target_cwd"),
+                        item.get("target_git_branch"),
+                        item.get("target_git_repo_root"),
+                        item["id"],
+                    ),
+                )
+                updated += cursor.rowcount or 0
+            return updated
+
+        result["updated"] = int(self._execute_write(_do) or 0)
+        return result
+
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
 
@@ -2839,10 +2998,15 @@ class SessionDB:
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
-                    "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "model", "system_prompt",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
+                for key in ("cwd", "git_branch", "git_repo_root"):
+                    if tip_row.get(key):
+                        merged[key] = tip_row[key]
+                    elif s.get(key):
+                        merged[key] = s[key]
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
@@ -3623,9 +3787,19 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
+            role = row["role"]
+            try:
+                from tools.todo_tool import is_todo_injection_content
+            except Exception:
+                is_todo_injection_content = lambda _content: False
+            if is_todo_injection_content(content):
+                # Legacy rows were persisted as role='user'. Treat them as
+                # internal replay hints so a preserved todo list cannot become
+                # the active/latest user turn after resume or compression.
+                role = "system"
+            if role in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
-            msg = {"role": row["role"], "content": content}
+            msg = {"role": role, "content": content}
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

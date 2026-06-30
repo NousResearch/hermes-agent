@@ -30,6 +30,7 @@ Session context:
 import io
 import logging
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -58,9 +59,17 @@ from typing import Optional, Sequence
 # module (class declaration, ``isinstance`` checks, docstring) working
 # unchanged. See #44873.
 if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
+    import concurrent_log_handler as _concurrent_log_handler  # noqa: E402
+
+    # Give busy Desktop/TUI + gateway + cron processes more time to serialize
+    # rotation before concurrent-log-handler gives up and writes a traceback to
+    # stderr. The default 20 attempts is ~1s; 100 attempts is still bounded but
+    # avoids most benign contention spikes.
+    _concurrent_log_handler.LOCK_ATTEMPTS = max(
+        int(getattr(_concurrent_log_handler, "LOCK_ATTEMPTS", 20) or 20),
+        100,
     )
+    RotatingFileHandler = _concurrent_log_handler.ConcurrentRotatingFileHandler
 else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
 
@@ -116,7 +125,9 @@ def _safe_stderr():  # type: ignore[return]
     return stream
 
 
-_CONCURRENT_LOG_LOCK_TIMEOUT = "Cannot acquire lock after 20 attempts"
+_CONCURRENT_LOG_LOCK_TIMEOUT_RE = re.compile(
+    r"Cannot acquire lock after \d+ attempts"
+)
 
 
 def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
@@ -131,7 +142,7 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
     return (
         sys.platform == "win32"
         and isinstance(exc, RuntimeError)
-        and _CONCURRENT_LOG_LOCK_TIMEOUT in str(exc)
+        and bool(_CONCURRENT_LOG_LOCK_TIMEOUT_RE.search(str(exc)))
     )
 
 
@@ -512,7 +523,12 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         # so the syscall is sub-microsecond on a hot file.
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
-        super().emit(record)
+        try:
+            super().emit(record)
+        except RuntimeError as exc:
+            if _is_windows_concurrent_log_lock_timeout(exc):
+                return
+            raise
 
     def handleError(self, record: logging.LogRecord) -> None:
         """Suppress the known Windows ``concurrent-log-handler`` lock timeout

@@ -78,6 +78,58 @@ def _safe_which(cmd: str) -> str | None:
         return None
 
 
+def _tail_text(path: Path, *, max_bytes: int = 256_000) -> str:
+    """Return a UTF-8-ish tail of a log file without loading huge logs."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()  # drop partial first line
+            data = f.read()
+        return data.decode("utf-8", errors="replace")
+    except (OSError, UnicodeError):
+        return ""
+
+
+def _recent_runtime_log_hits(logs_dir: Path) -> list[str]:
+    """Lightweight recent-error scan for doctor runtime health.
+
+    This is intentionally heuristic: it points users at logs worth reading
+    without failing doctor for old/benign reconnect noise.
+    """
+    patterns = (
+        "traceback",
+        "uncaught exception",
+        "[gateway-crash]",
+        "cannot acquire lock after",
+        "database is locked",
+        "permissionerror",
+        "unicodeerror",
+        "unicodedecodeerror",
+    )
+    hits: list[str] = []
+    for name in ("error.log", "errors.log", "gateway.log", "desktop.log", "agent.log"):
+        path = logs_dir / name
+        if not path.exists():
+            continue
+        text = _tail_text(path)
+        if not text:
+            continue
+        lines = text.splitlines()[-800:]
+        count = 0
+        sample = ""
+        for line in lines:
+            low = line.lower()
+            if any(p in low for p in patterns):
+                count += 1
+                sample = line.strip()[:180] or sample
+        if count:
+            suffix = f" — latest: {sample}" if sample else ""
+            hits.append(f"{name}: {count} recent suspicious line(s){suffix}")
+    return hits
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -1317,6 +1369,55 @@ def run_doctor(args):
                 check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
         except Exception:
             pass
+
+    _section("Runtime Health")
+    try:
+        log_hits = _recent_runtime_log_hits(hermes_home / "logs")
+        if log_hits:
+            for hit in log_hits[:5]:
+                check_warn(hit)
+            check_info("Review recent logs above if Hermes felt unstable; old reconnect noise may be benign.")
+        else:
+            check_ok("No recent suspicious runtime log patterns")
+    except Exception as e:
+        check_warn(f"Runtime log scan failed: {e}")
+
+    try:
+        from gateway.status import is_gateway_running, read_runtime_status
+
+        running = is_gateway_running(cleanup_stale=False)
+        runtime = read_runtime_status() or {}
+        state = runtime.get("gateway_state") or ("running" if running else "unknown")
+        pid = runtime.get("pid") or runtime.get("process", {}).get("pid") if isinstance(runtime, dict) else None
+        if running:
+            detail = f"(state={state}"
+            if pid:
+                detail += f", pid={pid}"
+            detail += ")"
+            check_ok("Gateway runtime is running", detail)
+        else:
+            check_info("Gateway runtime is not running or no live PID file was found")
+    except Exception as e:
+        check_warn(f"Gateway runtime status check failed: {e}")
+
+    try:
+        if state_db_path.exists():
+            from hermes_state import SessionDB
+
+            db = SessionDB(db_path=state_db_path, read_only=True)
+            try:
+                weak = db.find_weak_lineage_project_bindings()
+            finally:
+                db.close()
+            if weak:
+                check_warn(
+                    f"{len(weak)} compression continuation session(s) have weak project bindings",
+                    "(run `hermes sessions repair-project-binding --apply`)",
+                )
+            else:
+                check_ok("No weak compression project bindings")
+    except Exception as e:
+        check_warn(f"Session project-binding audit failed: {e}")
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)

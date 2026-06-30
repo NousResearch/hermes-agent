@@ -13171,6 +13171,26 @@ def main():
         help="Skip the timestamped backup copy (not recommended)",
     )
 
+    sessions_project_repair = sessions_subparsers.add_parser(
+        "repair-project-binding",
+        help="Find or backfill compression continuation rows that lost project cwd metadata",
+        description=(
+            "Diagnose Desktop/TUI chats that disappeared from a Project after "
+            "compression because the continuation row lost cwd/git metadata. "
+            "Default is check-only; pass --apply to update affected rows."
+        ),
+    )
+    sessions_project_repair.add_argument(
+        "--apply",
+        action="store_true",
+        help="Backfill weak rows from their nearest compression-lineage project ancestor",
+    )
+    sessions_project_repair.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="When used with --apply, skip the timestamped state.db backup (not recommended)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -13258,6 +13278,38 @@ def main():
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
+
+        if action == "repair-project-binding":
+            apply = bool(getattr(args, "apply", False))
+            if apply and not getattr(args, "no_backup", False):
+                from datetime import datetime
+                import shutil
+                from hermes_state import DEFAULT_DB_PATH
+
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = DEFAULT_DB_PATH.with_name(
+                    f"{DEFAULT_DB_PATH.name}.before-project-binding-repair-{stamp}.bak"
+                )
+                shutil.copy2(DEFAULT_DB_PATH, backup_path)
+                print(f"backup: {backup_path}")
+            result = db.repair_weak_lineage_project_bindings(apply=apply)
+            weak = result.get("weak") or []
+            print(
+                f"checked={result.get('checked', 0)} "
+                f"updated={result.get('updated', 0)} "
+                f"mode={'apply' if apply else 'check-only'}"
+            )
+            if weak:
+                for item in weak[:20]:
+                    print(
+                        f"- {item['id']} <- {item['ancestor_id']}: "
+                        f"{item.get('reason')} -> {item.get('target_cwd') or item.get('target_git_repo_root')}"
+                    )
+                if len(weak) > 20:
+                    print(f"… {len(weak) - 20} more")
+            else:
+                print("✓ no weak project bindings found")
+            return
 
         if action == "list":
             sessions = db.list_sessions_rich(

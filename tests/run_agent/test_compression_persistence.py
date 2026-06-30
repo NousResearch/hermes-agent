@@ -99,6 +99,7 @@ class TestFlushAfterCompression:
                 f"Expected 5 compressed messages in new session, got {len(new_rows)}. "
                 f"Compression persistence bug: messages not written to SQLite."
             )
+            db.close()
 
     def test_flush_with_stale_history_loses_messages(self):
         """Stale conversation_history no longer causes data loss."""
@@ -128,6 +129,7 @@ class TestFlushAfterCompression:
             rows = db.get_messages("new-session")
             assert len(rows) == 2
             assert [row["content"] for row in rows] == ["summary", "continuing..."]
+            db.close()
 
     def test_in_place_compression_rebaseline_prevents_duplicate_compacted_rows(self):
         """In-place compaction already persisted the compacted transcript.
@@ -190,6 +192,7 @@ class TestFlushAfterCompression:
                 "tool result",
                 "final answer",
             ]
+            db.close()
 
 
 # ---------------------------------------------------------------------------

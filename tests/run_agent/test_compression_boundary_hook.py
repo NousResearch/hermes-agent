@@ -92,6 +92,7 @@ class TestCompressionBoundaryHook:
                 f"Expected new session_id as first positional arg, got {call!r}"
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
+            db.close()
 
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
@@ -162,6 +163,7 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+            db.close()
 
 
 class TestSessionCompressEvent:
@@ -222,6 +224,7 @@ class TestSessionCompressEvent:
             assert ctx["session_id"] == agent.session_id
             assert ctx["old_session_id"] == original_sid
             assert ctx["compression_count"] == 1
+            db.close()
 
     def test_no_callback_is_safe(self):
         """Compression must work when no event_callback is wired."""
@@ -235,6 +238,7 @@ class TestSessionCompressEvent:
                 [{"role": "user", "content": "m"}], "sys", approx_tokens=100
             )
             assert compressed
+            db.close()
 
     def test_callback_exception_does_not_break_compression(self):
         from hermes_state import SessionDB
@@ -253,3 +257,4 @@ class TestSessionCompressEvent:
             )
             assert compressed
             assert agent.session_id != original_sid
+            db.close()

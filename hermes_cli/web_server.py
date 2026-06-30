@@ -4924,6 +4924,16 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
             removed = remove_env_value(body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
+        # Clear any credential pool entries seeded from this env var so
+        # the provider stops appearing in the model picker.  Without this,
+        # _seed_from_env's persisted entries survive indefinitely because
+        # load_pool uses prune_env_sources=False.  (#9331)
+        try:
+            from hermes_cli.auth import _clear_pool_entries_for_env_var
+            with _profile_scope(body.profile or profile):
+                _clear_pool_entries_for_env_var(body.key)
+        except Exception as exc:
+            _log.warning("Failed to clear credential pool entries for %s: %s", body.key, exc)
         return {"ok": True, "key": body.key}
     except HTTPException:
         raise

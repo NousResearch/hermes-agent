@@ -1332,6 +1332,60 @@ def write_credential_pool(
         return _save_auth_store(auth_store)
 
 
+def _clear_pool_entries_for_env_var(env_var: str) -> bool:
+    """Remove all env-seeded credential pool entries for a deleted env var.
+
+    ``_seed_from_env`` persists ``source=env:{env_var}`` entries that survive
+    even after the env var is removed from ``.env`` (``load_pool`` uses
+    ``prune_env_sources=False`` to avoid cross-process races).  When the
+    Desktop or CLI deletes an env var, this function cleans up the stale
+    pool entries so the provider stops appearing in the model picker.
+
+    Also clears any ``suppressed_sources`` flags for the same source so that
+    re-adding the env var later will re-seed correctly.
+
+    Returns True if any entry was removed.
+    """
+    source = f"env:{env_var}"
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return False
+
+        changed = False
+        for provider_id in list(pool.keys()):
+            entries = pool[provider_id]
+            if not isinstance(entries, list):
+                continue
+            new_entries = [
+                e for e in entries
+                if isinstance(e, dict) and e.get("source") != source
+            ]
+            if len(new_entries) < len(entries):
+                if new_entries:
+                    pool[provider_id] = new_entries
+                else:
+                    del pool[provider_id]
+                changed = True
+
+        # Clear stale suppressed-source flags so re-adding the env var later
+        # will re-seed correctly instead of being blocked by an old suppression.
+        suppressed = auth_store.get("suppressed_sources")
+        if isinstance(suppressed, dict):
+            for provider_id in list(suppressed.keys()):
+                sources = suppressed[provider_id]
+                if isinstance(sources, list) and source in sources:
+                    sources.remove(source)
+                    if not sources:
+                        del suppressed[provider_id]
+                    changed = True
+
+        if changed:
+            _save_auth_store(auth_store)
+        return changed
+
+
 def suppress_credential_source(provider_id: str, source: str) -> None:
     """Mark a credential source as suppressed so it won't be re-seeded."""
     with _auth_store_lock():

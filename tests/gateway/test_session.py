@@ -235,6 +235,48 @@ class TestBuildSessionContextPrompt:
         assert "Discord" in prompt
         assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower()
 
+    def test_discord_prompt_stable_across_message_id(self):
+        """The cached system prompt must NOT vary with the triggering message_id.
+
+        message_id changes every turn; baking it into the Discord IDs block
+        busts the gateway agent-cache signature and rebuilds the AIAgent on
+        every message (destroying prompt caching). The volatile id is injected
+        per-turn into the user message instead — the cached block only carries
+        a static pointer.
+        """
+        from unittest.mock import patch
+        import gateway.session as _gs
+
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(enabled=True, token="fake-d...oken"),
+            },
+        )
+
+        def _prompt_for(msg_id):
+            source = SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="chan-1",
+                chat_name="Server",
+                chat_type="group",
+                user_name="alice",
+                guild_id="guild-123",
+                message_id=msg_id,
+            )
+            ctx = build_session_context(source, config)
+            return build_session_context_prompt(ctx)
+
+        # Force the Discord IDs block on (it only emits when discord tools load).
+        with patch.object(_gs, "_discord_tools_loaded", return_value=True):
+            p1 = _prompt_for("1001")
+            p2 = _prompt_for("2002")
+            p3 = _prompt_for("3003")
+
+        assert p1 == p2 == p3, "system prompt must be stable across message_id"
+        assert "1001" not in p1 and "2002" not in p2 and "3003" not in p3
+        # Static pointer tells the agent where the volatile id actually lives.
+        assert "provided per-turn in the incoming user message" in p1
+
     def test_slack_prompt_includes_platform_notes(self):
         config = GatewayConfig(
             platforms={

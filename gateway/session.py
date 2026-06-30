@@ -451,7 +451,17 @@ def build_session_context_prompt(
             else:
                 id_lines.append(f"  - Channel: `{src.chat_id}`")
             if src.message_id:
-                id_lines.append(f"  - Triggering message: `{src.message_id}`")
+                # The triggering message id is volatile (changes every turn).
+                # Keep it OUT of this cached system-prompt block — including it
+                # here changes build_session_context_prompt() output per turn,
+                # which busts the gateway agent-cache signature and forces an
+                # AIAgent rebuild on every Discord message. The actual id is
+                # injected per-turn into the user message instead (see the
+                # "Triggering message id" note in run.py).
+                id_lines.append(
+                    "  - Triggering message: provided per-turn in the incoming "
+                    "user message (use it as `message_id` for reply/react/pin)"
+                )
             lines.extend(id_lines)
         else:
             lines.append("")

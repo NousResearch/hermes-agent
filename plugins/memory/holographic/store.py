@@ -229,15 +229,23 @@ class MemoryStore:
             results = [self._row_to_dict(r) for r in rows]
 
             if results:
-                ids = [r["fact_id"] for r in results]
-                placeholders = ",".join("?" * len(ids))
-                self._conn.execute(
-                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                    ids,
-                )
-                self._conn.commit()
+                self.mark_retrieved([r["fact_id"] for r in results])
 
             return results
+
+    def mark_retrieved(self, fact_ids: list[int]) -> None:
+        """Increment retrieval_count once for each unique fact id."""
+        unique_ids = sorted({int(fid) for fid in fact_ids})
+        if not unique_ids:
+            return
+
+        with self._lock:
+            placeholders = ",".join("?" * len(unique_ids))
+            self._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                unique_ids,
+            )
+            self._conn.commit()
 
     def update_fact(
         self,

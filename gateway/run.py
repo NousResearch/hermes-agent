@@ -15931,9 +15931,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _last_edit_ts = time.monotonic()
                             else:
                                 can_edit = False
+                            # Send the full accumulated text as a new message
+                            # so the user sees the complete progress instead of
+                            # just the latest line (e.g. after edit limit 230072).
+                            _fallback_text = full_text
+                            if not _fallback_text or not _fallback_text.strip():
+                                _fallback_text = msg
                             _flood_result = await adapter.send(
                                 chat_id=source.chat_id,
-                                content=msg,
+                                content=_fallback_text,
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
@@ -15943,6 +15949,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 and getattr(_flood_result, "message_id", None)
                             ):
                                 _cleanup_msg_ids.append(str(_flood_result.message_id))
+                                # Use the new message as the new progress target
+                                progress_msg_id = _flood_result.message_id
+                                can_edit = True
+                                progress_lines = []
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message

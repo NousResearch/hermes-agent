@@ -18,6 +18,10 @@ export interface BuiltSim {
 
 const DAY = 86_400
 
+// Roughly how many nodes share one ignite burst within a ring band — the build
+// reads as clustered pops, not a 1-by-1 trickle or an all-at-once flood.
+const CLUSTER_SIZE = 5
+
 // Constant ring SCALE: the core radius and the per-ring band are pinned to the
 // canonical 5-ring layout, so the empty core and every band are ALWAYS that
 // size on the disk — more data grows the disk OUTWARD (more rings) instead of
@@ -210,8 +214,18 @@ function buildLayout(graph: StarmapGraph, recById: Map<string, number>, minTs: n
     const lo = i > 0 ? rings[i - 1]!.ratio : 0
     const m = bucket.length
 
-    // f ∈ (0,1]: first node lands just inside the band, last node ON the ring.
-    bucket.forEach((n, k) => recByNode.set(n.id, lo + ((k + 1) / m) * (hi - lo)))
+    // Ignite in CLUSTERS, not a 1-by-1 trickle: split the band's (time-ordered)
+    // nodes into a few sub-bursts (~CLUSTER_SIZE each) that share an ignite
+    // moment, spaced across the band, with a hair of per-node jitter so a burst
+    // reads as organic rather than perfectly synchronous.
+    const clusters = Math.max(1, Math.round(m / CLUSTER_SIZE))
+
+    bucket.forEach((n, k) => {
+      const c = Math.min(clusters - 1, Math.floor((k / m) * clusters))
+      const jitter = ((hash(n.id) % 100) / 100 - 0.5) * (0.5 / clusters)
+      const f = clamp((c + 1) / clusters + jitter, 0.02, 1)
+      recByNode.set(n.id, lo + f * (hi - lo))
+    })
   })
 
   return {

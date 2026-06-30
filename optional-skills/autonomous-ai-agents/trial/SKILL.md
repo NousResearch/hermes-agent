@@ -64,9 +64,9 @@ invocation (`/trial strict <task>`) if given; otherwise infer it. When unsure,
 pick the lighter tier — you can escalate mid-run if it proves harder.
 
 > **Speed is a feature.** Every delegated subagent costs real wall-clock —
-> minutes each on slower models (e.g. MiniMax-M3). A simple task that takes half
-> an hour, or stalls at "gate 3/8", is a **bug, not rigor**. Never run the full
-> fan-out on small work.
+> minutes each on slower models. A simple task that takes half an hour, or
+> stalls at "gate 3/8", is a **bug, not rigor**. Never run the full fan-out on
+> small work.
 
 ## Autonomous run
 
@@ -98,9 +98,10 @@ delegation**. The gates still happen — they're just fast:
    the run evidence (command → result). Set `verdict: delivered`.
 
 Keep `status.json` + the console updated so the user watches it advance live —
-the gates just move fast. **Honesty:** the fast path trades a separate judge
-panel for objective execution; that's correct for low-stakes work. For
-high-stakes work, use the full path (real independent judges).
+the gates just move fast. **Honesty:** the fast path verifies by running the
+work directly instead of spawning fresh subagent judges; that's correct for
+low-stakes work. For high-stakes work, use the full path (fresh subagents with
+isolated context judge the claim independently).
 
 ## The Full Path (strict / maximum, or a genuinely complex task)
 

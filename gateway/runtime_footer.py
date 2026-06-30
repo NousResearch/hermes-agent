@@ -110,7 +110,10 @@ def format_runtime_footer(
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+                # Format tokens in K (e.g. 38k, 200k)
+                ctx_k = f"{context_tokens // 1000}k" if context_tokens >= 1000 else str(context_tokens)
+                len_k = f"{context_length // 1000}k" if context_length >= 1000 else str(context_length)
+                parts.append(f"{pct}% ({ctx_k}/{len_k})")
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:

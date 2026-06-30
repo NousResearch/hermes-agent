@@ -66,6 +66,43 @@ MAX_MESSAGE_LENGTH = 50_000
 
 SMTP_CONNECT_TIMEOUT = 30
 
+_MESSAGE_ID_RE = re.compile(r"<[^<>\r\n]+>")
+
+
+def _message_id_tokens(value: str) -> List[str]:
+    """Return sanitized Message-ID tokens from a header value.
+
+    ``References`` headers may be folded across multiple lines by mail clients
+    or IMAP servers.  The email package rejects header values containing raw
+    newlines, so outbound replies must unfold and sanitize the inbound chain
+    before re-emitting it.
+    """
+    if not value:
+        return []
+    raw = str(value)
+    matches = _MESSAGE_ID_RE.findall(raw)
+    if matches:
+        return [" ".join(match.split()) for match in matches]
+    unfolded = " ".join(raw.split())
+    return [part for part in unfolded.split(" ") if part]
+
+
+def _build_references_header(existing: str, current_msg_id: str) -> str:
+    """Build a safe outbound ``References`` chain preserving order.
+
+    The current inbound ``Message-ID`` is appended only if it is not already in
+    the inbound ``References`` chain.
+    """
+    tokens: List[str] = []
+    seen: set[str] = set()
+    for candidate in _message_id_tokens(existing) + _message_id_tokens(current_msg_id):
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tokens.append(candidate)
+    return " ".join(tokens)
+
 
 def _create_ipv4_connection(
     host: str,
@@ -686,6 +723,7 @@ class EmailAdapter(BasePlatformAdapter):
                     subject = _decode_header_value(msg.get("Subject", "(no subject)"))
                     message_id = msg.get("Message-ID", "")
                     in_reply_to = msg.get("In-Reply-To", "")
+                    references = msg.get("References", "")
                     # Skip automated/noreply senders before any processing
                     msg_headers = dict(msg.items())
                     if _is_automated_sender(sender_addr, msg_headers):
@@ -712,6 +750,7 @@ class EmailAdapter(BasePlatformAdapter):
                         "subject": subject,
                         "message_id": message_id,
                         "in_reply_to": in_reply_to,
+                        "references": references,
                         "body": body,
                         "attachments": attachments,
                         "date": msg.get("Date", ""),
@@ -839,6 +878,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "references": msg_data.get("references", ""),
         }
 
         source = self.build_source(
@@ -902,7 +942,9 @@ class EmailAdapter(BasePlatformAdapter):
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            references = _build_references_header(ctx.get("references", ""), original_msg_id)
+            if references:
+                msg["References"] = references
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
@@ -1015,7 +1057,9 @@ class EmailAdapter(BasePlatformAdapter):
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            references = _build_references_header(ctx.get("references", ""), original_msg_id)
+            if references:
+                msg["References"] = references
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
@@ -1095,7 +1139,9 @@ class EmailAdapter(BasePlatformAdapter):
         original_msg_id = ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
-            msg["References"] = original_msg_id
+            references = _build_references_header(ctx.get("references", ""), original_msg_id)
+            if references:
+                msg["References"] = references
 
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"

@@ -998,6 +998,46 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_string_args_coerced_to_list(self):
+        """String ``args`` in config is coerced to a single-element list.
+
+        YAML flow-style or config normalisation can store a list as its
+        string repr (e.g. ``'[C:/path/script.py]'``).  ``StdioServerParameters``
+        requires ``list[str]`` and rejects a bare string.  (#55385)
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[])
+        )
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+                 p_stdio, p_cs:
+                server = MCPServerTask("srv")
+                # Pass args as a string (simulates YAML flow-style corruption)
+                await server.start({
+                    "command": "node",
+                    "args": "C:/Users/test/script.py",
+                })
+
+                call_kwargs = mock_params.call_args
+                args_arg = call_kwargs.kwargs.get("args")
+                # Must be a list, not a string
+                assert isinstance(args_arg, list), (
+                    f"Expected list, got {type(args_arg).__name__}: {args_arg!r}"
+                )
+                assert args_arg == ["C:/Users/test/script.py"]
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+
     def test_shutdown_signals_task_exit(self):
         """shutdown() signals the event and waits for task completion."""
         from tools.mcp_tool import MCPServerTask

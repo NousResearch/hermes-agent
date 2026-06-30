@@ -1807,6 +1807,13 @@ class MCPServerTask:
 
         command = config.get("command")
         args = config.get("args", [])
+        # Guard: YAML flow-style or config normalisation can store a list as
+        # its string repr (e.g. ``'[C:/path/script.py]'``).  Pydantic's
+        # ``StdioServerParameters`` requires ``list[str]`` and rejects a bare
+        # string with ``Input should be a valid list``.  Coerce transparently
+        # so users don't have to hand-edit config.yaml.  (#55385)
+        if isinstance(args, str):
+            args = [args]
         user_env = config.get("env")
 
         if not command:

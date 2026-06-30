@@ -406,6 +406,32 @@ class TestAutoSsoRedirect:
         assert r.headers["location"].startswith("/login")
         assert "/auth/login" not in r.headers["location"]
 
+    def test_single_password_provider_renders_login_page_not_oauth_redirect(self, gated_app):
+        """Password-only providers do not implement OAuth start_login().
+
+        When BasicAuthProvider is the only session provider, the dashboard must
+        render /login so the password form can POST to /auth/password-login,
+        not auto-redirect to /auth/login?provider=basic and raise
+        NotImplementedError.
+        """
+        clear_providers()
+
+        class _PasswordOnlyProvider(StubAuthProvider):
+            name = "basic"
+            display_name = "Password"
+            supports_password = True
+
+            def start_login(  # pragma: no cover - must not be called
+                self, *, redirect_uri: str
+            ):
+                raise AssertionError("password providers must not auto-start OAuth")
+
+        register_provider(_PasswordOnlyProvider())
+        r = gated_app.get("/", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
+        assert "/auth/login" not in r.headers["location"]
+
 
 # ---------------------------------------------------------------------------
 # Gate middleware: same-origin next= validation

@@ -6,27 +6,25 @@ import { ErrorIcon } from '@/components/ui/error-state'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
-import { $desktopBoot } from '@/store/boot'
+import { FileText, Loader2, LogIn, RefreshCw, Settings2 } from '@/lib/icons'
+import { $desktopBoot, completeDesktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
 
-type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
+type BusyAction = 'retry' | 'signin' | null
 
 // A remote gateway whose access cookie has lapsed (e.g. the dashboard
 // restarted on the remote box) boots into this overlay with a reauth-shaped
-// error. The local-recovery buttons (Retry resets the local bootstrap latch;
-// Repair re-runs the installer) are no-ops for that case — the only fix is to
-// re-establish the remote session. The detection + copy helpers live in
+// error. The only fixes are to re-establish the remote session or update the
+// configured gateway URL/token. The detection + copy helpers live in
 // ./boot-failure-reauth so they're unit-testable without a React render.
 
-// Recovery surface for a hard boot failure (gateway never came up, backend
-// exited during startup, bootstrap latched, …). Without this the app shell
-// renders dead — "gateway offline", no composer, only a toast — with no way
-// to retry, repair the install, switch the gateway, or find the logs.
+// Recovery surface for a hard boot failure. Without this the app shell renders
+// dead — "gateway offline", no composer, only a toast — with no way to retry,
+// configure the gateway, or find the logs.
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
@@ -112,21 +110,12 @@ export function BootFailureOverlay() {
 
   const retry = async () => {
     setBusy('retry')
-    await window.hermesDesktop?.resetBootstrap().catch(() => undefined)
     window.location.reload()
   }
 
-  const repair = async () => {
-    setBusy('repair')
-    await window.hermesDesktop?.repairBootstrap().catch(() => undefined)
-    window.location.reload()
-  }
-
-  const switchToLocalGateway = async () => {
-    setBusy('local')
-    // applyConnectionConfig reloads the window from the main process.
-    await window.hermesDesktop?.applyConnectionConfig({ mode: 'local' }).catch(() => undefined)
-    setBusy(null)
+  const openGatewaySettings = () => {
+    completeDesktopBoot()
+    window.location.hash = '/settings?tab=gateway'
   }
 
   // Open the gateway's login window (renders the username/password form for a
@@ -205,15 +194,9 @@ export function BootFailureOverlay() {
                   {copy.retry}
                 </Button>
               )}
-              {!remoteReauth ? (
-                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
-                  {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
-                  {copy.repairInstall}
-                </Button>
-              ) : null}
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
-                {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
-                {copy.useLocalGateway}
+              <Button disabled={Boolean(busy)} onClick={openGatewaySettings} variant="secondary">
+                <Settings2 />
+                {copy.configureGateway}
               </Button>
               <Button onClick={openLogs} variant="ghost">
                 <FileText />

@@ -169,11 +169,6 @@ declare global {
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
-      getBootstrapState: () => Promise<DesktopBootstrapState>
-      resetBootstrap: () => Promise<{ ok: boolean }>
-      repairBootstrap: () => Promise<{ ok: boolean }>
-      cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
-      onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
@@ -452,66 +447,6 @@ export interface DesktopBootProgress {
   running: boolean
   timestamp: number
 }
-
-// First-launch install ("bootstrap") event types -- emitted by
-// electron/bootstrap-runner.cjs and observed by the renderer install overlay.
-// Mirrors the event shapes emitted by runBootstrap()'s onEvent callback.
-
-export interface DesktopBootstrapStageDescriptor {
-  name: string
-  title?: string
-  category?: string
-  needs_user_input?: boolean
-}
-
-export type DesktopBootstrapStageState = 'pending' | 'running' | 'succeeded' | 'skipped' | 'failed'
-
-export interface DesktopBootstrapStageResult {
-  state: DesktopBootstrapStageState
-  durationMs: number | null
-  startedAt: number | null
-  json: { ok: boolean; skipped?: boolean; reason?: string | null; stage: string } | null
-  error: string | null
-}
-
-export interface DesktopBootstrapUnsupportedPlatform {
-  platform: string
-  activeRoot: string
-  installCommand: string
-  docsUrl: string
-}
-
-export interface DesktopBootstrapState {
-  active: boolean
-  manifest: { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null } | null
-  stages: Record<string, DesktopBootstrapStageResult>
-  error: string | null
-  log: Array<{ ts: number; stage: string | null; line: string; stream?: 'stdout' | 'stderr' }>
-  startedAt: number | null
-  completedAt: number | null
-  unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
-}
-
-export type DesktopBootstrapEvent =
-  | { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null }
-  | {
-      type: 'stage'
-      name: string
-      state: DesktopBootstrapStageState
-      durationMs?: number
-      json?: DesktopBootstrapStageResult['json']
-      error?: string | null
-    }
-  | { type: 'log'; stage?: string | null; line: string; stream?: 'stdout' | 'stderr' }
-  | { type: 'complete'; marker: Record<string, unknown> }
-  | { type: 'failed'; stage?: string | null; error: string }
-  | {
-      type: 'unsupported-platform'
-      platform: string
-      activeRoot: string
-      installCommand: string
-      docsUrl: string
-    }
 
 export interface HermesApiRequest {
   path: string

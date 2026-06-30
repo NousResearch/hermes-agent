@@ -180,20 +180,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:boot-progress', listener)
     return () => ipcRenderer.removeListener('hermes:boot-progress', listener)
   },
-  // First-launch bootstrap progress -- emitted by the install.ps1 stage
-  // runner in main.cjs (apps/desktop/electron/bootstrap-runner.cjs).
-  // Renderer's install overlay subscribes to live events and queries the
-  // current snapshot via getBootstrapState() to recover after a devtools
-  // reload mid-bootstrap.
-  getBootstrapState: () => ipcRenderer.invoke('hermes:bootstrap:get'),
-  resetBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:reset'),
-  repairBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:repair'),
-  cancelBootstrap: () => ipcRenderer.invoke('hermes:bootstrap:cancel'),
-  onBootstrapEvent: callback => {
-    const listener = (_event, payload) => callback(payload)
-    ipcRenderer.on('hermes:bootstrap:event', listener)
-    return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
-  },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {

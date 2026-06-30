@@ -11,7 +11,7 @@ import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 // Repro for the "remote gateway → stuck on CONNECTING, no way to settings"
 // report. The connecting overlay (z-1200, full-screen, pointer-events on) used
 // to be shown whenever `gatewayState !== 'open' && !boot.error`. The ONLY escape
-// hatch — BootFailureOverlay, which has "Use local gateway" / "Sign in" /
+// hatch — BootFailureOverlay, which has "Configure gateway" / "Sign in" /
 // "Retry" — only renders when `boot.error` is set.
 //
 // useGatewayBoot only calls failDesktopBoot() (which sets boot.error) when the
@@ -56,7 +56,7 @@ const isConnectingShown = () =>
   screen.queryAllByText((_, el) => /^CONN[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
 
 const isRecoveryShown = () =>
-  Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
+  Boolean(screen.queryByText(/configure gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
 
 describe('connecting overlay vs recovery surface', () => {
   it('hard initial-boot failure surfaces the recovery overlay (the working path)', () => {
@@ -146,7 +146,7 @@ describe('connecting overlay vs recovery surface', () => {
 
     // Escape hatch is now reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
-    expect(screen.getByText(/use local gateway/i)).toBeTruthy()
+    expect(screen.getByText(/configure gateway/i)).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
   })
 })

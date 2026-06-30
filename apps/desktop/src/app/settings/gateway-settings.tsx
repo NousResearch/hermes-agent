@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { DesktopAuthProvider, DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
-import { AlertCircle, Check, FileText, Globe, Loader2, LogIn, Monitor } from '@/lib/icons'
+import { AlertCircle, Check, FileText, Globe, Loader2, LogIn } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
@@ -29,52 +29,12 @@ interface GatewaySettingsState {
 
 const EMPTY_STATE: GatewaySettingsState = {
   envOverride: false,
-  mode: 'local',
+  mode: 'remote',
   remoteAuthMode: 'token',
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
   remoteUrl: ''
-}
-
-function ModeCard({
-  active,
-  description,
-  disabled,
-  icon: Icon,
-  onSelect,
-  title
-}: {
-  active: boolean
-  description: string
-  disabled?: boolean
-  icon: typeof Monitor
-  onSelect: () => void
-  title: string
-}) {
-  return (
-    <button
-      className={cn(
-        'rounded-xl border p-3 text-left transition',
-        active
-          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
-          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) hover:bg-(--chrome-action-hover)',
-        disabled && 'cursor-not-allowed opacity-50'
-      )}
-      disabled={disabled}
-      onClick={onSelect}
-      type="button"
-    >
-      <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
-        <Icon className="size-4 text-muted-foreground" />
-        <span>{title}</span>
-        {active ? <Check className="ml-auto size-4 text-primary" /> : null}
-      </div>
-      <p className="mt-1.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {description}
-      </p>
-    </button>
-  )
 }
 
 function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
@@ -145,7 +105,7 @@ export function GatewaySettings() {
           return
         }
 
-        setState(config)
+        setState({ ...config, mode: 'remote' })
       })
       .catch(err => notifyError(err, g.failedLoad))
       .finally(() => {
@@ -164,7 +124,7 @@ export function GatewaySettings() {
   // prefers a fresh probe result over the saved value.
   const trimmedUrl = state.remoteUrl.trim()
   useEffect(() => {
-    if (state.mode !== 'remote' || !trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
+    if (!trimmedUrl || !/^https?:\/\//i.test(trimmedUrl)) {
       setProbeStatus('idle')
       setProbe(null)
 
@@ -202,7 +162,7 @@ export function GatewaySettings() {
     }, 500)
 
     return () => clearTimeout(timer)
-  }, [state.mode, trimmedUrl])
+  }, [trimmedUrl])
 
   // Effective auth mode: a reachable probe wins; otherwise fall back to the
   // saved config's mode so a re-open of settings doesn't flicker.
@@ -281,7 +241,7 @@ export function GatewaySettings() {
   }, [authMode, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
 
   const payload = () => ({
-    mode: state.mode,
+    mode: 'remote' as const,
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
@@ -289,7 +249,7 @@ export function GatewaySettings() {
   })
 
   const save = async (apply: boolean) => {
-    if (state.mode === 'remote' && !canUseRemote) {
+    if (!canUseRemote) {
       notify({
         kind: 'warning',
         title: g.incompleteTitle,
@@ -336,7 +296,7 @@ export function GatewaySettings() {
       // Save (don't apply/restart) so the login window has a URL to use and the
       // oauth mode is persisted, without yet flipping the live connection.
       const saved = await window.hermesDesktop.saveConnectionConfig({
-        mode: state.mode,
+        mode: 'remote',
         profile: scope ?? undefined,
         remoteAuthMode: 'oauth',
         remoteUrl: trimmedUrl
@@ -465,25 +425,6 @@ export function GatewaySettings() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <ModeCard
-          active={state.mode === 'local'}
-          description={g.localDesc}
-          disabled={state.envOverride}
-          icon={Monitor}
-          onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-          title={g.localTitle}
-        />
-        <ModeCard
-          active={state.mode === 'remote'}
-          description={g.remoteDesc}
-          disabled={state.envOverride}
-          icon={Globe}
-          onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-          title={g.remoteTitle}
-        />
-      </div>
-
       <div className="mt-5 grid gap-1">
         <ListRow
           action={
@@ -499,14 +440,14 @@ export function GatewaySettings() {
           title={g.remoteUrlTitle}
         />
 
-        {state.mode === 'remote' && probeStatus === 'probing' ? (
+        {probeStatus === 'probing' ? (
           <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <Loader2 className="size-4 animate-spin" />
             {g.probing}
           </div>
         ) : null}
 
-        {state.mode === 'remote' && probeStatus === 'error' ? (
+        {probeStatus === 'error' ? (
           <div className="flex items-start gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <AlertCircle className="mt-0.5 size-4 shrink-0" />
             {g.probeError}
@@ -514,7 +455,7 @@ export function GatewaySettings() {
         ) : null}
 
         {/* OAuth / password gateways: present a sign-in button + connection status. */}
-        {state.mode === 'remote' && authResolved && authMode === 'oauth' ? (
+        {authResolved && authMode === 'oauth' ? (
           <ListRow
             action={
               oauthConnected ? (
@@ -548,7 +489,7 @@ export function GatewaySettings() {
         ) : null}
 
         {/* Session-token gateways: keep the existing token entry box. */}
-        {state.mode === 'remote' && authResolved && authMode === 'token' ? (
+        {authResolved && authMode === 'token' ? (
           <ListRow
             action={
               <Input

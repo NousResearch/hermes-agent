@@ -85,12 +85,11 @@ export const ja = defineLocale({
       remoteDescription:
         'リモートゲートウェイのセッションが期限切れです。再接続するにはもう一度サインインしてください。チャットや設定は削除されません。',
       retry: '再試行',
-      repairInstall: 'インストールを修復',
-      useLocalGateway: 'ローカルゲートウェイを使用',
+      configureGateway: 'ゲートウェイを設定',
       openLogs: 'ログを開く',
-      repairHint: '修復はインストーラーを再実行します。新しいマシンでは数分かかる場合があります。',
+      repairHint: 'リモート Hermes ゲートウェイ URL を設定してから、接続を再試行してください。',
       remoteSignInHint:
-        'ゲートウェイのログインウィンドウを開きます。代わりにバンドルされたバックエンドに切り替えるには「ローカルゲートウェイを使用」を選択してください。',
+        'ゲートウェイのログインウィンドウを開きます。設定でゲートウェイ URL やトークンを更新することもできます。',
       hideRecentLogs: '最近のログを非表示',
       showRecentLogs: '最近のログを表示',
       signedInTitle: 'サインインしました',
@@ -629,18 +628,17 @@ export const ja = defineLocale({
       title: 'ゲートウェイ接続',
       envOverride: 'env オーバーライド',
       intro:
-        'Hermes Desktop はデフォルトで独自のローカルゲートウェイを起動します。別のマシンや信頼できるプロキシの背後で既に動作している Hermes バックエンドをこのアプリで制御する場合は、リモートゲートウェイを使用してください。以下でプロファイルを選択して、それぞれのリモートホストを設定します。',
+        'Hermes Desktop は、URL で指定された実行中の Hermes バックエンドに接続します。バックエンドは同じマシンでも別ホストでもかまいませんが、別コンポーネントとしてインストール・管理されます。',
       appliesTo: '適用対象',
       allProfiles: 'すべてのプロファイル',
       defaultConnection: '独自のオーバーライドがないすべてのプロファイルのデフォルト接続。',
       profileConnection: profile =>
-        `"${profile}" がアクティブプロファイルのときのみ使用される接続。ローカルに設定するとデフォルトを継承します。`,
+        `"${profile}" がアクティブプロファイルのときのみ使用される接続。未設定にするとデフォルトを継承します。`,
       envOverrideTitle: '環境変数がこのデスクトップセッションを制御しています。',
       envOverrideDesc:
         '保存された設定を使用するには HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN の設定を解除してください。',
       localTitle: 'ローカルゲートウェイ',
-      localDesc:
-        'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',
+      localDesc: '同じマシンのバックエンドも、他のバックエンドと同じように URL で設定します。',
       remoteTitle: 'リモートゲートウェイ',
       remoteDesc:
         'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型ゲートウェイは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',

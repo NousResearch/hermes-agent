@@ -128,8 +128,7 @@ export interface Translations {
       remoteTitle: string
       remoteDescription: string
       retry: string
-      repairInstall: string
-      useLocalGateway: string
+      configureGateway: string
       openLogs: string
       repairHint: string
       remoteSignInHint: string

@@ -793,6 +793,10 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # SessionDB-only message metadata is useful for replay and
+            # compaction bookkeeping but is not part of any provider schema.
+            api_msg.pop("turn_id", None)
+            api_msg.pop("compression_generation", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields

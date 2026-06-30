@@ -701,7 +701,9 @@ CREATE TABLE IF NOT EXISTS messages (
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
-    compacted INTEGER NOT NULL DEFAULT 0
+    compacted INTEGER NOT NULL DEFAULT 0,
+    turn_id TEXT,
+    compression_generation INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -735,6 +737,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
     ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_turn_id
+    ON messages(session_id, turn_id);
 """
 
 FTS_SQL = """
@@ -3014,6 +3018,8 @@ class SessionDB:
         platform_message_id: str = None,
         observed: bool = False,
         timestamp: Any = None,
+        turn_id: str = None,
+        compression_generation: int = 0,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -3059,14 +3065,19 @@ class SessionDB:
         num_tool_calls = 0
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+        try:
+            comp_generation = int(compression_generation or 0)
+        except (TypeError, ValueError):
+            comp_generation = 0
 
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, turn_id,
+                   compression_generation)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3084,6 +3095,8 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    turn_id,
+                    comp_generation,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -3104,7 +3117,14 @@ class SessionDB:
 
         return self._execute_write(_do)
 
-    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+    def _insert_message_rows(
+        self,
+        conn,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        default_compression_generation: int = 0,
+    ) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 
         Shared by :meth:`replace_messages` (delete-then-insert) and
@@ -3151,13 +3171,20 @@ class SessionDB:
             platform_msg_id = (
                 msg.get("platform_message_id") or msg.get("message_id")
             )
+            try:
+                comp_generation = int(
+                    msg.get("compression_generation", default_compression_generation) or 0
+                )
+            except (TypeError, ValueError):
+                comp_generation = int(default_compression_generation or 0)
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, turn_id,
+                   compression_generation)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3175,6 +3202,8 @@ class SessionDB:
                     codex_message_items_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
+                    msg.get("turn_id"),
+                    comp_generation,
                 ),
             )
             inserted += 1
@@ -3254,8 +3283,20 @@ class SessionDB:
                 "WHERE session_id = ? AND active = 1",
                 (session_id,),
             )
+            row = conn.execute(
+                "SELECT COALESCE(MAX(compression_generation), 0) AS generation "
+                "FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            current_generation = (
+                row["generation"] if hasattr(row, "keys") else row[0]
+            )
+            next_generation = int(current_generation or 0) + 1
             inserted, tool_calls_total = self._insert_message_rows(
-                conn, session_id, compacted_messages
+                conn,
+                session_id,
+                compacted_messages,
+                default_compression_generation=next_generation,
             )
             # message_count / tool_call_count reflect the LIVE (active) set —
             # the archived rows are still on disk but not part of the live count.
@@ -3614,7 +3655,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, platform_message_id, "
+                "observed, timestamp, turn_id, compression_generation "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY timestamp, id",
                 tuple(session_ids),
@@ -3628,6 +3670,9 @@ class SessionDB:
             msg = {"role": row["role"], "content": content}
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
+            if row["turn_id"]:
+                msg["turn_id"] = row["turn_id"]
+            msg["compression_generation"] = int(row["compression_generation"] or 0)
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:

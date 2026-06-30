@@ -347,7 +347,14 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
-def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict:
+def make_tool_result_message(
+    name: str,
+    content: Any,
+    tool_call_id: str,
+    *,
+    turn_id: str = "",
+    compression_generation: int = 0,
+) -> dict:
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table).
@@ -364,13 +371,20 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     list structure stays valid for vision-capable adapters.
     """
     wrapped = _maybe_wrap_untrusted(name, content)
-    return {
+    msg = {
         "role": "tool",
         "name": name,
         "tool_name": name,
         "content": wrapped,
         "tool_call_id": tool_call_id,
     }
+    if turn_id:
+        msg["turn_id"] = turn_id
+    try:
+        msg["compression_generation"] = int(compression_generation or 0)
+    except (TypeError, ValueError):
+        msg["compression_generation"] = 0
+    return msg
 
 
 # Tools whose results carry attacker-controllable content.  Wrapping their

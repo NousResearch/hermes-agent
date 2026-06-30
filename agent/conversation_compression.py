@@ -601,6 +601,72 @@ def compress_context(
     # session has logically ended), and let auto-compress callers detect
     # the no-op via len(returned) == len(input).
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
+        _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+        if getattr(agent, "_last_compression_summary_warning", None) != _err:
+            agent._last_compression_summary_warning = _err
+            agent._emit_warning(
+                f"⚠ Compression aborted: {_err}. "
+                "No messages were dropped — conversation continues unchanged. "
+                "Run /compress to retry, or /new to start a fresh session."
+            )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()  # compression aborted — no rotation will happen
+        return messages, _existing_sp
+
+    summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
+    if summary_error:
+        if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
+            agent._last_compression_summary_warning = summary_error
+            agent._emit_warning(
+                f"⚠ Compression summary failed: {summary_error}. "
+                "Inserted a fallback context marker."
+            )
+    else:
+        # No hard failure — but did the configured aux model error out
+        # and get recovered by retrying on main?  Surface that so users
+        # know their auxiliary.compression.model setting is broken even
+        # though compression succeeded.
+        _aux_fail_model = getattr(agent.context_compressor, "_last_aux_model_failure_model", None)
+        _aux_fail_err = getattr(agent.context_compressor, "_last_aux_model_failure_error", None)
+        if _aux_fail_model:
+            # Dedup on (model, error) so we don't spam on every compaction
+            _aux_key = (_aux_fail_model, _aux_fail_err)
+            if getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
+                agent._last_aux_fallback_warning_key = _aux_key
+                agent._emit_warning(
+                    f"ℹ Configured compression model '{_aux_fail_model}' failed "
+                    f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
+                    "check auxiliary.compression.model in config.yaml."
+                )
+
+    todo_snapshot = agent._todo_store.format_for_injection()
+    if todo_snapshot:
+        compressed.append({"role": "user", "content": todo_snapshot})
+
+    try:
+        next_generation = (
+            max(
+                int(m.get("compression_generation") or 0)
+                for m in messages
+                if isinstance(m, dict)
+            )
+            + 1
+        )
+    except (TypeError, ValueError):
+        next_generation = int(getattr(agent, "_current_compression_generation", 0) or 0) + 1
+    for msg in compressed:
+        if isinstance(msg, dict):
+            msg.setdefault("compression_generation", next_generation)
+            msg.setdefault("turn_id", f"compression:{next_generation}")
+    agent._current_compression_generation = next_generation
+
+    agent._invalidate_system_prompt()
+    new_system_prompt = agent._build_system_prompt(system_message)
+    agent._cached_system_prompt = new_system_prompt
+
+    if agent._session_db:
         try:
             _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
             if getattr(agent, "_last_compression_summary_warning", None) != _err:

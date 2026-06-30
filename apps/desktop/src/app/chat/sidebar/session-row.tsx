@@ -145,35 +145,42 @@ export function SidebarSessionRow({
     <SidebarRowShell
       data-session-row=""
       actions={
-        <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
-            <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-              {age}
-            </span>
-          )}
-          <SessionActionsMenu
-            onArchive={onArchive}
-            onBranch={onBranch}
-            onDelete={onDelete}
-            onPin={onPin}
-            pinned={isPinned}
-            profile={session.profile}
-            sessionId={session.id}
-            title={title}
-          >
-            <Button
-              aria-label={r.actionsFor(title)}
-              className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
-              data-no-tap-min=""
-              data-row-kebab=""
-              size="icon"
-              title={r.sessionActions}
-              variant="ghost"
+        // Mobile-standalone: don't render the kebab DropdownMenu at all. The
+        // CSS display:none hide was racing with first paint, leaving a Radix
+        // Slot trigger area tappable on touch; once it received a stray tap
+        // the Pin item (first in the menu) fired immediately. Mobile has
+        // long-press = pin and (eventually) a Done/edit overlay instead.
+        mobileStandalone ? null : (
+          <div className="relative z-2 grid w-[1.375rem] place-items-center">
+            {!isWorking && (
+              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
+                {age}
+              </span>
+            )}
+            <SessionActionsMenu
+              onArchive={onArchive}
+              onBranch={onBranch}
+              onDelete={onDelete}
+              onPin={onPin}
+              pinned={isPinned}
+              profile={session.profile}
+              sessionId={session.id}
+              title={title}
             >
-              <Codicon name="kebab-vertical" size="0.875rem" />
-            </Button>
-          </SessionActionsMenu>
-        </div>
+              <Button
+                aria-label={r.actionsFor(title)}
+                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+                data-no-tap-min=""
+                data-row-kebab=""
+                size="icon"
+                title={r.sessionActions}
+                variant="ghost"
+              >
+                <Codicon name="kebab-vertical" size="0.875rem" />
+              </Button>
+            </SessionActionsMenu>
+          </div>
+        )
       }
       className={cn(
         'group relative cursor-pointer transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',

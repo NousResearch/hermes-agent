@@ -2800,6 +2800,7 @@ _parallel_safe_servers: set = set()
 # captured at registration time so parallel safety never relies on prefix
 # guessing.
 _mcp_tool_server_names: Dict[str, str] = {}
+_mcp_tool_metadata: Dict[str, Dict[str, str]] = {}
 
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -3165,7 +3166,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    meta = _build_mcp_call_meta(
+                        server_name,
+                        tool_name,
+                        transport=_mcp_transport_from_config(server._config),
+                        context={
+                            "session_id": kwargs.get("session_id"),
+                            "tool_call_id": kwargs.get("tool_call_id"),
+                            "task_id": kwargs.get("task_id"),
+                            "hermes_tool_name": kwargs.get("tool_name") or kwargs.get("function_name"),
+                        },
+                    )
+                    result = await _call_mcp_tool_with_meta(
+                        server.session,
+                        tool_name,
+                        args,
+                        meta,
+                    )
                 finally:
                     server._pending_call_context = None
             # MCP CallToolResult has .content (list of content blocks) and .isError
@@ -3800,17 +3817,138 @@ _UTILITY_CAPABILITY_ATTRS = {
 }
 
 
-def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
-    """Remember the exact MCP server that registered *tool_name*."""
+def _mcp_transport_from_config(config: Optional[dict]) -> str:
+    """Return a bounded, secret-safe transport label for an MCP server config."""
+    if not isinstance(config, dict):
+        return "unknown"
+    transport = str(config.get("transport") or "").strip().lower()
+    if transport == "sse":
+        return "sse"
+    if config.get("url"):
+        return "streamable_http"
+    if config.get("command"):
+        return "stdio"
+    return "unknown"
+
+
+def _track_mcp_tool_server(
+    tool_name: str,
+    server_name: str,
+    *,
+    raw_tool_name: Optional[str] = None,
+    config: Optional[dict] = None,
+) -> None:
+    """Remember the exact MCP server/tool provenance for *tool_name*."""
     safe_server_name = sanitize_mcp_name_component(server_name)
+    metadata = {
+        "mcp_server_name": safe_server_name,
+        "mcp_tool_name": str(raw_tool_name or tool_name),
+        "mcp_transport": _mcp_transport_from_config(config),
+        "mcp_protocol": "mcp",
+    }
     with _lock:
         _mcp_tool_server_names[tool_name] = safe_server_name
+        _mcp_tool_metadata[tool_name] = metadata
 
 
 def _forget_mcp_tool_server(tool_name: str) -> None:
     """Forget MCP server provenance for a deregistered tool."""
     with _lock:
         _mcp_tool_server_names.pop(tool_name, None)
+        _mcp_tool_metadata.pop(tool_name, None)
+
+
+def get_mcp_tool_metadata(tool_name: str) -> Dict[str, str]:
+    """Return secret-safe MCP provenance for a registered Hermes tool name."""
+    with _lock:
+        return dict(_mcp_tool_metadata.get(tool_name, {}))
+
+
+def _inject_w3c_trace_context(
+    carrier: Dict[str, str],
+    *,
+    hermes_tool_name: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> None:
+    """Inject W3C trace context into *carrier* when OpenTelemetry is active.
+
+    The hermes-otel plugin starts the tool span before this handler runs, but
+    it tracks spans in its own registry rather than making them process-global
+    current spans. Prefer that active span when available, then fall back to
+    the process current context so non-plugin OTel integrations still work.
+    """
+    try:
+        from opentelemetry import propagate
+    except Exception:
+        return
+
+    context = None
+    if hermes_tool_name and task_id:
+        try:
+            from importlib import import_module
+            from opentelemetry.trace import set_span_in_context
+
+            get_tracer = import_module("hermes_otel.tracer").get_tracer
+            span = get_tracer().spans.get_span(f"{hermes_tool_name}:{task_id}")
+            if span is not None and hasattr(span, "get_span_context"):
+                context = set_span_in_context(span)
+        except Exception:
+            context = None
+
+    try:
+        if context is not None:
+            propagate.inject(carrier, context=context)
+        else:
+            propagate.inject(carrier)
+    except Exception:
+        return
+
+
+def _build_mcp_call_meta(
+    server_name: str,
+    mcp_tool_name: str,
+    *,
+    transport: Optional[str] = None,
+    context: Optional[dict] = None,
+) -> Dict[str, str]:
+    """Build the narrow, secret-safe MCP ``_meta`` propagation payload."""
+    context = context or {}
+    meta: Dict[str, str] = {
+        "mcp.protocol": "mcp",
+        "mcp.server.name": sanitize_mcp_name_component(server_name),
+        "mcp.tool.name": str(mcp_tool_name),
+    }
+    if transport:
+        meta["mcp.transport"] = str(transport)
+
+    session_id = str(context.get("session_id") or "")
+    if session_id:
+        meta["gen_ai.conversation.id"] = session_id
+    tool_call_id = str(context.get("tool_call_id") or "")
+    if tool_call_id:
+        meta["gen_ai.tool.call.id"] = tool_call_id
+
+    carrier: Dict[str, str] = {}
+    _inject_w3c_trace_context(
+        carrier,
+        hermes_tool_name=context.get("hermes_tool_name"),
+        task_id=context.get("task_id"),
+    )
+    for key in ("traceparent", "tracestate"):
+        value = carrier.get(key)
+        if value:
+            meta[key] = value
+    return meta
+
+
+async def _call_mcp_tool_with_meta(session, tool_name: str, args: dict, meta: dict):
+    """Call ``tools/call`` with MCP metadata, falling back for old SDKs."""
+    try:
+        return await session.call_tool(tool_name, arguments=args, meta=meta or None)
+    except TypeError as exc:
+        if "meta" not in str(exc):
+            raise
+        return await session.call_tool(tool_name, arguments=args)
 
 
 def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dict) -> List[dict]:
@@ -3947,7 +4085,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
             description=schema["description"],
         )
-        _track_mcp_tool_server(tool_name_prefixed, name)
+        _track_mcp_tool_server(
+            tool_name_prefixed,
+            name,
+            raw_tool_name=mcp_tool.name,
+            config=config,
+        )
         registered_names.append(tool_name_prefixed)
 
     # Register MCP Resources & Prompts utility tools, filtered by config and
@@ -3984,7 +4127,12 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
             description=schema["description"],
         )
-        _track_mcp_tool_server(util_name, name)
+        _track_mcp_tool_server(
+            util_name,
+            name,
+            raw_tool_name=handler_key,
+            config=config,
+        )
         registered_names.append(util_name)
 
     if registered_names:

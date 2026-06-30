@@ -56,7 +56,11 @@ def _patch_mcp_server():
     # `_rpc_lock` is acquired by _make_tool_handler's call path (mcp_tool.py
     # ~L2008) to serialize JSON-RPC against the server — build it inside the
     # fresh loop that _fake_run_on_mcp_loop spins up, not at fixture import.
-    fake_server = SimpleNamespace(session=fake_session, _rpc_lock=None)
+    fake_server = SimpleNamespace(
+        session=fake_session,
+        _rpc_lock=None,
+        _config={"command": "fake-mcp"},
+    )
     with patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
          patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
         yield fake_session
@@ -141,3 +145,77 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
+
+
+class TestMcpPropagationMeta:
+    """Ensure Hermes propagates only safe, protocol-level MCP context."""
+
+    def test_builds_safe_call_meta(self):
+        meta = mcp_tool._build_mcp_call_meta(
+            "money-server",
+            "lookup_budget",
+            transport="stdio",
+            context={"session_id": "conv-1", "tool_call_id": "call-9"},
+        )
+
+        assert meta["mcp.protocol"] == "mcp"
+        assert meta["mcp.server.name"] == "money_server"
+        assert meta["mcp.tool.name"] == "lookup_budget"
+        assert meta["mcp.transport"] == "stdio"
+        assert meta["gen_ai.conversation.id"] == "conv-1"
+        assert meta["gen_ai.tool.call.id"] == "call-9"
+        assert "arguments" not in meta
+        assert "result" not in meta
+
+    def test_builds_call_meta_with_w3c_trace_context(self):
+        with patch("tools.mcp_tool._inject_w3c_trace_context") as inject:
+            inject.side_effect = lambda carrier, **_kwargs: carrier.update({
+                "traceparent": "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01",
+                "tracestate": "vendor=value",
+            })
+
+            meta = mcp_tool._build_mcp_call_meta(
+                "money-server",
+                "lookup_budget",
+                transport="stdio",
+                context={
+                    "session_id": "conv-1",
+                    "tool_call_id": "call-9",
+                    "task_id": "task-1",
+                    "hermes_tool_name": "mcp_money_server_lookup_budget",
+                },
+            )
+
+        inject.assert_called_once()
+        assert inject.call_args.kwargs == {
+            "hermes_tool_name": "mcp_money_server_lookup_budget",
+            "task_id": "task-1",
+        }
+        assert meta["traceparent"] == "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+        assert meta["tracestate"] == "vendor=value"
+
+    def test_handler_passes_meta_to_mcp_call(self, _patch_mcp_server):
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(content=[_FakeContentBlock("ok")])
+        )
+
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler(
+            {"q": "redacted-by-policy"},
+            session_id="conv-1",
+            tool_call_id="call-9",
+            task_id="task-1",
+            function_name="mcp_test_server_my_tool",
+        )
+
+        assert json.loads(raw) == {"result": "ok"}
+        call_args = session.call_tool.await_args
+        assert call_args is not None
+        assert call_args.kwargs["arguments"] == {"q": "redacted-by-policy"}
+        meta = call_args.kwargs["meta"]
+        assert meta["mcp.server.name"] == "test_server"
+        assert meta["mcp.tool.name"] == "my-tool"
+        assert meta["mcp.transport"] == "stdio"
+        assert meta["gen_ai.conversation.id"] == "conv-1"
+        assert meta["gen_ai.tool.call.id"] == "call-9"

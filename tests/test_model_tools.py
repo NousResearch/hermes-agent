@@ -188,6 +188,44 @@ class TestHandleFunctionCall:
             }
             assert "API_TOKEN" not in repr(metadata_values)
 
+    def test_mcp_hooks_receive_secret_safe_identity_metadata(self):
+        mcp_metadata = {
+            "mcp_server_name": "budget_server",
+            "mcp_tool_name": "lookup",
+            "mcp_transport": "stdio",
+            "mcp_protocol": "mcp",
+        }
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("tools.mcp_tool.get_mcp_tool_metadata", return_value=mcp_metadata),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call(
+                "mcp_budget_server_lookup",
+                {"api_token": "not-exported"},
+                task_id="t1",
+                tool_call_id="call-123",
+            )
+
+        kwargs_by_hook = {c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list}
+        for hook_name in ("post_tool_call", "transform_tool_result"):
+            payload = kwargs_by_hook[hook_name]
+            assert payload["tool_type"] == "mcp"
+            assert payload["mcp_server_name"] == "budget_server"
+            assert payload["mcp_tool_name"] == "lookup"
+            assert payload["mcp_transport"] == "stdio"
+            assert payload["mcp_protocol"] == "mcp"
+            metadata_values = {
+                payload["tool_type"],
+                payload["mcp_server_name"],
+                payload["mcp_tool_name"],
+                payload["mcp_transport"],
+                payload["mcp_protocol"],
+            }
+            assert "api_token" not in repr(metadata_values)
+            assert "not-exported" not in repr(metadata_values)
+
     def test_execute_code_hooks_receive_python_command_metadata(self, monkeypatch):
         monkeypatch.setattr("tools.code_execution_tool._load_config", lambda: {"timeout": 45})
         with (

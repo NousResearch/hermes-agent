@@ -938,6 +938,16 @@ def _tool_command_metadata(function_name: str, function_args: Dict[str, Any]) ->
         if wait_kind:
             metadata["wait_kind"] = wait_kind
         return metadata
+    if function_name.startswith("mcp_"):
+        try:
+            from tools.mcp_tool import get_mcp_tool_metadata
+
+            metadata = get_mcp_tool_metadata(function_name)
+        except Exception:
+            metadata = {}
+        if metadata:
+            metadata["tool_type"] = "mcp"
+        return metadata
     return {}
 
 
@@ -1239,6 +1249,10 @@ def handle_function_call(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
+                        tool_call_id=tool_call_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        function_name=function_name,
                         enabled_tools=sandbox_enabled,
                     )
             else:
@@ -1247,6 +1261,10 @@ def handle_function_call(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
+                        tool_call_id=tool_call_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        function_name=function_name,
                         user_task=user_task,
                     )
             from hermes_cli.middleware import run_tool_execution_middleware

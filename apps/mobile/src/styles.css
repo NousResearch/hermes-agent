@@ -1088,12 +1088,14 @@ html.hermes-mobile-standalone [data-slot='page-search-filters'] > button[data-ac
   transform: rotate(90deg);
 }
 
-/* Drill-down: when a category is active, collapse the rest of the category
-   list so the user sees ONLY the chosen row + the filtered skills below it.
-   The list of 30+ categories was burying the filtered result far below the
-   fold, making the tap feel like nothing happened. Tapping the active row
-   again sets activeCategory back to null and the full list re-expands. */
-html.hermes-mobile-standalone [data-slot='page-search-filters']:has(> button[data-active='true']) > button:not([data-active='true']) {
+/* Drill-down: when a category is active, collapse the rest of the list so
+   the user sees ONLY the chosen row + the filtered skills below it. The
+   first button is "All" (= activeCategory null) — when it's active, that's
+   the initial state and ALL categories should remain visible. So scope the
+   collapse to "active button is NOT the first child", i.e. a real category
+   is picked. Tapping the picked category clears activeCategory → "All"
+   reactivates → the full list re-expands. */
+html.hermes-mobile-standalone [data-slot='page-search-filters']:has(> button:not(:first-child)[data-active='true']) > button:not([data-active='true']) {
   display: none;
 }
 

@@ -544,3 +544,35 @@ class TestThreadSafety:
         toolsets = result_holder["value"]
         assert "gated" in toolsets
         assert toolsets["gated"]["available"] is True
+
+
+class TestDynamicSchemaOverrides:
+    """Verify that dynamic schema overrides don't mutate the base schema."""
+
+    def test_dynamic_override_does_not_mutate_base_schema(self):
+        reg = ToolRegistry()
+        base_schema = _make_schema("dyn_tool")
+        base_schema["description"] = "original"
+        override_counter = {"calls": 0}
+
+        def dynamic_overrides():
+            override_counter["calls"] += 1
+            return {"description": "overridden"}
+
+        reg.register(name="dyn_tool", toolset="s", schema=base_schema,
+                     handler=_dummy_handler, dynamic_schema_overrides=dynamic_overrides)
+
+        defs1 = reg.get_definitions({"dyn_tool"})
+        assert defs1[0]["function"]["description"] == "overridden"
+        assert base_schema["description"] == "original"
+        defs2 = reg.get_definitions({"dyn_tool"})
+        assert defs2[0]["function"]["description"] == "overridden"
+        assert override_counter["calls"] == 2
+
+    def test_no_dynamic_override_preserves_base_schema(self):
+        reg = ToolRegistry()
+        base_schema = _make_schema("static_tool")
+        base_schema["description"] = "static desc"
+        reg.register(name="static_tool", toolset="s", schema=base_schema, handler=_dummy_handler)
+        defs = reg.get_definitions({"static_tool"})
+        assert defs[0]["function"]["description"] == "static desc"

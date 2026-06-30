@@ -629,6 +629,34 @@ class TestSessionJsonSnapshotOptIn:
         # the session JSON opt-in.
         assert hasattr(agent, "logs_dir")
 
+    def test_traversal_session_id_cannot_escape_logs_dir(self, agent, tmp_path):
+        # Security regression (#5958): a traversal-shaped session ID (which can
+        # originate from the untrusted X-Hermes-Session-Id API header) must not
+        # redirect the session snapshot outside the sessions directory.
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent.session_id = "../../../../outside_dir/pwned"
+        agent._save_session_log([{"role": "user", "content": "hello"}])
+
+        # Exactly one snapshot, and it lives directly under logs_dir.
+        written = list(tmp_path.glob("session_*.json"))
+        assert len(written) == 1, "writer must produce a single contained snapshot"
+        assert written[0].resolve().parent == tmp_path.resolve()
+        # Nothing escaped to the traversal target.
+        assert not (tmp_path.parent.parent / "outside_dir").exists()
+
+    def test_safe_session_filename_component_contains_traversal(self):
+        # The sanitizer is the chokepoint: every session-ID-derived artifact
+        # path goes through it, so it must always yield a single, traversal-free
+        # path segment while leaving legitimate IDs untouched.
+        f = run_agent._safe_session_filename_component
+        for raw in ("../../etc/passwd", "/abs/path", "..\\win\\trav", "a/b/c"):
+            out = f(raw)
+            assert "/" not in out and "\\" not in out and ".." not in out, out
+        # Legit IDs pass through unchanged; distinct IDs never collide.
+        assert f("api-abc123def456") == "api-abc123def456"
+        assert f("../a") != f("../b")
+
 
 class TestSaveSessionLogRedactsSecrets:
     """Regression: session_*.json must not contain plaintext credentials (#19798, #19845)."""
@@ -5670,6 +5698,13 @@ class TestMaxTokensParam:
         agent.model = "llama3"
         result = agent._max_tokens_param(4096)
         assert result == {"max_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_enterprise_copilot(self, agent):
+        """Enterprise Copilot endpoints (api.<tenant>.githubcopilot.com) must
+        share the same max_tokens behavior as the default endpoint."""
+        agent.base_url = "https://api.enterprise.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
 
 
 class TestGpt5ApiModeRouting:

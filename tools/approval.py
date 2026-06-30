@@ -48,6 +48,47 @@ _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     default="",
 )
 
+# Interactive-CLI flag. Concurrent ACP sessions run on a shared
+# ThreadPoolExecutor (acp_adapter/server.py), so mutating the process-global
+# os.environ["HERMES_INTERACTIVE"] races: one session's restore in `finally`
+# can clobber another session's set mid-run, dropping it onto the
+# non-interactive auto-approve path so a dangerous command executes without
+# the approval callback firing (GHSA-96vc-wcxf-jjff). A contextvar is
+# thread/task-local, so each executor worker (or asyncio task) sees only its
+# own value. None = unset → fall back to the env var for legacy
+# single-threaded CLI callers that still export HERMES_INTERACTIVE.
+_hermes_interactive_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "hermes_interactive",
+    default=None,
+)
+
+
+def set_hermes_interactive_context(interactive: bool) -> contextvars.Token:
+    """Bind interactive mode for the current context (thread or asyncio task).
+
+    Use this instead of mutating ``os.environ["HERMES_INTERACTIVE"]`` from
+    concurrent executor threads. When unset (default), interactive detection
+    falls back to the ``HERMES_INTERACTIVE`` env var for legacy callers.
+    """
+    return _hermes_interactive_ctx.set("1" if interactive else "")
+
+
+def reset_hermes_interactive_context(token: contextvars.Token) -> None:
+    """Restore the prior value from :func:`set_hermes_interactive_context`."""
+    _hermes_interactive_ctx.reset(token)
+
+
+def _is_interactive_cli() -> bool:
+    """True when running an interactive CLI/ACP session.
+
+    Prefers the context-local flag (set by concurrent ACP sessions) and falls
+    back to the ``HERMES_INTERACTIVE`` env var for single-threaded callers.
+    """
+    ctx_val = _hermes_interactive_ctx.get()
+    if ctx_val is not None:
+        return is_truthy_value(ctx_val)
+    return env_var_enabled("HERMES_INTERACTIVE")
+
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook for the approval system.
@@ -424,8 +465,10 @@ DANGEROUS_PATTERNS = [
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway lifecycle protection: prevent the agent from killing its own
     # gateway process.  These commands trigger a gateway restart/stop that
-    # terminates all running agents mid-work.
-    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    # terminates all running agents mid-work.  Allow global flags between
+    # `hermes` and `gateway` (e.g. `hermes -p ade gateway restart`) so a
+    # profile flag can't slip the agent past the guard.
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
@@ -497,6 +540,12 @@ DANGEROUS_PATTERNS = [
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary
+    # shell commands without triggering the `bash -c` pattern above. The
+    # inner commands may not individually match any dangerous pattern (e.g.
+    # data-exfiltration pipelines using curl/cat) yet are still executed in
+    # a full shell context.
+    (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
@@ -1097,12 +1146,27 @@ def _normalize_approval_mode(mode) -> str:
     YAML 1.1 treats bare words like `off` as booleans, so a config entry like
     `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
     intended string mode instead of falling back to manual approvals.
+
+    Unknown string values (e.g. 'auto') are rejected with a warning rather than
+    being silently accepted and falling through every mode check downstream.
+    Always returns one of 'manual', 'smart', or 'off'.
     """
+    _VALID_MODES = ("manual", "smart", "off")
     if isinstance(mode, bool):
         return "off" if mode is False else "manual"
     if isinstance(mode, str):
         normalized = mode.strip().lower()
-        return normalized or "manual"
+        if not normalized:
+            return "manual"
+        if normalized in _VALID_MODES:
+            return normalized
+        logger.warning(
+            "Unknown approvals.mode %r — defaulting to 'manual'. "
+            "Valid values: %s",
+            mode,
+            ", ".join(_VALID_MODES),
+        )
+        return "manual"
     return "manual"
 
 
@@ -1268,8 +1332,23 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
+    """Return True when the backend is isolated enough to skip dangerous-command prompts.
+
+    Isolated container backends sandbox the agent away from the host, so their
+    commands can't damage real files/services and we skip the approval layer.
+    Docker is the exception once host paths are bind-mounted into the container:
+    at that point a command like ``rm -rf /workspace`` reaches host files, so it
+    must go through the normal approval flow.
+    """
+    if env_type == "docker":
+        return not has_host_access
+    return env_type in ("singularity", "modal", "daytona")
+
+
 def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None) -> dict:
+                            approval_callback=None,
+                            has_host_access: bool = False) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -1279,11 +1358,13 @@ def check_dangerous_command(command: str, env_type: str,
         command: The shell command to check.
         env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
         approval_callback: Optional CLI callback for interactive prompts.
+        has_host_access: True when a Docker sandbox bind-mounts host paths,
+            so its commands can reach the host and must not skip approval.
 
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -1312,7 +1393,7 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
@@ -1525,16 +1606,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             has_host_access: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    ``has_host_access`` is True when a Docker sandbox bind-mounts host paths;
+    such a session is no longer isolated, so it goes through the normal flow
+    instead of the container fast-path.
     """
-    # Skip containers for both checks
-    if env_type in {"docker", "singularity", "modal", "daytona"}:
+    # Skip isolated container backends for both checks. Docker stops skipping
+    # once host paths are bind-mounted into the sandbox.
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1566,7 +1653,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_cli = env_var_enabled("HERMES_INTERACTIVE")
+    is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
@@ -1857,7 +1944,8 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
-def check_execute_code_guard(code: str, env_type: str) -> dict:
+def check_execute_code_guard(code: str, env_type: str,
+                             has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
     execute_code runs arbitrary local Python — the script can call
@@ -1883,8 +1971,12 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     )
 
     # Isolated backends already sandbox the child — matches the container skip
-    # in check_all_command_guards / check_dangerous_command.
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    # in check_all_command_guards / check_dangerous_command. Docker stops
+    # skipping once host paths are bind-mounted into the sandbox; vercel_sandbox
+    # has no host-bind concept so it stays always-skipped.
+    if env_type == "vercel_sandbox":
+        return {"approved": True, "message": None}
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass (session- or process-scoped).

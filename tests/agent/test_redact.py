@@ -492,6 +492,79 @@ class TestWebUrlsNotRedacted:
         assert "dbpass" not in result
 
 
+class TestBareTokenUserinfoRedaction:
+    """Regression tests for #6396 — a bare credential in URL userinfo
+    (``scheme://TOKEN@host``, no ``user:pass`` colon) is redacted. This is the
+    git-remote-with-embedded-password shape. The colon form ``user:pass@`` and
+    query-string tokens are deliberately left to pass through (#34029) so
+    magic-link / OAuth round-trip skills keep working — see
+    TestWebUrlsNotRedacted for those invariants.
+    """
+
+    def test_git_remote_bare_password_redacted(self):
+        """Exact bug scenario: password in a git remote URL."""
+        text = (
+            "git remote set-url origin "
+            "https://MYPASSWORDWASDISLAYEDHERE@github.com/unclehowell/FCUK.git"
+        )
+        result = redact_sensitive_text(text)
+        assert "MYPASSWORDWASDISLAYEDHERE" not in result
+        assert "@github.com" in result
+        assert "unclehowell/FCUK.git" in result
+
+    def test_ssh_bare_token_redacted(self):
+        text = "ssh://longtoken1234567@gitlab.com/project.git"
+        result = redact_sensitive_text(text)
+        assert "longtoken1234567" not in result
+        assert "@gitlab.com" in result
+
+    def test_ftp_bare_token_redacted(self):
+        text = "ftp://ftptoken123456@ftp.example.com/files"
+        result = redact_sensitive_text(text)
+        assert "ftptoken123456" not in result
+
+    def test_bare_token_with_query_redacts_token_only(self):
+        text = "https://abcdef1234567@host.com/path?foo=bar"
+        result = redact_sensitive_text(text)
+        assert "abcdef1234567" not in result
+        assert "?foo=bar" in result
+
+    def test_user_pass_form_still_passes_through(self):
+        """The ``user:pass@`` colon form must NOT be redacted (#34029)."""
+        text = "URL: https://user:supersecretpw@host.example.com/path"
+        assert redact_sensitive_text(text) == text
+
+    def test_short_username_not_redacted(self):
+        """Short userinfo (git, admin, deploy) below the 8-char floor passes."""
+        for text in (
+            "https://git@github.com/user/repo.git",
+            "https://admin@example.com/x",
+            "https://deploy@host.com/y",
+        ):
+            assert redact_sensitive_text(text) == text
+
+    def test_email_in_path_not_redacted(self):
+        """An ``@`` in a path/query is not userinfo — the token class stops at
+        ``/``, so emails after the first slash are never treated as a credential."""
+        for text in (
+            "https://example.com/search?q=user@example.com",
+            "https://example.com/users/john@doe.com/profile",
+        ):
+            assert redact_sensitive_text(text) == text
+
+    def test_plain_url_unchanged(self):
+        text = "https://github.com/user/repo.git"
+        assert redact_sensitive_text(text) == text
+
+    def test_long_bare_token_preserves_head_tail(self):
+        token = "abcdef" + "x" * 20 + "wxyz"
+        text = f"https://{token}@github.com/u/r.git"
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert "abcdef" in result  # head preserved
+        assert "wxyz" in result    # tail preserved
+
+
 class TestFormBodyRedaction:
     """Form-urlencoded body redaction (k=v&k=v with no other text)."""
 
@@ -813,3 +886,25 @@ class TestFileReadNonReusableRedaction:
         out = redact_sensitive_text(f"key: {self.SK}", force=True, file_read=True)
         assert "«redacted:sk-…»" in out
         assert self.SK not in out
+
+
+class TestFireworksToken:
+    KEY = "fw_" + "A" * 40
+
+    def test_bare_token_masked(self):
+        result = redact_sensitive_text(f"fireworks error: key {self.KEY}", force=True)
+        assert self.KEY not in result
+        assert "fw_AA" in result
+
+    def test_env_assignment_masked(self):
+        result = redact_sensitive_text(f"FIREWORKS_API_KEY={self.KEY}", force=True)
+        assert self.KEY not in result
+
+    def test_too_short_not_masked(self):
+        short = "fw_tooshort"
+        result = redact_sensitive_text(f"text {short} here", force=True)
+        assert short in result
+
+    def test_prefix_visible_in_masked_output(self):
+        result = redact_sensitive_text(self.KEY, force=True)
+        assert result.startswith("fw_AA")

@@ -106,6 +106,7 @@ _PREFIX_PATTERNS = [
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
     r"ntn_[A-Za-z0-9]{10,}",            # Notion internal integration token
+    r"fw_[A-Za-z0-9]{30,}",             # Fireworks AI API key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name.
@@ -219,6 +220,28 @@ _PRIVATE_KEY_RE = re.compile(
 # postgresql:// f-string template. See issue #33801.
 _DB_CONNSTR_RE = re.compile(
     r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
+    re.IGNORECASE,
+)
+
+# Bare-token credential in a web/transport URL: ``scheme://TOKEN@host``.
+# This is the ``git remote set-url origin https://PASSWORD@github.com/...``
+# shape from issue #6396 — a single opaque credential in the userinfo position
+# with NO ``user:pass`` colon. It is unambiguously a secret: legitimate
+# round-trip URLs (OAuth callbacks, magic links, pre-signed shares — see the
+# "Web-URL redaction is intentionally OFF" note in redact_sensitive_text) carry
+# their tokens in the QUERY STRING, never in bare userinfo. The colon form
+# ``user:pass@`` is deliberately left to pass through (commit "pass web URLs
+# through unchanged", #34029) and is NOT matched here — the token class forbids
+# ``:``. DB schemes are handled by _DB_CONNSTR_RE above and excluded here.
+#
+# Guards against false positives:
+#   - 8+ char floor skips short usernames (git, admin, root, deploy, ubuntu).
+#   - The token class ``[^\s:@/]`` cannot cross ``/``, so an ``@`` sitting in a
+#     path or query (e.g. ``?q=user@example.com``) is never treated as userinfo.
+_URL_BARE_TOKEN_RE = re.compile(
+    r"((?:https?|wss?|git|ssh|ftp|ftps|sftp)://)"  # scheme
+    r"([^\s:@/]{8,})"                               # bare token (no colon/slash/@), 8+ chars
+    r"(@[^\s]+)",                                   # @host...
     re.IGNORECASE,
 )
 
@@ -564,6 +587,16 @@ def redact_sensitive_text(
         else:
             text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
+        # Bare-token userinfo in web/transport URLs: ``scheme://TOKEN@host``.
+        # The git-remote-with-embedded-password shape from #6396. Only the
+        # colon-less bare-token form is redacted — ``user:pass@`` and
+        # query-string tokens are left to pass through (see the web-URL note
+        # below). See _URL_BARE_TOKEN_RE for the false-positive guards.
+        text = _URL_BARE_TOKEN_RE.sub(
+            lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}",
+            text,
+        )
+
     # JWT tokens (eyJ... — base64-encoded JSON headers)
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
@@ -575,7 +608,12 @@ def redact_sensitive_text(
     # blanket-redacting param values by name breaks those skills mid-flow.
     # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
     # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
-    # are still caught by _DB_CONNSTR_RE.
+    # are still caught by _DB_CONNSTR_RE. The ONE userinfo case still redacted
+    # is the colon-less bare-token form ``scheme://TOKEN@host`` (#6396, handled
+    # by _URL_BARE_TOKEN_RE in the ``://`` block above): a bare credential in
+    # userinfo is never a round-trip workflow token (those live in the query
+    # string), so masking it can't break a skill. The ``user:pass@`` form is
+    # left to pass through per #34029.
 
     # Form-urlencoded bodies (only triggers on clean k=v&k=v inputs).
     if "&" in text and "=" in text:

@@ -263,6 +263,94 @@ def test_new_skill_without_last_used_not_immediately_archived(curator_env):
     assert (skills_dir / "fresh").exists()
 
 
+def _backdate(u, name: str, days: int, *, use_count: int = 1):
+    """Write an agent-created usage record whose activity is *days* old."""
+    ts = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    data = u.load_usage()
+    data[name] = u._empty_record()
+    data[name]["created_by"] = "agent"
+    data[name]["created_at"] = ts
+    data[name]["last_used_at"] = ts if use_count else None
+    data[name]["last_activity_at"] = ts if use_count else None
+    data[name]["use_count"] = use_count
+    u.save_usage(data)
+
+
+def test_cron_referenced_skill_is_not_archived(curator_env, monkeypatch):
+    """A skill referenced by a cron job must survive inactivity archival even
+    when its activity is well past archive_after_days. The scheduler only
+    bumps usage when a job fires, so paused / infrequent / far-future jobs
+    would otherwise have their skills aged out from under them."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cron-dep")
+    _write_skill(skills_dir, "orphan")
+    _backdate(u, "cron-dep", 200)
+    _backdate(u, "orphan", 200)
+
+    # Pretend a (paused/infrequent) cron job references "cron-dep" only.
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"cron-dep"})
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("cron-dep")["state"] == "active"  # protected
+    assert (skills_dir / "cron-dep").exists()
+    assert u.get_record("orphan")["state"] == "archived"  # control
+    assert counts["archived"] == 1
+
+
+def test_unused_skill_not_archived_before_stale_floor(curator_env):
+    """A never-used skill (use_count == 0) younger than stale_after_days must
+    not be marked stale or archived — absence of use is not evidence of
+    staleness when the skill simply hasn't had its trigger come up yet."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "young-unused")
+    _backdate(u, "young-unused", 10, use_count=0)  # < 30d stale floor
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("young-unused")["state"] == "active"
+    assert counts["archived"] == 0
+    assert counts["marked_stale"] == 0
+
+
+def test_unused_skill_archived_past_archive_window(curator_env):
+    """The use=0 floor only protects YOUNG skills — a never-used skill older
+    than archive_after_days still archives (no perpetual reprieve)."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "old-unused")
+    _backdate(u, "old-unused", 200, use_count=0)
+
+    counts = c.apply_automatic_transitions()
+
+    assert u.get_record("old-unused")["state"] == "archived"
+    assert counts["archived"] == 1
+
+
+def test_candidate_list_marks_cron_referenced_skills(curator_env, monkeypatch):
+    """The LLM review candidate list flags cron-referenced skills so the
+    review pass knows not to prune them."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cron-dep")
+    _write_skill(skills_dir, "plain")
+    _backdate(u, "cron-dep", 1)
+    _backdate(u, "plain", 1)
+    monkeypatch.setattr(c, "_cron_referenced_skills", lambda: {"cron-dep"})
+
+    listing = c._render_candidate_list()
+    cron_line = next(l for l in listing.splitlines() if l.startswith("- cron-dep"))
+    plain_line = next(l for l in listing.splitlines() if l.startswith("- plain"))
+    assert "cron=yes" in cron_line
+    assert "cron=no" in plain_line
+
+
 def test_manual_skill_is_not_auto_archived(curator_env):
     """Manual skills can have usage records, but without the agent-created
     marker they must stay out of curator transitions."""

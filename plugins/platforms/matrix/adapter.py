@@ -2149,9 +2149,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """Read a local file and upload it."""
         p = Path(file_path).expanduser()
         if not p.exists():
-            return await self.send(
-                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            # file_path is a host-local path; never echo it into chat.
+            logger.warning(
+                "[%s] upload fallback: media file not found for %s",
+                self.name, file_path,
             )
+            text = f"{caption}\n⚠️ Couldn't deliver the attachment." if caption \
+                else "⚠️ Couldn't deliver the attachment."
+            return await self.send(room_id, text, reply_to)
         try:
             file_size = p.stat().st_size
         except OSError:
@@ -2891,6 +2896,25 @@ class MatrixAdapter(BasePlatformAdapter):
         content = getattr(event, "content", None)
         is_direct = bool(getattr(content, "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
+
+        # Only auto-join when the inviter is authorized. Without this, any
+        # federated Matrix user could invite the bot into arbitrary rooms,
+        # exposing its presence and metadata. Mirrors the allow-list gate
+        # used on the message/reaction paths.
+        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if not allow_all and not (
+            self._allowed_user_ids and inviter in self._allowed_user_ids
+        ):
+            logger.warning(
+                "Matrix: rejecting invite to %s from unauthorized user %s",
+                room_id,
+                inviter,
+            )
+            return
 
         logger.info(
             "Matrix: invited to %s — joining (is_direct=%s)",

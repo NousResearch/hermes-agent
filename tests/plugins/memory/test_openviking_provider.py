@@ -35,6 +35,7 @@ def _clear_openviking_env(monkeypatch):
         "OPENVIKING_USER",
         "OPENVIKING_AGENT",
         "OPENVIKING_CLI_CONFIG_FILE",
+        "OPENVIKING_PROFILE_MAX_CHARS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -1463,12 +1464,58 @@ def test_tool_add_resource_sends_git_remote_sources_as_path(url):
     })
 
 
-def test_get_tool_schemas_includes_narrow_forget_tool():
+def test_get_tool_schemas_includes_profile_and_narrow_forget_tools():
     provider = OpenVikingMemoryProvider()
 
     names = [schema["name"] for schema in provider.get_tool_schemas()]
 
+    assert "viking_profile" in names
     assert "viking_forget" in names
+
+
+def test_viking_profile_reads_identity_snapshot_first():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.return_value = {"result": {"content": "User name is Ada."}}
+
+    result = json.loads(provider.handle_tool_call("viking_profile", {}))
+
+    provider._client.get.assert_called_once_with(
+        "/api/v1/content/read",
+        params={"uri": "viking://user/memories/identity.md"},
+    )
+    assert result == {
+        "available": True,
+        "uri": "viking://user/memories/identity.md",
+        "level": "full",
+        "profile": "User name is Ada.",
+    }
+
+
+def test_viking_profile_falls_back_to_memory_overview():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    calls = []
+
+    def fake_get(path, params=None):
+        uri = (params or {}).get("uri", "")
+        calls.append((path, uri))
+        if uri in {"viking://user/memories/identity.md", "viking://user/memories/profile.md"}:
+            raise RuntimeError("missing")
+        return {"result": {"content": "Overview profile facts."}}
+
+    provider._client.get.side_effect = fake_get
+
+    result = json.loads(provider.handle_tool_call("viking_profile", {}))
+
+    assert calls == [
+        ("/api/v1/content/read", "viking://user/memories/identity.md"),
+        ("/api/v1/content/read", "viking://user/memories/profile.md"),
+        ("/api/v1/content/overview", "viking://user/memories/"),
+    ]
+    assert result["available"] is True
+    assert result["uri"] == "viking://user/memories/"
+    assert result["profile"] == "Overview profile facts."
 
 
 def test_handle_tool_call_forget_deletes_exact_memory_file_uri():
@@ -2886,6 +2933,34 @@ def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     provider._user = "usr"
     provider._agent = "hermes"
     return provider
+
+
+def test_prefetch_prepends_profile_once_per_session():
+    provider = _make_prefetch_provider()
+    provider._client.get.return_value = {"result": {"content": "User prefers concise answers."}}
+    provider._search_prefetch_context = MagicMock(return_value="- [events]\n  recalled context")
+
+    first = provider.prefetch("What should we recall?", session_id="sid-123")
+    second = provider.prefetch("What should we recall?", session_id="sid-123")
+
+    assert "## User Profile" in first
+    assert "User prefers concise answers." in first
+    assert "recalled context" in first
+    assert "## User Profile" not in second
+    assert "recalled context" in second
+    assert provider._search_prefetch_context.call_count == 2
+
+
+def test_prefetch_can_return_first_turn_profile_for_short_query():
+    provider = _make_prefetch_provider()
+    provider._client.get.return_value = {"result": {"content": "User identity is Ada."}}
+    provider._search_prefetch_context = MagicMock(return_value="should not run")
+
+    context = provider.prefetch("hi", session_id="sid-123")
+
+    assert "## OpenViking Context" in context
+    assert "User identity is Ada." in context
+    provider._search_prefetch_context.assert_not_called()
 
 
 def test_queue_prefetch_is_noop_for_openviking_recall(monkeypatch):

@@ -75,6 +75,7 @@ _SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
 _DEFAULT_RECALL_LIMIT = 6
 _DEFAULT_RECALL_SCORE_THRESHOLD = 0.15
 _DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000
+_DEFAULT_PROFILE_MAX_CHARS = 4000
 _DEFAULT_RECALL_TIMEOUT_SECONDS = 4.0
 _DEFAULT_RECALL_REQUEST_TIMEOUT_SECONDS = 3.0
 _DEFAULT_RECALL_FULL_READ_LIMIT = 2
@@ -82,6 +83,11 @@ _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
+_PROFILE_READS = (
+    ("viking://user/memories/identity.md", "full"),
+    ("viking://user/memories/profile.md", "full"),
+    ("viking://user/memories/", "overview"),
+)
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -472,6 +478,20 @@ BROWSE_SCHEMA = {
     },
 }
 
+PROFILE_SCHEMA = {
+    "name": "viking_profile",
+    "description": "Retrieve the user's stored OpenViking profile or identity snapshot.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "max_chars": {
+                "type": "integer",
+                "description": "Maximum characters to return (default: 4000).",
+            },
+        },
+    },
+}
+
 REMEMBER_SCHEMA = {
     "name": "viking_remember",
     "description": (
@@ -563,6 +583,7 @@ _OPENVIKING_RECALL_TOOL_NAMES = {
     SEARCH_SCHEMA["name"],
     READ_SCHEMA["name"],
     BROWSE_SCHEMA["name"],
+    PROFILE_SCHEMA["name"],
 }
 
 # Canonical tool_status values emitted in OpenViking batch tool parts.
@@ -1814,6 +1835,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._runtime_start_thread: Optional[threading.Thread] = None
         self._memory_write_lock = threading.Lock()
         self._memory_write_threads: Set[threading.Thread] = set()
+        self._profile_prefetched_sessions: Set[str] = set()
         # Set on shutdown so deferred-commit / writer finalizers stop issuing
         # network writes against a torn-down provider.
         self._shutting_down = False
@@ -1886,6 +1908,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "description": "Maximum total characters injected by recall",
                 "default": _DEFAULT_RECALL_MAX_INJECTED_CHARS,
                 "env_var": "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
+            },
+            {
+                "key": "profile_max_chars",
+                "description": "Maximum user profile characters injected or returned",
+                "default": _DEFAULT_PROFILE_MAX_CHARS,
+                "env_var": "OPENVIKING_PROFILE_MAX_CHARS",
             },
             {
                 "key": "recall_timeout_seconds",
@@ -2132,6 +2160,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = settings["agent"]
         self._session_id = session_id
         self._turn_count = 0
+        self._profile_prefetched_sessions.clear()
         warning_callback = (
             kwargs.get("warning_callback")
             if kwargs.get("platform") == "cli"
@@ -2192,6 +2221,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "Use viking_read when you already have a specific viking:// "
                 "memory or resource URI and need more detail; it can read up "
                 "to three URIs at once.\n"
+                "Use viking_profile when you need the user's stored profile or "
+                "identity snapshot.\n"
                 "Prefer one or two focused searches, then read the strongest "
                 "result URIs. If repeated searches return the same evidence "
                 "or no stronger evidence, stop searching, answer from "
@@ -2209,7 +2240,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "# OpenViking Knowledge Base\n"
                 f"Active. Endpoint: {self._endpoint}\n"
                 "Use viking_search, viking_read, viking_browse, "
-                "viking_remember, viking_forget, viking_add_resource. "
+                "viking_profile, viking_remember, viking_forget, "
+                "viking_add_resource. "
                 "If repeated searches "
                 "return the same evidence or no stronger evidence, answer "
                 "from available evidence and state uncertainty if needed."
@@ -2218,17 +2250,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return recall context for this query/session."""
         query_text = _derive_openviking_user_text(query).strip()
-        if not self._client or len(query_text) < _RECALL_QUERY_MIN_CHARS:
+        if not self._client:
             return ""
 
         effective_session_id = str(session_id or self._session_id or "").strip()
-        result = self._search_prefetch_context(
-            query_text,
-            session_id=effective_session_id,
-        )
-        if not result:
+        parts: List[str] = []
+        profile_context = self._first_turn_profile_context(effective_session_id)
+        if profile_context:
+            parts.append(profile_context)
+        if len(query_text) >= _RECALL_QUERY_MIN_CHARS:
+            result = self._search_prefetch_context(
+                query_text,
+                session_id=effective_session_id,
+            )
+            if result:
+                parts.append(result)
+        if not parts:
             return ""
-        return f"## OpenViking Context\n{result}"
+        return "## OpenViking Context\n" + "\n\n".join(parts)
 
     @staticmethod
     def _remaining_recall_timeout(deadline: float, per_request_timeout: float) -> float:
@@ -2618,6 +2657,83 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "prefer_abstract": self._env_bool("OPENVIKING_RECALL_PREFER_ABSTRACT", False),
             "resources": self._env_bool("OPENVIKING_RECALL_RESOURCES", False),
         }
+
+    def _profile_max_chars(self) -> int:
+        return self._env_int(
+            "OPENVIKING_PROFILE_MAX_CHARS",
+            _DEFAULT_PROFILE_MAX_CHARS,
+            minimum=200,
+            maximum=50000,
+        )
+
+    @staticmethod
+    def _extract_profile_content(resp: Any) -> str:
+        result = OpenVikingMemoryProvider._unwrap_result(resp)
+        if isinstance(result, str):
+            return result.strip()
+        if isinstance(result, dict):
+            return str(result.get("content") or result.get("text") or "").strip()
+        return ""
+
+    @staticmethod
+    def _truncate_profile_content(content: str, max_chars: int) -> str:
+        content = content.strip()
+        if len(content) <= max_chars:
+            return content
+        return content[:max_chars].rstrip() + "\n\n[... truncated, use viking_profile with a larger max_chars for more]"
+
+    def _read_profile_snapshot(
+        self,
+        *,
+        client: Optional[_VikingClient] = None,
+        max_chars: Optional[int] = None,
+    ) -> Dict[str, str]:
+        active_client = client or self._client
+        if not active_client:
+            return {}
+        if max_chars is None:
+            limit = self._profile_max_chars()
+        else:
+            try:
+                limit = int(max_chars)
+            except (TypeError, ValueError):
+                limit = self._profile_max_chars()
+            limit = max(200, min(50000, limit))
+
+        for uri, level in _PROFILE_READS:
+            endpoint = "/api/v1/content/overview" if level == "overview" else "/api/v1/content/read"
+            try:
+                resp = active_client.get(endpoint, params={"uri": uri})
+            except Exception:
+                continue
+            content = self._extract_profile_content(resp)
+            if not content:
+                continue
+            return {
+                "uri": uri,
+                "level": level,
+                "content": self._truncate_profile_content(content, limit),
+            }
+        return {}
+
+    def _first_turn_profile_context(self, session_id: str) -> str:
+        session_key = session_id or self._session_id or "__openviking_default_session__"
+        if session_key in self._profile_prefetched_sessions or self._turn_count > 0:
+            return ""
+        self._profile_prefetched_sessions.add(session_key)
+        try:
+            snapshot = self._read_profile_snapshot()
+        except Exception as e:
+            logger.debug("OpenViking profile prefetch failed: %s", e)
+            return ""
+        content = snapshot.get("content", "").strip()
+        if not content:
+            return ""
+        return "\n".join([
+            "## User Profile",
+            f"<uri>{snapshot.get('uri', '')}</uri>",
+            content,
+        ])
 
     @staticmethod
     def _clamp_score(value: Any) -> float:
@@ -3284,6 +3400,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             SEARCH_SCHEMA,
             READ_SCHEMA,
             BROWSE_SCHEMA,
+            PROFILE_SCHEMA,
             REMEMBER_SCHEMA,
             FORGET_SCHEMA,
             ADD_RESOURCE_SCHEMA,
@@ -3300,6 +3417,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return self._tool_read(args)
             elif tool_name == "viking_browse":
                 return self._tool_browse(args)
+            elif tool_name == "viking_profile":
+                return self._tool_profile(args)
             elif tool_name == "viking_remember":
                 return self._tool_remember(args)
             elif tool_name == "viking_forget":
@@ -3591,6 +3710,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
 
         return json.dumps(result, ensure_ascii=False)
+
+    def _tool_profile(self, args: dict) -> str:
+        snapshot = self._read_profile_snapshot(max_chars=args.get("max_chars"))
+        if not snapshot:
+            return json.dumps({
+                "available": False,
+                "profile": "",
+                "message": "No OpenViking profile or identity snapshot found.",
+            })
+        return json.dumps({
+            "available": True,
+            "uri": snapshot.get("uri", ""),
+            "level": snapshot.get("level", ""),
+            "profile": snapshot.get("content", ""),
+        }, ensure_ascii=False)
 
     def _tool_remember(self, args: dict) -> str:
         content = args.get("content", "")

@@ -57,9 +57,9 @@ def test_proactive_event_store_idempotently_tracks_saga_and_context(tmp_path):
     assert "draft/reply" in block
     assert "mail_alert_contract_deadline" in block
     assert "Contract approval needed by 17:00" in block
-    assert "ignore previous instructions" not in block
-    assert "raw visible body" not in block
     payload = _payload(block)
+    assert payload["new_alerts"][0]["visible_message_sent_to_chat"] == "[Email alert: urgent]\nraw visible body"
+    assert "ignore previous instructions" not in block
     assert payload["new_alerts"][0]["status"] == "context_ready"
     assert payload["new_alerts"][0]["introduced"] is False
 
@@ -101,6 +101,7 @@ def test_context_prompt_injects_full_alert_once_then_stops_repeating(tmp_path):
                 "type": "email_alert",
                 "alert_id": "mail_alert_once",
                 "summary": "Admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment.",
+                "visible_message_sent_to_chat": "admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment",
                 "source_ref": "gmail:msg-1",
                 "status": "context_ready",
                 "resolution_status": "unresolved",
@@ -117,6 +118,7 @@ def test_context_prompt_injects_full_alert_once_then_stops_repeating(tmp_path):
     assert second_payload == {
         "active_alert_breadcrumbs": [
             {
+                "event_id": event.event_id,
                 "alert_id": "mail_alert_once",
                 "summary": "Admin services wants you to explain why Foxley Lane Pharmacy is on the HQ assessment.",
                 "source_ref": "gmail:msg-1",

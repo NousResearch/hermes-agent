@@ -7686,17 +7686,22 @@ def _default_spawn(
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
+    from tools.environments.local import hermes_subprocess_env
+    env = hermes_subprocess_env(inherit_credentials=False)
+    for key in list(env):
+        if key == "GATEWAY_RELAY_SECRET" or key.startswith("GATEWAY_RELAY_"):
+            env.pop(key, None)
+            continue
+        if key.startswith("AUXILIARY_") and (
+            key.endswith("_API_KEY") or key.endswith("_BASE_URL")
+        ):
+            env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
-    # config.  Without this, `env = dict(os.environ)` copies only the parent's
-    # env, and when the child process starts `hermes -p <name>` the
-    # _apply_profile_override() runs *before* hermes_constants is imported.
-    # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
-    # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
-    # profile-specific config entirely.  Fixes profile-scoped fallback_providers
-    # being invisible to kanban workers.
+    # config.  Build from the centralized sanitized subprocess env first so the
+    # worker does not inherit provider/gateway credentials from the dispatching
+    # profile, then pin only the target profile and kanban routing variables.
     from hermes_cli.profiles import resolve_profile_env
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)

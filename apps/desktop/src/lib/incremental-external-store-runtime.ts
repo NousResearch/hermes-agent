@@ -136,6 +136,8 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
       self._notifyEventSubscribers(store.isRunning ? 'runStart' : 'runEnd', {})
     }
 
+    // metadata.isOptimistic keeps this placeholder ephemeral: core evicts
+    // off-branch optimistic messages on head moves and omits them from export().
     if (hasUpcomingMessage(isRunning, messages)) {
       const optimisticId = generateId()
       this.repository.addOrUpdateMessage(

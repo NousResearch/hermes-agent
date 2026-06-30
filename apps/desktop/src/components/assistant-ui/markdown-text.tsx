@@ -213,6 +213,21 @@ function MediaAttachment({ path }: { path: string }) {
     )
   }
 
+  if (kind === 'file') {
+    return (
+      <a
+        className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        href="#"
+        onClick={event => {
+          event.preventDefault()
+          openExternalLink(mediaExternalUrl(path))
+        }}
+      >
+        Open {name}
+      </a>
+    )
+  }
+
   return (
     <a
       className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"

@@ -16,6 +16,7 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // and keeps the emphasis run intact. Other trailing punctuation is still peeled
 // off by the final `[^\s<>"'`*.,;:!?]` class.
 const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
+const LOCAL_FILE_LINK_RE = /(?<!!)\[([^\]\n]+)\]\((file:\/\/[^)\s]+|\/[^)\s]+)\)/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
@@ -138,6 +139,43 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+function filePathFromHref(href: string): string {
+  if (/^file:/i.test(href)) {
+    try {
+      return decodeURIComponent(new URL(href).pathname)
+    } catch {
+      return href.replace(/^file:\/\//i, '')
+    }
+  }
+
+  try {
+    return decodeURIComponent(href)
+  } catch {
+    return href
+  }
+}
+
+function isAbsoluteFileHref(href: string): boolean {
+  if (/^file:/i.test(href)) {
+    return true
+  }
+
+  const clean = href.split(/[?#]/, 1)[0] || ''
+  const name = clean.split('/').filter(Boolean).pop() || ''
+
+  return /^\.[A-Za-z0-9]{1,12}$/.test(name.slice(name.lastIndexOf('.')))
+}
+
+function rewriteLocalFileLinks(text: string): string {
+  return text.replace(LOCAL_FILE_LINK_RE, (match: string, label: string, href: string) => {
+    if (!isAbsoluteFileHref(href)) {
+      return match
+    }
+
+    return `[${label}](#media:${encodeURIComponent(filePathFromHref(href))})`
+  })
+}
+
 function normalizeVisibleProse(text: string): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
@@ -145,7 +183,9 @@ function normalizeVisibleProse(text: string): string {
       part.startsWith('`')
         ? part
         : autoLinkRawUrls(
-            part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            rewriteLocalFileLinks(
+              part.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            )
           )
     )
     .join('')

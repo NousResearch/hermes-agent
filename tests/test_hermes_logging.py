@@ -126,6 +126,32 @@ class TestSetupLogging:
         ]
         assert len(agent_handlers) == 1
 
+    def test_force_updates_existing_agent_handler_level(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, log_level="INFO")
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home,
+            log_level="DEBUG",
+            force=True,
+        )
+
+        root = logging.getLogger()
+        agent_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "agent.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(agent_handlers) == 1
+        assert agent_handlers[0].level == logging.DEBUG
+
+        logging.getLogger("plugins.platforms.matrix.adapter").debug(
+            "debug after forced log-level change"
+        )
+        for h in root.handlers:
+            h.flush()
+
+        content = (hermes_home / "logs" / "agent.log").read_text(encoding="utf-8")
+        assert "debug after forced log-level change" in content
+
     def test_custom_log_level(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home, log_level="DEBUG")
 

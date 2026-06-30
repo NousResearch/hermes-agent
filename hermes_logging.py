@@ -553,8 +553,11 @@ def _add_rotating_handler(
     formatter: logging.Formatter,
     log_filter: Optional[logging.Filter] = None,
 ) -> None:
-    """Add a ``RotatingFileHandler`` to *logger*, skipping if one already
-    exists for the same resolved file path (idempotent).
+    """Add or update a ``RotatingFileHandler`` on *logger*.
+
+    The function is idempotent by resolved file path: re-calls do not attach
+    duplicate handlers, but they do refresh handler settings so forced logging
+    reconfiguration can change the file log level at runtime.
 
     Parameters
     ----------
@@ -568,6 +571,17 @@ def _add_rotating_handler(
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
         ):
+            existing.setLevel(level)
+            existing.setFormatter(formatter)
+            if hasattr(existing, "maxBytes"):
+                existing.maxBytes = max_bytes
+            if hasattr(existing, "backupCount"):
+                existing.backupCount = backup_count
+            if log_filter is not None and not _has_equivalent_filter(
+                existing,
+                log_filter,
+            ):
+                existing.addFilter(log_filter)
             return  # already attached
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -580,6 +594,22 @@ def _add_rotating_handler(
     if log_filter is not None:
         handler.addFilter(log_filter)
     logger.addHandler(handler)
+
+
+def _has_equivalent_filter(
+    handler: logging.Handler,
+    log_filter: logging.Filter,
+) -> bool:
+    for existing in handler.filters:
+        if existing is log_filter:
+            return True
+        if (
+            isinstance(existing, _ComponentFilter)
+            and isinstance(log_filter, _ComponentFilter)
+            and existing._prefixes == log_filter._prefixes
+        ):
+            return True
+    return False
 
 
 def _read_logging_config():

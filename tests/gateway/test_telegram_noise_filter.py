@@ -33,6 +33,7 @@ NOISY_STATUS_MESSAGES = [
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
+    "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to 85% (from 75%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
 ]

@@ -40,9 +40,11 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
 class TestDiscordBotFilter(unittest.TestCase):
     """Test the DISCORD_ALLOW_BOTS filtering logic."""
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
-        """Simulate the on_message filter logic and return whether message was accepted."""
-        # Replicate the exact filter logic from discord.py on_message
+    def _run_filter(self, message, allow_bots="none", client_user=None, self_role_mentions=None):
+        """Simulate the on_message bot filter and return whether message was accepted."""
+        # Replicate the Discord adapter's bot-message filter: other bots are
+        # accepted only when bot messages are allowed, and in `mentions` mode
+        # only when they mention this bot directly or via one of its roles.
         if message.author == client_user:
             return False  # own messages always ignored
 
@@ -51,10 +53,14 @@ class TestDiscordBotFilter(unittest.TestCase):
             if allow == "none":
                 return False
             elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+                role_mentions_self = bool(self_role_mentions)
+                if not client_user or (
+                    client_user not in message.mentions
+                    and not role_mentions_self
+                ):
                     return False
             # "all" falls through
-        
+
         return True  # message accepted
 
     def test_own_messages_always_ignored(self):
@@ -90,12 +96,32 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, mentions=[])
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
+    def test_allow_bots_mentions_rejects_bot_message_to_other_agent(self):
+        """Worker bot chatter mentioning another agent must not wake this bot."""
+        our_user = _make_author(is_self=True)
+        other_agent = _make_author(bot=True)
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, mentions=[other_agent])
+        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+
     def test_allow_bots_mentions_accepts_with_mention(self):
         """With allow_bots=mentions, bot messages with @mention are accepted."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, mentions=[our_user])
         self.assertTrue(self._run_filter(msg, "mentions", our_user))
+
+
+    def test_allow_bots_mentions_accepts_with_self_role_mention(self):
+        """With allow_bots=mentions, a bot message mentioning our role is accepted."""
+        our_user = _make_author(is_self=True)
+        bot = _make_author(bot=True)
+        role = MagicMock()
+        role.id = 1234
+        msg = _make_message(author=bot, mentions=[])
+        self.assertTrue(
+            self._run_filter(msg, "mentions", our_user, self_role_mentions=[role])
+        )
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""

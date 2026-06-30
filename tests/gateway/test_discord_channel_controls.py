@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
+import asyncio
 import sys
 
 import pytest
@@ -59,8 +60,19 @@ class FakeTextChannel:
     def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=12345, name=guild_name)
         self.topic = None
+        self.sent_messages = []
+        self.created_threads = []
+
+    async def send(self, content, **kwargs):
+        self.sent_messages.append(content)
+        return SimpleNamespace(id=9000 + len(self.sent_messages), content=content, create_thread=AsyncMock())
+
+    async def create_thread(self, name: str, **kwargs):
+        thread = FakeThread(channel_id=8000 + len(self.created_threads), name=name, parent=self)
+        self.created_threads.append(thread)
+        return thread
 
 
 class FakeThread:
@@ -69,34 +81,65 @@ class FakeThread:
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.guild = getattr(parent, "guild", None) or SimpleNamespace(id=12345, name=guild_name)
         self.topic = None
+        self.sent_messages = []
+        self.added_users = []
+        self._history_messages = []
+
+    async def send(self, content, **kwargs):
+        self.sent_messages.append(content)
+        author = SimpleNamespace(display_name="Pixoid", name="Pixoid", bot=True)
+        msg = SimpleNamespace(id=9100 + len(self.sent_messages), content=content, clean_content=content, author=author)
+        self._history_messages.append(msg)
+        return msg
+
+    async def add_user(self, user):
+        self.added_users.append(user)
+
+    def history(self, *, limit=100, oldest_first=False):
+        messages = list(self._history_messages)[:limit]
+        if not oldest_first:
+            messages.reverse()
+
+        async def _iter():
+            for msg in messages:
+                yield msg
+
+        return _iter()
 
 
 @pytest.fixture
-def adapter(monkeypatch):
+def adapter(monkeypatch, tmp_path):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
     adapter.handle_message = AsyncMock()
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, message_id: int = 123):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
-        id=123,
+        id=message_id,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
+        guild=getattr(channel, "guild", None),
     )
 
 
@@ -131,6 +174,591 @@ async def test_ignored_channel_blocks_even_with_mention(adapter, monkeypatch):
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_managed_bot_role_mention_counts_as_bot_mention(adapter, monkeypatch):
+    """Selecting a bot's managed @role should route like a direct bot mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_role = SimpleNamespace(id=1234, managed=True)
+    other_role = SimpleNamespace(id=5678, managed=True)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[bot_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> hello",
+        role_mentions=[bot_role],
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello"
+
+    adapter.handle_message.reset_mock()
+    message = make_message(
+        channel=channel,
+        content=f"<@&{other_role.id}> hello",
+        role_mentions=[other_role],
+        mentions=[],
+    )
+    await adapter._handle_message(message)
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shared_role_mention_with_human_mention_counts_as_bot_call(adapter, monkeypatch):
+    """@Crew plus @Human should still call every bot that has the Crew role."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    crew_role = SimpleNamespace(id=2468, managed=False)
+    human = SimpleNamespace(id=42, bot=False)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[crew_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{crew_role.id}> say hi to <@{human.id}>",
+        role_mentions=[crew_role],
+        mentions=[human],
+    )
+
+    assert adapter._message_mentions_own_role(message) == [crew_role]
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == f"say hi to <@{human.id}>"
+
+
+@pytest.mark.asyncio
+async def test_configured_crew_alias_counts_as_bot_call(adapter, monkeypatch):
+    """Configured crew phrases wake each participating bot without a direct tag."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:,get the crew,calling the crew")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="crew: discuss this together",
+        mentions=[],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "crew: discuss this together"
+
+
+@pytest.mark.asyncio
+async def test_direct_specialist_mention_still_wakes_when_crew_alias_disabled(adapter, monkeypatch):
+    """Restricted workers stay directly summonable by explicit @mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{bot_user.id}> Boba, quick reality check",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "Boba, quick reality check"
+
+
+@pytest.mark.asyncio
+async def test_worker_profile_ignores_broad_crew_alias_when_not_configured(adapter, monkeypatch):
+    """Worker profiles with no crew aliases do not join @Crew/crew: dogpiles."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="crew: discuss this together",
+        mentions=[],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_council_mode_opens_huddle_invites_workers_closes_and_synthesizes(adapter, monkeypatch):
+    """Coordinator council mode turns a crew call into a bounded huddle, not a dogpile."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [
+            {"name": "Boba", "id": "111", "role": "reality check"},
+            {"name": "Quill", "id": "222", "role": "docs"},
+            {"name": "Tinker", "id": "333", "role": "implementation"},
+        ],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+
+    channel = FakeTextChannel(channel_id=700)
+    message = make_message(channel=channel, content="crew: decide the multiplayer flow", mentions=[])
+    await adapter._handle_message(message)
+
+    assert len(channel.created_threads) == 1
+    huddle = channel.created_threads[0]
+    assert huddle.id in {8000, "8000"} or str(huddle.id) == "8000"
+    assert len(huddle.added_users) == 3
+    assert "<@111>" in huddle.sent_messages[0]
+    assert "no further input" in huddle.sent_messages[0]
+    assert "After `Huddle closed`, stop completely" in huddle.sent_messages[0]
+    assert not huddle.sent_messages[0].startswith("Huddle closed")
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+    assert "bounded crew huddle" in channel.sent_messages[0]
+    assert "@Boba" in channel.sent_messages[0]
+
+    for _ in range(10):
+        if adapter.handle_message.await_count:
+            break
+        await asyncio.sleep(0)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.text.startswith("[COUNCIL MODE SYNTHESIS]")
+    assert "Huddle transcript" in event.text
+    assert "Huddle closed" in huddle.sent_messages[-1]
+    assert "Route: `discord-council-123`" in huddle.sent_messages[0]
+    assert "Route: `discord-council-123`" in huddle.sent_messages[-1]
+    assert adapter._council_huddle_threads[str(huddle.id)] == "closed"
+    record = adapter._council_route_records.get("discord-council-123")
+    assert record["status"] == "closed"
+    assert record["origin_channel_id"] == "700"
+    assert record["huddle_thread_id"] == str(huddle.id)
+    assert record["worker_ids"] == ["111", "222", "333"]
+    assert record["actual_responder_ids"] == []
+    assert record["missing_worker_ids"] == ["111", "222", "333"]
+    assert record["final_delivery_target"] == "700"
+
+
+@pytest.mark.asyncio
+async def test_council_mode_role_trigger_only_for_council_role(adapter, monkeypatch):
+    """Mentioning @Pixoid should not open an @Crew huddle just because Pixoid owns that role."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111", "role": "reality check"}],
+    }
+
+    pixoid_role = SimpleNamespace(id=2468, name="Pixoid", managed=False)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[pixoid_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{pixoid_role.id}> can you check what processes are running?",
+        role_mentions=[pixoid_role],
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    assert channel.created_threads == []
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "can you check what processes are running?"
+
+
+@pytest.mark.asyncio
+async def test_council_mode_role_trigger_accepts_crew_role_name(adapter, monkeypatch):
+    """A real @Crew role mention still opens the bounded council huddle."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111", "role": "reality check"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+
+    crew_role = SimpleNamespace(id=2468, name="Crew", managed=False)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[crew_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{crew_role.id}> decide the multiplayer flow",
+        role_mentions=[crew_role],
+        mentions=[],
+    )
+
+    await adapter._handle_message(message)
+
+    assert len(channel.created_threads) == 1
+    huddle = channel.created_threads[0]
+    assert "<@111>" in huddle.sent_messages[0]
+    assert "decide the multiplayer flow" in huddle.sent_messages[0]
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+
+    for _ in range(10):
+        if adapter.handle_message.await_count:
+            break
+        await asyncio.sleep(0)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_council_route_records_do_not_collide_between_huddles(adapter, monkeypatch):
+    """Separate @Crew requests get distinct route records and huddle IDs."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+    channel = FakeTextChannel(channel_id=700)
+
+    await adapter._handle_message(
+        make_message(channel=channel, content="crew: first huddle", mentions=[], message_id=123)
+    )
+    await adapter._handle_message(
+        make_message(channel=channel, content="crew: second huddle", mentions=[], message_id=124)
+    )
+    for _ in range(20):
+        if adapter.handle_message.await_count >= 2:
+            break
+        await asyncio.sleep(0)
+
+    first = adapter._council_route_records.get("discord-council-123")
+    second = adapter._council_route_records.get("discord-council-124")
+    assert first["route_id"] != second["route_id"]
+    assert first["huddle_thread_id"] != second["huddle_thread_id"]
+    assert first["status"] == "closed"
+    assert second["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_council_route_records_restore_huddle_status_from_disk(adapter):
+    """Restart reconstruction restores open/closed huddle suppression state."""
+    adapter._council_route_records.upsert(
+        "discord-council-restore",
+        status="open",
+        huddle_thread_id="9001",
+        origin_channel_id="700",
+        worker_ids=["111"],
+        actual_responder_ids=[],
+        missing_worker_ids=["111"],
+    )
+
+    restored = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+
+    assert restored._council_huddle_threads["9001"] == "open"
+    assert restored._council_route_records.get("discord-council-restore")["worker_ids"] == ["111"]
+
+
+@pytest.mark.asyncio
+async def test_council_mode_no_tools_smoke_test_explains_no_huddle(adapter, monkeypatch):
+    """@Crew + no-tools should be legible and should not wake workers."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111"}],
+    }
+
+    channel = FakeTextChannel(channel_id=700)
+    message = make_message(
+        channel=channel,
+        content="crew: can we test the multiplayer experience? just reply yes; dont run any tools yet",
+        mentions=[],
+    )
+    await adapter._handle_message(message)
+
+    assert channel.created_threads == []
+    adapter.handle_message.assert_not_awaited()
+    assert len(channel.sent_messages) == 1
+    assert "Yes — I hear you" in channel.sent_messages[0]
+    assert "asked me not to run tools" in channel.sent_messages[0]
+    assert "won't open a huddle" in channel.sent_messages[0]
+    assert "@Boba" in channel.sent_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_council_mode_missing_workers_reports_route_gap_not_bare_answer(adapter, monkeypatch):
+    """Enabled @Crew route with no workers should not collapse to the LLM."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {"enabled": True, "wait_seconds": 0, "workers": []}
+
+    channel = FakeTextChannel(channel_id=700)
+    message = make_message(
+        channel=channel,
+        content="crew: can we test the multiplayer experience? just reply yes if you hear it from me",
+        mentions=[],
+    )
+    await adapter._handle_message(message)
+
+    assert channel.created_threads == []
+    adapter.handle_message.assert_not_awaited()
+    assert len(channel.sent_messages) == 1
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+    assert "couldn't start a crew huddle" in channel.sent_messages[0]
+    assert "no council workers are configured" in channel.sent_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_channel_allow_bots_none_only_blocks_top_level_channels(adapter, monkeypatch):
+    """Safer shared-channel config blocks bot chatter in channels but preserves thread handoffs."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("DISCORD_CHANNEL_ALLOW_BOTS", "none")
+
+    bot_user = SimpleNamespace(id=999)
+    adapter._client = SimpleNamespace(user=bot_user)
+    bot_author = SimpleNamespace(id=111, display_name="Boba", name="Boba", bot=True)
+
+    channel_msg = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{bot_user.id}> channel status ping",
+        mentions=[bot_user],
+    )
+    channel_msg.author = bot_author
+    assert adapter._discord_allow_bots_for_message(channel_msg) == "none"
+
+    thread_msg = make_message(
+        channel=FakeThread(channel_id=8000, parent=FakeTextChannel(channel_id=700)),
+        content=f"<@{bot_user.id}> thread handoff ping",
+        mentions=[bot_user],
+    )
+    thread_msg.author = bot_author
+    assert adapter._discord_allow_bots_for_message(thread_msg) == "mentions"
+
+
+@pytest.mark.asyncio
+async def test_council_huddle_suppresses_ambient_worker_chatter(adapter, monkeypatch):
+    """Open/closed huddle threads do not wake Pixoid on unmentioned worker messages."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._council_huddle_threads[str(thread.id)] = "open"
+    worker_author = SimpleNamespace(id=111, display_name="Boba", name="Boba", bot=True)
+    message = make_message(channel=thread, content="Boba view: risk here", mentions=[])
+    message.author = worker_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_council_huddle_suppresses_bot_reply_ping_after_close(adapter, monkeypatch):
+    """Closed huddles drop implicit reply pings before model invocation."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._council_huddle_threads[str(thread.id)] = "closed"
+    worker_author = SimpleNamespace(id=111, display_name="Boba", name="Boba", bot=True)
+    message = make_message(
+        channel=thread,
+        content="Silence.",
+        mentions=[adapter._client.user],  # implicit Discord reply ping, not textual <@id>
+    )
+    message.author = worker_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_worker_ignores_close_markers_and_acks(adapter, monkeypatch):
+    """Worker-style profiles stay quiet on huddle close markers and casual acks."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._threads.mark(str(thread.id))
+
+    for content in (
+        "Huddle closed. Workers, stop here unless tagged directly.",
+        "ok thanks",
+    ):
+        adapter.handle_message.reset_mock()
+        message = make_message(channel=thread, content=content, mentions=[])
+        await adapter._handle_message(message)
+        adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_worker_ignores_bot_reply_ping_without_textual_tag(adapter, monkeypatch):
+    """Discord reply pings from Pixoid do not count as direct worker summons."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._threads.mark(str(thread.id))
+
+    bot_user = adapter._client.user
+    pixoid_author = SimpleNamespace(id=1510114832991522906, display_name="Pixoid", name="Pixoid", bot=True)
+    message = make_message(
+        channel=thread,
+        content="Verified: huddle closed; no further worker action needed.",
+        mentions=[bot_user],  # implicit Discord reply mention, not textual <@id>
+    )
+    message.author = pixoid_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_require_mention_worker_accepts_bot_textual_tag(adapter, monkeypatch):
+    """Explicit bot-authored <@id> text still counts as a direct worker summon."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    parent = FakeTextChannel(channel_id=700)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+
+    bot_user = adapter._client.user
+    pixoid_author = SimpleNamespace(id=1510114832991522906, display_name="Pixoid", name="Pixoid", bot=True)
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> direct follow-up requested",
+        mentions=[bot_user],
+    )
+    message.author = pixoid_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_council_mode_reuses_current_workbench_thread(adapter, monkeypatch):
+    """@Crew inside an agent-workbench thread invites workers into that thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workbench_channel_id": "700",
+        "workers": [{"name": "Tinker", "id": "333"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_channel=lambda channel_id: None,
+        fetch_channel=AsyncMock(),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+    parent = FakeTextChannel(channel_id=700, name="agent-workbench")
+    thread = FakeThread(channel_id=8000, name="existing", parent=parent)
+    message = make_message(channel=thread, content="crew: discuss in here", mentions=[])
+
+    await adapter._handle_message(message)
+
+    assert parent.created_threads == []
+    assert len(thread.added_users) == 1
+    assert "<@333>" in thread.sent_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_crew_word_does_not_wake_bot(adapter, monkeypatch):
+    """The word crew is not ambient wakeup unless an explicit alias is configured."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="the crew should discuss things",
+        mentions=[],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_allowed_channels_blocks_direct_mention_outside_worker_context(adapter, monkeypatch):
+    """Worker whitelists block explicit @mentions outside approved contexts."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=900, name="random"),
+        content=f"<@{bot_user.id}> Boba can you check this?",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_allowed_channels_permits_direct_mention_in_approved_thread(adapter, monkeypatch):
+    """A worker restricted to the workbench parent can still be summoned in its threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["allowed_channels"] = ["700"]
+
+    bot_user = adapter._client.user
+    parent = FakeTextChannel(channel_id=700, name="agent-workbench")
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    message = make_message(
+        channel=thread,
+        content=f"<@{bot_user.id}> Quill please add source-truth notes",
+        mentions=[bot_user],
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -199,6 +827,267 @@ async def test_dms_unaffected_by_ignored_channels(adapter, monkeypatch):
 
     adapter.handle_message.assert_awaited_once()
 
+
+
+
+
+
+def _append_worker_reply(thread, *, worker_id: int, name: str, content: str):
+    author = SimpleNamespace(id=worker_id, display_name=name, name=name, bot=True)
+    msg = SimpleNamespace(
+        id=9200 + len(thread._history_messages),
+        content=content,
+        clean_content=content,
+        author=author,
+    )
+    thread._history_messages.append(msg)
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_council_closes_as_soon_as_all_workers_replied(adapter):
+    """All-replied path closes without waiting for the full timeout."""
+    origin = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=origin)
+    workers = [{"name": "Boba", "id": "111"}, {"name": "Quill", "id": "222"}]
+    _append_worker_reply(huddle, worker_id=111, name="Boba", content="Boba: yes")
+    _append_worker_reply(huddle, worker_id=222, name="Quill", content="Quill: yes")
+
+    await adapter._run_council_synthesis_after_wait(
+        origin_message=make_message(channel=origin, content="crew: test", mentions=[]),
+        huddle_thread=huddle,
+        request_text="crew: test",
+        wait_seconds=999,
+        route_id="discord-council-all-replied",
+        workers=workers,
+    )
+
+    assert "All invited workers replied" in huddle.sent_messages[-1]
+    record = adapter._council_route_records.get("discord-council-all-replied")
+    assert record["close_reason"] == "all_replied"
+    assert record["actual_responder_ids"] == ["111", "222"]
+    assert record["missing_worker_ids"] == []
+    event = adapter.handle_message.await_args.args[0]
+    assert "close_reason=all_replied" in event.text
+    assert "missing_worker_ids=[]" in event.text
+
+
+@pytest.mark.asyncio
+async def test_council_timeout_records_partial_missing_workers(adapter):
+    """Timeout path records contributors and missing workers explicitly."""
+    origin = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=origin)
+    workers = [{"name": "Boba", "id": "111"}, {"name": "Quill", "id": "222"}]
+    _append_worker_reply(huddle, worker_id=111, name="Boba", content="Boba: yes")
+
+    await adapter._run_council_synthesis_after_wait(
+        origin_message=make_message(channel=origin, content="crew: test", mentions=[]),
+        huddle_thread=huddle,
+        request_text="crew: test",
+        wait_seconds=0,
+        route_id="discord-council-partial-timeout",
+        workers=workers,
+    )
+
+    assert "Timeout reached" in huddle.sent_messages[-1]
+    record = adapter._council_route_records.get("discord-council-partial-timeout")
+    assert record["close_reason"] == "timeout"
+    assert record["actual_responder_ids"] == ["111"]
+    assert record["missing_worker_ids"] == ["222"]
+
+
+@pytest.mark.asyncio
+async def test_council_timeout_records_no_replies(adapter):
+    """No-reply timeout keeps every invited worker in missing_worker_ids."""
+    origin = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=origin)
+    workers = [{"name": "Boba", "id": "111"}, {"name": "Quill", "id": "222"}]
+
+    await adapter._run_council_synthesis_after_wait(
+        origin_message=make_message(channel=origin, content="crew: test", mentions=[]),
+        huddle_thread=huddle,
+        request_text="crew: test",
+        wait_seconds=0,
+        route_id="discord-council-no-reply-timeout",
+        workers=workers,
+    )
+
+    record = adapter._council_route_records.get("discord-council-no-reply-timeout")
+    assert record["close_reason"] == "timeout"
+    assert record["actual_responder_ids"] == []
+    assert record["missing_worker_ids"] == ["111", "222"]
+
+
+@pytest.mark.asyncio
+async def test_late_worker_reply_after_close_does_not_reopen_huddle(adapter, monkeypatch):
+    """Late worker messages after close stay silent and do not alter route state."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    parent = FakeTextChannel(channel_id=700)
+    huddle = FakeThread(channel_id=8000, name="crew-huddle", parent=parent)
+    adapter._council_huddle_threads[str(huddle.id)] = "closed"
+    adapter._council_route_records.upsert(
+        "discord-council-late",
+        status="closed",
+        huddle_thread_id=str(huddle.id),
+        worker_ids=["111"],
+        actual_responder_ids=[],
+        missing_worker_ids=["111"],
+    )
+    worker_author = SimpleNamespace(id=111, display_name="Boba", name="Boba", bot=True)
+    message = make_message(channel=huddle, content="late worker reply", mentions=[])
+    message.author = worker_author
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert adapter._council_huddle_threads[str(huddle.id)] == "closed"
+    assert adapter._council_route_records.get("discord-council-late")["status"] == "closed"
+
+# ── council replay regressions ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_replay_existing_workbench_thread_membership_trap_reuses_thread(adapter, monkeypatch):
+    """Replay: @Crew inside #agent-workbench should reuse the current thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workbench_channel_id": "700",
+        "workers": [{"name": "Tinker", "id": "333"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_channel=lambda channel_id: None,
+        fetch_channel=AsyncMock(),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+    parent = FakeTextChannel(channel_id=700, name="agent-workbench")
+    existing = FakeThread(channel_id=8000, name="existing-huddle", parent=parent)
+
+    await adapter._handle_message(
+        make_message(channel=existing, content="crew: test multiplayer here", mentions=[])
+    )
+
+    assert parent.created_threads == []
+    assert len(existing.added_users) == 1
+    assert "<@333>" in existing.sent_messages[0]
+    assert "bounded crew huddle" in existing.sent_messages[1]
+
+
+@pytest.mark.asyncio
+async def test_replay_crew_role_mention_opens_pixoid_council_route(adapter, monkeypatch):
+    """Replay: @Crew role mention should become Pixoid-led council, not bare yes."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    crew_role = SimpleNamespace(id=2468, name="Crew", managed=False)
+    channel = FakeTextChannel(channel_id=700)
+    channel.guild.me = SimpleNamespace(roles=[crew_role])
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111"}],
+    }
+    adapter._client = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        get_user=lambda user_id: SimpleNamespace(id=user_id),
+    )
+
+    await adapter._handle_message(
+        make_message(
+            channel=channel,
+            content=f"<@&{crew_role.id}> can we test the multiplayer experience? just reply yes",
+            role_mentions=[crew_role],
+            mentions=[],
+        )
+    )
+
+    assert len(channel.created_threads) == 1
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+    assert "bounded crew huddle" in channel.sent_messages[0]
+
+    for _ in range(10):
+        if adapter.handle_message.await_count:
+            break
+        await asyncio.sleep(0)
+
+    adapter.handle_message.assert_awaited_once()
+    assert adapter.handle_message.await_args.args[0].internal is True
+
+
+@pytest.mark.asyncio
+async def test_replay_crew_no_tools_skips_huddle_with_explanation(adapter, monkeypatch):
+    """Replay: user's original no-tools smoke test should not create a huddle."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {
+        "enabled": True,
+        "wait_seconds": 0,
+        "workers": [{"name": "Boba", "id": "111"}],
+    }
+    channel = FakeTextChannel(channel_id=700)
+
+    await adapter._handle_message(
+        make_message(
+            channel=channel,
+            content="crew: can we test the multiplayer experience here? just reply yes if you hear it from me...dont run any tools yet",
+            mentions=[],
+        )
+    )
+
+    assert channel.created_threads == []
+    assert "asked me not to run tools" in channel.sent_messages[0]
+    assert "@Boba" in channel.sent_messages[0]
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_replay_crew_without_no_tools_reports_unavailable_instead_of_bare_yes(adapter, monkeypatch):
+    """Replay: tools-allowed smoke test must open council or explain why not."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "crew:")
+    adapter.config.extra["council_mode"] = {"enabled": True, "workers": []}
+    channel = FakeTextChannel(channel_id=700)
+
+    await adapter._handle_message(
+        make_message(
+            channel=channel,
+            content="crew: can we test out the multiplayer experience here? just reply yes if you hear it from me...",
+            mentions=[],
+        )
+    )
+
+    assert channel.created_threads == []
+    assert "no council workers are configured" in channel.sent_messages[0]
+    assert "@Crew is coordinator-led" in channel.sent_messages[0]
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_replay_worker_close_marker_ack_lol_thanks_stay_silent(adapter, monkeypatch):
+    """Replay: workers do not loop on close markers or casual acknowledgements."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_CREW_ALIASES", raising=False)
+    thread = FakeThread(channel_id=8000, name="crew-huddle", parent=FakeTextChannel(channel_id=700))
+    adapter._threads.mark(str(thread.id))
+    adapter._council_huddle_threads[str(thread.id)] = "closed"
+
+    for content in (
+        "Huddle closed. I have enough for this round.",
+        "ok",
+        "lol thanks",
+    ):
+        adapter.handle_message.reset_mock()
+        await adapter._handle_message(make_message(channel=thread, content=content, mentions=[]))
+        adapter.handle_message.assert_not_awaited()
+
+
+def test_replay_duplicate_discord_event_id_is_idempotent(adapter):
+    """Replay: duplicate Discord message IDs are suppressed by the dedup cache."""
+    assert adapter._dedup.is_duplicate("1521209357902024715") is False
+    assert adapter._dedup.is_duplicate("1521209357902024715") is True
 
 # ── no_thread_channels ───────────────────────────────────────────────
 
@@ -281,6 +1170,31 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
     adapter.handle_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_auto_create_thread_reuses_existing_starter_thread(adapter):
+    """Multi-bot races should reuse the starter's thread, not spawn fallback threads."""
+    existing_thread = FakeThread(channel_id=999, name="crew-council")
+    refreshed_message = SimpleNamespace(thread=existing_thread)
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=refreshed_message),
+        send=AsyncMock(),
+    )
+    message = SimpleNamespace(
+        id=123,
+        content="<@999> <@888> discuss this together",
+        author=SimpleNamespace(display_name="Pixiedust"),
+        channel=channel,
+        thread=None,
+        create_thread=AsyncMock(side_effect=RuntimeError("message already has a thread")),
+    )
+
+    thread = await adapter._auto_create_thread(message)
+
+    assert thread is existing_thread
+    channel.fetch_message.assert_awaited_once_with(123)
+    channel.send.assert_not_awaited()
+
+
 # ── config.py bridging ───────────────────────────────────────────────
 
 
@@ -322,6 +1236,112 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_allow_bots(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.allow_bots to DISCORD_ALLOW_BOTS."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "allow_bots": "mentions",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_ALLOW_BOTS") == "mentions"
+
+
+def test_config_bridges_channel_allow_bots(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.channel_allow_bots to DISCORD_CHANNEL_ALLOW_BOTS."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "allow_bots": "mentions",
+            "channel_allow_bots": "none",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "")
+    monkeypatch.setenv("DISCORD_CHANNEL_ALLOW_BOTS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_ALLOW_BOTS") == "mentions"
+    assert os.getenv("DISCORD_CHANNEL_ALLOW_BOTS") == "none"
+
+
+def test_config_bridges_allowed_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges worker channel whitelists to DISCORD_ALLOWED_CHANNELS."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "allowed_channels": ["700", "800"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_ALLOWED_CHANNELS") == "700,800"
+
+
+def test_config_bridges_crew_aliases(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.crew_aliases to DISCORD_CREW_ALIASES."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "crew_aliases": ["crew:", "get the crew"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_CREW_ALIASES", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_CREW_ALIASES") == "crew:,get the crew"
+
+
+def test_config_seeds_council_mode_extra(monkeypatch, tmp_path):
+    """Nested discord.council_mode must reach DiscordAdapter via PlatformConfig.extra."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "enabled": True,
+            "council_mode": {
+                "enabled": True,
+                "workbench_channel_id": "700",
+                "wait_seconds": 0,
+                "workers": [{"name": "Boba", "id": "111"}],
+            },
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "token")
+
+    from gateway.config import Platform, load_gateway_config
+    config = load_gateway_config()
+
+    council_mode = config.platforms[Platform.DISCORD].extra["council_mode"]
+    assert council_mode["enabled"] is True
+    assert council_mode["workbench_channel_id"] == "700"
+    assert council_mode["workers"] == [{"name": "Boba", "id": "111"}]
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

@@ -163,6 +163,34 @@ describe('createGatewayEventHandler', () => {
     }
   })
 
+  it('submits voice transcripts synchronously without deferring through a timer', () => {
+    const appended: Msg[] = []
+    const calls: string[] = []
+    const ctx = buildCtx(appended)
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout')
+
+    ctx.composer.setInput = vi.fn(() => {
+      calls.push('setInput')
+    })
+    ctx.submission.submitRef.current = vi.fn((text: string) => {
+      calls.push(`submit:${text}`)
+    })
+
+    try {
+      createGatewayEventHandler(ctx)({
+        payload: { text: '  send this transcript  ' },
+        type: 'voice.transcript'
+      } as any)
+
+      expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+      expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('send this transcript')
+      expect(calls).toEqual(['setInput', 'submit:send this transcript'])
+      expect(timerSpy).not.toHaveBeenCalled()
+    } finally {
+      timerSpy.mockRestore()
+    }
+  })
+
   it('maps goal status.update prefixes to short status strings', () => {
     const ctx = buildCtx([])
     const onEvent = createGatewayEventHandler(ctx)

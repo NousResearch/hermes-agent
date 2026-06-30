@@ -624,10 +624,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         //
         // We can't branch on composer input from inside a setInput updater
         // (React strict mode double-invokes it, duplicating the submit).
-        // Just clear + defer submit so the cleared input is committed before
-        // submit reads it.
+        // `submit()` already accepts the transcript value directly, so
+        // deferring it only opens a race with the busy->false queue drain.
         setInput('')
-        setTimeout(() => submitRef.current(text), 0)
+        submitRef.current(text)
 
         return
       }

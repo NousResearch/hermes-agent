@@ -5093,7 +5093,11 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def _persist_migration(config: Dict[str, Any]) -> None:
+def _persist_migration(
+    config: Dict[str, Any],
+    *,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+) -> None:
     """Persist a migrated config under the migration write invariant.
 
     THE INVARIANT (single source of truth for the whole migration pipeline):
@@ -5113,7 +5117,7 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     across seeds, non-default values, behaviour flips, and data transforms is
     verified by the migration parity tests.
     """
-    save_config(config)
+    save_config(config, preserve_keys=preserve_keys)
 
 
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
@@ -5571,6 +5575,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     if current_ver < 29:
         config = read_raw_config()
         touched = False
+        preserve_keys: Set[Tuple[str, ...]] = set()
         for subsystem in ("memory", "skills"):
             sub = config.get(subsystem)
             if not isinstance(sub, dict) or "write_mode" not in sub:
@@ -5578,13 +5583,14 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             old = sub.pop("write_mode")
             old_norm = old.strip().lower() if isinstance(old, str) else old
             sub["write_approval"] = (old_norm == "approve")
+            preserve_keys.add((subsystem, "write_approval"))
             config[subsystem] = sub
             touched = True
             results["config_added"].append(
                 f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
             )
         if touched:
-            _persist_migration(config)
+            _persist_migration(config, preserve_keys=preserve_keys)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 

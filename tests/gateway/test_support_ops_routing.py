@@ -133,7 +133,7 @@ def test_backend_resolver_thread_title_requires_backend_lane_without_business_ke
     )
 
     assert result.ok is False
-    assert result.blocked_reason == "blocked_backend_resolver_thread_wrong_discord_lane"
+    assert result.blocked_reason == "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person"
     assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
 
 
@@ -145,8 +145,118 @@ def test_owner_route_back_thread_title_requires_control_tower_lane_without_busin
     )
 
     assert result.ok is False
-    assert result.blocked_reason == "blocked_owner_route_back_thread_wrong_discord_lane"
+    assert result.blocked_reason == "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person"
     assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+
+
+def test_structured_target_person_requires_matching_lane():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция – отговор за потенциални партньори",
+        channel_id="1504852553031221391",
+        initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+        target_person="emil_lomliev",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_target_person_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+    assert "target_person=emil_lomliev" in (result.guidance or "")
+
+
+def test_structured_target_person_unknown_requires_clarification():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция – отговор за потенциални партньори",
+        channel_id="1504852553031221391",
+        initial_message="Моля пиши на Иван Х.",
+        target_person="ivan_h",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_unknown_target_person_requires_clarification"
+    assert "Не изпратих съобщението" in (result.guidance or "")
+    assert "ivan_h" in (result.guidance or "")
+
+
+def test_conversational_unknown_person_phrase_requires_clarification_without_guessing():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция",
+        channel_id="1504852553031221391",
+        initial_message="Моля пиши на Иван Х за тази корекция.",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_unresolved_requested_person_requires_clarification"
+    assert "иван х" in (result.guidance or "")
+
+
+def test_conversational_learned_owner_alias_requires_control_tower_lane():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция",
+        channel_id="1504852553031221391",
+        initial_message="Моля пиши директно на Емо Л в неговия канал.",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_requested_person_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+
+
+def test_conversational_new_thread_request_resolves_backend_teammate():
+    result = lint_discord_thread_create_target(
+        "Алекс: Игрите на града",
+        channel_id="1504852553031221391",
+        initial_message="Моля пиши нов ТРЕД на Алекс.",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_requested_person_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
+
+
+def test_conversational_known_person_phrase_requires_matching_lane():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция",
+        channel_id="1504852553031221391",
+        initial_message="Моля пиши на Емо за тази корекция.",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_requested_person_wrong_discord_lane"
+    assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+
+
+def test_known_person_in_starter_requires_structured_target_person_if_lane_mismatches():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция",
+        channel_id="1504852553031221391",
+        initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person"
+    assert result.expected_channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID
+    assert "target_person='emil_lomliev'" in (result.guidance or "")
+
+
+def test_known_person_salutation_passes_in_matching_lane_without_confusing_requester():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция",
+        channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+    )
+
+    assert result.ok is True
+
+
+def test_structured_target_person_passes_in_matching_lane():
+    result = lint_discord_thread_create_target(
+        "SkyAI корекция – отговор за потенциални партньори",
+        channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+        target_person="emil_lomliev",
+    )
+
+    assert result.ok is True
 
 
 def test_owner_route_back_thread_title_requires_initial_message_for_standalone_thread():

@@ -612,7 +612,7 @@ class TestCreateThread:
         ))
 
         assert "error" in result
-        assert "blocked_backend_resolver_thread_wrong_discord_lane" in result["error"]
+        assert "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person" in result["error"]
         assert SKYVISION_BACKEND_CHANNEL_ID in result["error"]
         mock_req.assert_not_called()
 
@@ -628,8 +628,91 @@ class TestCreateThread:
         ))
 
         assert "error" in result
-        assert "blocked_owner_route_back_thread_wrong_discord_lane" in result["error"]
+        assert "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person" in result["error"]
         assert "1504852355588423801" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_blocks_unknown_target_person_with_clarification_guidance(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+            name="SkyAI корекция",
+            initial_message="Моля пиши на Иван Х.",
+            target_person="ivan_h",
+        ))
+
+        assert "error" in result
+        assert "blocked_unknown_target_person_requires_clarification" in result["error"]
+        assert "Не изпратих съобщението" in result["error"]
+        assert "ivan_h" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_blocks_structured_target_person_wrong_lane(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+            name="SkyAI корекция",
+            initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+            target_person="emil_lomliev",
+        ))
+
+        assert "error" in result
+        assert "blocked_target_person_wrong_discord_lane" in result["error"]
+        assert "1504852355588423801" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_blocks_conversational_unknown_person_with_guidance(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+            name="SkyAI корекция",
+            initial_message="Моля пиши на Иван Х.",
+        ))
+
+        assert "error" in result
+        assert "blocked_unresolved_requested_person_requires_clarification" in result["error"]
+        assert "Не изпратих съобщението" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_blocks_learned_owner_alias_in_wrong_lane(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+            name="SkyAI корекция",
+            initial_message="Моля пиши директно на Емо Л в неговия канал.",
+        ))
+
+        assert "error" in result
+        assert "blocked_requested_person_wrong_discord_lane" in result["error"]
+        assert "1504852355588423801" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_blocks_known_person_without_structured_target_person_wrong_lane(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+            name="SkyAI корекция",
+            initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+        ))
+
+        assert "error" in result
+        assert "blocked_salutation_person_wrong_discord_lane_requires_structured_target_person" in result["error"]
+        assert "target_person='emil_lomliev'" in result["error"]
         mock_req.assert_not_called()
 
     @patch("tools.discord_tool._discord_request")
@@ -645,6 +728,7 @@ class TestCreateThread:
             channel_id="1504852355588423801",
             name="SkyAI корекция – отговор за потенциални партньори към Емо",
             initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+            target_person="emil_lomliev",
         ))
 
         assert result["success"] is True

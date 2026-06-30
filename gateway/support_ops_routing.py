@@ -18,6 +18,15 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from gateway.support_ops_team_registry import (
+    SKYVISION_BACKEND_CHANNEL_ID,
+    SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+    format_resolution_candidates,
+    infer_requested_person_phrase,
+    infer_salutation_team_member,
+    resolve_team_member,
+)
+
 UNKNOWN_USER_RE = re.compile(r"(?<![\w-])@unknown-user\b", re.IGNORECASE)
 BACKEND_TEXT_MENTION_RE = re.compile(
     r"(?<![\w<@-])@(алекс|ивчо|иво|alex|ivcho|ivo|ivo\s+popov)\b",
@@ -48,8 +57,6 @@ IVCHO_MENTION = "<@1283039346295050271>"
 FATIH_MENTION = "<@779368140512821268>"
 PLAMENA_MENTION = "<@1282940574533423125>"
 BACKEND_MENTION = f"{ALEX_MENTION} {IVCHO_MENTION}"
-SKYVISION_BACKEND_CHANNEL_ID = "1504852408227069993"
-SKYVISION_CONTROL_TOWER_CHANNEL_ID = "1504852355588423801"
 BACKEND_RESOLVER_MENTIONS = frozenset({ALEX_MENTION, IVCHO_MENTION})
 SUPPORT_REQUESTER_MENTIONS = frozenset({PLAMENA_MENTION})
 
@@ -66,6 +73,21 @@ class DiscordTargetLintResult:
     ok: bool
     blocked_reason: Optional[str] = None
     expected_channel_id: Optional[str] = None
+    guidance: Optional[str] = None
+
+
+def _clarify_target_person_guidance(phrase: str | None = None) -> str:
+    if phrase:
+        return (
+            "Do not create the thread or claim delivery. Tell the requester: "
+            f"\"Не изпратих съобщението, защото не съм сигурен кой е '{phrase}'. "
+            "Моля уточнете човека/канала и ще го изпратя.\" "
+            "After the requester clarifies, record the new alias in durable memory/registry flow and retry."
+        )
+    return (
+        "Do not create the thread or claim delivery. Ask the requester to clarify the target person/channel, "
+        "then learn the alias and retry."
+    )
 
 
 def _replace_display_handles(text: str) -> tuple[str, Optional[str]]:
@@ -146,6 +168,7 @@ def lint_discord_thread_create_target(
     channel_id: str,
     message_id: str | None = None,
     initial_message: str | None = None,
+    target_person: str | None = None,
 ) -> DiscordTargetLintResult:
     """Validate explicit resolver thread titles against the chosen channel.
 
@@ -159,6 +182,61 @@ def lint_discord_thread_create_target(
 
     title = str(name or "")
     target_channel_id = str(channel_id or "").strip()
+    requested_phrase = infer_requested_person_phrase(f"{name}\n{initial_message or ''}")
+
+    if target_person:
+        resolution = resolve_team_member(target_person)
+        if resolution.status == "unknown":
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_unknown_target_person_requires_clarification",
+                guidance=_clarify_target_person_guidance(target_person),
+            )
+        if resolution.status == "ambiguous":
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_ambiguous_target_person_requires_clarification",
+                guidance=(
+                    _clarify_target_person_guidance(target_person)
+                    + f" Candidate registry matches: {format_resolution_candidates(resolution.candidates)}."
+                ),
+            )
+        member = resolution.member
+        assert member is not None
+        if target_channel_id != member.default_channel_id:
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_target_person_wrong_discord_lane",
+                expected_channel_id=member.default_channel_id,
+                guidance=(
+                    f"Do not create the thread here. target_person={member.key} "
+                    f"must use channel_id={member.default_channel_id} ({member.default_channel_name})."
+                ),
+            )
+        if not str(message_id or "").strip() and not str(initial_message or "").strip():
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_target_person_thread_missing_initial_message",
+                expected_channel_id=member.default_channel_id,
+                guidance="Do not create an empty handoff thread; include initial_message or anchor to an existing message.",
+            )
+        return DiscordTargetLintResult(ok=True)
+
+    salutation_member = infer_salutation_team_member(f"{initial_message or ''}\n{name}")
+    if salutation_member is not None and not requested_phrase:
+        member = salutation_member
+        if target_channel_id != member.default_channel_id:
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_salutation_person_wrong_discord_lane_requires_structured_target_person",
+                expected_channel_id=member.default_channel_id,
+                guidance=(
+                    "Do not create the thread or claim delivery. The starter message appears addressed to "
+                    f"{member.display_name}, but no target_person was provided. Retry with "
+                    f"target_person='{member.key}' and channel_id={member.default_channel_id} "
+                    f"({member.default_channel_name}); otherwise ask the requester to clarify who should receive it."
+                ),
+            )
 
     has_owner_title = bool(OWNER_THREAD_TITLE_RE.search(title))
     has_backend_title = bool(BACKEND_THREAD_TITLE_RE.search(title))
@@ -168,6 +246,10 @@ def lint_discord_thread_create_target(
             ok=False,
             blocked_reason="blocked_owner_route_back_thread_wrong_discord_lane",
             expected_channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+            guidance=(
+                "Do not create this owner handoff thread in the current channel. "
+                "Set target_person='emil_lomliev' and use the control-tower channel."
+            ),
         )
 
     if has_owner_title and not str(message_id or "").strip() and not str(initial_message or "").strip():
@@ -175,7 +257,36 @@ def lint_discord_thread_create_target(
             ok=False,
             blocked_reason="blocked_owner_route_back_thread_missing_initial_message",
             expected_channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+            guidance="Do not create an empty owner handoff thread; include initial_message or anchor to an existing message.",
         )
+
+    if requested_phrase:
+        resolution = resolve_team_member(requested_phrase)
+        if resolution.status != "resolved":
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_unresolved_requested_person_requires_clarification",
+                guidance=_clarify_target_person_guidance(requested_phrase),
+            )
+        member = resolution.member
+        assert member is not None
+        if target_channel_id != member.default_channel_id:
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_requested_person_wrong_discord_lane",
+                expected_channel_id=member.default_channel_id,
+                guidance=(
+                    f"Do not create the thread here. The requested person '{requested_phrase}' resolves to "
+                    f"{member.key}; use channel_id={member.default_channel_id} ({member.default_channel_name})."
+                ),
+            )
+        if not str(message_id or "").strip() and not str(initial_message or "").strip():
+            return DiscordTargetLintResult(
+                ok=False,
+                blocked_reason="blocked_requested_person_thread_missing_initial_message",
+                expected_channel_id=member.default_channel_id,
+                guidance="Do not create an empty handoff thread; include initial_message or anchor to an existing message.",
+            )
 
     if not has_backend_title:
         return DiscordTargetLintResult(ok=True)
@@ -185,6 +296,10 @@ def lint_discord_thread_create_target(
             ok=False,
             blocked_reason="blocked_backend_resolver_thread_wrong_discord_lane",
             expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+            guidance=(
+                "Do not create this backend handoff thread in the current channel. "
+                "Set target_person='alex' or target_person='ivcho' and use the backend channel."
+            ),
         )
 
     if not str(message_id or "").strip() and not str(initial_message or "").strip():
@@ -192,6 +307,7 @@ def lint_discord_thread_create_target(
             ok=False,
             blocked_reason="blocked_backend_resolver_thread_missing_initial_message",
             expected_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+            guidance="Do not create an empty backend handoff thread; include initial_message or anchor to an existing message.",
         )
 
     return DiscordTargetLintResult(ok=True)

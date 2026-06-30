@@ -2394,7 +2394,7 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         try:
             if ctx.forwarded_records:
-                self._send_loading_heartbeat(ctx)
+                await self._send_loading_heartbeat(ctx)
                 ctx.raw_text = self.build_forward_text(ctx.forwarded_records, ctx=ctx, is_dispatch=True)
         except Exception as exc:
             # Degrade gracefully: leave ctx.raw_text as-is.

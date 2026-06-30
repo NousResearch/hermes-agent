@@ -13,6 +13,7 @@ test_yuanbao_integration.py - Yuanbao 模块集成测试
 
 import sys
 import os
+import asyncio
 
 # 确保 hermes-agent 根目录在 sys.path 中
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,7 +21,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from gateway.config import Platform, PlatformConfig, GatewayConfig
 from gateway.platforms.yuanbao import YuanbaoAdapter
 
@@ -266,6 +267,41 @@ class TestManagerImports:
         assert isinstance(adapter._outbound.sender, MessageSender)
         assert isinstance(adapter._outbound.heartbeat, HeartbeatManager)
         assert isinstance(adapter._outbound.slow_notifier, SlowResponseNotifier)
+
+
+def test_forwarded_records_parse_awaits_loading_heartbeat():
+    from gateway.platforms.yuanbao import (
+        ForwardedRecordsParseMiddleware,
+        InboundContext,
+        WS_HEARTBEAT_RUNNING,
+    )
+
+    heartbeat = AsyncMock()
+    adapter = MagicMock()
+    adapter.name = "yuanbao"
+    adapter._outbound.heartbeat.send_heartbeat_once = heartbeat
+    ctx = InboundContext(
+        adapter=adapter,
+        chat_id="chat-1",
+        sender_nickname="Alice",
+        raw_text="please read",
+        forwarded_records={
+            "msg": [
+                {"sender": "Bob", "plainText": "hello", "msgContent": []},
+            ],
+        },
+    )
+    next_called = False
+
+    async def next_fn():
+        nonlocal next_called
+        next_called = True
+
+    asyncio.run(ForwardedRecordsParseMiddleware().handle(ctx, next_fn))
+
+    heartbeat.assert_awaited_once_with("chat-1", WS_HEARTBEAT_RUNNING)
+    assert next_called is True
+    assert "Bob：hello" in ctx.raw_text
 
 
 # ===========================================================

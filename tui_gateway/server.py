@@ -11506,6 +11506,23 @@ def _(rid, params: dict) -> dict:
         lower = arg.strip().lower()
         if not arg.strip() or lower == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "show":
+            return _ok(rid, {"type": "exec", "output": mgr.status_line() + "\n" + mgr.render_contract()})
+        if lower.startswith("draft"):
+            objective = arg.strip()[len("draft"):].strip()
+            if not objective:
+                return _ok(rid, {"type": "exec", "output": "Usage: /goal draft <objective in plain language>"})
+            # Import the draft handler from CLI mixin
+            try:
+                from hermes_cli.goals import GoalManager as _GM
+                _gm = _GM(session_id=sid_key, default_max_turns=max_turns)
+                contract = _gm.draft_contract(objective)
+                if contract:
+                    _gm.set_contract(contract)
+                    return _ok(rid, {"type": "exec", "output": f"✓ Contract drafted: {contract.objective}"})
+                return _ok(rid, {"type": "exec", "output": "Failed to draft contract — try a more specific objective."})
+            except Exception as exc:
+                return _err(rid, 5030, f"draft failed: {exc}")
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"

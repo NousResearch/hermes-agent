@@ -928,6 +928,35 @@ def run_doctor(args):
         except Exception:
             pass
 
+        # Warn if dashboard.basic_auth is configured but 'basic' plugin is
+        # disabled — causes 'no auth providers registered' on non-loopback
+        # bind with no actionable hint (#54489).
+        try:
+            _dash = (raw_config if 'raw_config' in dir() else {}).get("dashboard") or {}
+            _ba = _dash.get("basic_auth") or {}
+            _plugins_disabled = (raw_config if 'raw_config' in dir() else {}).get("plugins", {}).get("disabled") or []
+            if _ba.get("username") and "basic" in _plugins_disabled:
+                check_warn(
+                    "dashboard.basic_auth is configured but 'basic' plugin is disabled",
+                    "(dashboard auth will fail on non-loopback bind)"
+                )
+                if should_fix:
+                    # Remove 'basic' from plugins.disabled
+                    try:
+                        _plugins_disabled.remove("basic")
+                        import yaml
+                        with open(config_path, "w", encoding="utf-8") as f:
+                            yaml.dump(raw_config, f, default_flow_style=False, allow_unicode=True)
+                        check_ok("Removed 'basic' from plugins.disabled")
+                        fixed_count += 1
+                    except Exception as fix_err:
+                        check_warn(f"Auto-fix failed: {fix_err}")
+                        issues.append("Remove 'basic' from plugins.disabled in config.yaml")
+                else:
+                    issues.append("Remove 'basic' from plugins.disabled to enable dashboard auth")
+        except Exception:
+            pass
+
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
             import yaml

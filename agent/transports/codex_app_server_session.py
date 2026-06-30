@@ -797,6 +797,8 @@ class CodexAppServerSession:
         except CodexAppServerError as exc:
             # "no active turn to interrupt" is fine — already done.
             logger.debug("turn/interrupt non-fatal: %s", exc)
+        except RuntimeError as exc:
+            logger.debug("turn/interrupt skipped; transport closed: %s", exc)
         except TimeoutError:
             logger.warning("turn/interrupt timed out")
 

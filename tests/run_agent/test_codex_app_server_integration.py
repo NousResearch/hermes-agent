@@ -70,6 +70,26 @@ class TestApiModeAccepted:
         agent = _make_codex_agent()
         assert agent.api_mode == "codex_app_server"
 
+    def test_agent_close_closes_attached_codex_app_server_session(self):
+        agent = _make_codex_agent()
+        codex_session = MagicMock()
+        agent._codex_session = codex_session
+
+        agent.close()
+
+        codex_session.close.assert_called_once()
+        assert agent._codex_session is None
+
+    def test_agent_release_clients_closes_attached_codex_app_server_session(self):
+        agent = _make_codex_agent()
+        codex_session = MagicMock()
+        agent._codex_session = codex_session
+
+        agent.release_clients()
+
+        codex_session.close.assert_called_once()
+        assert agent._codex_session is None
+
 
 class TestRunConversationCodexPath:
     def test_run_conversation_returns_codex_shape(self, fake_session):

@@ -1201,6 +1201,25 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
   }
 
   if (isFileEditTool(part.toolName)) {
+    // The inline diff shown in the tool row is capped at _MAX_INLINE_DIFF_LINES
+    // (80) for display. The Copy button must yield the full content, not the
+    // truncated slice — same principle as clampForDisplay for tool output.
+    if (part.toolName === 'write_file') {
+      const content = firstStringField(args, ['content'])
+
+      if (content) {
+        return { label: copy.file, text: content }
+      }
+    }
+
+    if (part.toolName === 'patch') {
+      const fullDiff = inlineDiffFromResult(part.result)
+
+      if (fullDiff.trim()) {
+        return { label: copy.file, text: fullDiff }
+      }
+    }
+
     if (view.inlineDiff.trim()) {
       return { label: copy.file, text: view.inlineDiff }
     }

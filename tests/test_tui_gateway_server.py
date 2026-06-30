@@ -6019,6 +6019,69 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     assert text in {"", None}, f"expected empty text, got {text!r}"
 
 
+def test_prompt_submit_keep_transport_preserves_session_transport(monkeypatch):
+    """prompt.submit with keep_transport=true must NOT rebind session transport.
+
+    When an external client (ERP integration, bridge script) submits a prompt
+    via the WebSocket JSON-RPC API, the default behaviour rebinds the session
+    transport to the caller's WebSocket — stealing streaming events from the
+    Desktop app.  Passing ``keep_transport: true`` skips the rebind so the
+    Desktop keeps receiving events.
+    """
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    desktop_transport = object()
+    external_transport = object()
+
+    server._sessions["sid"] = _session(transport=desktop_transport)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "current_transport", lambda: external_transport)
+
+    # WITH keep_transport — session transport should stay as desktop_transport
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "sid",
+                "text": "hello from ERP",
+                "keep_transport": True,
+            },
+        }
+    )
+    assert server._sessions["sid"]["transport"] is desktop_transport
+
+    # WITHOUT keep_transport — session transport should be rebound to external
+    server._sessions["sid"]["running"] = False
+    server.handle_request(
+        {
+            "id": "2",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "hello again"},
+        }
+    )
+    assert server._sessions["sid"]["transport"] is external_transport
+
+
 # ── active live TUI sessions ─────────────────────────────────────────
 
 

@@ -8084,7 +8084,9 @@ def _(rid, params: dict) -> dict:
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
+    # External callers (ERP integrations, bridge scripts) can set
+    # keep_transport to avoid hijacking the Desktop app's transport.
+    if (t := current_transport()) is not None and not params.get("keep_transport"):
         session["transport"] = t
     with session["history_lock"]:
         if session.get("running"):

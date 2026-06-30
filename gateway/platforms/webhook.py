@@ -851,11 +851,16 @@ class WebhookAdapter(BasePlatformAdapter):
         ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
 
         Special token ``{__raw__}`` dumps the entire payload as indented
-        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
+        JSON (truncated to 4000 chars by default).  Useful for monitoring alerts or
         any webhook where the agent needs to see the full payload.
+
+        The truncation limit can be overridden with ``{__raw__:N}``:
+        ``{__raw__:20000}`` truncates at 20000 chars, ``{__raw__:0}`` means no truncation.
         """
         if not template:
             truncated = json.dumps(payload, indent=2)[:4000]
+            # Use configured token limit if available in the template
+            # (actual limit is applied per-token in _resolve)
             return (
                 f"Webhook event '{event_type}' on route "
                 f"'{route_name}':\n\n```json\n{truncated}\n```"
@@ -863,9 +868,15 @@ class WebhookAdapter(BasePlatformAdapter):
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
+            limit_str = match.group(2)
             # Special token: dump the entire payload as JSON
+            # Supports {__raw__} (4000 char default) and {__raw__:N} (custom limit)
             if key == "__raw__":
-                return json.dumps(payload, indent=2)[:4000]
+                raw = json.dumps(payload, indent=2)
+                if limit_str is not None:
+                    limit = int(limit_str)
+                    return raw if limit == 0 else raw[:limit]
+                return raw[:4000]
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -876,7 +887,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 return json.dumps(value, indent=2)[:2000]
             return str(value)
 
-        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+        # Pattern matches {key} or {key:N} for parameterized tokens like {__raw__:20000}
+        return re.sub(r"\{([a-zA-Z0-9_.]+)(?::(\d+))?\}", _resolve, template)
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict
@@ -1041,3 +1053,4 @@ class WebhookAdapter(BasePlatformAdapter):
             metadata = {"thread_id": thread_id}
 
         return await adapter.send(chat_id, content, metadata=metadata)
+

@@ -147,6 +147,16 @@ def render_wiki_blocks(page: dict[str, Any]) -> list[dict[str, Any]]:
         if buf:
             blocks.append(_section(buf))
 
+    changes = page.get("changes") or []
+    if changes:
+        lines = [
+            ("➕ " if c.get("kind") == "added" else "➖ ")
+            + f"{c.get('predicate','')} → {c.get('object','')}"
+            for c in changes
+        ]
+        blocks.append({"type": "divider"})
+        blocks.append(_section("*What changed since you last looked*\n" + "\n".join(lines)))
+
     # 50-block ceiling: never silently truncate — replace the overflow tail with
     # a pointer to the full page.
     if len(blocks) > BLOCK_CEILING:

@@ -53,18 +53,20 @@ def resolve_entity_iri(name: str) -> str:
     return f"{ATLAS_ORG}{slugify(name)}"
 
 
-async def fetch_entity_page(iri: str) -> dict[str, Any]:
-    """GET {ATLAS_BASE_URL}/v1/wiki/{iri}, fail-soft.
+async def fetch_entity_page(iri: str, *, viewer: str = "blake") -> dict[str, Any]:
+    """GET {ATLAS_BASE_URL}/v1/wiki/{iri}?viewer=<viewer>, fail-soft.
 
     Returns the page dict on 200; ``{"not_found": True, "iri": iri}`` on 404;
     ``{"degraded": True, "reason": ...}`` when Atlas is unconfigured/unreachable.
     Never raises.
     """
+    import urllib.parse  # noqa: PLC0415
+
     base = os.environ.get(_BASE_URL_ENV, "").strip().rstrip("/")
     if not base:
         return {"degraded": True, "reason": f"{_BASE_URL_ENV} unset"}
 
-    url = f"{base}/v1/wiki/{iri}"
+    url = f"{base}/v1/wiki/{iri}?viewer={urllib.parse.quote(viewer, safe='')}"
     headers = {"accept": "application/json"}
     token = os.environ.get(_TOKEN_ENV, "").strip()
     if token:

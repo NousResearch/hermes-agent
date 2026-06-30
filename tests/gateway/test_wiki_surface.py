@@ -106,3 +106,17 @@ def test_empty_citations_still_renders_narrative_if_cited_inline():
     blocks = render_wiki_blocks(page)
     assert any(b.get("type") == "section" for b in blocks)
     assert all("*Sources*" not in (b.get("text", {}).get("text", "")) for b in blocks)
+
+
+def test_renders_what_changed_section():
+    page = _load_fixture()
+    page["changes"] = [
+        {"predicate": "runsOn", "object": "Postgres", "kind": "added"},
+        {"predicate": "runsOn", "object": "Linear", "kind": "retired"},
+    ]
+    blocks = render_wiki_blocks(page)
+    text = "\n".join(
+        b["text"]["text"] for b in blocks if b.get("type") == "section"
+    )
+    assert "What changed since you last looked" in text
+    assert "Postgres" in text and "Linear" in text

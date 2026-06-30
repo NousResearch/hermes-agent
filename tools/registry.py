@@ -237,26 +237,10 @@ class ToolRegistry:
         """Return a stable snapshot of registered tool entries."""
         return self._snapshot_state()[0]
 
-    def _snapshot_toolset_checks(self) -> Dict[str, Callable]:
-        """Return a stable snapshot of toolset availability checks."""
-        return self._snapshot_state()[1]
-
-    def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
-        """Run a toolset check, treating missing or failing checks as unavailable/available."""
-        if not check:
-            return True
-        try:
-            return bool(check())
-        except Exception:
-            logger.debug("Toolset %s check raised; marking unavailable", toolset)
-            return False
-
     def _toolset_has_exposable_tools(
         self,
         toolset: str,
         entries: List[ToolEntry],
-        *,
-        quiet: bool = False,
     ) -> bool:
         """Return True when at least one tool in *toolset* would be exposed.
 
@@ -265,7 +249,6 @@ class ToolRegistry:
         Mixed toolsets (e.g. ``terminal`` plus desktop-only ``read_terminal``)
         must not be gated solely by the first registered ``check_fn``.
         """
-        del quiet  # reserved for parity with check_tool_availability signature
         check_results: Dict[Callable, bool] = {}
         for entry in entries:
             if entry.toolset != toolset:
@@ -437,6 +420,12 @@ class ToolRegistry:
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
             )
+            # Availability is now derived per-tool (_toolset_has_exposable_tools),
+            # so this map no longer gates a toolset. It is still consumed by
+            # get_toolset_requirements -> TOOLSET_REQUIREMENTS["check_fn"], which
+            # banner.py reads (presence only, never called) to classify an
+            # already-unavailable toolset as lazy-init vs disabled. Keep the
+            # write path for that classification.
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
@@ -659,7 +648,7 @@ class ToolRegistry:
         entries, _ = self._snapshot_state()
         for ts in sorted({entry.toolset for entry in entries}):
             ts_entries = [entry for entry in entries if entry.toolset == ts]
-            if self._toolset_has_exposable_tools(ts, entries, quiet=quiet):
+            if self._toolset_has_exposable_tools(ts, entries):
                 available.append(ts)
             else:
                 unavailable.append({

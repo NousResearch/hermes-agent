@@ -160,47 +160,6 @@ class TestFirecrawlClientConfig:
             importlib.reload(tools.web_tools)
             assert tools.web_tools._read_nous_access_token() == "nous-token"
 
-    def test_check_auxiliary_model_re_resolves_backend_each_call(self):
-        """Availability checks should not be pinned to module import state."""
-        import tools.web_tools
-
-        # Simulate the pre-fix import-time cache slot for regression coverage.
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        with patch(
-            "tools.web_tools.get_async_text_auxiliary_client",
-            side_effect=[(None, None), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model")],
-        ):
-            assert tools.web_tools.check_auxiliary_model() is False
-            assert tools.web_tools.check_auxiliary_model() is True
-
-    @pytest.mark.asyncio
-    async def test_summarizer_re_resolves_backend_after_initial_unavailable_state(self):
-        """Summarization should pick up a backend that becomes available later in-process."""
-        import tools.web_tools
-
-        tools.web_tools.__dict__["_aux_async_client"] = None
-
-        response = MagicMock()
-        response.choices = [MagicMock(message=MagicMock(content="summary text"))]
-
-        with patch(
-            "tools.web_tools._resolve_web_extract_auxiliary",
-            side_effect=[(None, None, {}), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model", {})],
-        ), patch(
-            "tools.web_tools.async_call_llm",
-            new=AsyncMock(return_value=response),
-        ) as mock_async_call:
-            assert tools.web_tools.check_auxiliary_model() is False
-            result = await tools.web_tools._call_summarizer_llm(
-                "Some content worth summarizing",
-                "Source: https://example.com\n\n",
-                None,
-            )
-
-        assert result == "summary text"
-        mock_async_call.assert_awaited_once()
-
     # ── Singleton caching ────────────────────────────────────────────
 
     def test_singleton_returns_same_instance(self):

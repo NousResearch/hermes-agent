@@ -596,14 +596,14 @@ def _resolve_hermes_bin_dir() -> str | None:
 def _prepend_hermes_bin_dir(existing_path: str) -> str:
     """Prepend the hermes install dir to ``existing_path`` if it's missing.
 
-    Cross-platform (uses ``os.pathsep``). First-occurrence wins, so a PATH
+    Cross-platform (uses ``_IS_WINDOWS``). First-occurrence wins, so a PATH
     that already contains the dir is returned unchanged. Returns the input
     unchanged when the install dir can't be resolved.
     """
     bin_dir = _resolve_hermes_bin_dir()
     if not bin_dir:
         return existing_path
-    sep = os.pathsep
+    sep = ";" if _IS_WINDOWS else ":"
     entries = [e for e in existing_path.split(sep) if e] if existing_path else []
     if bin_dir in entries:
         return existing_path

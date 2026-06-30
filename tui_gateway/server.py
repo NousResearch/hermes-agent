@@ -3180,9 +3180,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
 def _tool_ctx(name: str, args: dict) -> str:
     try:
-        from agent.display import build_tool_preview
+        from agent.display import build_tool_label
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        return build_tool_label(name, args, max_len=80) or ""
     except Exception:
         return ""
 
@@ -6221,6 +6221,36 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+@method("session.context_breakdown")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        usage = _get_usage(None)
+        return _ok(
+            rid,
+            {
+                "categories": [],
+                "context_max": usage.get("context_max", 0) or 0,
+                "context_percent": usage.get("context_percent", 0) or 0,
+                "context_used": usage.get("context_used", 0) or 0,
+                "estimated_total": 0,
+                "model": "",
+            },
+        )
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    try:
+        from agent.context_breakdown import compute_session_context_breakdown
+
+        payload = compute_session_context_breakdown(agent, history)
+    except Exception as exc:
+        return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
+    return _ok(rid, payload)
 
 
 def _pet_frame_counts(spritesheet) -> dict:

@@ -269,8 +269,37 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    IMAGE_CACHE_DIR,
+    AUDIO_CACHE_DIR,
+    VIDEO_CACHE_DIR,
+    DOCUMENT_CACHE_DIR,
 )
 from utils import env_int
+
+
+def _is_allowed_bridge_path(url: str) -> bool:
+    """Return True only when an absolute path from the bridge resolves inside a
+    known Hermes media cache directory.
+
+    The Baileys bridge is a local subprocess that downloads inbound media and
+    hands back absolute file paths. A compromised or buggy bridge could hand
+    back an arbitrary path (e.g. ``/etc/passwd``) which would otherwise be
+    attached verbatim and sent to the model. Resolve the path (following any
+    symlinks) and require it to live under one of the real cache roots — this
+    covers both the canonical ``cache/<kind>`` layout and the legacy
+    ``<kind>_cache`` layout that ``get_hermes_dir`` may return.
+    """
+    try:
+        resolved = Path(url).resolve()
+    except (OSError, ValueError):
+        return False
+    for root in (IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR):
+        try:
+            if resolved.is_relative_to(Path(root).resolve()):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _file_content_hash(path: Path) -> str:
@@ -1194,9 +1223,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         media_types.append("image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
                     # Local file path — bridge already downloaded the image
-                    cached_urls.append(url)
-                    media_types.append("image/jpeg")
-                    print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("image/jpeg")
+                        print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
@@ -1209,20 +1241,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         media_types.append("audio/ogg")
                 elif msg_type == MessageType.VOICE and os.path.isabs(url):
                     # Local file path — bridge already downloaded the audio
-                    cached_urls.append(url)
-                    media_types.append("audio/ogg")
-                    print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("audio/ogg")
+                        print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge audio path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
                     # Local file path — bridge already downloaded the document
-                    cached_urls.append(url)
-                    ext = Path(url).suffix.lower()
-                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
-                    media_types.append(mime)
-                    print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        ext = Path(url).suffix.lower()
+                        mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                        media_types.append(mime)
+                        print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge document path outside cache dir: {url}", flush=True)
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):
-                    cached_urls.append(url)
-                    media_types.append("video/mp4")
-                    print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    if _is_allowed_bridge_path(url):
+                        cached_urls.append(url)
+                        media_types.append("video/mp4")
+                        print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                    else:
+                        print(f"[{self.name}] Rejected bridge video path outside cache dir: {url}", flush=True)
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")

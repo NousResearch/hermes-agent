@@ -1679,16 +1679,10 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         raw_id = body.get("id") or body.get("session_id")
-        session_id = (
-            str(raw_id).strip()
-            if raw_id
-            else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        )
-        if not session_id or re.search(r"[\r\n\x00]", session_id):
-            return web.json_response(
-                _openai_error("Invalid session ID", code="invalid_session_id"),
-                status=400,
-            )
+        session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        from gateway.session import _is_path_unsafe
+        if not session_id or re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
+            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
         if len(session_id) > self._MAX_SESSION_HEADER_LEN:
             return web.json_response(
                 _openai_error("Session ID too long", code="invalid_session_id"),
@@ -2257,8 +2251,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=403,
                 )
-            # Sanitize: reject control characters that could enable header injection.
-            if re.search(r"[\r\n\x00]", provided_session_id):
+            # Sanitize: reject control characters that could enable header
+            # injection, and path-traversal-shaped IDs that would escape the
+            # sessions directory when interpolated into on-disk artifact
+            # filenames (session snapshots, request dumps). Mirrors the native
+            # gateway's entry-boundary guard (gateway.session._is_path_unsafe).
+            from gateway.session import _is_path_unsafe
+            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
                 return web.json_response(
                     {
                         "error": {
@@ -2266,6 +2265,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             "type": "invalid_request_error",
                         }
                     },
+                    status=400,
+                )
+            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
+                return web.json_response(
+                    {"error": {"message": "Session ID too long", "type": "invalid_request_error"}},
                     status=400,
                 )
             session_id = provided_session_id

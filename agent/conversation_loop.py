@@ -5379,6 +5379,55 @@ def run_conversation(
                                  agent._verification_stop_nudges)
                     continue
 
+                # User verification-loop gate: when the agent edited code this
+                # turn, let a registered `pre_verify` hook (plugin/shell) keep it
+                # going one more turn. The shipped guidance is folded into the
+                # evidence-based verify-on-stop nudge above, so this path has no
+                # default continuation cost.
+                _verify_nudge2 = None
+                _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
+                _attempt = getattr(agent, "_pre_verify_nudges", 0)
+                try:
+                    from agent.verify_hooks import max_verify_nudges
+                    from hermes_cli.plugins import get_pre_verify_continue_message, has_hook
+
+                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
+                        # Posture is fixed for the session — resolve once + cache.
+                        coding = getattr(agent, "_resolved_is_coding", None)
+                        if coding is None:
+                            from agent.coding_context import is_coding_context
+                            coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
+                            agent._resolved_is_coding = coding
+                        _verify_nudge2 = get_pre_verify_continue_message(
+                            session_id=getattr(agent, "session_id", None) or "",
+                            platform=getattr(agent, "platform", "") or "",
+                            model=getattr(agent, "model", "") or "",
+                            coding=coding,
+                            attempt=_attempt,
+                            final_response=final_response,
+                            changed_paths=_edited,
+                        )
+                except Exception:
+                    logger.debug("pre_verify hook check failed", exc_info=True)
+                    _verify_nudge2 = None
+
+                if _verify_nudge2:
+                    agent._pre_verify_nudges = _attempt + 1
+                    final_msg["finish_reason"] = "verify_hook_continue"
+                    # Same alternation contract as verify-on-stop: keep the
+                    # attempted answer in history, follow it with a synthetic
+                    # user nudge, and don't surface the premature answer.
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _verify_nudge2,
+                        "_pre_verify_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.debug("pre_verify nudge issued (attempt %d)",
+                                 agent._pre_verify_nudges)
+                    continue
+
                 messages.append(final_msg)
 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"

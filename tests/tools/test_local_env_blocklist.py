@@ -656,18 +656,20 @@ class TestHermesBinDirOnPath:
         from tools.environments import local as local_mod
         self._reset_cache()
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         out = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
-        assert out.split(os.pathsep)[0] == "/opt/hermes/bin"
-        assert "/usr/bin" in out.split(os.pathsep)
+        assert out.split(":")[0] == "/opt/hermes/bin"
+        assert "/usr/bin" in out.split(":")
 
     def test_prepend_is_idempotent(self, monkeypatch):
         from tools.environments import local as local_mod
         self._reset_cache()
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         once = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
         twice = local_mod._prepend_hermes_bin_dir(once)
         assert twice == once
-        assert once.split(os.pathsep).count("/opt/hermes/bin") == 1
+        assert once.split(":").count("/opt/hermes/bin") == 1
 
     def test_prepend_noop_when_unresolved(self, monkeypatch):
         from tools.environments import local as local_mod
@@ -684,6 +686,6 @@ class TestHermesBinDirOnPath:
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
         with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
             result = _make_run_env({})
-        entries = result["PATH"].split(os.pathsep)
+        entries = result["PATH"].split(":")
         assert entries[0] == "/opt/hermes/bin"
         assert "/usr/bin" in entries

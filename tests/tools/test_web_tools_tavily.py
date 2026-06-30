@@ -215,13 +215,13 @@ class TestWebExtractTavily:
 
         with patch("tools.web_tools._get_extract_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
-             patch("tools.web_tools.httpx.post", return_value=mock_response), \
-             patch("tools.web_tools.process_content_with_llm", return_value=None):
+             patch("tools.web_tools.httpx.post", return_value=mock_response):
             from tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(
-                web_extract_tool(["https://example.com"], use_llm_processing=False)
+                web_extract_tool(["https://example.com"])
             ))
             assert "results" in result
             assert len(result["results"]) == 1
             assert result["results"][0]["url"] == "https://example.com"
+            assert "Extracted content" in result["results"][0]["content"]
 

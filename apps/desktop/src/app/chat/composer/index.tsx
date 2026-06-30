@@ -13,7 +13,7 @@ import {
   useState
 } from 'react'
 
-import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
+import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -60,19 +60,33 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
-import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
+import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
 
 import { AttachmentList } from './attachments'
+import {
+  cloneAttachments,
+  COMPLETION_ACTIONS,
+  COMPOSER_FADE_BACKGROUND,
+  COMPOSER_SINGLE_LINE_MAX_PX,
+  COMPOSER_STACK_BREAKPOINT_PX,
+  DRAFT_PERSIST_DEBOUNCE_MS,
+  pickPlaceholder,
+  type QueueEditState,
+  slashArgStage,
+  slashChipKindForItem,
+  slashCommandToken
+} from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
@@ -88,6 +102,7 @@ import {
 } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useAutoSpeakReplies } from './hooks/use-auto-speak-replies'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
@@ -118,61 +133,6 @@ import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
-
-const COMPOSER_STACK_BREAKPOINT_PX = 320
-
-// A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
-// vertical padding). Anything taller means the text wrapped to a second line,
-// which is when the composer should expand to the stacked layout.
-const COMPOSER_SINGLE_LINE_MAX_PX = 36
-
-const COMPOSER_FADE_BACKGROUND =
-  'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
-
-const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
-
-/** Completion items can carry an `action` (set in use-slash-completions) that
- *  runs a side effect on pick instead of inserting a chip — e.g. the session
- *  picker's "Browse all…" entry opens the overlay. Table-driven so new action
- *  items are a registry row, not a composer branch. */
-const COMPLETION_ACTIONS: Record<string, () => void> = {
-  'session-picker': () => setSessionPickerOpen(true)
-}
-
-/** Map a picked `/` completion to its pill accent. Driven by the completion
- *  group set in use-slash-completions (Skills / Themes / Commands|Options). */
-function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
-  const group = (item.metadata as { group?: unknown } | undefined)?.group
-
-  if (group === 'Skills') {
-    return 'skill'
-  }
-
-  if (group === 'Themes') {
-    return 'theme'
-  }
-
-  return 'command'
-}
-
-/** A `/` query is at its arg stage once it's past the command name. */
-const slashArgStage = (query: string) => query.includes(' ')
-
-/** The `/command` token of a slash query (`personality x` → `/personality`). */
-const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
-
-interface QueueEditState {
-  attachments: ComposerAttachment[]
-  draft: string
-  entryId: string
-  sessionKey: string
-}
-
-const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
-
-// Quiet period after the last keystroke before persisting the draft;
-// unmount/pagehide flushes bypass it.
-const DRAFT_PERSIST_DEBOUNCE_MS = 400
 
 export function ChatBar({
   busy,
@@ -230,6 +190,7 @@ export function ChatBar({
   const statusItemsBySession = useStore($statusItemsBySession)
   const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
@@ -2021,6 +1982,20 @@ export function ChatBar({
 
   useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
 
+  const handleToggleAutoSpeak = useCallback(() => {
+    void setAutoSpeakReplies(!$autoSpeakReplies.get()).catch(error =>
+      notifyError(error, t.settings.config.autosaveFailed)
+    )
+  }, [t])
+
+  useAutoSpeakReplies({
+    conversationActive: voiceConversationActive,
+    failureLabel: t.assistant.thread.readAloudFailed,
+    markSpoken: consumePendingResponse,
+    pendingReply: pendingResponse,
+    sessionId
+  })
+
   const contextMenu = (
     <ContextMenu
       onInsertText={insertText}
@@ -2038,6 +2013,7 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
+      autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
       canSteer={canSteer}
@@ -2060,6 +2036,7 @@ export function ChatBar({
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
       onSteer={steerDraft}
+      onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
     />

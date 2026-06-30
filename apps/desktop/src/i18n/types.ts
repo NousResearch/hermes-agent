@@ -331,6 +331,8 @@ export interface Translations {
         off: string
         scaleTitle: string
         scaleDesc: string
+        roamTitle: string
+        roamDesc: string
         chooseTitle: string
         chooseDesc: string
         searchPlaceholder: string
@@ -1160,6 +1162,8 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceDictation: string
+    speakReplies: string
+    stopSpeakingReplies: string
     lookupLoading: string
     lookupNoMatches: string
     lookupTry: string
@@ -1497,6 +1501,24 @@ export interface Translations {
       turnRunning: string
       currentTurnElapsed: string
       contextUsage: string
+      contextUsagePanel: {
+        categories: {
+          conversation: string
+          mcp: string
+          memory: string
+          rules: string
+          skills: string
+          subagent_definitions: string
+          system_prompt: string
+          tool_definitions: string
+        }
+        empty: string
+        loading: string
+        percentFull: (percent: number) => string
+        title: string
+        tokenSummary: (used: string, max: string) => string
+      }
+      openContextUsage: string
       session: string
       runtimeSessionElapsed: string
       yoloOn: string
@@ -1657,6 +1679,7 @@ export interface Translations {
       stopReading: string
       readAloud: string
       editMessage: string
+      expandMessage: string
       scrollToBottom: string
       stop: string
       restorePrevious: string

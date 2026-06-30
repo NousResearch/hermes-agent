@@ -2968,8 +2968,15 @@ async def gateway_drain(request: Request):
             detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
         )
 
-    payload = write_drain_request(principal=str(principal))
-    _log.info("Gateway drain BEGIN requested by %s", principal)
+    payload = write_drain_request(
+        principal=str(principal),
+        suppress_notification=bool((body or {}).get("suppress_notification", False)),
+    )
+    _log.info(
+        "Gateway drain BEGIN requested by %s (suppress_notification=%s)",
+        principal,
+        payload["suppress_notification"],
+    )
     return {
         "ok": True,
         "action": "drain",
@@ -2977,6 +2984,7 @@ async def gateway_drain(request: Request):
         # Echo so a caller polling /api/status knows the marker is now set;
         # the gateway watcher flips gateway_state -> draining within ~1s.
         "draining": drain_requested(),
+        "suppress_notification": payload["suppress_notification"],
     }
 
 
@@ -3546,7 +3554,7 @@ async def get_sessions(
 
 
 @app.get("/api/profiles/sessions")
-async def get_profiles_sessions(
+def get_profiles_sessions(
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -11128,7 +11136,9 @@ async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
 
     try:
-        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+        loop = asyncio.get_running_loop()
+        profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
+        return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception(
             "GET /api/profiles failed; falling back to profile directory scan"

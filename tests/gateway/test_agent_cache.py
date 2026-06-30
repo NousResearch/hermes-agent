@@ -13,6 +13,8 @@ import os
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 
 def _make_runner():
@@ -1568,8 +1570,11 @@ class TestAgentCacheMessageCountRebaseline:
     """
 
     def _runner_with_db(self, db):
+        from hermes_state import AsyncSessionDB
+
         runner = _make_runner()
-        runner._session_db = db
+        # The gateway holds the async facade; the production refresh awaits it.
+        runner._session_db = AsyncSessionDB(db)
         return runner
 
     @staticmethod
@@ -1580,7 +1585,7 @@ class TestAgentCacheMessageCountRebaseline:
         the cached agent (or either side is None / it's a legacy 2-tuple).
         """
         try:
-            row = runner._session_db.get_session(session_id)
+            row = runner._session_db._db.get_session(session_id)
             live = row.get("message_count", 0) if row else None
         except Exception:
             live = None
@@ -1594,7 +1599,8 @@ class TestAgentCacheMessageCountRebaseline:
         )
         return not invalidate
 
-    def test_same_process_turns_preserve_cached_agent(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_same_process_turns_preserve_cached_agent(self, tmp_path):
         """The regression guard: consecutive same-process turns must REUSE
         the cached agent (prompt cache preserved), not rebuild every turn.
 
@@ -1622,7 +1628,7 @@ class TestAgentCacheMessageCountRebaseline:
             db.append_message("s1", role="user", content="u")
             db.append_message("s1", role="assistant", content="a")
             # Post-turn re-baseline (the fix).
-            runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+            await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
             # Next turn's guard decision.
             if self._guard_would_reuse(runner, "telegram:s1", "s1"):
                 reuses += 1
@@ -1633,7 +1639,8 @@ class TestAgentCacheMessageCountRebaseline:
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is agent
 
-    def test_cross_process_write_still_invalidates(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_cross_process_write_still_invalidates(self, tmp_path):
         """After the re-baseline, a DIFFERENT process appending to the same
         session must still flip the guard to rebuild (the #45966 fix holds).
         """
@@ -1653,7 +1660,7 @@ class TestAgentCacheMessageCountRebaseline:
         # Our own turn + re-baseline -> reuse next turn.
         db.append_message("s1", role="user", content="u")
         db.append_message("s1", role="assistant", content="a")
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is True
 
         # ANOTHER process (e.g. the desktop dashboard backend) appends a turn
@@ -1663,10 +1670,11 @@ class TestAgentCacheMessageCountRebaseline:
         # Guard must now reject reuse so the agent rebuilds from fresh disk.
         assert self._guard_would_reuse(runner, "telegram:s1", "s1") is False
 
-    def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_rebaseline_is_fail_safe_and_skips_legacy_and_pending(self, tmp_path):
         """Re-baseline must never crash and must leave legacy 2-tuples and
         pending-sentinel entries untouched."""
-        from hermes_state import SessionDB
+        from hermes_state import AsyncSessionDB, SessionDB
         from gateway.run import _AGENT_PENDING_SENTINEL
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
@@ -1676,24 +1684,24 @@ class TestAgentCacheMessageCountRebaseline:
 
         # No session_db -> no-op, no crash.
         runner._session_db = None
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
-        runner._session_db = db
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        runner._session_db = AsyncSessionDB(db)
 
         # Falsy session_id -> no-op.
-        runner._refresh_agent_cache_message_count("telegram:s1", "")
-        runner._refresh_agent_cache_message_count("telegram:s1", None)
+        await runner._refresh_agent_cache_message_count("telegram:s1", "")
+        await runner._refresh_agent_cache_message_count("telegram:s1", None)
 
         # Legacy 2-tuple is left untouched (it opts out of the guard).
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (object(), "sig")
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert len(runner._agent_cache["telegram:s1"]) == 2
 
         # Pending sentinel entry is left untouched.
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (_AGENT_PENDING_SENTINEL, "sig", 0)
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][0] is _AGENT_PENDING_SENTINEL
             assert runner._agent_cache["telegram:s1"][2] == 0
@@ -1703,10 +1711,10 @@ class TestAgentCacheMessageCountRebaseline:
             def get_session(self, _sid):
                 raise RuntimeError("db locked")
 
-        runner._session_db = _BoomDB()  # type: ignore[assignment]
+        runner._session_db = AsyncSessionDB(_BoomDB())  # type: ignore[assignment]
         with runner._agent_cache_lock:
             runner._agent_cache["telegram:s1"] = (object(), "sig", 5)
-        runner._refresh_agent_cache_message_count("telegram:s1", "s1")
+        await runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][2] == 5
 

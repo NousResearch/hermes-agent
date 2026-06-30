@@ -133,8 +133,11 @@ def test_dashboard_plugins_allows_cookie_authenticated_gate_session(gated_app):
 def test_gated_html_redirects_to_login(gated_app):
     r = gated_app.get("/", follow_redirects=False)
     assert r.status_code == 302
-    # Phase 6: gate carries a ``next=`` so post-login bounces back to /.
-    assert r.headers["location"] in ("/login", "/login?next=%2F")
+    # Phase 1 (cloud-auto-discovery): with a single interactive provider, an
+    # unauthenticated HTML load auto-initiates the OAuth redirect to
+    # /auth/login rather than rendering the /login interstitial. The /login
+    # page remains the fallback (multiple/zero providers, or loop-guard trip).
+    assert r.headers["location"].startswith("/auth/login?provider=stub")
 
 
 def test_gated_auth_providers_is_public(gated_app):

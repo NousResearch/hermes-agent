@@ -207,11 +207,15 @@ implementation as the base and carry only the fork's additional advantage.
 
 For development from this fork on Windows:
 
+Create the venv outside the cloned source tree. A venv inside the directory
+the agent operates from can be wiped by a relative-path command the agent runs
+against its own checkout, destroying the running runtime mid-session.
+
 ```powershell
 git clone https://github.com/zapabob/hermes-agent.git
 cd hermes-agent
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+py -3 -m venv "$env:USERPROFILE/.hermes/venvs/hermes-dev"
+& "$env:USERPROFILE/.hermes/venvs/hermes-dev/Scripts/Activate.ps1"
 python -m pip install -U pip
 pip install -e ".[all,dev]"
 python -m hermes_cli.main setup

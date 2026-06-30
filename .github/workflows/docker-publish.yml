@@ -112,7 +112,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Install uv (for docker tests)
         if: github.event_name != 'pull_request'
-        uses: astral-sh/setup-uv@fac544c07decb2b0bd96cd6e68b2b6f4c98b2c23 # v8.2.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Set up Python 3.11 (for docker tests)
         if: github.event_name != 'pull_request'

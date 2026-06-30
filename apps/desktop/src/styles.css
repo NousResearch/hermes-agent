@@ -414,6 +414,10 @@
     --theme-neutral-chrome: #0d0d0e;
     --theme-neutral-sidebar: #0a0a0b;
     --theme-neutral-card: #161618;
+    --theme-row-hover-accent-mix: 8%;
+    --theme-row-active-accent-mix: 14%;
+    --theme-control-hover-accent-mix: 9%;
+    --theme-control-active-accent-mix: 13%;
 
     /* Dark-only accent palette overrides. */
     --ui-red: #e75e78;
@@ -426,7 +430,8 @@
     /* Dark mode: a dark card needs a stronger black inset to show the recess. */
     --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 38%, transparent);
     /* Dark needs a lighter resting border than light mode. */
-    --dt-input-border: 4%;
+    --dt-input-border: 8%;
+    --dt-input-bg: 18%;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
@@ -607,6 +612,28 @@
 
 .quest-glow {
   animation: quest-glow 1.8s ease-in-out infinite;
+}
+
+.reuben-splash-stage {
+  isolation: isolate;
+}
+
+.reuben-splash-image {
+  transition:
+    filter 180ms ease,
+    opacity 180ms ease;
+}
+
+:root.dark .reuben-splash-stage {
+  background:
+    radial-gradient(circle at 50% 34%, color-mix(in srgb, var(--dt-midground) 10%, transparent), transparent 44%),
+    radial-gradient(circle at 50% 52%, color-mix(in srgb, var(--dt-foreground) 5%, transparent), transparent 58%);
+}
+
+:root.dark .reuben-splash-image {
+  filter: invert(1) hue-rotate(180deg) saturate(0.82) brightness(0.9) contrast(0.96);
+  mix-blend-mode: screen;
+  opacity: 0.9;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -525,7 +525,7 @@ function getWindowBackgroundColor() {
     return rendererTitleBarTheme.background
   }
 
-  return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
+  return nativeTheme.shouldUseDarkColors ? '#0f1117' : '#f7f7f7'
 }
 
 // Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back

@@ -21,21 +21,19 @@ const SYSTEM_MONO =
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
 const NOUS_BLUE = '#0053FD'
-const PSYCHE_BLUE = '#1540B1'
-const PSYCHE_WARM = '#FFE6CB'
 
 const nousTint = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, #FFFFFF)`
 const nousTintTransparent = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, transparent)`
 
 /**
- * Nous — canonical Hermes desktop identity. The palette keeps the current
- * glass geometry neutral, then lets the old bb/gui blue and psyche cream
- * return as accent seeds.
+ * Reuben — default desktop identity. Keep the stable internal name (`nous`)
+ * so existing saved settings continue to resolve, while the visible label and
+ * dark palette match the Reuben shell.
  */
 export const nousTheme: DesktopTheme = {
   name: 'nous',
-  label: 'Nous',
-  description: 'Glass neutrals with Nous blue accents',
+  label: 'Reuben',
+  description: 'Calm slate with Reuben blue accents',
   colors: {
     background: '#F8FAFF',
     foreground: '#17171A',
@@ -64,31 +62,31 @@ export const nousTheme: DesktopTheme = {
     userBubbleBorder: nousTintTransparent(24)
   },
   darkColors: {
-    background: '#0D2F86',
-    foreground: PSYCHE_WARM,
-    card: '#12378F',
-    cardForeground: PSYCHE_WARM,
-    muted: '#183F9A',
-    mutedForeground: '#B5C7F3',
-    popover: '#123A96',
-    popoverForeground: PSYCHE_WARM,
-    primary: PSYCHE_WARM,
-    primaryForeground: '#0D2F86',
-    secondary: '#1B45A4',
-    secondaryForeground: '#E0E8FF',
-    accent: PSYCHE_BLUE,
-    accentForeground: '#F0F4FF',
-    border: '#3158AD',
-    input: '#0B2566',
-    ring: PSYCHE_WARM,
-    midground: NOUS_BLUE,
-    composerRing: PSYCHE_WARM,
-    destructive: '#C0473A',
-    destructiveForeground: '#FEF2F2',
-    sidebarBackground: '#09286F',
-    sidebarBorder: '#234A9C',
-    userBubble: '#143B91',
-    userBubbleBorder: '#3A63BD'
+    background: '#0F1117',
+    foreground: '#E6E8EF',
+    card: '#171923',
+    cardForeground: '#E6E8EF',
+    muted: '#202433',
+    mutedForeground: '#A6ADBB',
+    popover: '#202433',
+    popoverForeground: '#E6E8EF',
+    primary: '#5B8CFF',
+    primaryForeground: '#F8FBFF',
+    secondary: '#1A1D29',
+    secondaryForeground: '#C7CEDB',
+    accent: '#1E2636',
+    accentForeground: '#DDE3EE',
+    border: '#2D3242',
+    input: '#343A4D',
+    ring: '#6AA2FF',
+    midground: '#6AA2FF',
+    composerRing: '#6AA2FF',
+    destructive: '#E75E78',
+    destructiveForeground: '#FFF5F7',
+    sidebarBackground: '#0D1016',
+    sidebarBorder: '#252B38',
+    userBubble: '#182033',
+    userBubbleBorder: '#2F3B52'
   },
   typography: {
     fontSans: SYSTEM_SANS,

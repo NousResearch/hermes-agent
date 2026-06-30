@@ -198,7 +198,7 @@ def windows_hide_flags() -> int:
     """
     if not IS_WINDOWS:
         return 0
-    return _CREATE_NO_WINDOW
+    return _CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB
 
 
 def windows_detach_popen_kwargs() -> dict:

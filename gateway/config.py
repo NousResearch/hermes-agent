@@ -1483,10 +1483,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Home Assistant
     hass_token = os.getenv("HASS_TOKEN")
     if hass_token:
-        if Platform.HOMEASSISTANT not in config.platforms:
-            config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
-        config.platforms[Platform.HOMEASSISTANT].token = hass_token
+        hass_config = _enable_from_env(Platform.HOMEASSISTANT)
+        hass_config.token = hass_token
         hass_url = os.getenv("HASS_URL")
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
@@ -1497,10 +1495,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
-        if Platform.EMAIL not in config.platforms:
-            config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
-        config.platforms[Platform.EMAIL].extra.update({
+        email_config = _enable_from_env(Platform.EMAIL)
+        email_config.extra.update({
             "address": email_addr,
             "imap_host": email_imap,
             "smtp_host": email_smtp,
@@ -1517,10 +1513,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # SMS (Twilio)
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
     if twilio_sid:
-        if Platform.SMS not in config.platforms:
-            config.platforms[Platform.SMS] = PlatformConfig()
-        config.platforms[Platform.SMS].enabled = True
-        config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
+        sms_config = _enable_from_env(Platform.SMS)
+        sms_config.api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = os.getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
         config.platforms[Platform.SMS].home_channel = HomeChannel(

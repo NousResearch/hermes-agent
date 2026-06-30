@@ -787,6 +787,12 @@ AUTHOR_MAP = {
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
     "123342691+banditburai@users.noreply.github.com": "banditburai",
     "9063726+Kyzcreig@users.noreply.github.com": "Kyzcreig",
+    # Bare-noreply form (no +id prefix) — the fork owner's commits are authored
+    # as plain "Kyzcreig@users.noreply.github.com". The check only auto-skips the
+    # +id-prefixed numeric form, so the bare form needs an explicit mapping or
+    # EVERY Kyzcreig-authored PR fails contributor-check (refs: upstream-parity
+    # CI-gate-traps TRAP 3).
+    "Kyzcreig@users.noreply.github.com": "Kyzcreig",
     "270082434+crayfish-ai@users.noreply.github.com": "crayfish-ai",
     "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
     "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",

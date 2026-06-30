@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,7 @@ import {
   getAuxiliaryModels,
   getGlobalModelInfo,
   getGlobalModelOptions,
+  getHermesConfigRecord,
   getMoaModels,
   getRecommendedDefaultModel,
   saveHermesConfig,
@@ -29,7 +31,12 @@ import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 
-import { invalidateHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import {
+  HERMES_CONFIG_KEY,
+  invalidateHermesConfig,
+  setHermesConfigCache,
+  useHermesConfigRecord
+} from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { CONTROL_TEXT } from './constants'
@@ -148,6 +155,42 @@ export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
       moaSlotComplete(preset.aggregator)
   )
 
+const normalizeEndpointUrl = (value: unknown): string =>
+  String(value ?? '')
+    .trim()
+    .replace(/\/+$/, '')
+    .toLowerCase()
+
+export function resolveModelSettingsProvider(
+  providers: readonly ModelOptionProvider[],
+  provider: string,
+  configuredBaseUrl: unknown
+): string {
+  const slug = provider.trim()
+
+  if (slug.toLowerCase() !== 'custom') {
+    return slug
+  }
+
+  const baseUrl = normalizeEndpointUrl(configuredBaseUrl)
+
+  if (!baseUrl) {
+    return slug
+  }
+
+  const matchingCustomProvider = providers.find(row => {
+    if (row.slug === 'custom') {
+      return false
+    }
+
+    const customEndpoint = row.slug.toLowerCase().startsWith('custom:') || row.is_user_defined
+
+    return customEndpoint && normalizeEndpointUrl(row.api_url) === baseUrl
+  })
+
+  return matchingCustomProvider?.slug ?? slug
+}
+
 interface StaleAuxWarningProps {
   applying: boolean
   onReset: () => void
@@ -190,6 +233,7 @@ interface ModelSettingsProps {
 export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
+  const configClient = useQueryClient()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -226,20 +270,31 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+      const [modelInfo, modelOptions, auxiliaryModels, moaModels, cfg] = await Promise.all([
         getGlobalModelInfo(),
         getGlobalModelOptions(),
         getAuxiliaryModels(),
-        getMoaModels().catch(() => null)
+        getMoaModels().catch(() => null),
+        configClient
+          .fetchQuery({ queryKey: HERMES_CONFIG_KEY, queryFn: getHermesConfigRecord, staleTime: 0 })
+          .catch(() => null)
       ])
 
       if (profileEpoch.current !== epoch) {
         return
       }
 
-      setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-      setProviders(modelOptions.providers || [])
-      setSelectedProvider(prev => prev || modelInfo.provider)
+      const optionProviders = modelOptions.providers || []
+
+      const provider = resolveModelSettingsProvider(
+        optionProviders,
+        modelInfo.provider,
+        cfg ? getNested(cfg, 'model.base_url') : undefined
+      )
+
+      setMainModel({ model: modelInfo.model, provider })
+      setProviders(optionProviders)
+      setSelectedProvider(prev => prev || provider)
       setSelectedModel(prev => prev || modelInfo.model)
       setAuxiliary(auxiliaryModels)
       setMoa(moaModels)
@@ -260,7 +315,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         setLoading(false)
       }
     }
-  }, [])
+  }, [configClient])
 
   useEffect(() => {
     void refresh()

@@ -83,6 +83,54 @@ async function renderModelSettings() {
 }
 
 describe('ModelSettings', () => {
+  it('resolves the bare custom provider to the saved endpoint row that matches model.base_url', async () => {
+    const { resolveModelSettingsProvider } = await import('./model-settings')
+
+    expect(
+      resolveModelSettingsProvider(
+        [
+          {
+            name: 'Custom endpoint',
+            slug: 'custom',
+            models: [],
+            authenticated: false,
+            auth_type: 'api_key'
+          },
+          {
+            name: '100.79.23.62:8317',
+            slug: 'custom:100.79.23.62:8317',
+            api_url: 'http://100.79.23.62:8317/v1/',
+            models: ['gpt-5.4'],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ],
+        'custom',
+        'http://100.79.23.62:8317/v1'
+      )
+    ).toBe('custom:100.79.23.62:8317')
+  })
+
+  it('keeps the bare custom provider when no saved endpoint matches model.base_url', async () => {
+    const { resolveModelSettingsProvider } = await import('./model-settings')
+
+    expect(
+      resolveModelSettingsProvider(
+        [
+          {
+            name: 'Other endpoint',
+            slug: 'custom:other',
+            api_url: 'http://127.0.0.1:8000/v1',
+            models: ['llama'],
+            is_user_defined: true
+          }
+        ],
+        'custom',
+        'http://100.79.23.62:8317/v1'
+      )
+    ).toBe('custom')
+  })
+
   it('loads the current main model and lists configured providers only', async () => {
     await renderModelSettings()
 
@@ -96,6 +144,50 @@ describe('ModelSettings', () => {
     // "Nous" shows in both the trigger and the open list.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
+  })
+
+  it('shows the saved custom provider instead of the unconfigured custom setup row', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'custom', model: 'gpt-5.4' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Custom endpoint',
+          slug: 'custom',
+          models: [],
+          authenticated: false,
+          auth_type: 'api_key'
+        },
+        {
+          name: '100.79.23.62:8317',
+          slug: 'custom:100.79.23.62:8317',
+          api_url: 'http://100.79.23.62:8317/v1',
+          models: ['gpt-5.4', 'gpt-5.5'],
+          authenticated: true,
+          is_user_defined: true,
+          capabilities: { 'gpt-5.4': { reasoning: true, fast: false } }
+        }
+      ]
+    })
+    getHermesConfigRecord.mockResolvedValueOnce({
+      model: { provider: 'custom', default: 'gpt-5.4', base_url: 'http://100.79.23.62:8317/v1' },
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' }
+    })
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('100.79.23.62:8317')).toBeTruthy()
+    expect(screen.getByText('gpt-5.4')).toBeTruthy()
+    expect(screen.queryByText(/needs an API key/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Set up Custom endpoint/ })).toBeNull()
+  })
+
+  it('loads the current model when the supplemental config lookup fails', async () => {
+    getHermesConfigRecord.mockRejectedValue(new Error('config unavailable'))
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('hermes-4')).toBeTruthy()
+    expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
   })
 
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {

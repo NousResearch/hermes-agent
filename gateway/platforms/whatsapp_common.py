@@ -386,8 +386,13 @@ class WhatsAppBehaviorMixin:
         # which WhatsApp renders with literal asterisks).
         def _header_to_bold(m: re.Match) -> str:
             inner = m.group(1).strip()
-            while len(inner) > 1 and inner.startswith("*") and inner.endswith("*"):
-                inner = inner[1:-1].strip()
+            # The whole header becomes one bold span (*...*); strip any
+            # interior WhatsApp emphasis-asterisk spans first so the wrap can
+            # never emit literal "**" or a stray "*" (WhatsApp renders those
+            # verbatim). Handles the fully-wrapped case ("# **Title**" ->
+            # "*Title*") and partial emphasis ("# *italic* heading" ->
+            # "*italic heading*"); combined "*_x_*" keeps its "_" italic.
+            inner = re.sub(r"\*(\S(?:.*?\S)?)\*", r"\1", inner)
             return f"*{inner}*"
 
         result = re.sub(

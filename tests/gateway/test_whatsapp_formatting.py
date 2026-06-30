@@ -98,6 +98,22 @@ class TestFormatMessage:
         assert adapter.format_message("# **Title**") == "*Title*"
         assert adapter.format_message("## __Strong__") == "*Strong*"
 
+    def test_header_partial_emphasis_no_literal_asterisks(self):
+        """A header with emphasis on only PART of the line must still bold the
+        whole line without leaking literal "**" or a stray "*" (WhatsApp renders
+        those verbatim). Sibling to the combined-emphasis fix in #55298, which
+        covers step-3 ***bold-italic***; this covers the step-4 header wrap."""
+        adapter = _make_adapter()
+        out1 = adapter.format_message("# *italic* heading")
+        assert "**" not in out1
+        assert out1 == "*italic heading*"
+        out2 = adapter.format_message("# normal *em* tail")
+        assert "**" not in out2
+        assert out2 == "*normal em tail*"
+        # existing whole-line cases still hold
+        assert adapter.format_message("# **Title**") == "*Title*"
+        assert adapter.format_message("# Title") == "*Title*"
+
     def test_links_converted(self):
         adapter = _make_adapter()
         result = adapter.format_message("[click here](https://example.com)")

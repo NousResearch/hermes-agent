@@ -1625,6 +1625,18 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         if (new_provider or "").strip().lower() == "moa":
             from agent.moa_loop import MoAClient
 
+            # The MoA virtual provider speaks only chat.completions via the
+            # MoAClient facade — the aggregator's real transport
+            # (codex_responses / anthropic_messages) is resolved and applied
+            # *inside* the reference/aggregator fan-out, never on the outer
+            # primary call. determine_api_mode("moa", ...) above may have left
+            # api_mode set to the aggregator's transport; if the conversation
+            # loop sees that, it dispatches client.responses.create (which the
+            # facade has no .responses for) and the call falls through to the
+            # moa://local placeholder → HTTP 404 → fallback to a reference
+            # model. Pin chat_completions here so the primary call always goes
+            # through MoAClient.chat.completions, matching agent_init.py.
+            agent.api_mode = "chat_completions"
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}

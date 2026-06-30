@@ -9,7 +9,7 @@ import {
   WHITE,
   WHITEISH_SHEEN
 } from './constants'
-import { clamp, nodeRadius, recencyInk, shapePath } from './geometry'
+import { clamp, fitScale, nodeRadius, recencyInk, shapePath } from './geometry'
 import { countLabel, ellipsize, metaBadges, nodeFooter, wrapText } from './text'
 import type {
   FadeBuckets,
@@ -83,11 +83,66 @@ const NODE_BIRTH = { down: 0.11, up: 0.075 }
 const SCRAMBLE_CHARS =
   'ﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾜﾝｦｱｳｴｵｶｷｹｺｻｼｽｾﾀﾁﾂﾃﾅﾆﾇﾈ0123456789:.=*+<>Ξ╳'
 
-// Fill the current path as a lit sphere: an offset radial gradient from a hot
-// core → darkened body → translucent rim, so a flat circle reads with volume.
-// `strength` is how white the core is; `bodyDarken` darkens the body (0 for
-// active/hover nodes so they pop full bright). Near-white inks skip the darken
-// and force a near-full sheen so the white core still reads.
+// Sphere-sprite atlas: a lit orb is the same picture at every size, so we render
+// each distinct (ink, sheen, darken) appearance ONCE into an offscreen sprite and
+// blit it (scaled) per node — instead of allocating a fresh radial gradient for
+// every star on every frame. Keyed by appearance, not size; drawImage scales it.
+// Reference radius the sprite is rendered at — larger than the usual billboarded
+// screen-space orb, so sprites scale down in normal use and stay crisp.
+const SPRITE_R = 96
+
+const spriteCache = new Map<string, HTMLCanvasElement>()
+
+// Build (or fetch) the orb sprite for one appearance: an offset radial gradient
+// from a hot core → darkened body → translucent rim, clipped to the disk, so a
+// flat circle reads with volume. `strength` is how white the core is; `bodyDarken`
+// darkens the body (0 for active/hover nodes so they pop full bright). Near-white
+// inks skip the darken and force a near-full sheen so the white core still reads.
+function sphereSprite(ink: Rgb, strength: number, bodyDarken: number): HTMLCanvasElement {
+  const key = `${ink.r},${ink.g},${ink.b}|${strength}|${bodyDarken}`
+  const cached = spriteCache.get(key)
+
+  if (cached) {
+    return cached
+  }
+
+  const R = SPRITE_R
+  // Margin for the gradient's rim (extends to 1.15·R) so it isn't clipped.
+  const pad = Math.ceil(R * 0.15) + 1
+  const size = (R + pad) * 2
+  const c = R + pad
+  const cv = document.createElement('canvas')
+  cv.width = size
+  cv.height = size
+  const g2 = cv.getContext('2d')
+
+  if (!g2) {
+    return cv
+  }
+
+  const mx = Math.max(ink.r, ink.g, ink.b)
+  const mn = Math.min(ink.r, ink.g, ink.b)
+  const sat = mx ? (mx - mn) / mx : 0
+  const whiteness = clamp((luminance(ink.r, ink.g, ink.b) - 0.7) / 0.3, 0, 1) * (1 - sat)
+  const eff = strength + (WHITEISH_SHEEN - strength) * whiteness
+  const hi = mixRgb(ink, WHITE, 0.7 * eff)
+  const body = darken(ink, bodyDarken * (1 - whiteness))
+  const grad = g2.createRadialGradient(c - R * 0.35, c - R * 0.4, R * 0.05, c, c, R * 1.15)
+  grad.addColorStop(0, rgba(hi, 1))
+  grad.addColorStop(0.5, rgba(body, 1))
+  grad.addColorStop(1, rgba(body, 0.85))
+  g2.fillStyle = grad
+  g2.beginPath()
+  g2.arc(c, c, R, 0, Math.PI * 2)
+  g2.fill()
+  spriteCache.set(key, cv)
+
+  return cv
+}
+
+// Paint a lit orb of radius `r` centered at (x, y) by blitting its cached sprite.
+// Honors the caller's globalAlpha (drawImage multiplies it), matching the old
+// gradient fill. No path needed — the sprite already carries the disk + AA rim.
 function sphereFill(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -97,19 +152,10 @@ function sphereFill(
   strength: number,
   bodyDarken: number
 ): void {
-  const mx = Math.max(ink.r, ink.g, ink.b)
-  const mn = Math.min(ink.r, ink.g, ink.b)
-  const sat = mx ? (mx - mn) / mx : 0
-  const whiteness = clamp((luminance(ink.r, ink.g, ink.b) - 0.7) / 0.3, 0, 1) * (1 - sat)
-  const eff = strength + (WHITEISH_SHEEN - strength) * whiteness
-  const hi = mixRgb(ink, WHITE, 0.7 * eff)
-  const body = darken(ink, bodyDarken * (1 - whiteness))
-  const g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.05, x, y, r * 1.15)
-  g.addColorStop(0, rgba(hi, 1))
-  g.addColorStop(0.5, rgba(body, 1))
-  g.addColorStop(1, rgba(body, 0.85))
-  ctx.fillStyle = g
-  ctx.fill()
+  const sprite = sphereSprite(ink, strength, bodyDarken)
+  const scale = r / SPRITE_R
+  const drawSize = sprite.width * scale
+  ctx.drawImage(sprite, x - drawSize / 2, y - drawSize / 2, drawSize, drawSize)
 }
 
 const rectsOverlap = (a: Rect, b: Rect) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
@@ -156,7 +202,7 @@ export function drawScene(scene: Scene): DrawResult {
 
   const erec = (rec: number) => (frontier > 0 ? clamp(rec / frontier, 0, 1) : 1)
   const { h, w } = size
-  const { bandInk, base, bg, c, chipBg, darkTheme, inkInv, memoryInk, primary, skillInk } = palette
+  const { bandInk, base, bg, c, chipBg, darkTheme, inkInv, memoryInk, skillInk } = palette
   const { bandAlpha, lightSize, ringAlpha, sheen } = RING_PARAMS[darkTheme ? 'dark' : 'light']
 
   let animating = false
@@ -208,6 +254,9 @@ export function drawScene(scene: Scene): DrawResult {
   const shade = (a: number) => `rgba(${base.r},${base.g},${base.b},${a})`
   const projX = (wx: number) => wx * vp.k + vp.x
   const projY = (wy: number) => wy * vp.k * TILT + vp.y
+  // Baseline node scale: the rested fit, held stable while the playback camera
+  // dives into the core — so t≈0 nodes don't balloon (see fitScale).
+  const nodeK = fitScale(w, h, rings)
 
   // Two composable layers: node highlight (selected ?? hovered) in full ink, and
   // a selection-only ring/date filter that only shifts alpha.
@@ -322,85 +371,16 @@ export function drawScene(scene: Scene): DrawResult {
   })
   ctx.setLineDash([])
 
-  // Screen space for the core, jump routes, and glyphs (crisp, easy to trim).
+  // Screen space for the jump routes and glyphs (crisp, easy to trim). The empty
+  // core's animated scramble is NOT painted here — it's the only perpetually
+  // moving layer, so it's drawn live each frame by drawScramble() on top of the
+  // (cached) static scene. Everything else in this function is static until an
+  // input changes, which is why `animating` now reflects only in-flight fades.
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-
-  // Ring 0 is intentionally empty: computeRecency's lead-in keeps the oldest
-  // real data out in the first shell. Fill that gap with a tilted ASCII
-  // scramble — a decoding-glyph field laid on the disk plane (rows squashed by
-  // TILT, circular falloff) so the empty core reads as "computing", not missing.
-  // It animates continuously, so the draw loop is kept hot (animating = true).
-  const coreX = projX(0)
-  const coreY = projY(0)
-  // Fill to the innermost ring (the core shell), not the RING_INNER constant —
-  // the ring sits in lead-in space, so derive the radius from it directly.
-  const coreRx = (rings[0]?.r ?? RING_INNER) * vp.k * 0.94
-  const cell = clamp(coreRx * 0.2, 6, 11)
-  // Aspect-correct on the tilt: rows are spaced by the full glyph height (square
-  // cells, no vertical squish), but the field is clipped to the disk's ELLIPSE
-  // (vertical extent = coreRx * TILT), so it sits on the tilted plane while the
-  // glyphs themselves stay un-squished. Fewer rows fit vertically — that's it.
-  const coreRy = coreRx * TILT
-  const half = Math.max(3, Math.round(coreRx / cell))
-  const now = performance.now()
-
-  ctx.save()
-  ctx.font = `${cell}px "JetBrains Mono", "Hiragino Sans", "Noto Sans JP", ui-monospace, monospace`
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-
-  for (let r = -half; r <= half; r += 1) {
-    // Per-row flow: half the rows drift left, half right, each at its own speed.
-    // The drift is a continuous pixel scroll (not a per-cell swap), and each
-    // glyph's identity is tied to its slot index — so a character visibly slides
-    // across instead of the whole row flickering in place. Combined with the
-    // TILT squash + opposite directions, the field reads as a turning surface.
-    const rowSeed = (r * 19349663) >>> 0 || 1
-    const dir = rowSeed & 1 ? 1 : -1
-    const speed = 8 + (rowSeed % 16) // px/sec
-    const scroll = (now / 1000) * speed * dir
-    const ny = (r * cell) / coreRy
-    // Latitude dimming: rows away from the equator fade, selling the sphere read.
-    const rowDim = 1 - 0.5 * Math.min(1, Math.abs(ny))
-    const kMin = Math.floor((-coreRx - scroll) / cell) - 1
-    const kMax = Math.ceil((coreRx - scroll) / cell) + 1
-
-    for (let k = kMin; k <= kMax; k += 1) {
-      const sx = k * cell + scroll // screen-space x relative to the core center
-      const nx = sx / coreRx
-      const d2 = nx * nx + ny * ny
-
-      if (d2 > 1) {
-        continue
-      }
-
-      const seed = (rowSeed ^ ((k >>> 0) * 73856093)) >>> 0
-      const ch = SCRAMBLE_CHARS[seed % SCRAMBLE_CHARS.length] ?? '0'
-      // Mostly flat brightness, fading only near the rim (reduced gradient).
-      const edge = clamp((1 - Math.sqrt(d2)) / 0.4, 0, 1)
-      const flick = 0.7 + 0.3 * (((seed >>> 5) % 100) / 100)
-      // Fake depth: a stable per-slot value pops a subset of glyphs forward, so
-      // some characters read as nearer/brighter and drift across in front.
-      const depth = ((seed >>> 11) % 100) / 100
-      const pop = depth > 0.92 ? 2.6 : depth > 0.78 ? 1.6 : 1
-      const a = clamp((darkTheme ? 0.25 : 0.33) * edge * flick * rowDim * pop, 0, 0.85)
-
-      if (a < 0.02) {
-        continue
-      }
-
-      ctx.fillStyle = rgba(primary, a)
-      ctx.fillText(ch, coreX + sx, coreY + r * cell)
-    }
-  }
-
-  ctx.restore()
-  ctx.globalAlpha = 1
-  animating = true
 
   // Jump routes — a focused node's links stop at its selection ring.
   const focusNode = focusId ? (byId.get(focusId) ?? null) : null
-  const focusRingR = focusNode ? (nodeRadius(focusNode) + focusNode.rec) * vp.k + 4 : 0
+  const focusRingR = focusNode ? nodeRadius(focusNode) * nodeK + 4 : 0
 
   for (const link of links) {
     const s = typeof link.source === 'object' ? link.source : byId.get(String(link.source))
@@ -467,20 +447,30 @@ export function drawScene(scene: Scene): DrawResult {
   ctx.setLineDash([])
 
   // Nodes: the node layer paints pure ink (focused node + neighbors); the date
-  // filter is alpha-only, so the two states compose.
+  // filter is alpha-only, so the two states compose. Track which rings have at
+  // least one revealed node so a ring's date only shows once it has content.
+  const revealedRings = new Set<number>()
+
   for (const n of nodes) {
     // The land comes first: a node waits for the ring that CAPS its region (its
     // outer date gridline) to grow in before it ignites — so the ring is always
     // drawn before any star inside it, not after.
     const landLaid = (ringAppear[n.outerRingIndex] ?? 1) >= 0.5
     const revealed = seen(n.rec) && landLaid
+
+    if (revealed) {
+      revealedRings.add(n.outerRingIndex)
+    }
     const isFocus = revealed && n.id === focusId
     const isNeighbor = revealed && !!focusSet && focusSet.has(n.id)
     const inRing = !!ring && n.rec >= ringLo && n.rec < ringHi
     const nodeHigh = isFocus || isNeighbor
     const er = erec(n.rec)
     const ageScale = nodeHigh || inRing ? 1 : 0.34 + Math.min(1, er / 0.4) * 0.66
-    const r = nodeRadius(n) * vp.k * ageScale
+    // Stable screen-space radius: use the graph's resting fit zoom, not the
+    // current playback camera zoom. Full-map views keep their original density,
+    // while t≈0 spore-zoom no longer inflates nodes into bubbles.
+    const r = nodeRadius(n) * nodeK * ageScale
 
     const baseAlpha = nodeHigh ? 1 : ring ? (inRing ? (focusId ? 0.55 : 1) : 0.16) : focusId ? 0.16 : recencyInk(er)
     const alpha = fadeAlpha(fades.nodes, n.id, revealed ? baseAlpha : 0, nodeHigh || inRing)
@@ -504,12 +494,13 @@ export function drawScene(scene: Scene): DrawResult {
     ctx.globalAlpha = vis
     const nodeInk = nodeHigh ? base : n.kind === 'memory' ? memoryInk : skillInk
     const shape = NODE_SHAPE[n.kind]
-    shapePath(ctx, shape, sx, sy, r)
 
     if (shape === 'circle') {
-      // Highlighted orbs pop full bright; others darken so the sheen reads.
+      // Highlighted orbs pop full bright; others darken so the sheen reads. The
+      // sprite carries the disk, so no path is built for circles.
       sphereFill(ctx, sx, sy, r, nodeInk, sheen, nodeHigh ? 0 : ORB_DARKEN)
     } else {
+      shapePath(ctx, shape, sx, sy, r)
       ctx.fillStyle = rgba(nodeInk, 1)
       ctx.fill()
     }
@@ -533,8 +524,10 @@ export function drawScene(scene: Scene): DrawResult {
   ctx.textAlign = 'center'
   const LABEL_GAP = 15
   let lastLabelY = Number.POSITIVE_INFINITY
+  // A ring's date only shows once it actually has a revealed node — no floating
+  // date over a blank disk (t=0) or a lone empty ring.
   rings.forEach((rg, i) => {
-    if (!rg.label) {
+    if (!rg.label || !revealedRings.has(i)) {
       return
     }
 
@@ -620,7 +613,7 @@ export function drawScene(scene: Scene): DrawResult {
     const totalW = Math.max(metaW, footerW, titleBgW)
     const totalH = BADGE_H + ROW_GAP + titleBgH + (footerText ? ROW_GAP + FOOTER_H : 0)
     const bx = clamp(projX(tip.x) - totalW / 2, 4, Math.max(4, w - totalW - 4))
-    const by = clamp(projY(tip.y) - (nodeRadius(tip) * vp.k + 8) - totalH, 4, Math.max(4, h - totalH - 4))
+    const by = clamp(projY(tip.y) - (nodeRadius(tip) * nodeK + 8) - totalH, 4, Math.max(4, h - totalH - 4))
     tipRect = { h: totalH, w: totalW, x: bx, y: by }
 
     ctx.textAlign = 'left'
@@ -687,7 +680,7 @@ export function drawScene(scene: Scene): DrawResult {
     const label = ellipsize(ctx, n.label, Math.min(180, w * 0.32))
     const bw = ctx.measureText(label).width + 8
     const x = clamp(projX(n.x) - bw / 2, LBL_M, Math.max(LBL_M, w - bw - LBL_M))
-    const top = projY(n.y) - (nodeRadius(n) * vp.k + 7) - LBL_H + 4
+    const top = projY(n.y) - (nodeRadius(n) * nodeK + 7) - LBL_H + 4
     const clampY = (v: number) => clamp(v, LBL_M, Math.max(LBL_M, h - LBL_H - LBL_M))
     const step = LBL_H + 3
     let y: null | number = null
@@ -718,4 +711,115 @@ export function drawScene(scene: Scene): DrawResult {
   }
 
   return { animating, ringLabelRects }
+}
+
+// Glyph cells from the core's center to its rim — the target density. In the mid
+// range the field is this many cells across (constant "amount of text"), and the
+// glyph size tracks the camera. Bump for denser, drop for sparser.
+const SCRAMBLE_RADIUS = 6
+
+// Glyph size (px) is clamped to this band: the font grows with the camera but
+// never balloons on a big/zoomed-in core — past the ceiling the core fills with
+// MORE, smaller glyphs instead of fewer huge ones — and stays legible when tiny.
+const SCRAMBLE_CELL_MIN = 5
+const SCRAMBLE_CELL_MAX = 13
+
+// The empty-core scramble: a tilted, Matrix-style decoding-glyph field laid on
+// the disk plane (rows squashed by TILT, clipped to the core ellipse) so the
+// empty center reads as "computing", not missing. PURELY decorative — the glyphs
+// are a seeded PRNG field, never derived from nodes/memories. Drawn live each
+// frame on top of the cached static scene, since it's the only animated layer.
+export function drawScramble({
+  ctx,
+  dpr,
+  palette,
+  rings,
+  vp
+}: {
+  ctx: CanvasRenderingContext2D
+  dpr: number
+  palette: Palette
+  rings: Ring[]
+  vp: Viewport
+}): void {
+  const { darkTheme, primary } = palette
+  const projX = (wx: number) => wx * vp.k + vp.x
+  const projY = (wy: number) => wy * vp.k * TILT + vp.y
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+  const coreX = projX(0)
+  const coreY = projY(0)
+  // Fill to the innermost ring (the core shell), not the RING_INNER constant —
+  // the ring sits in lead-in space, so derive the radius from it directly.
+  const coreRx = (rings[0]?.r ?? RING_INNER) * vp.k * 0.94
+
+  if (coreRx <= 0) {
+    return
+  }
+
+  // Target ~SCRAMBLE_RADIUS cells to the rim (camera-scaled glyphs), but clamp the
+  // glyph SIZE so a big/zoomed-in core scales the font DOWN — packing in more,
+  // smaller glyphs rather than a few giant ones — and stays legible when tiny.
+  const cell = clamp(coreRx / SCRAMBLE_RADIUS, SCRAMBLE_CELL_MIN, SCRAMBLE_CELL_MAX)
+  // Aspect-correct on the tilt: rows are spaced by the full glyph height (square
+  // cells, no vertical squish), but the field is clipped to the disk's ELLIPSE
+  // (vertical extent = coreRx * TILT), so it sits on the tilted plane while the
+  // glyphs themselves stay un-squished. Fewer rows fit vertically — that's it.
+  const coreRy = coreRx * TILT
+  const half = Math.max(3, Math.round(coreRx / cell))
+  const now = performance.now()
+
+  ctx.save()
+  ctx.font = `${cell}px "JetBrains Mono", "Hiragino Sans", "Noto Sans JP", ui-monospace, monospace`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+
+  for (let r = -half; r <= half; r += 1) {
+    // Per-row flow: half the rows drift left, half right, each at its own speed.
+    // The drift is a continuous pixel scroll (not a per-cell swap), and each
+    // glyph's identity is tied to its slot index — so a character visibly slides
+    // across instead of the whole row flickering in place. Combined with the
+    // TILT squash + opposite directions, the field reads as a turning surface.
+    const rowSeed = (r * 19349663) >>> 0 || 1
+    const dir = rowSeed & 1 ? 1 : -1
+    const speed = 8 + (rowSeed % 16) // px/sec
+    const scroll = (now / 1000) * speed * dir
+    const ny = (r * cell) / coreRy
+    // Latitude dimming: rows away from the equator fade, selling the sphere read.
+    const rowDim = 1 - 0.5 * Math.min(1, Math.abs(ny))
+    const kMin = Math.floor((-coreRx - scroll) / cell) - 1
+    const kMax = Math.ceil((coreRx - scroll) / cell) + 1
+
+    for (let k = kMin; k <= kMax; k += 1) {
+      const sx = k * cell + scroll // screen-space x relative to the core center
+      const nx = sx / coreRx
+      const d2 = nx * nx + ny * ny
+
+      if (d2 > 1) {
+        continue
+      }
+
+      const seed = (rowSeed ^ ((k >>> 0) * 73856093)) >>> 0
+      const ch = SCRAMBLE_CHARS[seed % SCRAMBLE_CHARS.length] ?? '0'
+      // Mostly flat brightness, fading only near the rim (reduced gradient).
+      const edge = clamp((1 - Math.sqrt(d2)) / 0.4, 0, 1)
+      const flick = 0.7 + 0.3 * (((seed >>> 5) % 100) / 100)
+      // Fake depth: a stable per-slot value pops a subset of glyphs forward, so
+      // some characters read as nearer/brighter and drift across in front.
+      const depth = ((seed >>> 11) % 100) / 100
+      const pop = depth > 0.92 ? 2.6 : depth > 0.78 ? 1.6 : 1
+      const a = clamp((darkTheme ? 0.25 : 0.33) * edge * flick * rowDim * pop, 0, 0.85)
+
+      if (a < 0.02) {
+        continue
+      }
+
+      ctx.fillStyle = rgba(primary, a)
+      ctx.fillText(ch, coreX + sx, coreY + r * cell)
+    }
+  }
+
+  ctx.restore()
+  ctx.globalAlpha = 1
 }

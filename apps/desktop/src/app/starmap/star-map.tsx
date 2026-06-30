@@ -7,8 +7,8 @@ import type { StarmapGraph } from '@/types/hermes'
 
 import { computePalette, memoryInkFor, resolveRgb, rgba } from './color'
 import { RING_OUTER, TILT, ZOOM_MAX, ZOOM_MIN } from './constants'
-import { clamp, distToSegmentSq, fitViewport, nodeRadius } from './geometry'
-import { drawScene } from './render'
+import { clamp, distToSegmentSq, fitScale, fitViewport, nodeRadius } from './geometry'
+import { drawScene, drawScramble } from './render'
 import { decodeShareCode, encodeShareCode, ShareCodeError } from './share-code'
 import { ShareControls } from './share-controls'
 import { buildSimulation } from './simulation'
@@ -492,12 +492,12 @@ export function StarMap({
     return () => mo.disconnect()
   }, [invalidate])
 
-  // Event-driven render loop: no frames while idle. Anything that changes the
-  // view calls invalidate(); a draw that's still animating reschedules itself.
+  // Render loop. The core scramble animates continuously, so the loop runs while
+  // the window is focused — but each frame is cheap (live scramble + a blit of the
+  // cached static layer). The expensive scene only re-renders when invalidate()
+  // marks it dirty. Capped to ~30fps; interaction (force) bypasses the cap.
   useEffect(() => {
     let raf = 0
-    // Continuous self-animation (the core scramble) only needs ~30fps; cap it so
-    // the idle loop isn't a 60fps full-scene redraw. Interaction bypasses the cap.
     const ANIM_MS = 1000 / 30
     let lastAnimTs = 0
     let force = true
@@ -516,57 +516,96 @@ export function StarMap({
       }
     }
 
-    const draw = (): boolean => {
+    // The static scene (rings, bands, links, nodes, labels) is cached in an
+    // offscreen layer and only re-rendered when something actually changes —
+    // dirtyRef flags that. The animated core scramble is the ONLY per-frame work:
+    // each frame we just clear, draw the live scramble, and blit the cached layer
+    // on top. So an idle map costs a scramble + one drawImage, not a full redraw.
+    let staticCanvas: HTMLCanvasElement | null = null
+
+    const paint = () => {
       const canvas = canvasRef.current
       const ctx = canvas?.getContext('2d')
 
       if (!canvas || !ctx) {
-        return false
+        return
+      }
+
+      if (!staticCanvas) {
+        staticCanvas = document.createElement('canvas')
+      }
+
+      // Keep the offscreen layer matched to the backing store; a resize wipes it,
+      // so force a static rebuild.
+      if (staticCanvas.width !== canvas.width || staticCanvas.height !== canvas.height) {
+        staticCanvas.width = canvas.width
+        staticCanvas.height = canvas.height
+        dirtyRef.current = true
+      }
+
+      const offCtx = staticCanvas.getContext('2d')
+
+      if (!offCtx) {
+        return
       }
 
       if (themeDirtyRef.current || !paletteRef.current) {
         paletteRef.current = computePalette(canvas)
         themeDirtyRef.current = false
+        dirtyRef.current = true
       }
 
-      const { animating, ringLabelRects } = drawScene({
-        adjacency: adjacencyRef.current,
-        byId: byIdRef.current,
-        ctx,
-        dpr: dprRef.current,
-        fades: fadeRef.current,
-        focusId: selectedIdRef.current ?? hoverRef.current,
-        hoverId: hoverRef.current,
-        hoverLink: hoveredLinkRef.current,
-        hoverRing: hoveredRingRef.current,
-        links: linksRef.current,
-        memById: memByIdRef.current,
-        nodes: nodesRef.current,
-        palette: paletteRef.current,
-        reveal: revealRef.current,
-        rings: ringsRef.current,
-        selectedRing: selectedRingRef.current,
-        size: sizeRef.current,
-        snapMotion: snapMotionRef.current,
-        vp: viewportRef.current
-      })
+      const palette = paletteRef.current
 
-      // One-shot: a scrub snaps this frame; hover/focus afterward eases as usual
-      // (buckets are already at target, so the next eased frames don't move).
-      snapMotionRef.current = false
-      ringLabelRectsRef.current = ringLabelRects
+      if (!palette) {
+        return
+      }
 
-      return animating
+      // Rebuild the cached static layer only when the scene changed; keep
+      // rebuilding while fades are mid-ease (drawScene returns `animating`).
+      if (dirtyRef.current) {
+        const { animating, ringLabelRects } = drawScene({
+          adjacency: adjacencyRef.current,
+          byId: byIdRef.current,
+          ctx: offCtx,
+          dpr: dprRef.current,
+          fades: fadeRef.current,
+          focusId: selectedIdRef.current ?? hoverRef.current,
+          hoverId: hoverRef.current,
+          hoverLink: hoveredLinkRef.current,
+          hoverRing: hoveredRingRef.current,
+          links: linksRef.current,
+          memById: memByIdRef.current,
+          nodes: nodesRef.current,
+          palette,
+          reveal: revealRef.current,
+          rings: ringsRef.current,
+          selectedRing: selectedRingRef.current,
+          size: sizeRef.current,
+          snapMotion: snapMotionRef.current,
+          vp: viewportRef.current
+        })
+
+        // One-shot: a scrub snaps this frame; hover/focus afterward eases as usual
+        // (buckets are already at target, so the next eased frames don't move).
+        snapMotionRef.current = false
+        ringLabelRectsRef.current = ringLabelRects
+        dirtyRef.current = animating
+      }
+
+      // Composite: live scramble underneath, cached static scene on top.
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      drawScramble({ ctx, dpr: dprRef.current, palette, rings: ringsRef.current, vp: viewportRef.current })
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.drawImage(staticCanvas, 0, 0)
     }
 
     const frame = (ts: number) => {
       raf = 0
 
-      if (!dirtyRef.current) {
-        return
-      }
-
-      // Throttle animation-only frames; an interaction (force) always draws now.
+      // The scramble animates every frame; throttle to ANIM_MS unless an
+      // interaction (force) needs an immediate repaint.
       if (!force && ts - lastAnimTs < ANIM_MS) {
         schedule()
 
@@ -575,11 +614,8 @@ export function StarMap({
 
       force = false
       lastAnimTs = ts
-      dirtyRef.current = draw()
-
-      if (dirtyRef.current) {
-        schedule()
-      }
+      paint()
+      schedule()
     }
 
     invalidateRef.current = () => {
@@ -646,14 +682,16 @@ export function StarMap({
   // ── Pointer interactions (invert the tilted projection for hit-testing) ─────
   const pickNode = (cssX: number, cssY: number): null | SimNode => {
     const vp = viewportRef.current
-    const wx = (cssX - vp.x) / vp.k
-    const wy = (cssY - vp.y) / (vp.k * TILT)
+    // Hit radius mirrors the billboarded draw: rested fit scale, screen space.
+    const nodeK = fitScale(sizeRef.current.w, sizeRef.current.h, ringsRef.current)
     let best: null | SimNode = null
     let bestD = Infinity
 
     for (const n of nodesRef.current) {
-      const r = nodeRadius(n) + 6
-      const d = (n.x - wx) ** 2 + (n.y - wy) ** 2
+      const r = nodeRadius(n) * nodeK + 6
+      const sx = n.x * vp.k + vp.x
+      const sy = n.y * vp.k * TILT + vp.y
+      const d = (sx - cssX) ** 2 + (sy - cssY) ** 2
 
       if (d < r * r && d < bestD) {
         bestD = d

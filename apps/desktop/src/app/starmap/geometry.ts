@@ -1,7 +1,7 @@
 import type { StarmapNode } from '@/types/hermes'
 
 import { AGE_GRADIENT, FIT_PADDING, RING_INNER, RING_OUTER, TILT, ZOOM_MAX, ZOOM_MIN } from './constants'
-import type { Shape, Viewport } from './types'
+import type { Ring, Shape, Viewport } from './types'
 
 export function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
@@ -103,6 +103,11 @@ export function fitViewport(w: number, h: number, outer: number = RING_OUTER): V
 export function radiusForRecency(rec: number, outer: number = RING_OUTER): number {
   return RING_INNER + rec * (outer - RING_INNER)
 }
+
+// Screen-space scale at the graph's fully-rested fit. Nodes size against THIS,
+// not the live (playback) camera — so a spore-zoom moves WHERE they sit, not how
+// big they read (billboarded), while a full-map view keeps its honest density.
+export const fitScale = (w: number, h: number, rings: Ring[]): number => fitViewport(w, h, rings.at(-1)?.r ?? RING_OUTER).k
 
 // Squared distance from point (px,py) to segment a→b — for cheap link hit-tests.
 export function distToSegmentSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {

@@ -35,6 +35,10 @@ const ACTIVE_MARKER_CLASS = 'opacity-100'
 const INACTIVE_MARKER_CLASS = 'opacity-30'
 // Busiest bucket gets this many stars; quieter ones scale down proportionally.
 const MAX_STARS_PER_BUCKET = 7
+// Full coils the constellation winds across the timeline's width.
+const COIL_TURNS = 6
+// Vertical swing (in % of track height) the coil arcs above/below the midline.
+const COIL_AMPLITUDE = 36
 
 // Deterministic PRNG (mulberry32) so a bucket's stars stay put across renders.
 function rng(seed: number): () => number {
@@ -50,9 +54,11 @@ function rng(seed: number): () => number {
   }
 }
 
-// Scatter each time bucket's activity into stars: count ∝ events, split between
-// skill- and memory-coloured stars, jittered within the bucket's horizontal slot
-// and across the track height. A starmap timeline for a starmap.
+// Wind each time bucket's activity into stars along a helix: count ∝ events,
+// split between skill- and memory-coloured stars, ordered left→right and arced
+// above/below the midline by a sine wave so the field reads as a coiling spiral
+// rather than random scatter. Front-of-coil stars (cos→1) read brighter and
+// larger for a sense of depth. A starmap timeline for a starmap.
 function buildStars(axis: TimeAxis): Star[] {
   const n = Math.max(1, axis.buckets.length)
   const stars: Star[] = []
@@ -69,18 +75,22 @@ function buildStars(axis: TimeAxis): Star[] {
     const slot = 1 / n
 
     for (let s = 0; s < count; s++) {
-      const jitter = (r() - 0.5) * slot * 0.9
-      const center = (i + 0.5) / n
+      // Ordered position within the bucket's slot keeps the coil smooth.
+      const frac = (i + (s + 0.5) / count) / n
+      const angle = frac * COIL_TURNS * Math.PI * 2
+      // Depth: front of the coil (cos→1) is brighter/larger than the back.
+      const depth = (Math.cos(angle) + 1) / 2
+      const wobble = (r() - 0.5) * slot * 0.25
+      const top = 50 + Math.sin(angle) * COIL_AMPLITUDE + (r() - 0.5) * 5
 
       stars.push({
         delay: r() * 3,
         duration: 2.4 + r() * 2.6,
         kind: s < skillCount ? 'skill' : 'memory',
-        leftPct: Math.max(0, Math.min(1, center + jitter)) * 100,
-        // Brighter, slightly larger stars are rarer.
-        opacity: 0.5 + r() * 0.5,
-        size: 1 + Math.round(r() * r() * 2.2),
-        topPct: 12 + r() * 76
+        leftPct: Math.max(0, Math.min(1, frac + wobble)) * 100,
+        opacity: 0.45 + depth * 0.5,
+        size: 1 + Math.round(depth * 2.4),
+        topPct: Math.max(6, Math.min(94, top))
       })
     }
   })

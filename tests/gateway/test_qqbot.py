@@ -1777,6 +1777,66 @@ class TestDefaultInteractionDispatch:
         assert resolve_calls == []
 
     @pytest.mark.asyncio
+    async def test_approval_click_accepts_group_shared_context(self):
+        """Regression test for the follow-up to #30737.
+
+        When the agent uses group_sessions_per_user=false, the session_key
+        has no user_id suffix. Any operator in the matching group should
+        be able to resolve the approval.
+        """
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 1,  # group
+                "group_openid": "g-1",
+                "group_member_openid": "any-member",  # any member, not encoded in key
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:group:g-1:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("agent:main:qqbot:group:g-1", "once", False)]
+
+    @pytest.mark.asyncio
+    async def test_approval_click_rejects_group_mismatch_in_shared_context(self):
+        """Even in shared-context mode, an operator from a different group
+        cannot resolve a session in chat-1."""
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 1,  # group
+                "group_openid": "g-other",  # NOT the group in the session_key
+                "group_member_openid": "any-member",
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:group:g-1:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == []
+
+    @pytest.mark.asyncio
     async def test_update_prompt_click_writes_response_file(self, tmp_path, monkeypatch):
         """update_prompt:y click writes 'y' to ~/.hermes/.update_response."""
         adapter = self._make_adapter()

@@ -391,20 +391,6 @@ class SmsAdapter(BasePlatformAdapter):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _strip_markdown_for_sms(message: str) -> str:
-    """Strip markdown — SMS renders it as literal characters."""
-    message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"_(.+?)_", r"\1", message, flags=re.DOTALL)
-    message = re.sub(r"```[a-z]*\n?", "", message)
-    message = re.sub(r"`(.+?)`", r"\1", message)
-    message = re.sub(r"^#{1,6}\s+", "", message, flags=re.MULTILINE)
-    message = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", message)
-    message = re.sub(r"\n{3,}", "\n\n", message)
-    return message.strip()
-
-
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -428,7 +414,7 @@ async def _standalone_send(
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
 
-    message = _strip_markdown_for_sms(message)
+    message = strip_markdown(message)
 
     def _redacted_error(text):
         try:

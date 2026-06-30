@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -751,6 +752,20 @@ def _session_key_namespace(profile: Optional[str]) -> str:
     return f"agent:{profile}"
 
 
+def _session_key_component(value: object) -> str:
+    """Return a filesystem-safe session-key segment.
+
+    Most platform identifiers are already safe and must stay byte-identical for
+    backward compatibility. Some platforms, notably DingTalk DMs, use opaque
+    IDs containing ``/`` and ``+``; a raw slash later trips the session path
+    traversal guard. Percent-encode only components that need escaping.
+    """
+    s = str(value)
+    if _is_path_unsafe(s) or "+" in s:
+        return quote(s, safe="")
+    return s
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
@@ -794,8 +809,11 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_chat_id}"
+                return (
+                    f"{ns}:{platform}:dm:{_session_key_component(dm_chat_id)}:"
+                    f"{_session_key_component(source.thread_id)}"
+                )
+            return f"{ns}:{platform}:dm:{_session_key_component(dm_chat_id)}"
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
@@ -810,10 +828,13 @@ def build_session_key(
             )
         if dm_participant_id:
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"{ns}:{platform}:dm:{dm_participant_id}"
+                return (
+                    f"{ns}:{platform}:dm:{_session_key_component(dm_participant_id)}:"
+                    f"{_session_key_component(source.thread_id)}"
+                )
+            return f"{ns}:{platform}:dm:{_session_key_component(dm_participant_id)}"
         if source.thread_id:
-            return f"{ns}:{platform}:dm:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{_session_key_component(source.thread_id)}"
         return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
@@ -825,9 +846,9 @@ def build_session_key(
     key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
-        key_parts.append(source.chat_id)
+        key_parts.append(_session_key_component(source.chat_id))
     if source.thread_id:
-        key_parts.append(source.thread_id)
+        key_parts.append(_session_key_component(source.thread_id))
 
     # In threads, default to shared sessions (all participants see the same
     # conversation).  Per-user isolation only applies when explicitly enabled
@@ -837,7 +858,7 @@ def build_session_key(
         isolate_user = False
 
     if isolate_user and participant_id:
-        key_parts.append(str(participant_id))
+        key_parts.append(_session_key_component(participant_id))
 
     return ":".join(key_parts)
 

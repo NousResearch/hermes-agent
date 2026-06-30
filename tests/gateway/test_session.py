@@ -945,6 +945,23 @@ class TestWhatsAppSessionKeyConsistency:
         bare = SessionSource(platform=Platform.TELEGRAM, chat_id="", chat_type="dm")
         assert build_session_key(bare) == "agent:main:telegram:dm"
 
+    def test_dm_chat_id_with_path_separators_is_percent_encoded(self):
+        """Opaque platform IDs like DingTalk cids may contain slashes."""
+        chat_id = "cidNcWXuYmxUGBIug3mN5iy/9w/Ez8547TrWG+V8QP0w/E="
+        source = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id=chat_id,
+            chat_type="dm",
+        )
+
+        key = build_session_key(source)
+
+        assert key == (
+            "agent:main:dingtalk:dm:"
+            "cidNcWXuYmxUGBIug3mN5iy%2F9w%2FEz8547TrWG%2BV8QP0w%2FE%3D"
+        )
+        assert "/" not in key
+
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""
         source = SessionSource(

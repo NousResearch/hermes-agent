@@ -644,3 +644,96 @@ class TestPersistPromptSummary:
         assert "Clarify" in summary
         assert "Pick a path?" in summary
         assert "B" in summary
+
+
+class TestClearOverlaysForInterrupt:
+    """Regression tests for #14026 — interrupting a running agent must clear
+    every input-blocking overlay (approval/clarify/sudo/secret) so the CLI
+    isn't left frozen with no thread servicing the prompt."""
+
+    def _make_cli(self):
+        cli = _make_cli_stub()
+        # Attributes the helper touches that the base stub doesn't set.
+        cli._clarify_state = None
+        cli._clarify_freetext = False
+        cli._secret_state = None
+        cli._secret_deadline = 0
+        cli._paint_now = MagicMock()
+        return cli
+
+    def test_clears_all_four_overlays_and_unblocks_queues(self):
+        cli = self._make_cli()
+        approval_q = queue.Queue()
+        clarify_q = queue.Queue()
+        sudo_q = queue.Queue()
+        secret_q = queue.Queue()
+        cli._approval_state = {"response_queue": approval_q}
+        cli._clarify_state = {"response_queue": clarify_q}
+        cli._clarify_freetext = True
+        cli._sudo_state = {"response_queue": sudo_q, "timeout": 60}
+        cli._sudo_deadline = 99999.0
+        cli._secret_state = {"response_queue": secret_q, "var_name": "X"}
+
+        cli._clear_active_overlays_for_interrupt()
+
+        # All states nilled out.
+        assert cli._approval_state is None
+        assert cli._clarify_state is None
+        assert cli._clarify_freetext is False
+        assert cli._sudo_state is None
+        assert cli._sudo_deadline == 0
+        assert cli._secret_state is None
+
+        # Each blocked thread would have received a terminal value.
+        assert approval_q.get_nowait() == "deny"
+        assert clarify_q.get_nowait()  # cancellation sentinel string
+        assert sudo_q.get_nowait() == ""
+        assert secret_q.get_nowait() == ""
+
+    def test_noop_when_no_overlays_active(self):
+        cli = self._make_cli()
+        cli._clear_active_overlays_for_interrupt()
+        assert cli._approval_state is None
+        assert cli._clarify_state is None
+        assert cli._sudo_state is None
+        assert cli._secret_state is None
+
+    def test_dead_queue_does_not_block_clearing_others(self):
+        """A queue that raises on put() must not prevent the remaining
+        overlays from being cleared."""
+        cli = self._make_cli()
+
+        class _DeadQueue:
+            def put(self, *_a, **_k):
+                raise RuntimeError("queue gone")
+
+        clarify_q = queue.Queue()
+        cli._approval_state = {"response_queue": _DeadQueue()}
+        cli._clarify_state = {"response_queue": clarify_q}
+
+        cli._clear_active_overlays_for_interrupt()
+
+        assert cli._approval_state is None  # cleared despite dead queue
+        assert cli._clarify_state is None
+        assert clarify_q.get_nowait()
+
+    def test_interrupt_unblocks_thread_blocked_on_approval(self):
+        """End-to-end: a worker blocked on the approval queue unblocks when the
+        interrupt helper drains it."""
+        cli = self._make_cli()
+        approval_q = queue.Queue()
+        cli._approval_state = {"response_queue": approval_q}
+        result = {}
+
+        def _worker():
+            result["value"] = approval_q.get(timeout=2)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        cli._clear_active_overlays_for_interrupt()
+        t.join(timeout=2)
+
+        assert not t.is_alive(), "worker thread never unblocked"
+        assert result["value"] == "deny"
+

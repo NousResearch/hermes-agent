@@ -23,56 +23,54 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Typography } from "@/components/NouiTypography";
-import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import { normalizeSessionTitle } from "@/lib/chat-title";
 import { PluginSlot } from "@/plugins";
-
-function buildWsUrl(
-  authParam: [string, string],
-  resume: string | null,
-  channel: string,
-): string {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // ``authParam`` is ``["token", <session>]`` in loopback mode and
-  // ``["ticket", <minted>]`` in gated mode. The server-side helper
-  // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
-  const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
-  if (resume) qs.set("resume", resume);
-  return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
-}
+import { useTheme } from "@/themes";
+import { useProfileScope } from "@/contexts/useProfileScope";
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
 // channel — the previous PTY child terminates with the old WS, and its
 // channel auto-evicts when no subscribers remain.
-function generateChannelId(): string {
+function generateChannelId(scope?: string): string {
+  const prefix = scope ? "chat" : "chat-fresh";
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
+    return `${prefix}-${crypto.randomUUID()}`;
   }
-  return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(
+    36,
+  )}`;
 }
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
 // with cream foreground — we intentionally don't pick monokai or a loud
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
-const TERMINAL_THEME = {
-  background: "#0d2626",
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
-};
+const DEFAULT_TERMINAL_BACKGROUND = "#000000";
+const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
+
+function buildTerminalTheme(background: string, foreground: string) {
+  return {
+    background,
+    foreground,
+    cursor: foreground,
+    cursorAccent: background,
+    selectionBackground:
+      foreground.length === 7 ? `${foreground}44` : foreground,
+  };
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -119,13 +117,56 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
+  // In gated (OAuth) mode the server intentionally omits the session token —
+  // the dashboard API layer authenticates the WS via a single-use ticket,
+  // so a missing token there is expected, not an error.
   const [banner, setBanner] = useState<string | null>(() =>
-    typeof window !== "undefined" && !window.__HERMES_SESSION_TOKEN__
+    typeof window !== "undefined" &&
+    !window.__HERMES_SESSION_TOKEN__ &&
+    !window.__HERMES_AUTH_REQUIRED__
       ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const forceFreshPtyRef = useRef(false);
+  // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
+  // started a new session that ended the current PTY child), the PTY socket
+  // closes with a normal code. Before this fix the terminal just printed
+  // "[session ended]" and went dead — the only recovery was a full page
+  // refresh. `sessionEnded` flips on that clean close and renders an explicit
+  // "Start new session" affordance; clicking it bumps `reconnectNonce`, which
+  // is a dependency of the connect effect, so a fresh PTY spawns in place.
+  const [sessionEnded, setSessionEnded] = useState(false);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+  const reconnect = useCallback(() => {
+    forceFreshPtyRef.current = true;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
+    setSessionEnded(false);
+    setBanner(null);
+    setReconnectNonce((n) => n + 1);
+  }, [clearReconnectTimer]);
+  const startFreshDashboardChat = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+
+    next.delete("resume");
+    forceFreshPtyRef.current = true;
+    reconnectAttemptRef.current = 0;
+    clearReconnectTimer();
+    setSearchParams(next, { replace: true });
+    setSessionEnded(false);
+    setBanner(null);
+    setReconnectNonce((n) => n + 1);
+  }, [clearReconnectTimer, searchParams, setSearchParams]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -136,7 +177,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
-  const { setEnd } = usePageHeader();
+  const { setEnd, setTitle } = usePageHeader();
+  const [sessionTitleState, setSessionTitleState] = useState<{
+    scope: string;
+    title: string | null;
+  }>({ scope: "", title: null });
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
@@ -152,6 +197,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : false,
   );
 
+  const { theme } = useTheme();
+  const terminalBg = theme.terminalBackground ?? DEFAULT_TERMINAL_BACKGROUND;
+  const terminalFg = theme.terminalForeground ?? DEFAULT_TERMINAL_FOREGROUND;
+  const terminalTheme = useMemo(
+    () => buildTerminalTheme(terminalBg, terminalFg),
+    [terminalBg, terminalFg],
+  );
+
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
   // param changes do NOT remount the component. Resume-in-chat from the
@@ -159,7 +212,51 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  // Profile-scoped chat: spawn the PTY under the globally selected
+  // management profile. Changing it remounts the terminal (key below /
+  // effect dep) so the user explicitly starts a fresh scoped session.
+  const { profile: scopedProfile } = useProfileScope();
+  const channel = useMemo(
+    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
+    [resumeParam, scopedProfile],
+  );
+  const titleScope = `${channel}\0${reconnectNonce}`;
+  const sessionTitle =
+    sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
+  const handleSessionTitleChange = useCallback(
+    (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
+    [titleScope],
+  );
+
+  useEffect(() => {
+    if (!isActive) {
+      setTitle(null);
+      return;
+    }
+
+    setTitle(sessionTitle);
+    return () => setTitle(null);
+  }, [isActive, sessionTitle, setTitle]);
+
+  useEffect(() => {
+    if (!resumeParam) return;
+
+    let cancelled = false;
+
+    api
+      .getSessionDetail(resumeParam, scopedProfile)
+      .then((session) => {
+        if (cancelled) return;
+        handleSessionTitleChange(normalizeSessionTitle(session.title));
+      })
+      .catch(() => {
+        // Best-effort: the PTY-side session.info stream can still supply it.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam, scopedProfile, handleSessionTitleChange]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -273,8 +370,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!host) return;
 
     const token = window.__HERMES_SESSION_TOKEN__;
+    const gated = !!window.__HERMES_AUTH_REQUIRED__;
     // Banner already initialised above; just bail before wiring xterm/WS.
-    if (!token) {
+    // In gated mode the token is absent by design — api.buildWsUrl() mints
+    // a WS ticket instead, so don't bail; let the effect reach that path.
+    if (!token && !gated) {
       return;
     }
 
@@ -304,7 +404,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
-      theme: TERMINAL_THEME,
+      theme: terminalTheme,
     });
     termRef.current = term;
 
@@ -556,21 +656,67 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    const forceFresh = forceFreshPtyRef.current;
+    forceFreshPtyRef.current = false;
+    const scheduleReconnect = (code: number) => {
+      if (reconnectTimerRef.current) {
+        return;
+      }
+      const attempt = Math.min(reconnectAttemptRef.current + 1, 5);
+      reconnectAttemptRef.current = attempt;
+      const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
+      setSessionEnded(false);
+      setBanner(
+        `Chat connection interrupted (code ${code}). Reconnecting…`,
+      );
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        setReconnectNonce((n) => n + 1);
+      }, delayMs);
+    };
     void (async () => {
-      const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel);
+      const params: Record<string, string> = { channel };
+      if (resumeParam) params.resume = resumeParam;
+      if (forceFresh) params.fresh = "1";
+      // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
+      // selected profile, so the conversation runs with that profile's model,
+      // skills, memory, and sessions (see web_server._resolve_chat_argv).
+      if (scopedProfile) params.profile = scopedProfile;
+      const url = await api.buildWsUrl("/api/pty", params);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
     ws.onopen = () => {
+      clearReconnectTimer();
+      reconnectAttemptRef.current = 0;
       setBanner(null);
+      setSessionEnded(false);
       // Send the initial RESIZE immediately so Ink has *a* size to lay
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
+      // skill" panel) is typed into the composer as a /learn command once the
+      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
+      // so this reuses the existing composer path — no special PTY protocol.
+      const learnSeed = searchParams.get("learn");
+      if (learnSeed) {
+        const next = new URLSearchParams(searchParams);
+        next.delete("learn");
+        setSearchParams(next, { replace: true });
+        const cmd = `/learn ${learnSeed}`.trim();
+        // Delay so Ink's composer has mounted and grabbed focus before input.
+        setTimeout(() => {
+          try {
+            wsRef.current?.send(cmd + "\r");
+          } catch {
+            /* PTY not ready / closed — user can retype */
+          }
+        }, 800);
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -586,19 +732,61 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (unmounting) {
         return;
       }
+      // Surface the real cause to the browser console on every close so a
+      // "chat won't connect" report can be diagnosed without server access.
+      // The server sends a machine-parseable reason on every rejection (see
+      // pty_ws in web_server.py); echo it verbatim alongside the close code.
+      const why = ev.reason ? ` reason=${ev.reason}` : "";
+      console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
       if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
+        setBanner(
+          ev.reason
+            ? `Auth failed (${ev.reason}). Reload to refresh the session.`
+            : "Auth failed. Reload the page to refresh the session token.",
+        );
         return;
       }
       if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
+        // Host/Origin mismatch (DNS-rebinding guard).
+        setBanner(
+          ev.reason
+            ? `Refused: ${ev.reason}.`
+            : "Refused: request host/origin doesn't match the dashboard.",
+        );
+        return;
+      }
+      if (ev.code === 4404) {
+        setBanner(
+          ev.reason
+            ? `Chat websocket unavailable: ${ev.reason}.`
+            : "Chat websocket unavailable on this server.",
+        );
+        return;
+      }
+      if (ev.code === 4408) {
+        setBanner(
+          ev.reason
+            ? `Refused: ${ev.reason}.`
+            : "Refused: your client isn't permitted (server bound to localhost only).",
+        );
         return;
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
         return;
       }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
+        scheduleReconnect(ev.code);
+        return;
+      }
+      // Normal/clean exit: the agent process ended (e.g. the user typed
+      // `/exit`, or started a new session). NS-504: surface an explicit
+      // restart affordance instead of leaving a dead terminal that only a
+      // full page refresh could recover.
+      term.write(
+        `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
+      );
+      setSessionEnded(true);
     };
 
     // Keystrokes → PTY.
@@ -651,6 +839,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
+      clearReconnectTimer();
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer
       // effect's top level so it can't reach into that scope — close via
@@ -666,7 +855,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -713,6 +902,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [isActive]);
 
+  // Keep the live xterm theme in sync when the active theme's terminal
+  // colors change (e.g. user switches to a custom YAML theme mid-session).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = terminalTheme;
+  }, [terminalTheme]);
+
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
@@ -741,7 +938,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             onClick={closeMobilePanel}
             className={cn(
               "fixed inset-0 z-[55] p-0 block",
-              "bg-black/60 backdrop-blur-sm",
+              "bg-black/60",
             )}
           />
         )}
@@ -753,7 +950,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           className={cn(
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
             "border-l border-current/20 text-midground",
-            "bg-background-base/95 backdrop-blur-sm",
+            "bg-background-base/95",
             "transition-transform duration-200 ease-out",
             "[background:var(--component-sidebar-background)]",
             "[clip-path:var(--component-sidebar-clip-path)]",
@@ -771,7 +968,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <Typography
               mondwest
               className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-              style={{ mixBlendMode: "plus-lighter" }}
             >
               {t.app.modelToolsSheetTitle}
               <br />
@@ -795,7 +991,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <div className="border-b border-current/10 px-1 py-2">
+              <ChatSidebar
+                channel={channel}
+                profile={scopedProfile}
+                onDashboardNewSessionRequest={startFreshDashboardChat}
+                onSessionTitleChange={handleSessionTitleChange}
+              />
+            </div>
+            <ChatSessionList
+              activeSessionId={resumeParam}
+              profile={scopedProfile}
+              onPicked={closeMobilePanel}
+              onNewChat={startFreshDashboardChat}
+            />
           </div>
         </div>
       </>,
@@ -820,7 +1029,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: TERMINAL_THEME.background,
+            backgroundColor: terminalBg,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
@@ -828,6 +1037,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
+
+          {/* NS-504: the agent process exited (e.g. `/exit` or a new session).
+              Offer an in-place restart so the user never has to refresh the
+              whole page to get a working chat back. */}
+          {sessionEnded && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
+              <div className="text-sm tracking-wide text-white/80">
+                Session ended.
+              </div>
+              <Button
+                onClick={reconnect}
+                prefix={<RotateCcw className="h-4 w-4" />}
+                aria-label="Start a new chat session"
+              >
+                Start new session
+              </Button>
+            </div>
+          )}
 
           <Button
             ghost
@@ -838,13 +1065,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "absolute z-10",
               "normal-case tracking-normal font-normal",
               "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
+              "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
               "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}
-            style={{ color: TERMINAL_THEME.foreground }}
+            style={{ color: terminalFg }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
@@ -860,10 +1087,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
+            className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
           >
+            {/* Model picker — keeps the rail thin. */}
+            <div className="shrink-0">
+              <ChatSidebar
+                channel={channel}
+                profile={scopedProfile}
+                onDashboardNewSessionRequest={startFreshDashboardChat}
+                onSessionTitleChange={handleSessionTitleChange}
+              />
+            </div>
+
+            {/* Session switcher fills the remaining height below the model box. */}
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSessionList
+                activeSessionId={resumeParam}
+                profile={scopedProfile}
+                onNewChat={startFreshDashboardChat}
+              />
             </div>
           </div>
         )}
@@ -876,5 +1118,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
+    __HERMES_AUTH_REQUIRED__?: boolean;
   }
 }

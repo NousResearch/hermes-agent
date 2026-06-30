@@ -25,15 +25,48 @@ def test_xai_provider_registers():
     assert provider.default_model() == "grok-imagine-video"
 
 
-def test_xai_capabilities_text_and_image_only():
-    """xAI was previously advertised with edit/extend operations. The
-    simplified surface only exposes text-to-video and image-to-video —
-    confirm those are the only modalities advertised."""
+def test_xai_provider_lists_text_and_current_image_video_models():
+    from plugins.video_gen.xai import XAIVideoGenProvider
+
+    models = XAIVideoGenProvider().list_models()
+    ids = [model["id"] for model in models]
+
+    assert ids[0] == "grok-imagine-video"
+    assert ids[1] == "grok-imagine-video-1.5"
+    assert models[1]["modalities"] == ["image"]
+    assert "aliases" not in models[1]
+
+
+def test_xai_routes_default_models_by_modality():
+    from plugins.video_gen.xai import _resolve_model_for_modality
+
+    assert _resolve_model_for_modality(
+        "grok-imagine-video",
+        modality="text",
+        explicit_model=False,
+    ) == "grok-imagine-video"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video",
+        modality="image",
+        explicit_model=False,
+    ) == "grok-imagine-video-1.5"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video-1.5-preview",
+        modality="text",
+        explicit_model=False,
+    ) == "grok-imagine-video"
+    assert _resolve_model_for_modality(
+        "grok-imagine-video-1.5-preview",
+        modality="text",
+        explicit_model=True,
+    ) == "grok-imagine-video-1.5-preview"
+
+
+def test_xai_capabilities_keep_generate_surface_only():
     from plugins.video_gen.xai import XAIVideoGenProvider
 
     caps = XAIVideoGenProvider().capabilities()
     assert caps["modalities"] == ["text", "image"]
-    # No 'operations' key in the simplified surface
     assert "operations" not in caps
     assert caps["max_reference_images"] == 7
 
@@ -111,3 +144,45 @@ def test_xai_no_operation_kwarg():
     assert result["success"] is False
     # auth_required, NOT some signature error
     assert result["error_type"] in {"auth_required", "api_error"}
+
+
+def test_xai_video_output_urls_prefers_stored_public_url():
+    from plugins.video_gen.xai import _xai_video_output_urls
+
+    public_url, temporary, stored = _xai_video_output_urls({
+        "url": "https://vidgen.x.ai/xai-vidgen-bucket/out.mp4",
+        "file_output": {
+            "public_url": "https://files-cdn.x.ai/token/file_abc.mp4",
+            "file_id": "file_abc",
+        },
+    })
+    assert public_url == "https://files-cdn.x.ai/token/file_abc.mp4"
+    assert stored == "https://files-cdn.x.ai/token/file_abc.mp4"
+    assert temporary == "https://vidgen.x.ai/xai-vidgen-bucket/out.mp4"
+
+
+@pytest.mark.asyncio
+async def test_video_input_from_public_url_uses_url_field():
+    from plugins.video_gen.xai import _video_input_from_public_url
+
+    url = "https://files-cdn.x.ai/kRQVP6PRQlioVAUNC3GAdg/file_1faca9c3-9411-46ad-bb41-b9b8527789e6.mp4"
+    result = await _video_input_from_public_url(
+        url,
+        api_key="test-key",
+        base_url="https://api.x.ai/v1",
+    )
+    assert result == {"url": url}
+
+
+def test_video_input_from_public_url_rejects_bare_file_id():
+    import asyncio
+    from plugins.video_gen.xai import _video_input_from_public_url
+
+    result = asyncio.run(
+        _video_input_from_public_url(
+            "file_1faca9c3-9411-46ad-bb41-b9b8527789e6",
+            api_key="test-key",
+            base_url="https://api.x.ai/v1",
+        )
+    )
+    assert result is None

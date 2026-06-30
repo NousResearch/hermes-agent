@@ -18,7 +18,6 @@ import {
   buildSubagentTree,
   descendantIds,
   flattenTree,
-  fmtCost,
   fmtDuration,
   fmtTokens,
   formatSummary,
@@ -407,8 +406,6 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
   const outputTokens = item.outputTokens ?? 0
   const localTokens = inputTokens + outputTokens
   const subtreeTokens = agg.inputTokens + agg.outputTokens - localTokens
-  const localCost = item.costUsd ?? 0
-  const subtreeCost = agg.costUsd - localCost
 
   const filesRead = item.filesRead ?? []
   const filesWritten = item.filesWritten ?? []
@@ -442,7 +439,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
         {item.apiCalls ? <Field name="api calls" t={t} value={String(item.apiCalls)} /> : null}
       </Box>
 
-      {localTokens > 0 || localCost > 0 ? (
+      {localTokens > 0 ? (
         <OverlaySection defaultOpen t={t} title="Budget">
           {localTokens > 0 ? (
             <Field
@@ -452,19 +449,6 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
                 <>
                   {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
                   {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} reasoning` : ''}
-                </>
-              }
-            />
-          ) : null}
-
-          {localCost > 0 ? (
-            <Field
-              name="cost"
-              t={t}
-              value={
-                <>
-                  {fmtCost(localCost)}
-                  {subtreeCost >= 0.01 ? ` · subtree +${fmtCost(subtreeCost)}` : ''}
                 </>
               }
             />
@@ -650,7 +634,6 @@ function DiffView({
 
   const round = (n: number) => String(Math.round(n))
   const sumTokens = (x: typeof aTotals) => x.inputTokens + x.outputTokens
-  const dollars = (n: number) => fmtCost(n) || '$0.00'
 
   return (
     <Box flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
@@ -683,7 +666,6 @@ function DiffView({
           {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
         </Text>
         <Text color={t.color.text}>{diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
-        <Text color={t.color.text}>{diffMetricLine('cost', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
       </Box>
     </Box>
   )

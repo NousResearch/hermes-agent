@@ -6,7 +6,7 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
@@ -113,8 +113,29 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             # old_string/new_string — e.g. LLM used 2-space indent but the
             # file is 4-space. Shift new_string by the indentation delta so
             # the replacement matches the file's actual indent pattern.
+            # LLMs frequently serialize tabs / carriage returns in JSON
+            # tool-call arguments as the two-character sequences ``\t`` and
+            # ``\r`` (backslash + letter) instead of the real control bytes.
+            # If we write new_string verbatim, the file ends up with literal
+            # backslash sequences where the surrounding code uses real tabs.
+            #
+            # Strategy: only unescape when the matched region of the file
+            # *actually contains* the corresponding real control character.
+            # That mirrors the region-based heuristic in
+            # ``_detect_escape_drift`` and keeps legitimate writes of the
+            # literal two-character string ``"\t"`` (e.g. patching Python
+            # source that contains a tab string literal in source text)
+            # untouched — those files have a backslash+t in the matched
+            # region, not a real tab, so we leave new_string alone.
+            #
+            # ``\n`` is intentionally excluded: newlines serialize correctly
+            # through JSON, and rewriting backslash-n would mangle escape
+            # sequences in source code constants far more often than help.
+            effective_new = _maybe_unescape_new_string(
+                new_string, content, matches,
+            )
             new_content = _apply_replacements(
-                content, matches, new_string,
+                content, matches, effective_new,
                 old_string=old_string if strategy_name != "exact" else None,
             )
             return new_content, len(matches), strategy_name, None
@@ -245,6 +266,42 @@ def _reindent_replacement(file_region: str, old_string: str, new_string: str) ->
             # the start of new_string. Anchor to the file's base.
             out_lines.append(file_indent + line.lstrip(" \t"))
     return "\n".join(out_lines)
+
+
+def _maybe_unescape_new_string(new_string: str,
+                               content: str,
+                               matches: List[Tuple[int, int]]) -> str:
+    """Conditionally unescape ``\\t``/``\\r`` in new_string.
+
+    LLMs frequently send the two-character sequences ``\\t`` (backslash + t)
+    and ``\\r`` (backslash + r) inside JSON tool-call arguments where they
+    meant a real tab or carriage-return byte. Writing the string verbatim
+    corrupts tab-indented files with literal backslash-letter pairs.
+
+    The unescape is only applied per-sequence when the *matched region of
+    the file* actually contains the corresponding control character — that
+    is, we only convert ``\\t`` -> tab when the file region we're replacing
+    contains a real tab byte. Files that legitimately contain the literal
+    two-character string ``"\\t"`` (e.g. a Python source line that defines
+    ``sep = "\\t"``) get a backslash+t in the matched region instead of a
+    tab, so we leave new_string alone.
+
+    ``\\n`` is intentionally excluded: newlines serialize correctly through
+    JSON and rewriting backslash-n would corrupt escape sequences in
+    string literals far more often than it would help.
+    """
+    # Cheap pre-check — bail out unless new_string actually contains one of
+    # the suspect sequences. Keeps the common case free.
+    if "\\t" not in new_string and "\\r" not in new_string:
+        return new_string
+
+    matched_regions = "".join(content[start:end] for start, end in matches)
+    out = new_string
+    if "\\t" in out and "\t" in matched_regions:
+        out = out.replace("\\t", "\t")
+    if "\\r" in out and "\r" in matched_regions:
+        out = out.replace("\\r", "\r")
+    return out
 
 
 def _apply_replacements(content: str, matches: List[Tuple[int, int]],
@@ -711,9 +768,14 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
+        # Expand to include trailing whitespace that was normalized,
+        # but only when the normalized match itself ended with whitespace.
+        # When the match ends with a non-space character, the first
+        # whitespace in the original is a word boundary and must not be
+        # consumed.  See https://github.com/NousResearch/hermes-agent/issues/52491
+        if norm_end < len(normalized) and normalized[norm_end - 1] == ' ':
+            while orig_end < len(original) and original[orig_end] in ' \t':
+                orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     

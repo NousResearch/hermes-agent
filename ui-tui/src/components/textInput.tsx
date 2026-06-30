@@ -24,7 +24,9 @@ type InkExt = typeof Ink & {
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } = ink
+
+const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } =
+  ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -36,6 +38,7 @@ const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
+type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
@@ -121,6 +124,30 @@ export function applyPrintableInsert(
 }
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
+
+export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+  if (env.WT_SESSION) {
+    return true
+  }
+
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {
+    return true
+  }
+
+  if (env.GHOSTTY_RESOURCES_DIR || env.GHOSTTY_BIN_DIR) {
+    return true
+  }
+
+  if ((env.TERM ?? '').toLowerCase() === 'xterm-ghostty') {
+    return true
+  }
+
+  if ((env.TERM_PROGRAM ?? '').toLowerCase() === 'ghostty') {
+    return true
+  }
+
+  return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
+}
 
 function prevPos(s: string, p: number) {
   const pos = snapPos(s, p)
@@ -334,11 +361,30 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
     return false
   }
 
+  // tmux adds a PTY multiplexing layer that desyncs stdout.write() cursor
+  // advances from its internal cursor model, causing cursor drift and ghost
+  // whitespace under the fast-echo bypass path.
+  //
+  // `TMUX` catches the local case. It is NOT forwarded over SSH, so when the
+  // TUI runs on a remote host launched from inside local tmux we only see a
+  // tmux-flavored `TERM` (tmux sets `tmux`/`tmux-256color`); match that too so
+  // remote-over-tmux sessions still fall back to the safe render path. We
+  // deliberately do NOT match `screen*`: GNU screen sets the same TERM and has
+  // no reported drift, so widening to screen would disable the optimization for
+  // those users with no evidence of a bug.
+  const term = (env.TERM ?? '').trim().toLowerCase()
+
+  if ((env.TMUX ?? '').trim().length > 0 || term === 'tmux' || term.startsWith('tmux-')) {
+    return false
+  }
+
   // Termux terminals are especially sensitive to bypass-path cursor drift and
   // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
   // off by default in Termux mode; allow explicit opt-in for local debugging.
   if (isTermuxTuiMode(env)) {
-    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '').trim().toLowerCase()
+    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '')
+      .trim()
+      .toLowerCase()
 
     if (override) {
       return /^(?:1|true|yes|on)$/i.test(override)
@@ -623,7 +669,8 @@ export function TextInput({
     }, FRAME_BATCH_MS)
   }
 
-  const canFastEchoBase = () => supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
+  const canFastEchoBase = () =>
+    supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
   const canFastAppend = (current: string, cursor: number, text: string) =>
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
@@ -943,7 +990,10 @@ export function TextInput({
       if (k.return) {
         flushKeyBurst()
 
-        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
+        const sequence = (event.keypress as { sequence?: string }).sequence
+        const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
+
+        if (k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)) {
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {
           cbSubmit.current?.(vRef.current)
@@ -963,7 +1013,9 @@ export function TextInput({
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
-      const isPrintableInput = (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
+
+      const isPrintableInput =
+        (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
 
       if (!isPrintableInput) {
         flushKeyBurst()
@@ -1261,9 +1313,7 @@ interface TextInputProps {
   voiceRecordKey?: ParsedVoiceRecordKey
 }
 
-export type RightClickDecision =
-  | { action: 'copy'; text: string }
-  | { action: 'paste' }
+export type RightClickDecision = { action: 'copy'; text: string } | { action: 'paste' }
 
 /**
  * Decide what right-click should do on the composer:

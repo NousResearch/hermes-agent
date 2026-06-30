@@ -219,6 +219,14 @@ gateway:
 
   resume:
     db_unavailable:        "Base de dados de sessões indisponível."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "Não foram encontradas sessões com nome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
     list_header:           "📋 **Sessões com nome**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,11 +259,21 @@ gateway:
 
   status:
     header:                "📊 **Estado do Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID da sessão:** `{session_id}`"
     title:                 "**Título:** {title}"
     created:               "**Criada:** {timestamp}"
     last_activity:         "**Última atividade:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
+    tokens:                "**Tokens de API cumulativos (reenviados a cada chamada):** {tokens}"
     agent_running:         "**Agente em execução:** {state}"
     state_yes:             "Sim ⚡"
     state_no:              "Não"
@@ -290,7 +308,8 @@ gateway:
 
   undo:
     nothing:               "Nada para anular."
-    removed:               "↩️ {count} mensagem(ns) anulada(s).\nRemovido: \"{preview}\""
+    removed:               "↩️ {turns} turno(s) anulado(s) ({count} mensagem(ns)).\nGuardado em: \"{preview}\"\nCopia/edita o texto acima e envia-o para voltar a perguntar a partir daqui."
+    invalid_count:         "Contagem inválida \"{arg}\" — usa /undo ou /undo N."
 
   update:
     platform_not_messaging:  "✗ /update só está disponível em plataformas de mensagens. Executa `hermes update` a partir do terminal."
@@ -313,11 +332,24 @@ gateway:
     label_cost_included:      "Custo: incluído"
     label_context:            "Contexto: {used} / {total} ({pct}%)"
     label_compressions:       "Compressões: {count}"
+    breakdown_header: "🧩 **Detalhamento do contexto** _(estimado)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Prompt do sistema"
+    breakdown_cat_tool_definitions: "Definições de ferramentas"
+    breakdown_cat_rules: "Regras"
+    breakdown_cat_skills: "Habilidades"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Definições de subagentes"
+    breakdown_cat_memory: "Memória"
+    breakdown_cat_conversation: "Conversa"
     header_session_info:      "📊 **Informações da sessão**"
     label_messages:           "Mensagens: {count}"
     label_estimated_context:  "Contexto estimado: ~{count} tokens"
     detailed_after_first:     "_(Utilização detalhada disponível após a primeira resposta do agente)_"
     no_data:                  "Não há dados de utilização disponíveis para esta sessão."
+
+  credits:
+    not_logged_in:            "Você não está conectado ao Nous Portal. Faça login para ver seu saldo de créditos e recarregar."
 
   verbose:
     not_enabled:           "O comando `/verbose` não está ativado para plataformas de mensagens.\n\nAtiva-o em `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -342,6 +374,8 @@ gateway:
     label_off:             "Desativado (apenas texto)"
     label_voice_only:      "Ativado (resposta de voz a mensagens de voz)"
     label_all:             "TTS (resposta de voz a todas as mensagens)"
+    help:                  "{toggle}\n\n**Como funciona o /voice**\n• `/voice on` — resposta por voz quando envias uma mensagem de voz\n• `/voice tts` — resposta por voz a *todas* as mensagens\n• `/voice off` — voltar às respostas apenas em texto\n• `/voice status` — mostrar o modo atual\n• `/voice` (sem argumento) — alternar rapidamente entre ligado e desligado{channels}"
+    help_channels:         "\n\n**Canais de voz ao vivo (Discord)**\n• Entra primeiro num canal de voz, depois `/voice channel` — eu entro, ouço e falo as minhas respostas\n• `/voice leave` — desligar do canal de voz"
 
   yolo:
     disabled:                   "⚠️ Modo YOLO **DESATIVADO** nesta sessão — comandos perigosos exigirão aprovação."

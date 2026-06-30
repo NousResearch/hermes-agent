@@ -7,7 +7,6 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
-import importlib.util
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -16,6 +15,10 @@ from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
+from hermes_cli.nous_account import (
+    format_nous_portal_entitlement_message,
+    get_nous_portal_account_info,
+)
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
@@ -88,7 +91,6 @@ from hermes_constants import is_termux as _is_termux
 
 def show_status(args):
     """Show status of all Hermes Agent components."""
-    show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
 
     print()
@@ -162,12 +164,12 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value) if not show_all else value
+        display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
+    anthropic_display = redact_key(anthropic_value)
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================
@@ -193,26 +195,57 @@ def show_status(args):
         qwen_status = {}
         minimax_status = {}
 
-    nous_logged_in = bool(nous_status.get("logged_in"))
+    nous_account_info = None
+    if (
+        nous_status.get("logged_in")
+        or nous_status.get("access_token")
+        or nous_status.get("portal_base_url")
+        or nous_status.get("inference_credential_present")
+        or nous_status.get("error_code")
+    ):
+        try:
+            nous_account_info = get_nous_portal_account_info()
+        except Exception:
+            nous_account_info = None
+
+    nous_logged_in = bool(
+        nous_status.get("logged_in")
+        or (nous_account_info and nous_account_info.logged_in)
+    )
+    nous_inference_present = bool(
+        nous_status.get("inference_credential_present")
+        or (nous_account_info and nous_account_info.inference_credential_present)
+    )
     nous_error = nous_status.get("error")
-    nous_label = "logged in" if nous_logged_in else "not logged in (run: hermes auth add nous --type oauth)"
+    if nous_logged_in:
+        nous_label = "logged in"
+    elif nous_inference_present:
+        nous_label = "not logged in (Nous inference key configured)"
+    else:
+        nous_label = "not logged in (run: hermes portal)"
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
         f"{nous_label}"
     )
     portal_url = nous_status.get("portal_base_url") or "(unknown)"
+    inference_url = (
+        nous_status.get("inference_base_url")
+        or (nous_account_info.inference_base_url if nous_account_info else None)
+    )
     access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
     key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
     refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
     if nous_logged_in or portal_url != "(unknown)" or nous_error:
         print(f"    Portal URL: {portal_url}")
+    if nous_inference_present and inference_url:
+        print(f"    Inference:  {inference_url}")
     if nous_logged_in or nous_status.get("access_expires_at"):
         print(f"    Access exp: {access_exp}")
-    if nous_logged_in or nous_status.get("agent_key_expires_at"):
+    if nous_logged_in or nous_inference_present or nous_status.get("agent_key_expires_at"):
         print(f"    Key exp:    {key_exp}")
     if nous_logged_in or nous_status.get("has_refresh_token"):
         print(f"    Refresh:    {refresh_label}")
-    if nous_error and not nous_logged_in:
+    if nous_error:
         print(f"    Error:      {nous_error}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
@@ -303,18 +336,18 @@ def show_status(args):
             else:
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
-    elif nous_logged_in:
-        # Logged into Nous but on the free tier — show upgrade nudge
+    elif nous_logged_in or nous_inference_present:
+        # Nous OAuth without entitlement, or an opaque inference key without
+        # Portal account information, cannot enable the Tool Gateway.
         print()
         print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
-        print("  Your free-tier Nous account does not include Tool Gateway access.")
-        print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
-        try:
-            portal_url = nous_status.get("portal_base_url", "").rstrip("/")
-            if portal_url:
-                print(f"  Upgrade: {portal_url}")
-        except Exception:
-            pass
+        message = format_nous_portal_entitlement_message(
+            nous_account_info,
+            capability="managed web, image, TTS, STT, browser, and Modal tools",
+        )
+        if message:
+            for line in message.splitlines():
+                print(f"  {line}")
 
     # =========================================================================
     # API-Key Providers

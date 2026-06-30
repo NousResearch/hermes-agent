@@ -6,7 +6,6 @@ import base64
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from agent.image_routing import (
     _coerce_capability_bool,
@@ -16,6 +15,7 @@ from agent.image_routing import (
     _supports_vision_override,
     build_native_content_parts,
     decide_image_input_mode,
+    extract_image_refs,
 )
 
 
@@ -248,8 +248,23 @@ class TestLookupSupportsVisionOverride:
             assert _lookup_supports_vision("anthropic", "claude-sonnet-4", {}) is True
 
     def test_no_override_no_models_dev_entry_returns_none(self):
-        with patch("agent.models_dev.get_model_capabilities", return_value=None):
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=False):
             assert _lookup_supports_vision("custom", "my-llava", {}) is None
+
+    def test_ollama_probe_when_models_dev_missing(self):
+        cfg = {"model": {"base_url": "http://localhost:11434/v1"}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("agent.model_metadata.query_ollama_supports_vision", return_value=True):
+            assert _lookup_supports_vision("ollama", "gemma4:e2b", cfg) is True
+
+    def test_ollama_probe_false_for_text_only_model(self):
+        cfg = {"model": {"base_url": "http://localhost:11434/v1"}}
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.image_routing._should_probe_ollama_vision", return_value=True), \
+             patch("agent.model_metadata.query_ollama_supports_vision", return_value=False):
+            assert _lookup_supports_vision("custom", "gemma4:31b", cfg) is False
 
     def test_cfg_none_falls_back_to_models_dev(self):
         # Caller didn't pass cfg at all — old call sites must still work.
@@ -449,3 +464,296 @@ class TestLargeImageHandling:
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
         assert parts[1]["type"] == "image_url"
+
+
+# ─── extract_image_refs ──────────────────────────────────────────────────────
+
+
+class TestExtractImageRefs:
+    """Scan task body / inbound text for image paths and URLs (kanban worker
+    enrichment, issue raised May 2026)."""
+
+    def test_empty_or_none_returns_empty(self):
+        assert extract_image_refs("") == ([], [])
+        assert extract_image_refs(None) == ([], [])  # type: ignore[arg-type]
+
+    def test_finds_absolute_path(self, tmp_path: Path):
+        img = tmp_path / "screenshot.png"
+        img.write_bytes(_png_bytes())
+        body = f"Look at {img} and tell me what's wrong."
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
+        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        monkeypatch.setenv("HOME", str(tmp_path))
+        img = tmp_path / "foo.png"
+        img.write_bytes(_png_bytes())
+        paths, urls = extract_image_refs("see ~/foo.png please")
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_skips_nonexistent_paths(self, tmp_path: Path):
+        # Path-shaped but no file on disk → skipped.
+        body = f"What's at {tmp_path}/never_created.png ?"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == []
+
+    def test_finds_http_image_url(self):
+        body = "Check out https://example.com/photos/cat.png — cute right?"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == ["https://example.com/photos/cat.png"]
+
+    def test_finds_https_url_with_query_string(self):
+        body = "Diagram: https://cdn.example.com/img.jpeg?size=large&v=2 here"
+        paths, urls = extract_image_refs(body)
+        assert urls == ["https://cdn.example.com/img.jpeg?size=large&v=2"]
+
+    def test_url_trailing_punctuation_stripped(self):
+        # Prose punctuation right after the URL must not be part of the URL.
+        body = "See https://example.com/a.png."
+        paths, urls = extract_image_refs(body)
+        assert urls == ["https://example.com/a.png"]
+
+    def test_ignores_non_image_urls(self):
+        body = "See https://example.com/page.html and https://x.com/y.pdf"
+        paths, urls = extract_image_refs(body)
+        assert urls == []
+
+    def test_dedupes_paths_and_urls(self, tmp_path: Path):
+        img = tmp_path / "dup.png"
+        img.write_bytes(_png_bytes())
+        body = (
+            f"First {img} then again {img}. "
+            "Also https://example.com/x.png and https://example.com/x.png again."
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == ["https://example.com/x.png"]
+
+    def test_ignores_paths_in_fenced_code_block(self, tmp_path: Path):
+        img = tmp_path / "real.png"
+        img.write_bytes(_png_bytes())
+        body = (
+            "Outside the block, attach this:\n"
+            f"{img}\n"
+            "But not these examples:\n"
+            "```\n"
+            f"some_other_image: /tmp/example.png\n"
+            f"url: https://example.com/example.png\n"
+            "```\n"
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_ignores_paths_in_inline_code(self, tmp_path: Path):
+        img = tmp_path / "real.jpg"
+        img.write_bytes(_png_bytes())
+        body = (
+            f"Attach {img}, but ignore the example "
+            "`https://example.com/skip.png` in backticks."
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_does_not_match_paths_inside_urls(self, tmp_path: Path):
+        # The lookbehind in the regex prevents matching the path-portion of
+        # a URL as a local path. Only the URL should be detected.
+        body = "Just the URL: https://example.com/some/dir/image.png"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == ["https://example.com/some/dir/image.png"]
+
+    def test_mixed_paths_and_urls(self, tmp_path: Path):
+        img = tmp_path / "local.png"
+        img.write_bytes(_png_bytes())
+        body = (
+            f"Compare local {img} against the design at "
+            "https://example.com/design/v2.png — does it match?"
+        )
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == ["https://example.com/design/v2.png"]
+
+    def test_case_insensitive_extension(self, tmp_path: Path):
+        img = tmp_path / "shouty.PNG"
+        img.write_bytes(_png_bytes())
+        body = f"see {img}"
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+
+
+# ─── build_native_content_parts with URLs ────────────────────────────────────
+
+
+class TestBuildNativeContentPartsURLs:
+    """URL pass-through support added so kanban task bodies (and other
+    inbound surfaces) can route remote image URLs straight to the model."""
+
+    def test_url_only_no_local_paths(self):
+        parts, skipped = build_native_content_parts(
+            "what is this?",
+            [],
+            image_urls=["https://example.com/diagram.png"],
+        )
+        assert skipped == []
+        assert len(parts) == 2
+        assert parts[0]["type"] == "text"
+        assert "[Image attached: https://example.com/diagram.png]" in parts[0]["text"]
+        assert parts[0]["text"].startswith("what is this?")
+        assert parts[1] == {
+            "type": "image_url",
+            "image_url": {"url": "https://example.com/diagram.png"},
+        }
+
+    def test_mixed_path_and_url(self, tmp_path: Path):
+        img = tmp_path / "local.png"
+        img.write_bytes(_png_bytes())
+        parts, skipped = build_native_content_parts(
+            "compare these",
+            [str(img)],
+            image_urls=["https://example.com/remote.jpg"],
+        )
+        assert skipped == []
+        # 1 text + 2 image parts (local data URL first, then remote URL).
+        image_parts = [p for p in parts if p.get("type") == "image_url"]
+        assert len(image_parts) == 2
+        assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert image_parts[1]["image_url"]["url"] == "https://example.com/remote.jpg"
+        text = parts[0]["text"]
+        assert "[Image attached at:" in text
+        assert "[Image attached: https://example.com/remote.jpg]" in text
+
+    def test_empty_url_list_is_no_op(self, tmp_path: Path):
+        img = tmp_path / "x.png"
+        img.write_bytes(_png_bytes())
+        # image_urls=[] should behave the same as not passing it at all.
+        parts_no_urls, _ = build_native_content_parts("hi", [str(img)])
+        parts_empty_urls, _ = build_native_content_parts("hi", [str(img)], image_urls=[])
+        assert parts_no_urls == parts_empty_urls
+
+    def test_blank_url_strings_are_dropped(self):
+        parts, _ = build_native_content_parts(
+            "x", [], image_urls=["", "  ", "https://example.com/a.png"]
+        )
+        image_parts = [p for p in parts if p.get("type") == "image_url"]
+        assert len(image_parts) == 1
+        assert image_parts[0]["image_url"]["url"] == "https://example.com/a.png"
+
+    def test_url_only_inserts_default_prompt_when_text_empty(self):
+        parts, _ = build_native_content_parts(
+            "", [], image_urls=["https://example.com/a.png"]
+        )
+        assert parts[0]["type"] == "text"
+        assert parts[0]["text"].startswith("What do you see in this image?")
+
+
+# ─── Format compatibility: transcode non-universal formats to PNG ────────────
+
+
+class TestFormatCompatibility:
+    """Some image formats Discord (and other chat platforms) accept aren't
+    accepted by every major vision provider. Anthropic for example returns
+    HTTP 400 'Could not process image' for AVIF/HEIC/BMP/TIFF/ICO/SVG.
+
+    We transcode anything outside the universal-safe set (PNG/JPEG/GIF/WEBP)
+    to PNG with Pillow before declaring media_type so the provider call
+    actually succeeds. Regression coverage for the user-reported Discord
+    'Could not process image' HTTP 400 (issue #25935).
+    """
+
+    def test_avif_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        avif_header = b"\x00\x00\x00\x20ftypavif\x00\x00\x00\x00"
+        assert _sniff_mime_from_bytes(avif_header) == "image/avif"
+
+    def test_tiff_sniffed_both_endians(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b"II*\x00" + b"\x00" * 16) == "image/tiff"
+        assert _sniff_mime_from_bytes(b"MM\x00*" + b"\x00" * 16) == "image/tiff"
+
+    def test_ico_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b"\x00\x00\x01\x00" + b"\x00" * 16) == "image/x-icon"
+
+    def test_heic_still_sniffed(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        heic_header = b"\x00\x00\x00\x20ftypheic\x00\x00\x00\x00"
+        assert _sniff_mime_from_bytes(heic_header) == "image/heic"
+
+    def test_svg_sniffed_correctly(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+        assert _sniff_mime_from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>') == "image/svg+xml"
+        assert _sniff_mime_from_bytes(b'<?xml version="1.0"?><svg/>') == "image/svg+xml"
+
+    def test_bmp_transcoded_to_png(self, tmp_path: Path):
+        """BMP file should land as image/png in the data URL, not image/bmp,
+        because not every provider (Anthropic) accepts BMP."""
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "scan.bmp"
+        Image.new("RGB", (4, 4), (255, 0, 0)).save(img_path, format="BMP")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,"), (
+            f"BMP must be transcoded to PNG for cross-provider compatibility, got: {url[:60]}"
+        )
+
+    def test_tiff_transcoded_to_png(self, tmp_path: Path):
+        import pytest
+        Image = pytest.importorskip("PIL.Image", reason="Pillow not installed; transcode is best-effort")
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "scan.tiff"
+        Image.new("RGB", (4, 4), (0, 255, 0)).save(img_path, format="TIFF")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+
+    def test_png_passes_through_no_transcode(self, tmp_path: Path):
+        """Universal-safe formats must NOT be re-encoded — preserves bytes."""
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "ok.png"
+        img_path.write_bytes(_png_bytes())
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+        b64 = url.split(",", 1)[1]
+        assert base64.b64decode(b64) == _png_bytes()
+
+    def test_jpeg_passes_through_no_transcode(self, tmp_path: Path):
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "ok.jpg"
+        img_path.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9")
+        url = _file_to_data_url(img_path)
+        assert url is not None
+        assert url.startswith("data:image/jpeg;base64,")
+
+    def test_transcode_failure_is_skipped_not_crashed(self, tmp_path: Path):
+        """If Pillow can't decode (corrupted bytes labeled as a rare format),
+        return None so the caller skips it rather than sending broken data."""
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "corrupt.avif"
+        img_path.write_bytes(b"\x00\x00\x00\x20ftypavif" + b"\x00" * 32)
+        url = _file_to_data_url(img_path)
+        assert url is None
+
+    def test_svg_skipped_not_transcoded(self, tmp_path: Path):
+        """SVG is vector; Pillow can't rasterize it. It must be skipped
+        (None) rather than producing an invalid data URL."""
+        from agent.image_routing import _file_to_data_url
+
+        img_path = tmp_path / "icon.svg"
+        img_path.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>')
+        url = _file_to_data_url(img_path)
+        assert url is None

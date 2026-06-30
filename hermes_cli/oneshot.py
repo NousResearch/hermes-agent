@@ -174,28 +174,60 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
+    real_stderr = sys.stderr
     devnull = open(os.devnull, "w", encoding="utf-8")
 
+    response: Optional[str] = None
+    result: dict = {}
+    failure: BaseException | None = None
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(
-                prompt,
-                model=model,
-                provider=provider,
-                toolsets=explicit_toolsets,
-                use_config_toolsets=use_config_toolsets,
-            )
+            try:
+                response, result = _run_agent(
+                    prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                # Capture anything that escapes the agent (including OSError
+                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
+                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
+                # the real stderr instead of crashing past the redirect with a
+                # traceback that the caller never sees. A silent exit in a
+                # cron / SSH / subprocess context is the worst failure mode.
+                # See #30623.
+                failure = exc
     finally:
         try:
             devnull.close()
         except Exception:
             pass
 
+    if failure is not None:
+        # Re-raise control-flow exceptions so the parent handles them as usual
+        # (Ctrl-C / explicit sys.exit() inside the agent).
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            raise failure
+        real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+        real_stderr.flush()
+        return 1
+
     if response:
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
+
+    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+        return 2
+
+    if not (response or "").strip():
+        real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
+        real_stderr.flush()
+        return 1
+
     return 0
 
 
@@ -221,9 +253,9 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
-) -> str:
+) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns the final response string."""
+    run a single conversation.  Returns ``(final_response, run_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -337,7 +369,8 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    result = agent.run_conversation(prompt)
+    return (result.get("final_response") or "", result)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

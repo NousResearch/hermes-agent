@@ -33,7 +33,10 @@ import logging
 import os
 from typing import Any, Optional
 
+from agent.redact import redact_sensitive_text
+from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
+from hermes_cli.config import cfg_get, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +179,111 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+def _goal_judge_available() -> bool:
+    """True when an auxiliary client is configured for the goal judge.
+
+    ``judge_goal`` is fail-open at the source: when no auxiliary model can
+    be reached it returns a ``"continue"`` verdict that is indistinguishable
+    from a real "not done yet" judgment. The completion gate must not treat
+    that as a rejection, or an unconfigured/degraded auxiliary model would
+    wedge every ``goal_mode`` worker (it could never close its own task).
+
+    So we probe availability first and only enforce the gate when a judge is
+    actually reachable. This mirrors the same client lookup ``judge_goal``
+    performs internally.
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception:
+        return False
+    return client is not None and bool(model)
+
+
+# ---------------------------------------------------------------------------
+# Runtime-activity → board-heartbeat bridge (#31752)
+# ---------------------------------------------------------------------------
+# When the agent ticks ``_touch_activity`` during normal work (between
+# tool calls, mid-stream chunks, etc.), we want the kanban board's
+# ``last_heartbeat_at`` columns to reflect that liveness so the dispatcher
+# watchdog (which reads ``tasks.last_heartbeat_at``, not the agent's
+# in-process timestamp) doesn't reclaim an actively-running worker as
+# stale. The model is not required to call the explicit ``kanban_heartbeat``
+# tool for this to work — that tool stays available for workers that want
+# to attach a note or pre-emptively extend a claim across a known-long op.
+#
+# Constraints:
+#   - Best-effort: never raise. The agent loop must not care if the bridge
+#     fails (board missing, DB locked, etc.).
+#   - Rate-limited to one DB write per 60s per-process; runtime activity
+#     can tick on every chunk/tool result and we don't need that resolution.
+#   - No-op outside dispatcher-spawned worker context (no ``HERMES_KANBAN_TASK``).
+#   - No durable note on these auto-heartbeats; that's reserved for the
+#     explicit tool which carries a model-supplied note.
+
+_AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
+_auto_heartbeat_last_attempt: float = 0.0
+
+
+def heartbeat_current_worker_from_env() -> bool:
+    """Best-effort: extend the kanban claim + bump board heartbeat for the
+    current dispatcher-spawned worker, using identity from env vars.
+
+    Returns True if a write was attempted (whether or not it succeeded);
+    False if the call was skipped (not a kanban worker, rate-limited, or
+    swallowed exception). The boolean is informational — callers should
+    not branch on it.
+
+    Identity comes from:
+      * ``HERMES_KANBAN_TASK`` — task id (required; absence means no-op)
+      * ``HERMES_KANBAN_RUN_ID`` — pins the run row so we don't heartbeat
+        a stale run that may have already been reclaimed
+      * ``HERMES_KANBAN_CLAIM_LOCK`` — claim lock for ``heartbeat_claim``;
+        falls back to the default ``_claimer_id()`` for locally-driven
+        workers that never went through the dispatcher path
+
+    Rate-limited via the module-level ``_auto_heartbeat_last_attempt``
+    timestamp (monotonic clock); not thread-safe in the strict sense, but
+    the worst case is one extra DB write per race, which is harmless.
+    """
+    global _auto_heartbeat_last_attempt
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid:
+        return False
+    import time as _time
+    now = _time.monotonic()
+    if (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        return False
+    _auto_heartbeat_last_attempt = now
+    try:
+        kb, conn = _connect()
+        try:
+            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+            try:
+                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
+            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+            run_id: Optional[int]
+            try:
+                run_id = int(run_id_raw) if run_id_raw else None
+            except (TypeError, ValueError):
+                run_id = None
+            try:
+                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        logger.debug("auto-heartbeat: bridge failed", exc_info=True)
+        return False
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
@@ -235,6 +343,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "tenant": task.tenant,
         "workspace_kind": task.workspace_kind,
         "workspace_path": task.workspace_path,
+        "project_id": task.project_id,
         "created_by": task.created_by,
         "created_at": task.created_at,
         "started_at": task.started_at,
@@ -402,6 +511,17 @@ def _handle_complete(args: dict, **kw) -> str:
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")
+    if summary:
+        summary = redact_sensitive_text(str(summary), force=True)
+    if result:
+        result = redact_sensitive_text(str(result), force=True)
+    if metadata is not None and isinstance(metadata, dict):
+        meta_json = json.dumps(metadata)
+        meta_json = redact_sensitive_text(meta_json, force=True)
+        try:
+            metadata = json.loads(meta_json)
+        except json.JSONDecodeError:
+            pass
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
     if created_cards is not None:
@@ -469,6 +589,37 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Goal-mode pre-completion judge gate (Issue #38367).
+            # Prevent workers from bypassing the auxiliary judge by
+            # calling kanban_complete before acceptance criteria are met.
+            # Only enforce when a judge is actually reachable — see
+            # _goal_judge_available for why an unavailable judge fails open.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode and _goal_judge_available():
+                verdict = "done"
+                reason = ""
+                try:
+                    verdict, reason, _ = judge_goal(
+                        goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                        last_response=(summary or result or "").strip(),
+                    )
+                except Exception as judge_exc:
+                    # Defensive: judge_goal swallows its own errors, but if
+                    # it ever raises, fail open rather than wedge the worker.
+                    logger.warning(
+                        "goal judge check failed, allowing completion: %s",
+                        judge_exc,
+                        exc_info=True,
+                    )
+                if verdict != "done":
+                    return tool_error(
+                        f"Goal completion rejected by judge: {reason}. "
+                        f"To proceed, either: (1) provide explicit acceptance "
+                        f"evidence in your summary matching the task's criteria, "
+                        f"or (2) create continuation tasks with parents=[{tid}] "
+                        f"and keep this task alive."
+                    )
+
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -524,13 +675,21 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    reason = redact_sensitive_text(str(reason), force=True)
+    kind = args.get("kind")
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
+        if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
+            conn.close()
+            return tool_error(
+                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+            )
         try:
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
+                kind=kind,
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
@@ -539,7 +698,15 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            # Tell the worker where the task actually landed so it doesn't
+            # assume it's sitting in 'blocked' when routing sent it elsewhere.
+            landed = kb.get_task(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status=landed.status if landed else "blocked",
+                block_kind=kind,
+            )
         finally:
             conn.close()
     except ValueError as e:
@@ -611,6 +778,7 @@ def _handle_comment(args: dict, **kw) -> str:
     body = args.get("body")
     if not body or not str(body).strip():
         return tool_error("body is required")
+    body = redact_sensitive_text(str(body), force=True)
     # Author is intentionally derived from the worker's own runtime
     # identity, NOT from caller-supplied args. Comments are injected
     # into the next worker's system prompt by ``build_worker_context``
@@ -659,8 +827,19 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
-    workspace_kind = args.get("workspace_kind") or "scratch"
+    # Resolve workspace. If the caller passed one explicitly, honor it.
+    # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
+    # inherits its own running task's workspace, so a worker editing a
+    # dir:/worktree project that spawns a follow-up child keeps the child
+    # in that project instead of a throwaway scratch dir. Orchestrators
+    # (kanban toolset, no HERMES_KANBAN_TASK) and CLI/dashboard callers
+    # fall back to scratch as before. Explicit None path stays None.
+    workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    project_id = args.get("project") or args.get("project_id")
+    _inherit_workspace = workspace_kind is None and workspace_path is None
+    if workspace_kind is None:
+        workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
@@ -675,6 +854,10 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
+    if goal_bool_error:
+        return tool_error(goal_bool_error)
+    goal_max_turns = args.get("goal_max_turns")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -685,6 +868,19 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Inherit the spawning worker's own task workspace when the
+            # caller didn't specify one (see resolution note above).
+            if _inherit_workspace:
+                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                if _self_tid:
+                    _self_task = kb.get_task(conn, _self_tid)
+                    if _self_task is not None and _self_task.workspace_kind:
+                        workspace_kind = _self_task.workspace_kind
+                        workspace_path = _self_task.workspace_path
+                        # Keep follow-up children inside the same project so the
+                        # whole subtree shares one repo + branch convention.
+                        if project_id is None and _self_task.project_id:
+                            project_id = _self_task.project_id
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -695,6 +891,7 @@ def _handle_create(args: dict, **kw) -> str:
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                project_id=project_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
                 max_runtime_seconds=(
@@ -702,14 +899,20 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                goal_mode=goal_mode,
+                goal_max_turns=(
+                    int(goal_max_turns) if goal_max_turns is not None else None
+                ),
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
+            subscribed = _maybe_auto_subscribe(conn, new_tid)
             return _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
+                subscribed=subscribed,
             )
         finally:
             conn.close()
@@ -718,6 +921,102 @@ def _handle_create(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_create failed")
         return tool_error(f"kanban_create: {e}")
+
+
+def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
+    """Auto-subscribe the calling session to task completion / block events.
+
+    Returns True if a subscription row was written, False otherwise (no
+    session context, config gate disabled, or best-effort failure). The
+    caller surfaces this in the ``subscribed`` field of the kanban_create
+    response so an orchestrator can decide whether to fall back to an
+    explicit ``kanban_notify-subscribe`` or to polling.
+
+    Gated by ``kanban.auto_subscribe_on_create`` in config.yaml (default
+    True). Disable to mirror pre-feature behaviour, e.g. when the
+    originating user/chat opted out via the per-platform notification
+    toggle (see ``hermes dashboard``).
+
+    Subscription paths:
+
+    - **Gateway** (telegram/discord/slack/etc): ``HERMES_SESSION_PLATFORM``
+      and ``HERMES_SESSION_CHAT_ID`` are set in ContextVars by the
+      messaging gateway before agent dispatch. The notification poller
+      already keys off these, so we just register a row.
+
+    - **TUI** (herm desktop / herm TUI): the platform/chat_id ContextVars
+      are intentionally cleared (TUI is a single-channel local UI, not
+      a multi-tenant chat surface), but the agent subprocess inherits
+      ``HERMES_SESSION_KEY`` from the parent session. We subscribe with
+      ``platform="tui"`` and ``chat_id=<key>``; the TUI notification
+      poller (``tui_gateway/server.py``) reads ``kanban_notify_subs``
+      for these rows and posts the completion message into the running
+      session.
+
+    - **CLI / cron / test / unattached**: no persistent delivery channel,
+      no-op.
+
+    Failure mode: any exception inside the function is logged at WARNING
+    with the offending exception + diagnostic env vars and swallowed.
+    We never want a notification bookkeeping failure to fail the
+    kanban_create that the agent is mid-conversation about.
+    """
+    try:
+        cfg = load_config()
+        if not cfg_get(cfg, "kanban", "auto_subscribe_on_create", default=True):
+            return False
+    except Exception:
+        # If config can't load we still default to True — this is the
+        # user-friendly behaviour that mirrors the pre-gate implementation.
+        pass
+
+    platform = ""
+    chat_id = ""
+    try:
+        from gateway.session_context import get_session_env
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+        if not platform or not chat_id:
+            # TUI / desktop fallback: platform/chat_id ContextVars are
+            # cleared for TUI sessions, but the parent process exports
+            # HERMES_SESSION_KEY into the subprocess env. Treat that
+            # as a "tui" subscription so the TUI notification poller
+            # (tui_gateway/server.py) can pick it up.
+            #
+            # HERMES_SESSION_ID is intentionally NOT a fallback here:
+            # it is set by ACP / the agent subprocess for telemetry
+            # regardless of whether the parent is a TUI or a CLI, so
+            # treating it as a notification target would auto-subscribe
+            # every CLI invocation, which is exactly the over-eager
+            # behaviour that got #19718 reverted upstream. The TUI
+            # poller keys on HERMES_SESSION_KEY.
+            session_key = (
+                get_session_env("HERMES_SESSION_KEY", "")
+                or os.environ.get("HERMES_SESSION_KEY", "")
+            )
+            if not session_key:
+                return False  # CLI / cron / test — no persistent channel
+            platform = "tui"
+            chat_id = session_key
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
+        user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        notifier_profile = os.environ.get("HERMES_PROFILE")
+
+        # Lazy-import to keep the module-level dependency light
+        from hermes_cli import kanban_db as _kb
+        _kb.add_notify_sub(
+            conn, task_id=task_id,
+            platform=platform, chat_id=chat_id,
+            thread_id=thread_id, user_id=user_id,
+            notifier_profile=notifier_profile,
+        )
+        return True
+    except Exception as _exc:
+        logger.warning(
+            "_maybe_auto_subscribe failed: %r (platform=%r key_set=%r)",
+            _exc, platform, bool(chat_id),
+        )
+        return False
 
 
 def _handle_unblock(args: dict, **kw) -> str:
@@ -961,11 +1260,16 @@ KANBAN_COMPLETE_SCHEMA = {
 KANBAN_BLOCK_SCHEMA = {
     "name": "kanban_block",
     "description": (
-        "Transition the task to blocked because you need human input "
-        "to proceed. ``reason`` will be shown to the human on the "
-        "board and included in context when someone unblocks you. "
-        "Use for genuine blockers only — don't block on things you can "
-        "resolve yourself."
+        "Stop work on this task and route it according to WHY you're stuck. "
+        "Set ``kind`` to say which: 'dependency' (waiting on another task — "
+        "goes to todo and auto-resumes when that task finishes, no human "
+        "needed), 'needs_input' (you need a human decision/answer), "
+        "'capability' (a hard wall: no access, missing credentials, an action "
+        "no agent can do), or 'transient' (a flaky failure that may clear). "
+        "``reason`` is shown to the human on the board. If a task keeps "
+        "getting unblocked and re-blocked for the same reason, it is "
+        "auto-escalated to triage. Use for genuine blockers only — don't "
+        "block on things you can resolve yourself."
     ),
     "parameters": {
         "type": "object",
@@ -977,9 +1281,18 @@ KANBAN_BLOCK_SCHEMA = {
             "reason": {
                 "type": "string",
                 "description": (
-                    "What you need answered, in one or two sentences. "
-                    "Don't paste the whole conversation; the human has "
-                    "the board and can ask follow-ups via comments."
+                    "What you need answered or what stopped you, in one or "
+                    "two sentences. Don't paste the whole conversation; the "
+                    "human has the board and can ask follow-ups via comments."
+                ),
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["dependency", "needs_input", "capability", "transient"],
+                "description": (
+                    "Why you're blocked. 'dependency' waits in todo and "
+                    "resumes automatically; the others surface to a human. "
+                    "Omit only if none apply."
                 ),
             },
             "board": _board_schema_prop(),
@@ -1119,6 +1432,15 @@ KANBAN_CREATE_SCHEMA = {
                     "Relative paths are rejected at dispatch."
                 ),
             },
+            "project": {
+                "type": "string",
+                "description": (
+                    "Optional project id or slug to link the task to. When "
+                    "set, the task becomes a git worktree under the project's "
+                    "primary repo with a deterministic branch (project slug + "
+                    "task id), instead of a random branch."
+                ),
+            },
             "triage": {
                 "type": "boolean",
                 "description": (
@@ -1158,12 +1480,35 @@ KANBAN_CREATE_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Skill names to force-load into the dispatched "
-                    "worker (in addition to the built-in kanban-worker "
-                    "skill). Use this to pin a task to a specialist "
+                    "worker. The kanban lifecycle is already injected "
+                    "automatically; use this to pin a task to a specialist "
                     "context — e.g. ['translation'] for a translation "
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "goal_mode": {
+                "type": "boolean",
+                "description": (
+                    "Run the dispatched worker in a goal loop. When true, "
+                    "after each turn an auxiliary judge checks the worker's "
+                    "response against this card's title/body; if the work "
+                    "isn't done and budget remains, the worker keeps going "
+                    "in the same session until the judge agrees it's "
+                    "complete (or the goal-turn budget is exhausted, which "
+                    "blocks the task for human review). Use this for "
+                    "open-ended cards where one shot rarely finishes the "
+                    "work. Defaults to false (classic single-shot worker)."
+                ),
+            },
+            "goal_max_turns": {
+                "type": "integer",
+                "description": (
+                    "Turn budget for goal_mode workers. Caps how many "
+                    "continuation turns the worker may take before the task "
+                    "is blocked for review. Ignored unless goal_mode is "
+                    "true. Defaults to the goal-engine default (20)."
                 ),
             },
             "board": _board_schema_prop(),

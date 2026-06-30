@@ -2,20 +2,14 @@
 
 import asyncio
 import json
-import os
-from pathlib import Path
-from typing import Awaitable
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
     _video_to_base64_data_url,
     _handle_video_analyze,
     _MAX_VIDEO_BASE64_BYTES,
-    _VIDEO_MIME_TYPES,
-    _VIDEO_SIZE_WARN_BYTES,
     video_analyze_tool,
     VIDEO_ANALYZE_SCHEMA,
 )

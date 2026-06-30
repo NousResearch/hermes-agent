@@ -7,7 +7,6 @@ The Linux mode bits live in the upper 16 bits of ``ZipInfo.external_attr``;
 we explicitly reject any member whose type bits are S_IFLNK.
 """
 
-import io
 import os
 import stat
 import tempfile

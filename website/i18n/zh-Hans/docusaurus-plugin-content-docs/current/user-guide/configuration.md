@@ -79,7 +79,7 @@ delegation:
 
 还可以设置 `providers.<id>.stale_timeout_seconds` 用于非流式陈旧调用检测器，以及 `providers.<id>.models.<model>.stale_timeout_seconds` 作为特定模型的覆盖值。此值优先于旧版 `HERMES_API_CALL_STALE_TIMEOUT` 环境变量。
 
-不设置这些值将保持旧版默认值（`HERMES_API_TIMEOUT=1800`s、`HERMES_API_CALL_STALE_TIMEOUT=300`s、原生 Anthropic 900s）。目前不适用于 AWS Bedrock（`bedrock_converse` 和 AnthropicBedrock SDK 路径均使用 boto3 及其自身的超时配置）。请参阅 [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example) 中的注释示例。
+不设置这些值将保持旧版默认值（`HERMES_API_TIMEOUT=1800`s、`HERMES_API_CALL_STALE_TIMEOUT=90`s、原生 Anthropic 900s）。隐式的非流式 stale 检测会在本地端点上自动禁用，并且会在超大上下文下自动放宽。目前不适用于 AWS Bedrock（`bedrock_converse` 和 AnthropicBedrock SDK 路径均使用 boto3 及其自身的超时配置）。请参阅 [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example) 中的注释示例。
 
 ## 终端后端配置
 
@@ -555,7 +555,7 @@ compression:
   threshold: 0.50                                   # 在上下文限制的此百分比时压缩
   target_ratio: 0.20                                # 保留为最近尾部的阈值分数
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
-  hygiene_hard_message_limit: 400                   # Gateway 安全阀 —— 见下文
+  hygiene_hard_message_limit: 5000                  # Gateway 安全阀 —— 见下文
 
 # 摘要模型/provider 在 auxiliary: 下配置：
 auxiliary:
@@ -569,7 +569,7 @@ auxiliary:
 带有 `compression.summary_model`、`compression.summary_provider` 和 `compression.summary_base_url` 的旧版配置在首次加载时自动迁移到 `auxiliary.compression.*`（配置版本 17）。无需手动操作。
 :::
 
-`hygiene_hard_message_limit` 是仅限 gateway 的**预压缩安全阀**。拥有数千条消息的失控会话可能在正常的上下文百分比阈值触发之前就达到模型上下文限制；当消息数超过此上限时，Hermes 强制压缩，无论 token 使用情况如何。默认 `400` —— 对于非常长的会话正常的平台，请调高；要强制更积极的压缩，请降低。在运行中的 gateway 上编辑此值将在下一条消息时生效（见下文）。
+`hygiene_hard_message_limit` 是仅限 gateway 的**预压缩安全阀**。它的存在是为了打破一个死循环：当超大会话的 API 调用持续断开时，gateway 永远收不到 token 使用数据，基于 token 的阈值因此无法触发，于是 transcript 持续增长、断开愈发严重。这个基于消息数的下限仅凭消息数量触发（无论 API 是否失败，消息数始终已知），强制压缩以恢复会话。默认 `5000` —— 远高于任何正常会话，包括做数千次短轮次的大上下文（1M+）模型，它们早就在 token 阈值处压缩了。对于异常平台可调得更高；要强制更积极的压缩则调低。在运行中的 gateway 上编辑此值将在下一条消息时生效（见下文）。
 
 :::tip Gateway 热重载压缩和上下文长度
 从最近的版本开始，在运行中的 gateway 上编辑 `config.yaml` 中的 `model.context_length` 或任何 `compression.*` 键将在下一条消息时生效 —— 无需 gateway 重启、`/reset` 或会话轮换。缓存的 agent 签名包含这些键，因此 gateway 在检测到更改时会透明地重建 agent。API 密钥和工具/技能配置仍需要通常的重载路径。
@@ -774,7 +774,7 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 
 当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 或 `OPENAI_API_KEY` 进行认证）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
 
-辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](/reference/environment-variables)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`google-gemini-cli`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
+辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](/reference/environment-variables)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
 
 :::tip MiniMax OAuth
 `minimax-oauth` 通过浏览器 OAuth 登录（无需 API 密钥）。运行 `hermes model` 并选择 **MiniMax (OAuth)** 进行认证。辅助任务自动使用 `MiniMax-M2.7-highspeed`。参阅 [MiniMax OAuth 指南](../guides/minimax-oauth.md)。
@@ -820,6 +820,13 @@ auxiliary:
   # 上下文压缩超时（与 compression.* 配置分开）
   compression:
     timeout: 120               # 秒 —— 压缩摘要长对话，需要更多时间
+    # fallback_chain:           # 可选 —— 发生速率限制/连接故障时尝试的 provider
+    #   - provider: nous
+    #     model: deepseek/deepseek-chat
+    #   - provider: openrouter
+    #     model: google/gemini-2.5-flash
+    #     base_url: ""
+    #     api_key: ""
 
   # 技能中心 —— 技能匹配和搜索
   skills_hub:
@@ -855,8 +862,36 @@ auxiliary:
 :::
 
 :::info
-上下文压缩有自己的 `compression:` 块用于阈值，以及 `auxiliary.compression:` 块用于模型/provider 设置 —— 参阅上方的[上下文压缩](#context-compression)。回退模型使用 `fallback_model:` 块 —— 参阅[回退模型](/integrations/providers#fallback-model)。三者都遵循相同的 provider/model/base_url 模式。
+上下文压缩有自己的 `compression:` 块用于阈值，以及 `auxiliary.compression:` 块用于模型/provider 设置 —— 参阅上方的[上下文压缩](#context-compression)。主备用链使用顶层的 `fallback_providers:` 列表 —— 参阅[备用提供商](/integrations/providers#fallback-providers)。三者都遵循相同的 provider/model/base_url 模式。
 :::
+
+### 辅助任务的每任务回退链
+
+每个辅助任务都可以选择性地定义一个 `fallback_chain` —— 一个 provider/model 条目列表，当主要辅助 provider 因速率限制、网络连接问题或付费限制而失败时，Hermes 会尝试使用该列表：
+
+```yaml
+auxiliary:
+  compression:
+    provider: openrouter
+    model: openai/gpt-4o-mini
+    fallback_chain:
+      - provider: nous
+        model: deepseek/deepseek-chat
+      - provider: openrouter
+        model: google/gemini-2.5-flash
+```
+
+当主要辅助 provider（`openrouter` / `openai/gpt-4o-mini`）返回速率限制、连接超时或需要付费错误时，Hermes 将依次遍历 `fallback_chain`。它会跳过 provider 与已失败 provider 相同的条目，并尝试每个剩余条目，直到有一个成功或该链耗尽。如果所有回退都失败，Hermes 会回退到主 agent 模型作为最终的安全网。
+
+每个条目支持与任何辅助任务配置相同的三个旋钮：
+
+| 键 | 描述 |
+|-----|-------------|
+| `provider` | Provider 名称（`nous`、`openrouter`、`anthropic`、`gemini`、`main` 等） |
+| `model` | 该 provider 的模型名称 |
+| `base_url` | （可选）自定义 OpenAI 兼容端点 |
+
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`web_extract`、`approval`、`skills_hub`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
@@ -1156,7 +1191,7 @@ display:
 
 `display.language` 设置翻译一小组静态面向用户的消息 —— CLI 审批提示、少数 gateway 斜杠命令回复（例如重启排空通知、"审批已过期"、"目标已清除"）。它**不**翻译 agent 响应、日志行、工具输出、错误回溯或斜杠命令描述 —— 这些保持英文。如果您希望 agent 本身用另一种语言回复，只需在您的提示词或系统消息中告诉它。
 
-支持的值：`en`（默认）、`zh`（简体中文）、`ja`（日语）、`de`（德语）、`es`（西班牙语）、`fr`（法语）、`tr`（土耳其语）、`uk`（乌克兰语）。未知值回退到英文。
+支持的值：`en`（默认）、`zh`（简体中文）、`zh-hant`（繁体中文）、`ja`（日语）、`de`（德语）、`es`（西班牙语）、`fr`（法语）、`tr`（土耳其语）、`uk`（乌克兰语）、`af`（南非荷兰语）、`ko`（韩语）、`it`（意大利语）、`ga`（爱尔兰语）、`pt`（葡萄牙语）、`ru`（俄语）、`hu`（匈牙利语）。未知值回退到英文。
 
 您也可以使用 `HERMES_LANGUAGE` 环境变量按会话设置，它会覆盖配置值。
 
@@ -1176,13 +1211,13 @@ display:
 
 ### 运行时元数据页脚（仅限 gateway）
 
-当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚 —— 与 CLI 在其状态栏中显示的相同信息（模型、上下文 %、cwd、会话时长、token、成本）。默认关闭；如果您的团队希望每个回复都包含来源信息，请按 gateway 选择加入。
+当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。目前页脚可显示模型、上下文窗口百分比和当前工作目录。默认关闭；如果您的团队希望每个回复都包含这些来源信息，请按 gateway 选择加入。
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # 任意：model、context_pct、cwd、duration、tokens、cost
+    fields: ["model", "context_pct", "cwd"]   # 支持字段：model、context_pct、cwd
 ```
 
 `/footer` 斜杠命令在任何会话中运行时切换此功能。
@@ -1302,7 +1337,7 @@ streaming:
   edit_interval: 0.3      # 消息编辑之间的秒数
   buffer_threshold: 40    # 强制编辑刷新前的字符数
   cursor: " ▉"            # 流式传输期间显示的光标
-  fresh_final_after_seconds: 60   # 当预览超过此时间时发送新的最终消息（Telegram）；0 = 始终就地编辑
+  fresh_final_after_seconds: 0    # 预览超过此时间时选择发送新的最终消息（Telegram）
 ```
 
 启用后，bot 在第一个 token 时发送消息，然后随着更多 token 到来渐进式编辑它。不支持消息编辑的平台（Signal、Email、Home Assistant）在第一次尝试时自动检测 —— 该会话的流式传输被优雅地禁用，不会产生大量消息。
@@ -1311,10 +1346,10 @@ streaming:
 
 **溢出处理：** 如果流式传输的文本超过平台的消息长度限制（约 4096 字符），当前消息被最终化，新消息自动开始。
 
-**新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。当 `fresh_final_after_seconds > 0`（默认 `60`）时，完成的回复作为全新消息传递（尽力删除旧预览），以便 Telegram 的可见时间戳反映完成时间。短预览仍然就地最终化。设置为 `0` 以始终就地编辑。
+**新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。设置 `fresh_final_after_seconds > 0` 可选择将旧预览作为全新的最终消息传递，并尽力删除旧预览。默认值为 `0`，始终就地最终化流式回复，避免某些客户端短暂显示重复消息再删除其中一条。
 
 :::note
-流式传输默认禁用。在 `~/.hermes/config.yaml` 中启用以尝试流式传输 UX。
+主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关。
 :::
 
 ## 群聊会话隔离
@@ -1411,7 +1446,7 @@ code_execution:
 
 ## Web 搜索后端
 
-`web_search`、`web_extract` 和 `web_crawl` 工具支持五种后端 provider。在 `config.yaml` 中或通过 `hermes tools` 配置后端：
+`web_search` 和 `web_extract` 工具支持五种后端 provider。在 `config.yaml` 中或通过 `hermes tools` 配置后端：
 
 ```yaml
 web:
@@ -1422,17 +1457,17 @@ web:
   extract_backend: "firecrawl"
 ```
 
-| 后端 | 环境变量 | 搜索 | 提取 | 爬取 |
-|---------|---------|--------|---------|-------|
-| **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
-| **SearXNG** | `SEARXNG_URL` | ✔ | — | — |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
+| 后端 | 环境变量 | 搜索 | 提取 |
+|---------|---------|--------|---------|
+| **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ |
+| **SearXNG** | `SEARXNG_URL` | ✔ | — |
+| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ |
+| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ |
+| **Exa** | `EXA_API_KEY` | ✔ | ✔ |
 
 **后端选择：** 如果未设置 `web.backend`，后端从可用的 API 密钥自动检测。如果仅设置了 `SEARXNG_URL`，使用 SearXNG。如果仅设置了 `EXA_API_KEY`，使用 Exa。如果仅设置了 `TAVILY_API_KEY`，使用 Tavily。如果仅设置了 `PARALLEL_API_KEY`，使用 Parallel。否则 Firecrawl 是默认值。
 
-**SearXNG** 是一个免费、自托管、尊重隐私的元搜索引擎，查询 70+ 个搜索引擎。无需 API 密钥 —— 只需将 `SEARXNG_URL` 设置为您的实例（例如 `http://localhost:8080`）。SearXNG 仅限搜索；`web_extract` 和 `web_crawl` 需要单独的提取 provider（设置 `web.extract_backend`）。Docker 设置说明请参阅 [Web 搜索设置指南](/user-guide/features/web-search)。
+**SearXNG** 是一个免费、自托管、尊重隐私的元搜索引擎，查询 70+ 个搜索引擎。无需 API 密钥 —— 只需将 `SEARXNG_URL` 设置为您的实例（例如 `http://localhost:8080`）。SearXNG 仅限搜索；`web_extract` 需要单独的提取 provider（设置 `web.extract_backend`）。Docker 设置说明请参阅 [Web 搜索设置指南](/user-guide/features/web-search)。
 
 **自托管 Firecrawl：** 设置 `FIRECRAWL_API_URL` 指向您自己的实例。设置自定义 URL 后，API 密钥变为可选（在服务器上设置 `USE_DB_AUTHENTICATION=***` 以禁用认证）。
 

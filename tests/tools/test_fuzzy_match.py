@@ -43,6 +43,47 @@ class TestWhitespaceDifference:
         assert count == 1
         assert "bar" in new
 
+    def test_boundary_space_preserved_after_match(self):
+        """Regression: whitespace_normalized match ending with a non-space
+        character must NOT consume the word-boundary space that follows.
+        https://github.com/NousResearch/hermes-agent/issues/52491"""
+        # Case 1 — simple word boundary
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "foo   bar baz", "foo bar", "XY",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "XY baz", f"Boundary space deleted: {new!r}"
+
+    def test_boundary_space_preserved_in_code_edit(self):
+        """Regression: real-world code-edit scenario where the space before
+        the next operator must survive a whitespace-normalized match."""
+        content = "result = compute(a,  b) + tail"
+        new, count, strategy, err = fuzzy_find_and_replace(
+            content, "compute(a, b)", "compute(a, b, c)",
+        )
+        assert err is None
+        assert count == 1
+        assert strategy == "whitespace_normalized"
+        assert new == "result = compute(a, b, c) + tail", f"Boundary space deleted: {new!r}"
+
+    def test_trailing_ws_still_consumed_when_match_ends_with_space(self):
+        """When the normalized match itself ends with whitespace (pattern has
+        trailing space), the expansion must still consume the full whitespace
+        run in the original."""
+        # Use a pattern with trailing space where the boundary is clear:
+        # content has "foo   " then "bar", pattern is "foo " — the match
+        # should cover all 3 original spaces (the trailing ws run).
+        new, count, strategy, err = fuzzy_find_and_replace(
+            "a = foo   + bar", "foo +", "XY",
+        )
+        assert err is None
+        assert count == 1
+        # "foo   +" normalized to "foo +" matches; trailing spaces consumed
+        # Result: "a = XY bar"
+        assert "XY" in new and "bar" in new
+
 
 class TestIndentDifference:
     def test_different_indentation(self):
@@ -428,4 +469,119 @@ class TestFormatNoMatchHint:
             0, "totally_unique_xyzzy_qux", "abc\nxyz\n",
         )
         assert result == ""
+
+
+class TestEscapeNormalizedNewString:
+    """Regression tests for unescaping common sequences in new_string when
+    the matched region of the file contains real control characters.
+
+    Issue #33733: LLMs overwhelmingly represent tabs as the two-character
+    sequence ``\\t`` (backslash + t) in JSON tool-call arguments. When the
+    file already contains real tab bytes (0x09), writing new_string
+    verbatim leaves literal ``\\t`` characters and corrupts the file.
+
+    The fix unescapes ``\\t`` -> tab and ``\\r`` -> CR in new_string when
+    the matched file region actually contains those control characters,
+    regardless of which match strategy fired. ``\\n`` is excluded because
+    newlines serialize correctly through JSON.
+    """
+
+    def test_tab_in_new_string_unescaped_under_escape_normalized(self):
+        """File has real tab, model sends literal \\t in BOTH old and new.
+
+        Match strategy is ``escape_normalized``.
+        """
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "def hello():\n\\tprint(\"before\")\n"
+        new_string = "def hello():\n\\tprint(\"after\")\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert "\tprint(\"after\")" in new
+        assert "\\t" not in new
+
+    def test_tab_in_new_string_unescaped_under_exact(self):
+        """File has real tab, old_string has real tab too (matches via
+        ``exact``), but new_string still arrives with literal ``\\t``.
+
+        This is the issue's headline reproduction — the previous fix that
+        gated on ``strategy_name == "escape_normalized"`` missed this case.
+        """
+        content = "def hello():\n\tprint(\"before\")\n"
+        old_string = "\tprint(\"before\")"           # real tab
+        new_string = "\\tprint(\"after\")"           # literal backslash + t
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "exact"
+        assert "\tprint(\"after\")" in new
+        assert "\\t" not in new
+
+    def test_carriage_return_in_new_string_unescaped(self):
+        """File has real CR, model sends literal \\r in new_string."""
+        content = "line1\r\nline2\r\n"
+        old_string = "line1\\r\\nline2\\r\\n"
+        new_string = "replaced\\r\\n"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "escape_normalized"
+        assert "replaced\r" in new
+
+    def test_newline_in_new_string_NOT_unescaped(self):
+        """``\\n`` is intentionally left alone — newlines serialize correctly
+        through JSON, and unescaping would corrupt source-code escape
+        sequences far more often than help.
+        """
+        content = "line1\nline2\n"
+        old_string = "line1\nline2"
+        new_string = "alpha\\nbeta"                 # literal backslash + n
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # The literal two-character sequence ``\n`` must survive verbatim.
+        assert "alpha\\nbeta" in new
+        # And there should be no real newline added where ``\\n`` sat.
+        assert "alpha\nbeta" not in new
+
+    def test_mixed_tab_and_newline_only_tab_unescaped(self):
+        """When new_string contains both \\t and \\n, only \\t is converted."""
+        content = "def foo():\n\tpass\n"
+        old_string = "def foo():\n\tpass\n"
+        new_string = "def bar():\\n\\treturn 1\\n"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        # \t -> real tab
+        assert "\treturn 1" in new
+        assert "\\t" not in new
+        # \n preserved as literal backslash-n
+        assert "\\n" in new
+
+    def test_exact_match_preserves_literal_backslash_t_in_string_literal(self):
+        """If the matched region of the file does NOT contain a real tab,
+        new_string's literal ``\\t`` is preserved — the file genuinely uses
+        a backslash-t sequence (e.g. a Python source line ``sep = "\\t"``).
+        """
+        content = 'sep = "\\t"\n'                   # source contains backslash + t
+        old_string = 'sep = "\\t"\n'
+        new_string = 'sep = "\\tab"\n'              # still backslash + t literal
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None, f"Unexpected error: {err}"
+        assert count == 1
+        assert strategy == "exact"
+        # File still has the literal two-char ``\t`` — no tab byte injected.
+        assert 'sep = "\\tab"' in new
+        assert "\t" not in new
+
+    def test_no_escape_sequences_passthrough(self):
+        """When new_string has no \\t or \\r, the helper is a no-op."""
+        content = "def foo():\n    return 1\n"
+        old_string = "def foo():\n    return 1\n"
+        new_string = "def foo():\n    return 2\n"
+        new, count, _, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert "return 2" in new
 

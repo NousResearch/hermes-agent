@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import sys
 import types
-from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import pytest

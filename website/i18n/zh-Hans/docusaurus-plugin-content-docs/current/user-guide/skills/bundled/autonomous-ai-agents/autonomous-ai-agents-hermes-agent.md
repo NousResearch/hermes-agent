@@ -52,7 +52,7 @@ Hermes 的差异化特性：
 
 ```bash
 # 安装
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # 交互式聊天（默认）
 hermes
@@ -332,7 +332,6 @@ hermes uninstall            Uninstall Hermes
 /commands [page]     Browse all commands (gateway)
 /usage               Token usage
 /insights [days]     Usage analytics
-/gquota              Show Google Gemini Code Assist quota usage (CLI)
 /status              Session info (gateway)
 /profile             Active profile info
 /debug               Upload debug report (system info + logs) and get shareable links

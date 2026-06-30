@@ -11,6 +11,7 @@ avoid retrying with a partial topic route that can render outside the lane.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -116,7 +117,7 @@ def _inject_fake_telegram(monkeypatch):
 
 
 def _make_adapter():
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = object.__new__(TelegramAdapter)
@@ -137,7 +138,7 @@ def _make_adapter():
 
 def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
     """Reply-derived thread ids in ordinary groups must not create topic lanes."""
-    from gateway.platforms import telegram as telegram_mod
+    import plugins.platforms.telegram.adapter as telegram_mod
 
     adapter = _make_adapter()
     message = SimpleNamespace(
@@ -171,7 +172,7 @@ def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
 
 def test_forum_group_topic_message_preserves_thread_session_key():
     """Real Telegram forum-topic messages should still route by topic id."""
-    from gateway.platforms import telegram as telegram_mod
+    import plugins.platforms.telegram.adapter as telegram_mod
 
     adapter = _make_adapter()
     message = SimpleNamespace(
@@ -201,7 +202,7 @@ def test_forum_group_topic_message_preserves_thread_session_key():
 
 def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     """Forum General-topic messages should keep synthetic thread context."""
-    from gateway.platforms import telegram as telegram_mod
+    import plugins.platforms.telegram.adapter as telegram_mod
 
     adapter = _make_adapter()
     message = SimpleNamespace(
@@ -588,6 +589,35 @@ async def test_send_uses_reply_fallback_for_hermes_dm_topics():
         metadata={
             "thread_id": "20197",
             "telegram_dm_topic_reply_fallback": True,
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[0]["message_thread_id"] == 20197
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+async def test_send_uses_reply_anchor_when_direct_topic_fallback_metadata_exists():
+    """Restart/update replay metadata keeps the anchor authoritative when present."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(kwargs)
+        return SimpleNamespace(message_id=777)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "462",
         },
     )
 
@@ -1098,7 +1128,7 @@ async def test_base_send_image_fallback_preserves_metadata():
     from gateway.platforms.base import BasePlatformAdapter
 
     class _ConcreteBaseAdapter(BasePlatformAdapter):
-        async def connect(self):
+        async def connect(self, *, is_reconnect: bool = False):
             return True
 
         async def disconnect(self):
@@ -1268,6 +1298,100 @@ async def test_send_marks_wrapped_connect_timeout_retryable_after_exhaustion():
         err = FakeTimedOut("Timed out")
         err.__context__ = FakeConnectTimeout("ConnectTimeout")
         raise err
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is False
+    assert result.retryable is True
+    assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_send_retries_pool_timeout():
+    """Retry TimedOut when it is an httpx pool-timeout (request not sent).
+
+    PTB wraps ``httpx.PoolTimeout`` into ``TimedOut`` with a message that
+    explicitly states the request was *not* sent to Telegram. Re-sending is
+    safe and prevents a silent drop when the pool frees up.
+    """
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] < 3:
+            raise FakeTimedOut(
+                "Pool timeout: All connections in the connection pool are "
+                "occupied. Request was *not* sent to Telegram. Consider "
+                "adjusting the connection pool size or the pool timeout."
+            )
+        return SimpleNamespace(message_id=202)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "202"
+    assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_send_drains_general_request_pool_before_retrying_pool_timeout():
+    """Pool timeout should reset the send-message request pool before retrying."""
+    adapter = _make_adapter()
+    general_request = SimpleNamespace(
+        shutdown=AsyncMock(),
+        initialize=AsyncMock(),
+    )
+    polling_request = SimpleNamespace(
+        shutdown=AsyncMock(),
+        initialize=AsyncMock(),
+    )
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_request, general_request))
+    )
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] == 1:
+            raise FakeTimedOut(
+                "Pool timeout: All connections in the connection pool are "
+                "occupied. Request was *not* sent to Telegram."
+            )
+        return SimpleNamespace(message_id=203)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "203"
+    assert attempt[0] == 2
+    general_request.shutdown.assert_awaited_once()
+    general_request.initialize.assert_awaited_once()
+    polling_request.shutdown.assert_not_awaited()
+    polling_request.initialize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_marks_pool_timeout_retryable_after_exhaustion():
+    """Pool timeout that never clears stays retryable for outer retry handling."""
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        raise FakeTimedOut(
+            "Pool timeout: All connections in the connection pool are occupied. "
+            "Request was *not* sent to Telegram."
+        )
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 

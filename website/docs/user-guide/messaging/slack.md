@@ -76,6 +76,8 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `im:history` | Read direct message history |
 | `im:read` | View basic DM info |
 | `im:write` | Open and manage DMs |
+| `mpim:history` | Read group direct message (multi-person DM) history |
+| `mpim:read` | View basic group DM info |
 | `users:read` | Look up user information |
 | `files:read` | Read and download attached files, including voice notes/audio |
 | `files:write` | Upload files (images, audio, documents) |
@@ -124,6 +126,7 @@ This step is critical — it controls what messages the bot can see.
 | Event | Required? | Purpose |
 |-------|-----------|---------|
 | `message.im` | **Yes** | Bot receives direct messages |
+| `message.mpim` | **Yes** | Bot receives messages in **group DMs** (multi-person DMs) it's added to |
 | `message.channels` | **Yes** | Bot receives messages in **public** channels it's added to |
 | `message.groups` | **Recommended** | Bot receives messages in **private** channels it's invited to |
 | `app_mention` | **Yes** | Prevents Bolt SDK errors when bot is @mentioned |
@@ -279,6 +282,11 @@ thread.
 
 Only the first token is checked against the known command list, so
 casual messages like `!nice work` pass through to the agent unchanged.
+
+Approval prompts (dangerous command / `execute_code` approval) normally
+render as interactive buttons. When buttons can't be delivered and
+Hermes falls back to a text prompt, the prompt instructs you to reply
+with `!approve` / `!deny` — the form that works inside threads.
 
 ### Advanced: emit only the slash-commands array
 
@@ -601,6 +609,7 @@ Notes:
 | Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Hermes Agent` |
 | Bot doesn't respond to @mentions in channels | 1) Check `message.channels` event is subscribed. 2) Bot must be invited to the channel. 3) Ensure `channels:history` scope is added. 4) Reinstall the app after scope/event changes |
 | Bot ignores messages in private channels | Add both the `message.groups` event subscription and `groups:history` scope, then reinstall the app and `/invite` the bot |
+| Bot doesn't respond in group DMs (multi-person DMs) | Add the `message.mpim` event subscription and the `mpim:history` scope (plus `mpim:read`), then **reinstall** the app. Without `message.mpim`, Slack never delivers group-DM messages to the bot — even though 1:1 DMs work. |
 | "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
 | Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |

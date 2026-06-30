@@ -57,7 +57,7 @@ See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for the full walkthr
 ## 3. Verify it worked
 
 ```bash
-hermes portal status
+hermes portal info
 ```
 
 You should see:
@@ -95,7 +95,7 @@ You should see Hermes call `web_search` (Firecrawl-backed, through the gateway) 
 
 ## 5. Pick the model you actually want
 
-The default after `hermes setup --portal` is a sensible general-purpose model, but the whole point of the subscription is access to the full catalog. Switch with `/model` mid-session:
+`hermes setup --portal` lets you pick a model during setup, but the whole point of the subscription is access to the full catalog — switch any time with `/model` mid-session:
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic
@@ -136,6 +136,8 @@ hermes tools
 # → TTS              → "Nous Subscription"     (recommended)
 ```
 
+These rows appear in `hermes tools` even before you've logged into Nous Portal — if you pick "Nous Subscription" without an active session, Hermes runs the Portal login inline (without changing your inference provider or your other tools).
+
 Verify your mix with:
 
 ```bash
@@ -161,8 +163,9 @@ Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a
 The Portal subscription works for [cron jobs](/user-guide/features/cron) and [batch processing](/user-guide/features/batch-processing) the same way it works for interactive chat — the OAuth refresh token is reused automatically. No additional setup; just schedule cron jobs and they'll bill against your subscription.
 
 ```bash
-hermes cron add "Daily AI news summary" "every day at 9am" \
-  "Search the web for top AI news and summarize the 5 most important stories"
+hermes cron create "every day at 9am" \
+  "Search the web for top AI news and summarize the 5 most important stories" \
+  --name "Daily AI news"
 ```
 
 The cron job runs unattended, calls the model + web search + summarization all through your Portal subscription.
@@ -175,12 +178,12 @@ For team setups where multiple humans share a machine, each human has their own 
 
 ## Troubleshooting
 
-### `hermes portal status` shows "not logged in" after `hermes setup --portal`
+### `hermes portal info` shows "not logged in" after `hermes setup --portal`
 
 The OAuth flow didn't complete. Re-run it:
 
 ```bash
-hermes auth add nous --type oauth
+hermes portal
 ```
 
 If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding and manual-paste workarounds.
@@ -200,7 +203,7 @@ hermes model
 # pick Nous Portal
 ```
 
-Re-verify with `hermes portal status`.
+Re-verify with `hermes portal info`.
 
 ### Tool Gateway tools showing partner names instead of "via Nous Portal"
 
@@ -236,16 +239,16 @@ If a model is genuinely unavailable, [open an issue](https://github.com/NousRese
 
 ### Billing not appearing on my Portal account
 
-`hermes portal status` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
+`hermes portal info` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
 
 - `model.provider` set to `openrouter`/`anthropic`/etc. instead of `nous`
 - An OAuth refresh failure that fell back to a different configured provider
-- Multiple Hermes profiles where you're using the wrong one (check `hermes profile current`)
+- Multiple Hermes profiles where you're using the wrong one (check `hermes profile list`)
 
 ### Want to revoke and start clean
 
 ```bash
-hermes auth remove nous       # wipes the local refresh token
+hermes auth logout nous       # wipes the local refresh token
 # Then re-run setup or remove the subscription from the Portal web UI
 ```
 

@@ -1063,13 +1063,14 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
-    def test_launchd_domain_uses_user_domain(self, monkeypatch):
+    def test_launchd_domain_uses_user_domain(self, tmp_path, monkeypatch):
         # The user/<uid> domain (not gui/<uid>) is the one reachable from
         # non-Aqua/background sessions on macOS 26+ (issue #23387).
         # When gui/<uid> fails to probe and user/<uid> succeeds,
         # _launchd_domain() must return user/<uid>.
         gateway_cli._resolved_launchd_domain = None
         monkeypatch.setattr(os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
         label = gateway_cli.get_launchd_label()
 
         def fake_run(cmd, check=False, **kwargs):
@@ -1468,6 +1469,10 @@ class TestLaunchdDomainDetection:
     def _reset_domain_cache(self):
         """Clear any cached domain result between tests."""
         gateway_cli._resolved_launchd_domain = None
+
+    @pytest.fixture(autouse=True)
+    def _isolate_launchd_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
 
     def test_prefers_gui_domain_when_service_loaded_there(self, monkeypatch):
         """In an Aqua session where the service is loaded under gui/<uid>,

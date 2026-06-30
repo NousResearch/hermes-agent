@@ -1696,6 +1696,9 @@ class AIAgent:
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
+                # Skip flagged synthetic verification messages
+                if msg.get("_verification_stop_synthetic"):
+                    continue
                 msg_id = id(msg)
                 if msg_id in flushed_ids:
                     continue
@@ -2420,6 +2423,11 @@ class AIAgent:
         try:
             cleaned = []
             for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                # Skip flagged synthetic verification messages
+                if msg.get("_verification_stop_synthetic"):
+                    continue
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])

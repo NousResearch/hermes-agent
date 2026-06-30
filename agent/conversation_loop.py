@@ -794,6 +794,8 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # Strip internal verification-stop synthetic marker
+            api_msg.pop("_verification_stop_synthetic", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -4849,6 +4851,7 @@ def run_conversation(
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
                     final_msg["finish_reason"] = "verification_required"
+                    final_msg["_verification_stop_synthetic"] = True
                     messages.append(final_msg)
                     # Keep the attempted final answer in model history so the
                     # synthetic user nudge preserves role alternation, but do
@@ -4918,6 +4921,10 @@ def run_conversation(
                     continue
 
                 messages.append(final_msg)
+                # Cleanup any verification loop synthetic scaffolding before exit
+                messages[:] = [msg for msg in messages if not msg.get("_verification_stop_synthetic")]
+                agent._session_messages = messages
+                agent._persist_session(messages, conversation_history)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:

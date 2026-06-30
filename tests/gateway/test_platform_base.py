@@ -1417,6 +1417,30 @@ class TestTruncateMessage:
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
 
+    def test_fence_like_line_inside_code_block_not_closing(self):
+        """Regression: a ``` line with trailing non-whitespace is content,
+        not a closing fence (CommonMark spec, issue #55292)."""
+        adapter = self._adapter()
+        # Code block contains "``` not a close" which should be treated as
+        # content, not a fence boundary.
+        inner_lines = "inside line\n" * 80
+        msg = (
+            "Before\n```text\n"
+            "``` not a close\n"
+            + inner_lines
+            + "```\nAfter"
+        )
+        chunks = adapter.truncate_message(msg, max_length=300)
+        assert len(chunks) > 1
+        # The code block should still be considered open after the
+        # "``` not a close" line — continuation chunks must reopen with
+        # the original language tag.
+        has_text_reopen = any("```text\n" in chunk for chunk in chunks[1:])
+        assert has_text_reopen, (
+            "Continuation chunk should reopen with ```text — "
+            "the ``` not a close line is content, not a fence"
+        )
+
     def test_each_chunk_under_max_length(self):
         adapter = self._adapter()
         msg = "word " * 500

@@ -5329,8 +5329,13 @@ class BasePlatformAdapter(ABC):
                 stripped = line.strip()
                 if stripped.startswith("```"):
                     if in_code:
-                        in_code = False
-                        lang = ""
+                        # Only close if trailing content is whitespace
+                        # (CommonMark spec: closing fence may be followed
+                        # only by whitespace)
+                        after_ticks = stripped[3:]
+                        if not after_ticks or after_ticks.isspace():
+                            in_code = False
+                            lang = ""
                     else:
                         in_code = True
                         tag = stripped[3:].strip()

@@ -799,6 +799,21 @@ class GatewayKanbanWatchersMixin:
                 default_assignee,
             )
 
+        def _read_current_default_assignee() -> Optional[str]:
+            """Re-read kanban.default_assignee from config on each tick.
+
+            Unlike max_spawn and max_in_progress (which require a restart),
+            default_assignee is a lightweight operational knob that operators
+            expect to take effect without bouncing the gateway (#55446).
+            Falls back to the startup value on config-load failure.
+            """
+            try:
+                cfg = _load_config()
+                kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+                return (kcfg.get("default_assignee") or "").strip() or None
+            except Exception:
+                return default_assignee
+
         # Read kanban.max_in_progress_per_profile — per-profile concurrency
         # cap (#21582). When set, no single profile gets more than N
         # workers running at once, even if the global max_in_progress
@@ -912,6 +927,7 @@ class GatewayKanbanWatchersMixin:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
+                current_assignee = _read_current_default_assignee()
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
@@ -919,7 +935,7 @@ class GatewayKanbanWatchersMixin:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
-                    default_assignee=default_assignee,
+                    default_assignee=current_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
                 )
             except sqlite3.DatabaseError as exc:

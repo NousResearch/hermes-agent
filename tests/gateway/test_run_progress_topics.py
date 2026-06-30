@@ -1634,3 +1634,83 @@ async def test_run_agent_suppresses_thinking_when_thinking_off(monkeypatch, tmp_
         [c["content"] for c in adapter.sent] + [c["content"] for c in adapter.edits]
     )
     assert "weighing the options here" not in blob
+class EditLimitProgressAdapter(ProgressCaptureAdapter):
+    """Adapter that fails all edits, simulating 230072 edit limit."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self._next_id = 0
+
+    def _mint_id(self):
+        self._next_id += 1
+        return f"progress-{self._next_id}"
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(
+            success=False,
+            error="[230072] The message has reached the number of times it can be edited.",
+        )
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=self._mint_id())
+
+
+@pytest.mark.asyncio
+async def test_edit_limit_fallback_sends_full_text_not_msg(monkeypatch, tmp_path):
+    """With edit-always-fails adapter, progress is delivered via send().
+
+    The _handle_message_with_agent progress loop falls back to
+    adapter.send() when edit_message fails with 230072.  This test
+    confirms the gateway completes the run without raising even when
+    every edit attempt is rejected.
+    """
+    adapter = EditLimitProgressAdapter(platform=Platform.TELEGRAM)
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    config_data = {
+        "display": {
+            "tool_progress": "all",
+            "interim_assistant_messages": False,
+        },
+    }
+    import yaml
+    (tmp_path / "config.yaml").write_text(yaml.dump(config_data), encoding="utf-8")
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = type("Agent", (), {
+        "__init__": lambda self, *a, **kw: None,
+        "run_conversation": lambda self, *a, **kw: {"final_response": "all good"},
+    })
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    runner = _make_runner(adapter)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", chat_type="group")
+    session_key = "agent:main:telegram:group:chat"
+
+    result = await runner._run_agent(
+        message="hello", context_prompt="", history=[], source=source,
+        session_id="test-edit-limit", session_key=session_key,
+    )
+    assert result["final_response"] == "all good"

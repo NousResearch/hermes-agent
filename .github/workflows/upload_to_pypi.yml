@@ -48,10 +48,10 @@ jobs:
           python-version: '3.13'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+        uses: astral-sh/setup-uv@fac544c07decb2b0bd96cd6e68b2b6f4c98b2c23 # v8.2.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        uses: actions/setup-node@48b55a011bdae6d29c4aeedf01eab9d0f0eaa3b2 # v6.4.0
         with:
           node-version: '22'
 

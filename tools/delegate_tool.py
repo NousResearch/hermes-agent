@@ -1060,6 +1060,10 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-task reasoning-effort override from the resolve_delegation_model hook.
+    # None => fall back to delegation.reasoning_effort / parent inheritance
+    # (unchanged behavior). A value here wins over both.
+    override_effort: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1272,6 +1276,23 @@ def _build_child_agent(
                 )
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
+
+    # Per-task effort override from the resolve_delegation_model hook wins over
+    # both the delegation-config effort and parent inheritance. Built directly
+    # (not via parse_reasoning_effort) so the full adaptive range incl. "max"
+    # is honored — the adapter's ADAPTIVE_EFFORT_MAP accepts max/xhigh even
+    # though the legacy config parser caps at xhigh.
+    if override_effort:
+        _eff = override_effort.strip().lower()
+        if _eff in {"low", "medium", "high", "xhigh", "max"}:
+            child_reasoning = {"enabled": True, "effort": _eff}
+        elif _eff == "none":
+            child_reasoning = {"enabled": False}
+        else:
+            logger.warning(
+                "resolve_delegation_model: unknown effort '%s', keeping default",
+                override_effort,
+            )
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -2512,6 +2533,18 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Let a router plugin override (model, effort) for THIS task based
+            # on its goal text. No plugin registered -> (None, None) -> creds
+            # are used unchanged (byte-identical to pre-hook behavior).
+            _model_override, _effort_override = _resolve_delegation_model_override(
+                goal=t["goal"],
+                context=t.get("context"),
+                role=effective_role,
+                toolsets=t.get("toolsets"),
+                parent_agent=parent_agent,
+                creds=creds,
+                cfg=cfg,
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2519,7 +2552,8 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=_model_override or creds["model"],
+                override_effort=_effort_override,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -3022,6 +3056,78 @@ def _resolve_child_credential_pool(
             exc,
         )
     return None
+
+
+def _resolve_delegation_model_override(
+    *,
+    goal: str,
+    context: Optional[str],
+    role: Optional[str],
+    toolsets: Optional[List[str]],
+    parent_agent,
+    creds: dict,
+    cfg: dict,
+):
+    """Fire the ``resolve_delegation_model`` plugin hook for ONE delegation.
+
+    Lets a router plugin override the (model, effort) pair that this single
+    child task runs on, using the task ``goal`` text + parent/config context.
+    Returns ``(model_override, effort_override)`` — both ``None`` when no
+    plugin registers the hook or every callback abstains (returns ``None``).
+
+    SAFE DEFAULT / cache-safety: when the hook is unregistered this is a cheap
+    ``has_hook`` lookup that returns ``(None, None)``, so the caller keeps the
+    configured delegation creds and ``delegate_task`` behaves byte-identically
+    to a build without the hook. The hook fires at the delegation boundary
+    only (fresh child context) — it never switches the main agent's model
+    mid-turn and never touches the parent's prompt cache.
+
+    The FIRST callback returning a dict with a non-empty ``model`` or
+    ``effort`` wins; later callbacks are ignored. A bad return shape (non-dict,
+    or a dict with neither usable key) is skipped, not fatal.
+    """
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook as _invoke_hook
+    except Exception:
+        return None, None
+
+    # No registered router -> provably no-op (identical-to-before behavior).
+    try:
+        if not has_hook("resolve_delegation_model"):
+            return None, None
+    except Exception:
+        return None, None
+
+    try:
+        results = _invoke_hook(
+            "resolve_delegation_model",
+            goal=goal or "",
+            context=context,
+            role=role,
+            toolsets=list(toolsets) if toolsets else None,
+            parent_model=getattr(parent_agent, "model", None),
+            delegation_model=creds.get("model"),
+            delegation_effort=str(cfg.get("reasoning_effort") or "").strip() or None,
+        )
+    except Exception:
+        logger.debug("resolve_delegation_model hook invocation failed", exc_info=True)
+        return None, None
+
+    for ret in results:
+        if not isinstance(ret, dict):
+            continue
+        raw_model = ret.get("model")
+        raw_effort = ret.get("effort")
+        model = str(raw_model).strip() if raw_model else None
+        effort = str(raw_effort).strip().lower() if raw_effort else None
+        if model or effort:
+            logger.debug(
+                "resolve_delegation_model: plugin override model=%s effort=%s "
+                "(was model=%s)",
+                model, effort, creds.get("model"),
+            )
+            return model or None, effort or None
+    return None, None
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:

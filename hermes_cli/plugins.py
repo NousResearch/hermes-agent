@@ -163,6 +163,33 @@ VALID_HOOKS: Set[str] = {
     "on_session_reset",
     "subagent_start",
     "subagent_stop",
+    # Delegation model/effort router hook. Fired by tools/delegate_tool.py
+    # ONCE PER child task, right before the child AIAgent is constructed, so a
+    # plugin can OVERRIDE which (model, effort) pair that single delegation runs
+    # on. This is a cache-safe boundary: each child is a fresh context, so a
+    # route decision here never re-reads or invalidates the parent's prompt
+    # cache, and it never switches the main agent's model mid-turn.
+    #
+    # Kwargs:
+    #   goal: str               -- the child task's prompt/goal text
+    #   context: str | None     -- optional extra context block for the child
+    #   role: str               -- "leaf" | "orchestrator"
+    #   toolsets: list[str] | None -- toolsets the child will run with
+    #   parent_model: str | None   -- the model the delegating parent runs on
+    #   delegation_model: str | None  -- model from delegation config (None ->
+    #                                    child inherits the parent's model)
+    #   delegation_effort: str | None -- reasoning_effort from delegation config
+    #
+    # Return: a plugin returns a dict to override, or None to abstain. The
+    # FIRST non-None dict wins (invoke_hook preserves registration order).
+    #   {"model": "<model-id>", "effort": "low|medium|high|xhigh|max"}
+    # Both keys are optional: a plugin may set only "effort" (keep the model,
+    # change thinking depth) or only "model". An omitted/empty key leaves that
+    # axis at its configured default. SAFE DEFAULT: when no plugin registers
+    # this hook, or every callback returns None, delegate_task behaves
+    # byte-identically to a build without the hook (children inherit the
+    # parent / configured delegation creds).
+    "resolve_delegation_model",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

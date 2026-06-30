@@ -34,6 +34,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_delegation_model_override,
     _inherit_parent_base_url,
 )
 
@@ -3153,6 +3154,228 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestResolveDelegationModelHook(unittest.TestCase):
+    """The resolve_delegation_model plugin hook: a router plugin can override
+    the (model, effort) pair for a single delegation, and the absence of the
+    hook is byte-identical to pre-hook behavior."""
+
+    # -- helper-level: _resolve_delegation_model_override --------------------
+
+    @patch("hermes_cli.plugins.invoke_hook")
+    @patch("hermes_cli.plugins.has_hook", return_value=False)
+    def test_no_registered_hook_is_noop(self, _has_hook, mock_invoke):
+        """No plugin registered -> (None, None) and the hook is never invoked
+        (the cache-safe, identical-to-before path)."""
+        m, e = _resolve_delegation_model_override(
+            goal="anything",
+            context=None,
+            role="leaf",
+            toolsets=None,
+            parent_agent=_make_mock_parent(),
+            creds={"model": "claude-opus-4-8"},
+            cfg={},
+        )
+        self.assertEqual((m, e), (None, None))
+        mock_invoke.assert_not_called()
+
+    @patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"model": "claude-haiku-4-5", "effort": "low"}],
+    )
+    @patch("hermes_cli.plugins.has_hook", return_value=True)
+    def test_plugin_override_wins(self, _has_hook, _invoke):
+        m, e = _resolve_delegation_model_override(
+            goal="summarize this changelog",
+            context=None,
+            role="leaf",
+            toolsets=["read"],
+            parent_agent=_make_mock_parent(),
+            creds={"model": "claude-opus-4-8"},
+            cfg={"reasoning_effort": "medium"},
+        )
+        self.assertEqual((m, e), ("claude-haiku-4-5", "low"))
+
+    @patch("hermes_cli.plugins.invoke_hook", return_value=[{"effort": "xhigh"}])
+    @patch("hermes_cli.plugins.has_hook", return_value=True)
+    def test_effort_only_override(self, _has_hook, _invoke):
+        """A plugin may set only effort (keep the model)."""
+        m, e = _resolve_delegation_model_override(
+            goal="debug this race condition",
+            context=None,
+            role="leaf",
+            toolsets=None,
+            parent_agent=_make_mock_parent(),
+            creds={"model": "claude-opus-4-8"},
+            cfg={},
+        )
+        self.assertEqual((m, e), (None, "xhigh"))
+
+    @patch(
+        "hermes_cli.plugins.invoke_hook",
+        # First dict carries no usable key -> skipped; second one wins.
+        return_value=[{}, {"model": "claude-sonnet-4-5"}],
+    )
+    @patch("hermes_cli.plugins.has_hook", return_value=True)
+    def test_first_usable_dict_wins(self, _has_hook, _invoke):
+        m, e = _resolve_delegation_model_override(
+            goal="refactor the auth module",
+            context=None,
+            role="leaf",
+            toolsets=None,
+            parent_agent=_make_mock_parent(),
+            creds={"model": None},
+            cfg={},
+        )
+        self.assertEqual((m, e), ("claude-sonnet-4-5", None))
+
+    @patch("hermes_cli.plugins.invoke_hook", side_effect=RuntimeError("boom"))
+    @patch("hermes_cli.plugins.has_hook", return_value=True)
+    def test_hook_exception_is_swallowed(self, _has_hook, _invoke):
+        """A misbehaving router must not break delegation."""
+        m, e = _resolve_delegation_model_override(
+            goal="x",
+            context=None,
+            role="leaf",
+            toolsets=None,
+            parent_agent=_make_mock_parent(),
+            creds={"model": "claude-opus-4-8"},
+            cfg={},
+        )
+        self.assertEqual((m, e), (None, None))
+
+    # -- build-level: _build_child_agent override_effort --------------------
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_applies_override_effort(self, _cfg):
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "medium"}
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="hard task",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_effort="xhigh",
+            )
+        self.assertEqual(
+            MockAgent.call_args[1]["reasoning_config"],
+            {"enabled": True, "effort": "xhigh"},
+        )
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_override_effort_supports_max(self, _cfg):
+        """'max' must survive — it bypasses the legacy xhigh-capped parser."""
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "medium"}
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="hardest task",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_effort="max",
+            )
+        self.assertEqual(
+            MockAgent.call_args[1]["reasoning_config"],
+            {"enabled": True, "effort": "max"},
+        )
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_no_override_inherits_parent_reasoning(self, _cfg):
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "medium"}
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="ordinary task",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_effort=None,
+            )
+        self.assertEqual(
+            MockAgent.call_args[1]["reasoning_config"],
+            {"enabled": True, "effort": "medium"},
+        )
+
+    # -- end-to-end: delegate_task wires the hook into child construction ----
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"model": "claude-haiku-4-5", "effort": "low"}],
+    )
+    @patch("hermes_cli.plugins.has_hook", return_value=True)
+    def test_delegate_task_applies_hook_override(
+        self, _has_hook, _invoke, _cfg, mock_run
+    ):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "ok",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "medium"}
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            delegate_task(goal="summarize this file", parent_agent=parent)
+
+        self.assertEqual(MockAgent.call_args[1]["model"], "claude-haiku-4-5")
+        self.assertEqual(
+            MockAgent.call_args[1]["reasoning_config"],
+            {"enabled": True, "effort": "low"},
+        )
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("hermes_cli.plugins.invoke_hook")
+    @patch("hermes_cli.plugins.has_hook", return_value=False)
+    def test_delegate_task_without_hook_is_unchanged(
+        self, _has_hook, mock_invoke, _cfg, mock_run
+    ):
+        """No router registered -> child inherits the parent's model exactly as
+        before, and the hook is never invoked."""
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "ok",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            delegate_task(goal="do the thing", parent_agent=parent)
+
+        # creds["model"] is None (empty cfg) -> child inherits parent.model.
+        self.assertEqual(MockAgent.call_args[1]["model"], parent.model)
+        # invoke_hook fires for unrelated hooks (subagent_start/stop), but the
+        # router hook must never be invoked when has_hook() reports it absent.
+        router_calls = [
+            c
+            for c in mock_invoke.call_args_list
+            if c.args and c.args[0] == "resolve_delegation_model"
+        ]
+        self.assertEqual(router_calls, [])
 
 
 if __name__ == "__main__":

@@ -291,10 +291,21 @@ def mmr_select(candidates, k, lam=0.4, sim_fn=question_similarity):
 # ── ranking & bucket assembly ────────────────────────────────────────────────
 
 
+def selection_floor(records, discard_threshold, rel_frac=0.0, abs_floor=0.10):
+    """The value gate. rel_frac=0 → the absolute `discard_threshold` (backward-compatible). rel_frac>0
+    → a RELATIVE knee: `max(abs_floor, rel_frac · top_value)`, so the cutoff scales with each run's value
+    distribution (a low-value domain isn't wiped by a fixed absolute floor), with `abs_floor` as a low
+    junk backstop. In relative mode `discard_threshold` is not used."""
+    if rel_frac <= 0:
+        return discard_threshold
+    top = max((r.get("value", 0.0) for r in records if not r.get("gated_out")), default=0.0)
+    return max(abs_floor, rel_frac * top)
+
+
 def rank_and_select(records, *, discard_threshold, pre_answer_threshold,
                     hard_cap, mmr_lambda=0.4, redundancy_threshold=0.8,
-                    sim_fn=question_similarity):
-    """Gate → keep (value ≥ discard) → collapse redundant clusters → MMR-diversify
+                    sim_fn=question_similarity, rel_frac=0.0, abs_floor=0.10):
+    """Gate → keep (value ≥ floor) → collapse redundant clusters → MMR-diversify
     to hard_cap → classify.
 
     Pure: takes already-scored records (each with `value`, `u`, `evsi`,
@@ -303,10 +314,12 @@ def rank_and_select(records, *, discard_threshold, pre_answer_threshold,
     holds everything else, each tagged with a `recommendation`:
       SKIP (low value / gated out) · REDUNDANT (same latent as a kept higher-value
       question) · OVERFLOW (valuable + distinct but beyond hard_cap).
+    The gate is `selection_floor(...)`: absolute when `rel_frac=0`, else a relative knee.
     """
+    floor = selection_floor(records, discard_threshold, rel_frac, abs_floor)
     survivors, discarded = [], []
     for r in records:
-        if r.get("gated_out") or r.get("value", 0.0) < discard_threshold:
+        if r.get("gated_out") or r.get("value", 0.0) < floor:
             r["recommendation"] = "SKIP"
             discarded.append(r)
         else:

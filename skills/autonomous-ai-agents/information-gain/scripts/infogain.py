@@ -43,6 +43,8 @@ DEFAULTS = {
     "discard_threshold": 0.40,
     "pre_answer_threshold": 0.60,
     "refill_floor": 0.30,
+    "rel_keep_frac": 0.0,   # relative-knee selection: 0 = absolute discard_threshold (current);
+                            # >0 = keep value >= max(abs_floor, rel_keep_frac * top_value). Set from 1b.
     "questions_per_round": 6,
     "gen_samples": 1,
     "gen_temperature": 0.0,
@@ -253,7 +255,8 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
         bucket, _ = voi.rank_and_select(
             scored_all, discard_threshold=cfg["discard_threshold"],
             pre_answer_threshold=cfg["pre_answer_threshold"],
-            hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"], sim_fn=sim_fn)
+            hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"], sim_fn=sim_fn,
+            rel_frac=cfg["rel_keep_frac"])
         best_fresh = voi.best_value(fresh)
         log(f"round {rounds_used}: bucket={len(bucket)} "
             f"(target {cfg['target_bucket_size']}), best fresh value={best_fresh:.2f}")
@@ -286,7 +289,8 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
     bucket, discarded = voi.rank_and_select(
         scored_all, discard_threshold=cfg["discard_threshold"],
         pre_answer_threshold=cfg["pre_answer_threshold"],
-        hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"], sim_fn=sim_fn)
+        hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"], sim_fn=sim_fn,
+        rel_frac=cfg["rel_keep_frac"])
 
     usage = pipeline.get_usage()
     usage["wall_seconds"] = round(time.time() - _t0, 1)

@@ -176,6 +176,23 @@ class TestSimilarityAndSelection(unittest.TestCase):
                                        pre_answer_threshold=0.6, hard_cap=2)
         self.assertEqual([r["family"] for r in buck0], ["A", "A"])
 
+    def test_selection_floor_modes(self):
+        recs = [self._scored("a", "t", 0.6), self._scored("b", "t2", 0.3)]
+        self.assertEqual(voi.selection_floor(recs, 0.40), 0.40)                       # rel_frac=0 -> absolute
+        self.assertAlmostEqual(voi.selection_floor(recs, 0.40, rel_frac=0.5), 0.30)   # max(0.10, 0.5*0.6)
+        self.assertAlmostEqual(voi.selection_floor(recs, 0.40, rel_frac=0.1, abs_floor=0.15), 0.15)  # backstop
+
+    def test_relative_knee_keeps_more_in_low_value_domain(self):
+        # values all run low; absolute 0.40 wipes most, the relative knee scales to the top value
+        recs = [self._scored("q1", "t1", 0.50), self._scored("q2", "t2", 0.35),
+                self._scored("q3", "t3", 0.28), self._scored("q4", "t4", 0.12)]
+        abs_bucket, _ = voi.rank_and_select([dict(r) for r in recs], discard_threshold=0.40,
+                                            pre_answer_threshold=0.60, hard_cap=7)            # rel_frac=0
+        rel_bucket, _ = voi.rank_and_select([dict(r) for r in recs], discard_threshold=0.40,
+                                            pre_answer_threshold=0.60, hard_cap=7, rel_frac=0.5)
+        self.assertEqual(len(abs_bucket), 1)   # only q1 (>=0.40)
+        self.assertEqual(len(rel_bucket), 3)   # floor=max(0.10, 0.25)=0.25 -> q1,q2,q3
+
     def _fam(self, q, t, fam, val):
         return {"question": q, "target": t, "family": fam, "value": val, "u": 0.8,
                 "evsi": val, "gated_out": False, "answers": [], "modal_answer": None}

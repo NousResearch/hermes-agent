@@ -1,4 +1,6 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
+import logging
+
 import pytest
 
 from gateway.run import GatewayRunner
@@ -142,12 +144,12 @@ class TestProfileMessageHandler:
         assert seen["profile"] == "writer"
 
 
-class TestPortBindingHardError:
-    """A secondary profile enabling a port-binding platform aborts startup."""
+class TestSecondaryProfileConfigHandling:
+    """Secondary config errors degrade only when the profile is safe to skip."""
 
     @pytest.mark.asyncio
-    async def test_secondary_webhook_raises(self, monkeypatch):
-        from gateway.run import MultiplexConfigError
+    async def test_secondary_webhook_uses_degradable_error(self, monkeypatch):
+        from gateway.run import SecondaryPortBindingConfigError
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -163,10 +165,143 @@ class TestPortBindingHardError:
             "gateway.config.load_gateway_config", lambda: reviewer_cfg
         )
 
-        with pytest.raises(MultiplexConfigError) as ei:
+        with pytest.raises(SecondaryPortBindingConfigError) as ei:
             await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert "webhook" in str(ei.value)
         assert "reviewer" in str(ei.value)
+        assert "reviewer" not in runner._profile_adapters
+
+    @pytest.mark.asyncio
+    async def test_secondary_reports_all_port_binding_platforms(self, monkeypatch):
+        from gateway.run import SecondaryPortBindingConfigError
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform.FEISHU: PlatformConfig(enabled=True),
+            Platform.WEBHOOK: PlatformConfig(enabled=True, extra={"port": 8644}),
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
+        }
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reviewer_cfg
+        )
+
+        with pytest.raises(SecondaryPortBindingConfigError) as ei:
+            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        message = str(ei.value)
+        assert "feishu" in message
+        assert "webhook" in message
+        assert "telegram" not in message
+        assert "reviewer" not in runner._profile_adapters
+
+    @pytest.mark.asyncio
+    async def test_multiplexer_skips_bad_profile_and_continues(self, monkeypatch, caplog):
+        from pathlib import Path
+        from gateway.config import GatewayConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        runner._profile_adapters = {}
+
+        async def fake_start_one(profile_name, profile_home, claimed):
+            if profile_name == "bad":
+                from gateway.run import SecondaryPortBindingConfigError
+                raise SecondaryPortBindingConfigError("bad enables webhook")
+            runner._profile_adapters[profile_name] = {}
+            return 2
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", Path("/tmp/default")),
+                ("bad", Path("/tmp/bad")),
+                ("good", Path("/tmp/good")),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name",
+            lambda: "default",
+        )
+        monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
+        monkeypatch.setattr(
+            "gateway.status.write_runtime_status",
+            lambda **kwargs: None,
+        )
+
+        caplog.set_level(logging.WARNING, logger="gateway.run")
+        connected = await runner._start_secondary_profile_adapters()
+
+        assert connected == 2
+        assert "good" in runner._profile_adapters
+        assert "bad" not in runner._profile_adapters
+        assert "Skipping secondary profile 'bad'" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_multiplexer_propagates_security_config_error(self, monkeypatch):
+        from pathlib import Path
+        from gateway.config import GatewayConfig
+        from gateway.run import MultiplexConfigError
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.adapters = {}
+        runner._profile_adapters = {}
+
+        async def fake_start_one(profile_name, profile_home, claimed):
+            raise MultiplexConfigError(
+                f"Profile '{profile_name}' enables open policy without allow-all opt-in"
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", Path("/tmp/default")),
+                ("unsafe", Path("/tmp/unsafe")),
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name",
+            lambda: "default",
+        )
+        monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
+
+        with pytest.raises(MultiplexConfigError, match="open policy"):
+            await runner._start_secondary_profile_adapters()
+
+    @pytest.mark.asyncio
+    async def test_open_policy_uses_fatal_config_error(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import (
+            MultiplexConfigError,
+            SecondaryPortBindingConfigError,
+        )
+
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("WECOM_ALLOW_ALL_USERS", raising=False)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        unsafe_cfg = GatewayConfig(multiplex_profiles=True)
+        unsafe_cfg.platforms = {
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "open"},
+            ),
+        }
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: unsafe_cfg)
+
+        with pytest.raises(MultiplexConfigError, match="open policy") as exc_info:
+            await runner._start_one_profile_adapters("unsafe", "/tmp/unsafe", {})
+
+        assert not isinstance(exc_info.value, SecondaryPortBindingConfigError)
+        assert "unsafe" not in runner._profile_adapters
 
     @pytest.mark.asyncio
     async def test_secondary_non_binding_platform_ok(self, monkeypatch):
@@ -383,6 +518,15 @@ class TestPortBindingHardError:
     def test_port_binding_set_covers_known_listeners(self):
         from gateway.run import _PORT_BINDING_PLATFORM_VALUES
         # Every adapter that binds a TCP port must be in the guard set.
-        for p in ("webhook", "api_server", "msgraph_webhook", "feishu",
-                  "wecom_callback", "bluebubbles", "sms"):
+        for p in (
+            "webhook",
+            "api_server",
+            "msgraph_webhook",
+            "feishu",
+            "wecom_callback",
+            "bluebubbles",
+            "sms",
+            "whatsapp_cloud",
+            "line",
+        ):
             assert p in _PORT_BINDING_PLATFORM_VALUES

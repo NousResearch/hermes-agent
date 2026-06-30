@@ -17,7 +17,12 @@ Verdict: **Δ component directionally calibrated** (per-answer ρ=0.39, cluster 
 (0/40 within-prompt reorderings, anti-predictive alone); **full EVSI not-yet-validated** — null vs the
 clean realized-change signal (ρ=−0.009), and its +0.605 vs realized-EVSI is a **stakes-reuse confound**
 (partial-ρ|stakes = −0.13); **max-Δ** is the best clean predictor but marginal (p=0.064). n=17 / 3
-prompts → directional. **Consequence: gate the wrapper on a de-confounded #21; formula change pending.**
+prompts → directional. **Consequence: gate the wrapper on a de-confounded #21.**
+**Decision (2026-06): FREEZE the formula — no changes on n=17; #21 decides every formula question
+de-confounded and properly powered.** Caveat carried forward: `U` is inert *for ranking* but
+**load-bearing for the gate** (`is_gated_out`: `derivable_prob`→1 → `U`→0 retires answered questions
+across rounds), so any later "drop U" must **keep the derivability gate**, only removing U from the
+`value` number.
 
 **1.1 Use-relevant validity study (the core test).** For N prompts, produce three responses and
 judge them blind for relevance to the prompt:
@@ -46,11 +51,12 @@ where improvement flattens to ~0. Set the cap from the curve, don't guess it.
 signal (+0.526) while EVSI/value are ≈0 there (the EVSI signal lives entirely in stakes-weighting,
 which 1.1 must validate de-confounded). See `evsi-validation-findings.md`.
 
-**1.3 Calibration → rank-relative (likely) + drop `U`.** Absolute thresholds (0.40/0.60) are
-model-dependent (fast → everything PRE_ANSWER; deepseek → fewer). Switch selection to rank/relative
-(top-K, or ≥ X% of the round's best). **Also fold in the P1c finding: drop the inert `U` factor**
-(ranking-neutral on the validation set; `√(U·EVSI)` collapses to a monotone transform of EVSI) — a
-simplification, pending confirmation it isn't a narrow-`U`-range artifact. Small change, robust to scale.
+**1.3 Calibration → rank-relative (likely); revisit `U` after #21.** Absolute thresholds (0.40/0.60)
+are model-dependent (fast → everything PRE_ANSWER; deepseek → fewer). Switch selection to rank/relative
+(top-K, or ≥ X% of the round's best). The P1c finding (inert `U`) is **held, not actioned** (formula
+frozen until #21). If #21 confirms it, drop `U` from the `value` number **only** — `value` becomes EVSI
+(`√(U·EVSI)` is already a monotone transform of EVSI), while the derivability **gate** stays so the
+evidence loop still retires answered questions. Pending confirmation it isn't a narrow-`U`-range artifact.
 
 **1.4 Elicitation (only if 1.1 says inputs are the weak link).** Replace absolute 0–1 Δ/stakes with
 **comparative/pairwise** judgments ("which answer would change the response more?") — models are far

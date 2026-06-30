@@ -85,11 +85,15 @@ synthesis. All 5 headline numbers reproduced within rounding; verdicts:
 
 ## What it means for the rating
 
-1. **`U` (uncertainty) is inert** in this sample (range-compressed 0.725–0.984) and anti-predictive on
-   its own. `√(U·EVSI)` ranks identically to EVSI. *Hedge:* inertness unproven beyond this narrow U
-   spread; one buy-rent pair came within 0.002 of flipping.
+1. **`U` (uncertainty) is inert *for ranking*** in this sample (range-compressed 0.725–0.984) and
+   anti-predictive on its own. `√(U·EVSI)` ranks identically to EVSI. **But `U` is load-bearing for the
+   *gate*** (`is_gated_out`: `derivable_prob`→1 → `U`→0 retires answered questions across rounds) — the
+   ablation only tested the ranking role. So a future "drop U" removes it from the `value` number
+   **only**, keeping the derivability gate. *Hedge:* inertness unproven beyond this narrow U spread;
+   one buy-rent pair came within 0.002 of flipping.
 2. **The full EVSI is not-yet-validated.** Don't ship the ranker on this evidence; **gate the Phase-2
    wrapper on a de-confounded #21.** Stop citing +0.605 as validation — it's a stakes-reuse artifact.
+   **Decision (2026-06): freeze the formula — no changes on n=17;** #21 decides every formula question.
 3. **max-Δ is a live contender** (best clean-signal predictor) but **marginal** (p=0.064) — a
    hypothesis to test in #21, not a switch to flip now.
 4. **Floor: defer.** Directionally a floor exists (low-Δ questions realize ~0.43 vs ~0.83 at top), but

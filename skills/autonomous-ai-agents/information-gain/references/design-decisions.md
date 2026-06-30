@@ -63,8 +63,13 @@ exploration value = √(uncertainty × value-of-answering)
 > confound** (the realized-EVSI target recycles projected stakes; partial-ρ\|stakes = −0.13);
 > (d) **max-Δ** is the best clean-signal predictor but marginal (p=0.064). *Caveat:* n=17 / 3 prompts,
 > and `U`'s range is compressed (0.725–0.984), so its inertness is unproven beyond this sample.
-> **Formula change is pending** a de-confounded, multi-prompt re-run (#21) that measures realized
-> *stakes* and registers max-Δ as a competitor; the wrapper build is gated on it.
+> **`U` has two roles** — it's inert as a *ranking* factor but **load-bearing as the gate**
+> (`is_gated_out`: `derivable_prob`→1 → `U`→0 retires answered questions across rounds, §"evidence
+> loop"); the ablation only tested the ranking role. So a future "drop U" means removing it from the
+> `value` number **only**, never from the derivability gate.
+> **Decision (2026-06): the formula is FROZEN** — no changes on n=17. A de-confounded, multi-prompt
+> re-run (#21) that measures realized *stakes* and registers max-Δ as a competitor decides every
+> formula question; the wrapper build is gated on it.
 
 ## The evidence loop (how multi-step depth happens)
 

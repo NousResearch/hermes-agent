@@ -673,6 +673,34 @@ class TestCodexValidateResponse:
         r = SimpleNamespace(output=None, output_text="Some text")
         assert transport.validate_response(r) is False
 
+    def test_empty_output_content_filter_incomplete_is_valid(self, transport):
+        r = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="content_filter"),
+            output=[],
+            output_text="",
+        )
+        assert transport.validate_response(r) is True
+
+    def test_empty_output_content_filter_dict_incomplete_is_valid(self, transport):
+        r = SimpleNamespace(
+            status=" incomplete ",
+            incomplete_details={"reason": " content_filter "},
+            output=[],
+            output_text="",
+        )
+        assert transport.validate_response(r) is True
+
+    @pytest.mark.parametrize("reason", ["max_output_tokens", "length", "", None])
+    def test_empty_output_other_incomplete_reasons_remain_invalid(self, transport, reason):
+        r = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason=reason),
+            output=[],
+            output_text="",
+        )
+        assert transport.validate_response(r) is False
+
 
 class TestCodexMapFinishReason:
 

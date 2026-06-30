@@ -490,12 +490,36 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+def _converse_image_block_from_data_url(url: str) -> Optional[Dict]:
+    """Build a Converse image block from a ``data:`` URL, or None if not one."""
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    header, _, data = url.partition(",")
+    media_type = "image/jpeg"
+    if header.startswith("data:"):
+        mime_part = header[5:].split(";")[0]
+        if mime_part:
+            media_type = mime_part
+    return {
+        "image": {
+            "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
+            "source": {"bytes": data},
+        }
+    }
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
     Handles:
       - Plain text strings → [{"text": "..."}]
-      - Content arrays with text/image_url parts → mixed text/image blocks
+      - Content arrays with text / image_url / input_image / Anthropic-style
+        ``image`` parts → mixed text/image blocks
+
+    The three image shapes (``image_url``, ``input_image``, and the
+    Anthropic-native ``image`` source block) are all treated as images, the
+    same way the Anthropic converter and the rest of the codebase do — Bedrock
+    frequently serves Claude models, so all three reach this converter.
 
     Filters out empty text blocks — Bedrock's Converse API rejects messages
     where a text content block has an empty ``text`` field (ValidationException:
@@ -538,6 +562,38 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
+            elif part_type == "input_image":
+                # OpenAI Responses shape: ``image_url`` is a bare URL string
+                # (or, defensively, the {"url": ...} dict form). The Anthropic
+                # converter accepts this; Converse must too.
+                image_url = part.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else image_url
+                block = _converse_image_block_from_data_url(url)
+                if block is not None:
+                    blocks.append(block)
+                elif isinstance(url, str) and url:
+                    blocks.append({"text": f"[Image: {url}]"})
+            elif part_type == "image":
+                # Anthropic-native block: {"source": {"type": "base64",
+                # "media_type": ..., "data": ...}} or a url source.
+                source = part.get("source")
+                if isinstance(source, dict):
+                    src_type = source.get("type")
+                    data = source.get("data")
+                    if src_type == "base64" and isinstance(data, str) and data:
+                        media_type = source.get("media_type") or "image/jpeg"
+                        if not isinstance(media_type, str):
+                            media_type = "image/jpeg"
+                        blocks.append({
+                            "image": {
+                                "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
+                                "source": {"bytes": data},
+                            }
+                        })
+                    else:
+                        src_url = source.get("url")
+                        if isinstance(src_url, str) and src_url:
+                            blocks.append({"text": f"[Image: {src_url}]"})
         return blocks if blocks else [{"text": " "}]
     return [{"text": str(content)}]
 

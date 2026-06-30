@@ -146,6 +146,22 @@ class TestCoerceValue:
         """A non-numeric string in [number, string] should stay a string."""
         assert _coerce_value("hello", ["number", "string"]) == "hello"
 
+    def test_union_keeps_leading_zero_value_as_string(self):
+        """A leading-zero value (a formatted code/id like "007") in a union that
+        also permits a string must stay a string — coercing it to a number drops
+        the zeros and corrupts the argument. Plain numeric strings, "0", and
+        decimals are unaffected, and a pure integer field still coerces."""
+        assert _coerce_value("007", ["integer", "string"]) == "007"
+        assert _coerce_value("0123", ["string", "integer"]) == "0123"
+        assert _coerce_value("-007", ["integer", "string"]) == "-007"
+        # Unchanged cases:
+        assert _coerce_value("42", ["integer", "string"]) == 42
+        assert _coerce_value("0", ["integer", "string"]) == 0
+        assert _coerce_value("0.5", ["number", "string"]) == 0.5
+        # A field typed purely as integer has no string alternative, so a
+        # leading-zero value is still a (zero-less) integer.
+        assert _coerce_value("007", "integer") == 7
+
     def test_array_type_parsed_from_json_string(self):
         """Stringified JSON arrays are parsed into native lists."""
         assert _coerce_value('["a", "b"]', "array") == ["a", "b"]

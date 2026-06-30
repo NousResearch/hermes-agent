@@ -733,8 +733,16 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
         return None
 
     if isinstance(expected_type, list):
-        # Union type — try each in order, return first successful coercion
+        # Union type — try each in order, return first successful coercion.
+        # If the union also permits a string, a leading-zero value (a formatted
+        # code/id like "007" or "0123" the model meant as text) must stay a
+        # string: coercing it to a number drops the zeros and silently corrupts
+        # the argument. A plain string variant is a no-op, so without this skip
+        # the numeric branch wins regardless of the union order.
+        keep_as_string = "string" in expected_type and _has_leading_zero(value)
         for t in expected_type:
+            if keep_as_string and t in {"integer", "number"}:
+                continue
             result = _coerce_value(value, t, schema=schema)
             if result is not value:
                 return result
@@ -751,6 +759,21 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
     if expected_type == "null" and value.strip().lower() == "null":
         return None
     return value
+
+
+def _has_leading_zero(value: str) -> bool:
+    """True when *value* carries a meaningful leading zero.
+
+    ``"007"`` / ``"0123"`` are formatted codes or ids, not the integers 7 / 123
+    — the leading zero is information that a numeric coercion would discard.
+    ``"0"``, ``"0.5"`` and ``"0x1F"`` are ordinary values, not zero-padded.
+    """
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    if s[:1] in {"+", "-"}:
+        s = s[1:]
+    return len(s) >= 2 and s[0] == "0" and s[1].isdigit()
 
 
 def _schema_allows_null(schema: dict | None) -> bool:

@@ -52,6 +52,8 @@ def _clear_auth_env(monkeypatch) -> None:
         "QQ_ALLOWED_USERS",
         "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
+        "WHATSAPP_GROUP_ALLOWED_USERS",
+        "WHATSAPP_GROUP_POLICY",
         "TELEGRAM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
@@ -285,6 +287,57 @@ def test_env_allowlist_still_takes_precedence_for_own_policy_platform(monkeypatc
     )
     assert runner._is_user_authorized(listed) is True
     assert runner._is_user_authorized(stranger) is False
+
+
+def test_whatsapp_group_allowlist_authorizes_group_sender_even_with_dm_allowlist(monkeypatch):
+    """WhatsApp group allowlist is chat-scoped and must not grant DM access."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "owner-user")
+
+    family_chat = "120363001234567890@g.us"
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "dm_policy": "allowlist",
+                    "allow_from": ["owner-user"],
+                    "group_policy": "allowlist",
+                    "group_allow_from": [family_chat],
+                },
+            )
+        }
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config, enforces=True)
+    adapter._group_policy = "allowlist"
+    adapter._group_allow_from = {family_chat}
+    adapter._is_group_allowed = lambda chat_id: chat_id == family_chat
+
+    group_sender = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="other-member@lid",
+        chat_id=family_chat,
+        user_name="member",
+        chat_type="group",
+    )
+    other_group_sender = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="other-member@lid",
+        chat_id="120363999999999999@g.us",
+        user_name="member",
+        chat_type="group",
+    )
+    dm_sender = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="other-member@lid",
+        chat_id="other-member@lid",
+        user_name="member",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(group_sender) is True
+    assert runner._is_user_authorized(other_group_sender) is False
+    assert runner._is_user_authorized(dm_sender) is False
 
 
 def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):

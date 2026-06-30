@@ -2220,3 +2220,43 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+    def test_read_events_raises_when_loop_exits_without_error_frame(self):
+        """When the WS closes between the while-condition check and the next
+        receive(), the while loop exits silently.  The post-loop guard must
+        raise so _listen_loop takes the reconnect/backoff path instead of
+        resetting backoff to 0 and immediately retrying."""
+        import aiohttp
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._running = True
+
+        ws = MagicMock()
+        call_count = 0
+        text_msg = MagicMock()
+        text_msg.type = aiohttp.WSMsgType.TEXT
+        text_msg.data = '{"op": 1, "d": null}'  # heartbeat ack, ignored by dispatch
+
+        async def receive_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: return a normal TEXT message so the loop continues
+                return text_msg
+            # Second call: close the WS before returning, so the while
+            # condition becomes false on the next iteration check
+            ws.closed = True
+            # Return a message that won't be reached (loop exits first)
+            return text_msg
+
+        ws.receive = AsyncMock(side_effect=receive_side_effect)
+        ws.closed = False
+        adapter._ws = ws
+        # _dispatch_payload needs to exist and be callable
+        adapter._dispatch_payload = MagicMock()
+
+        with pytest.raises(RuntimeError, match="loop exit without error frame"):
+            asyncio.run(adapter._read_events())

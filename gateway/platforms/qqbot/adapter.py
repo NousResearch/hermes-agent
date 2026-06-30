@@ -702,6 +702,12 @@ class QQAdapter(BasePlatformAdapter):
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
 
+        # If the loop exited because the WS closed (not because _running was
+        # set to False), raise so _listen_loop takes the reconnect/backoff path
+        # instead of resetting backoff_idx to 0 and immediately retrying.
+        if self._running:
+            raise RuntimeError("QQ WebSocket closed (loop exit without error frame)")
+
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
 

@@ -9,6 +9,7 @@
     "prebuild": "node scripts/prebuild.mjs",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
+    "postinstall": "node scripts/patch-gray-matter-js-yaml4.cjs",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",
     "serve": "docusaurus serve",
@@ -25,6 +26,7 @@
     "@easyops-cn/docusaurus-search-local": "^0.55.1",
     "@mdx-js/react": "^3.0.0",
     "clsx": "^2.0.0",
+    "dompurify": "^3.4.11",
     "prism-react-renderer": "^2.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -37,7 +39,11 @@
   },
   "overrides": {
     "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "dompurify": "^3.4.11",
+    "http-proxy-middleware": "3.0.7",
+    "js-yaml": "^4.2.0",
+    "undici": "^7.28.0"
   },
   "browserslist": {
     "production": [

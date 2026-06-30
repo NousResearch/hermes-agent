@@ -2,11 +2,22 @@ import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdo
 import { useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { openInEditor } from '../lib/editor.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { deriveStarmapPalette, fadeHex, fadeInk, type StarmapPalette } from '../lib/starmapPalette.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayScrollbar } from './overlayScrollbar.js'
+
+interface MutationResult {
+  message: string
+  ok: boolean
+}
+
+interface NodeDetail extends MutationResult {
+  content?: string
+  kind?: string
+}
 
 // A run is [text, styleKey, alpha?, hexOverride?] from learning_graph_render.py.
 type Run = [string, string, number?, (string | null)?]
@@ -22,6 +33,7 @@ interface BucketNode {
   body?: string
   fullLabel?: string
   glyph: string
+  id: string
   label: string
   meta: string
   style: string
@@ -132,9 +144,14 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const [cursor, setCursor] = useState(0)
   const [mode, setMode] = useState<'item' | 'timeline'>('timeline')
   const [tick, setTick] = useState(0)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
   const itemScroll = useRef<null | ScrollBoxHandle>(null)
 
-  // The renderer is size-aware, so refetch when the terminal resizes.
+  // The renderer is size-aware, so refetch when the terminal resizes (or after a
+  // mutation bumps reloadKey).
   useEffect(() => {
     let alive = true
     setData(null)
@@ -155,12 +172,66 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     return () => {
       alive = false
     }
-  }, [gw, cols, chartRows])
+  }, [gw, cols, chartRows, reloadKey])
 
   const tree = buildTree(data?.buckets ?? [])
   const activeRow = tree[Math.min(cursor, Math.max(0, tree.length - 1))]
   const activeNode = activeRow?.kind === 'node' ? activeRow.node : undefined
   const activeBucket = activeRow && activeRow.kind !== 'gap' ? activeRow.bucket : undefined
+
+  const doDelete = () => {
+    const node = activeNode
+    if (!node) {
+      return
+    }
+
+    setBusy(true)
+    gw.request<MutationResult>('learning.delete', { id: node.id })
+      .then(res => {
+        setNotice(res.message)
+
+        if (res.ok) {
+          setMode('timeline')
+          setReloadKey(k => k + 1)
+        }
+      })
+      .catch((e: unknown) => setNotice(rpcErrorMessage(e)))
+      .finally(() => {
+        setBusy(false)
+        setConfirmDelete(false)
+      })
+  }
+
+  const doEdit = async () => {
+    const node = activeNode
+    if (!node) {
+      return
+    }
+
+    setBusy(true)
+    try {
+      const detail = await gw.request<NodeDetail>('learning.detail', { id: node.id })
+      if (!detail.ok || detail.content == null) {
+        return setNotice(detail.message || 'cannot edit')
+      }
+
+      const edited = await openInEditor(detail.content, detail.kind === 'skill' ? '.md' : '.txt')
+      if (edited == null || edited.trim() === detail.content.trim()) {
+        return setNotice('no changes')
+      }
+
+      const res = await gw.request<MutationResult>('learning.edit', { content: edited, id: node.id })
+      setNotice(res.message)
+
+      if (res.ok) {
+        setReloadKey(k => k + 1)
+      }
+    } catch (e) {
+      setNotice(rpcErrorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (mode === 'item') {
@@ -196,10 +267,36 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   }
 
   useInput((ch, key) => {
+    if (busy) {
+      return
+    }
+
+    // Pending delete confirmation swallows the next key (y confirms, else cancel).
+    if (confirmDelete) {
+      if (ch === 'y' || ch === 'Y') {
+        return doDelete()
+      }
+
+      return setConfirmDelete(false)
+    }
+
     const back = key.escape || key.leftArrow || ch === 'h'
 
     if (ch === 'q') {
       return onClose()
+    }
+
+    // Edit / delete work in both modes whenever a node is selected.
+    if (activeNode && ch === 'd' && !key.ctrl) {
+      setNotice('')
+
+      return setConfirmDelete(true)
+    }
+
+    if (activeNode && ch === 'e') {
+      setNotice('')
+
+      return void doEdit()
     }
 
     if (mode === 'item') {
@@ -332,7 +429,8 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         </Box>
 
         <Footer>
-          <Hint t={t}>↑↓/jk scroll · PgUp/PgDn page · g/G top/bottom · Esc/← back · q close</Hint>
+          <StatusLines confirm={confirmDelete} label={activeNode.fullLabel || activeNode.label} notice={notice} t={t} />
+          <Hint t={t}>↑↓/jk scroll · PgUp/PgDn page · e edit · d delete · Esc/← back · q close</Hint>
         </Footer>
       </Box>
     )
@@ -394,9 +492,16 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       </Box>
 
       <Footer>
-        {data.summary.length ? <Hint t={t}>{data.summary.join(' · ')}</Hint> : null}
+        <StatusLines
+          confirm={confirmDelete}
+          label={activeNode ? activeNode.fullLabel || activeNode.label : ''}
+          notice={notice}
+          t={t}
+        />
+        {!confirmDelete && !notice && data.summary.length ? <Hint t={t}>{data.summary.join(' · ')}</Hint> : null}
         <Hint t={t}>
-          ↑↓/jk move{activeNode?.body ? ' · Enter/→ open' : ''} · g/G top/bottom · q close
+          ↑↓/jk move{activeNode?.body ? ' · Enter/→ open' : ''}
+          {activeNode ? ' · e edit · d delete' : ''} · g/G top/bottom · q close
         </Hint>
       </Footer>
     </Box>
@@ -451,6 +556,18 @@ function Shell({ children, t }: { children: React.ReactNode; t: Theme }) {
       <Text color={t.color.muted}>Esc/q close</Text>
     </Box>
   )
+}
+
+function StatusLines({ confirm, label, notice, t }: { confirm: boolean; label: string; notice: string; t: Theme }) {
+  if (confirm) {
+    return <Text color={t.color.error}>delete {label}? y/N</Text>
+  }
+
+  if (notice) {
+    return <Text color={t.color.accent}>{notice}</Text>
+  }
+
+  return null
 }
 
 function Footer({ children }: { children: React.ReactNode }) {

@@ -222,6 +222,86 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
 
+# ── list / delete / edit ─────────────────────────────────────────────────────
+
+
+def _cmd_list(args: argparse.Namespace) -> int:
+    from rich.console import Console
+
+    from agent.learning_graph_render import format_date
+
+    console = Console(no_color=bool(getattr(args, "no_color", False)))
+    nodes = sorted(_build_payload().get("nodes", []), key=lambda n: n.get("timestamp") or 0)
+    if not nodes:
+        console.print("[grey62]No learning yet.[/grey62]")
+        return 0
+    for node in nodes:
+        glyph = "◆" if node.get("kind") == "memory" else "●"
+        date = format_date(node.get("timestamp"))
+        console.print(f"[grey54]{node['id']}[/grey54]  {glyph} {node.get('label', '')}  [grey54]{date}[/grey54]")
+    return 0
+
+
+def _cmd_delete(args: argparse.Namespace) -> int:
+    from agent.learning_mutations import delete_node, node_detail
+
+    detail = node_detail(args.node)
+    if not detail.get("ok"):
+        print(f"  {detail.get('message', 'not found')}")
+        return 1
+    if not getattr(args, "yes", False):
+        try:
+            if input(f"  Delete {detail['label']!r}? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("  aborted")
+                return 1
+        except (EOFError, KeyboardInterrupt):
+            print("\n  aborted")
+            return 1
+    res = delete_node(args.node)
+    print(f"  {res['message']}")
+    return 0 if res.get("ok") else 1
+
+
+def _cmd_edit(args: argparse.Namespace) -> int:
+    from agent.learning_mutations import edit_node, node_detail
+
+    detail = node_detail(args.node)
+    if not detail.get("ok"):
+        print(f"  {detail.get('message', 'not found')}")
+        return 1
+    suffix = ".md" if detail["kind"] == "skill" else ".txt"
+    edited = _open_in_editor(detail["content"], suffix=suffix)
+    if edited is None or edited.strip() == detail["content"].strip():
+        print("  no changes")
+        return 0
+    res = edit_node(args.node, edited)
+    print(f"  {res['message']}")
+    return 0 if res.get("ok") else 1
+
+
+def _open_in_editor(initial: str, *, suffix: str) -> Optional[str]:
+    import os
+    import subprocess
+    import tempfile
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as fh:
+        fh.write(initial)
+        path = fh.name
+    try:
+        subprocess.call([*editor.split(), path])
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        print(f"  editor failed: {exc}")
+        return None
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def register_cli(parent: argparse.ArgumentParser) -> None:
     parent.add_argument(
         "--reveal",
@@ -237,6 +317,21 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     parent.add_argument("--no-color", action="store_true", help="Disable color output.")
     parent.add_argument("--json", action="store_true", help="Print the raw graph payload as JSON and exit.")
     parent.set_defaults(func=_cmd_show)
+
+    sub = parent.add_subparsers(dest="journey_action")
+
+    p_list = sub.add_parser("list", help="List node ids (for delete/edit).")
+    p_list.add_argument("--no-color", action="store_true")
+    p_list.set_defaults(func=_cmd_list)
+
+    p_del = sub.add_parser("delete", help="Delete a learned skill (archived) or memory by node id.")
+    p_del.add_argument("node", help="Node id (skill name or memory:<source>:<index>; see `journey list`).")
+    p_del.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt.")
+    p_del.set_defaults(func=_cmd_delete)
+
+    p_edit = sub.add_parser("edit", help="Edit a learned skill or memory by node id in $EDITOR.")
+    p_edit.add_argument("node", help="Node id (skill name or memory:<source>:<index>; see `journey list`).")
+    p_edit.set_defaults(func=_cmd_edit)
 
 
 def cmd_journey(args: argparse.Namespace) -> int:

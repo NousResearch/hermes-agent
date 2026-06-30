@@ -13,6 +13,7 @@ import importlib
 import difflib
 import io
 import json
+import re
 import shlex
 import sys
 from dataclasses import dataclass, replace
@@ -70,6 +71,51 @@ def _capture_output(fn: Callable[[], object]) -> str:
     if code:
         raise ConsoleCommandError(text.strip() or f"Command exited with status {code}")
     return text.rstrip()
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _is_status_footer_rule(line: str) -> bool:
+    stripped = _strip_ansi(line).strip()
+    if len(stripped) < 8:
+        return False
+    normalized = stripped.replace("\u2500", "-")
+    return set(normalized) <= {"-"}
+
+
+def _strip_console_status_footer(text: str) -> str:
+    lines = text.splitlines()
+    while lines and not _strip_ansi(lines[-1]).strip():
+        lines.pop()
+    if len(lines) < 2:
+        return text.rstrip()
+
+    last = _strip_ansi(lines[-1]).strip()
+    prev = _strip_ansi(lines[-2]).strip()
+    if not (
+        prev.startswith("Run 'hermes doctor'")
+        and last.startswith("Run 'hermes setup'")
+    ):
+        return text.rstrip()
+
+    lines = lines[:-2]
+    while lines and not _strip_ansi(lines[-1]).strip():
+        lines.pop()
+    if lines and _is_status_footer_rule(lines[-1]):
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+def _table_summary(summary: str, *, limit: int = 76) -> str:
+    summary = " ".join(summary.split())
+    if len(summary) <= limit:
+        return summary
+    return f"{summary[: limit - 3].rstrip()}..."
 
 
 def _split_line(line: str) -> list[str]:
@@ -197,6 +243,112 @@ def _parser_root() -> tuple[_ArgumentParser, argparse._SubParsersAction]:
     parser = _ArgumentParser(prog="hermes", add_help=False)
     subparsers = parser.add_subparsers(dest="_console_command")
     return parser, subparsers
+
+
+def _subparser_actions(parser: argparse.ArgumentParser) -> list[argparse._SubParsersAction]:
+    return [
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ]
+
+
+def _choice_help(action: argparse._SubParsersAction, name: str) -> str:
+    for choice in action._choices_actions:
+        if getattr(choice, "dest", None) == name or getattr(choice, "metavar", None) == name:
+            help_text = getattr(choice, "help", None)
+            if help_text and help_text is not argparse.SUPPRESS:
+                return str(help_text)
+    return ""
+
+
+def _clean_summary(text: str | None) -> str:
+    if not text:
+        return ""
+    if text is argparse.SUPPRESS:
+        return ""
+    summary = " ".join(str(text).split())
+    if not summary:
+        return ""
+    if summary.startswith("Run `hermes "):
+        return ""
+    return summary
+
+
+def _summaries_from_parser(parser: argparse.ArgumentParser) -> dict[tuple[str, ...], str]:
+    summaries: dict[tuple[str, ...], str] = {}
+
+    def walk(current: argparse.ArgumentParser, path: tuple[str, ...]) -> None:
+        for action in _subparser_actions(current):
+            for name, child in action.choices.items():
+                child_path = (*path, name)
+                summary = _clean_summary(_choice_help(action, name)) or _clean_summary(
+                    child.description
+                )
+                if summary:
+                    summaries.setdefault(child_path, summary)
+                walk(child, child_path)
+
+    walk(parser, ())
+    return summaries
+
+
+def _noop_console_command(_args: argparse.Namespace) -> None:
+    return None
+
+
+def _extracted_summaries(
+    module_name: str,
+    builder_name: str,
+    main_handler_name: str,
+) -> dict[tuple[str, ...], str]:
+    try:
+        parser, subparsers = _parser_root()
+        module = importlib.import_module(module_name)
+        builder = getattr(module, builder_name)
+        builder(subparsers, **{main_handler_name: _noop_console_command})
+        return _summaries_from_parser(parser)
+    except Exception:
+        return {}
+
+
+def _registered_summaries(
+    root: str,
+    module_name: str,
+    register_name: str,
+) -> dict[tuple[str, ...], str]:
+    try:
+        parser, subparsers = _parser_root()
+        module = importlib.import_module(module_name)
+        top_parser = subparsers.add_parser(root)
+        register = getattr(module, register_name)
+        register(top_parser)
+        return _summaries_from_parser(parser)
+    except Exception:
+        return {}
+
+
+def _builder_summaries(
+    module_name: str,
+    builder_name: str,
+) -> dict[tuple[str, ...], str]:
+    try:
+        parser, subparsers = _parser_root()
+        module = importlib.import_module(module_name)
+        getattr(module, builder_name)(subparsers)
+        return _summaries_from_parser(parser)
+    except Exception:
+        return {}
+
+
+def _adder_summaries(module_name: str, add_name: str) -> dict[tuple[str, ...], str]:
+    try:
+        parser, subparsers = _parser_root()
+        module = importlib.import_module(module_name)
+        getattr(module, add_name)(subparsers)
+        return _summaries_from_parser(parser)
+    except Exception:
+        return {}
 
 
 def _invoke_namespace(args: argparse.Namespace) -> object:
@@ -399,6 +551,7 @@ def _register_command_family(
     mutating: Iterable[Sequence[str]] = (),
     hosted: Iterable[Sequence[str]] = (),
     summary: str = "",
+    summaries: dict[tuple[str, ...], str] | None = None,
     confirmation: str = "",
 ) -> None:
     mutating_paths = {tuple(path) for path in mutating}
@@ -407,10 +560,11 @@ def _register_command_family(
         child_key = tuple(child_path)
         full_path = (root, *tuple(child_path))
         usage = " ".join(full_path)
+        command_summary = summary or (summaries or {}).get(full_path) or f"Run `hermes {usage}`."
         engine.register(
             full_path,
             usage,
-            summary or f"Run `hermes {usage}`.",
+            command_summary,
             handler_factory(tuple(child_path)),
             mutating=child_key in mutating_paths,
             confirmation=confirmation or f"Run `hermes {usage}`?",
@@ -485,7 +639,7 @@ class HermesConsoleEngine:
             if self.context not in command.contexts:
                 continue
             marker = " *" if command.mutating else "  "
-            lines.append(f"{marker} {command.usage:<32} {command.summary}")
+            lines.append(f"{marker} {command.usage:<32} {_table_summary(command.summary)}")
         lines.extend(
             [
                 "",
@@ -790,11 +944,13 @@ class HermesConsoleEngine:
         }
 
         for root, (module, builder, main_handler, paths, mutating) in extracted.items():
+            summaries = _extracted_summaries(module, builder, main_handler)
             _register_command_family(
                 self,
                 root=root,
                 paths=paths,
                 mutating=mutating,
+                summaries=summaries,
                 handler_factory=lambda fixed, root=root, module=module, builder=builder, main_handler=main_handler: _extracted_handler(
                     root,
                     fixed,
@@ -866,6 +1022,7 @@ class HermesConsoleEngine:
             self,
             root="portal",
             paths=portal_paths,
+            summaries=_adder_summaries("hermes_cli.portal_cli", "add_parser"),
             handler_factory=lambda fixed: _adder_handler(
                 "portal",
                 fixed,
@@ -890,6 +1047,7 @@ class HermesConsoleEngine:
                 ("restore",),
                 ("bind-board",),
             ],
+            summaries=_builder_summaries("hermes_cli.projects_cmd", "build_parser"),
             mutating=[
                 ("create",),
                 ("add-folder",),
@@ -946,6 +1104,7 @@ class HermesConsoleEngine:
                 ("assignments",),
                 ("context",),
             ],
+            summaries=_builder_summaries("hermes_cli.kanban", "build_parser"),
             mutating=[
                 ("init",),
                 ("boards", "create"),
@@ -1033,11 +1192,13 @@ class HermesConsoleEngine:
             ),
         }
         for root, (module, register, handler_name, paths, mutating) in registered.items():
+            summaries = _registered_summaries(root, module, register)
             _register_command_family(
                 self,
                 root=root,
                 paths=paths,
                 mutating=mutating,
+                summaries=summaries,
                 handler_factory=lambda fixed, root=root, module=module, register=register, handler_name=handler_name: _registered_handler(
                     root,
                     fixed,
@@ -1349,7 +1510,8 @@ def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
     from hermes_cli.status import show_status
 
-    return _capture_output(lambda: show_status(SimpleNamespace(all=False, deep=False)))
+    output = _capture_output(lambda: show_status(SimpleNamespace(all=False, deep=False)))
+    return _strip_console_status_footer(output)
 
 
 def _doctor(_engine: HermesConsoleEngine, args: list[str]) -> str:

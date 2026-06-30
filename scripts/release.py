@@ -271,6 +271,7 @@ AUTHOR_MAP = {
     "zhaolei.vc@bytedance.com": "zhaoleibd",
     "jeffrobodie@gmail.com": "jeffrobodie-glitch",
     "kyssta-exe@users.noreply.github.com": "kyssta-exe",
+    "218078013+kyssta-exe@users.noreply.github.com": "kyssta-exe",  # PR #55657 salvage (read-before-write invariant for background-review skill patches; #55647)
     "ali.zakaee.1997@gmail.com": "ITheEqualizer",
     "copii.list@gmail.com": "stremtec",
     "solaiagent@gmail.com": "solaitken",

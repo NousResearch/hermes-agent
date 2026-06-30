@@ -483,6 +483,15 @@ export function TextInput({
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
   const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // True for one keystroke after a commit took the full Ink render path
+  // (syncParent). Ink repaints the whole input line, so the terminal cursor
+  // baseline that the fast-echo "\b \b" shortcut assumes is no longer valid;
+  // a fast-echo backspace fired right after an Ink repaint desyncs the screen
+  // and strands glyphs (the OpenKey Vietnamese "hạ␣␣" bug: an injected U+202F
+  // marker forces an Ink repaint, then the recompose backspaces fast-echo
+  // against a stale baseline). Suppress fast-echo for that one next edit.
+  const inkRepaintedRef = useRef(false)
+  const inkRepaintResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const mouseAnchorRef = useRef<null | number>(null)
   const lastClickRef = useRef<{ at: number; offset: number }>({ at: 0, offset: -1 })
@@ -622,6 +631,10 @@ export function TextInput({
       if (localRenderTimer.current) {
         clearTimeout(localRenderTimer.current)
       }
+
+      if (inkRepaintResetTimer.current) {
+        clearTimeout(inkRepaintResetTimer.current)
+      }
     },
     []
   )
@@ -676,7 +689,7 @@ export function TextInput({
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
 
   const canFastBackspace = (current: string, cursor: number) =>
-    canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
+    !inkRepaintedRef.current && canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
 
   const commit = (
     next: string,
@@ -722,6 +735,22 @@ export function TextInput({
         flushParentChange()
         self.current = true
         cbChange.current(next)
+        // A full Ink repaint just happened. Mark it so any fast-echo backspace
+        // later in this IME recompose burst is suppressed (it would write
+        // "\b \b" against a baseline Ink just invalidated, stranding the U+202F
+        // marker glyph — the "hạ␣␣" bug). IME reads arrive as SEPARATE stdin
+        // events with small macrotask gaps, so a setTimeout(0) reset would
+        // clear the flag between reads and miss the very backspaces it must
+        // guard. Use a short real-time window that spans a recompose burst;
+        // normal typing re-enables fast-echo via the append path below.
+        inkRepaintedRef.current = true
+        if (inkRepaintResetTimer.current) {
+          clearTimeout(inkRepaintResetTimer.current)
+        }
+        inkRepaintResetTimer.current = setTimeout(() => {
+          inkRepaintResetTimer.current = null
+          inkRepaintedRef.current = false
+        }, 60)
       } else {
         self.current = true
         scheduleParentChange(next)
@@ -1167,7 +1196,17 @@ export function TextInput({
 
           v = inserted.value
           c = inserted.cursor
-          scheduleKeyBurstCommit(v, c)
+          // Multi-character inserts are IME recompositions or pastes, NOT rapid
+          // single-key typing. Committing them through the 16ms deferred
+          // key-burst path opens a race: when an IME recompose arrives as a
+          // burst of backspaces followed by this text in one stdin read (e.g.
+          // OpenKey Vietnamese Telex, which injects a U+202F marker then erases
+          // and re-emits the syllable), the single `self.current` guard can be
+          // consumed by an interleaved re-render before the deferred commit
+          // flushes, snapping the buffer back to a stale parent value and
+          // dropping the recomposed tail (the "hanhj -> hạ␣␣" bug). Commit
+          // synchronously so the recomposed value reaches the parent atomically.
+          commit(v, c)
 
           return
         }
@@ -1190,6 +1229,14 @@ export function TextInput({
 
             if (simpleAppend) {
               stdout!.write(text)
+              // A real character was just fast-echoed to the screen, so the
+              // terminal baseline is synced again — clear any pending Ink-repaint
+              // fast-echo suppression so normal backspace fast-echo resumes.
+              inkRepaintedRef.current = false
+              if (inkRepaintResetTimer.current) {
+                clearTimeout(inkRepaintResetTimer.current)
+                inkRepaintResetTimer.current = null
+              }
               // ASCII-printable text advances the physical cursor by exactly
               // text.length cells (canFastAppendShape rejects non-ASCII,
               // wide chars, newlines). Notify Ink so the cached displayCursor

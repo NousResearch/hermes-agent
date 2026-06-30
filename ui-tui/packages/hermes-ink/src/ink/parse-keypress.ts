@@ -184,6 +184,58 @@ function splitNumericParams(params: string): number[] {
   return params.split(';').map(p => parseInt(p, 10))
 }
 
+// A text token can carry stray control bytes fused with printable input —
+// most commonly when a third-party IME (Vietnamese Telex via OpenKey/Unikey/
+// EVKey, etc.) recomposes a syllable by emitting an erase control byte
+// immediately followed by the finished character(s) in a single stdin read
+// (e.g. "\x7fô", "ab\bç"). parseKeypress only recognizes a control key when
+// the WHOLE string is exactly that control byte, so a mixed chunk falls
+// through every branch and returns name:"" with a non-printable sequence,
+// which the composer's PRINTABLE gate then discards — taking the surrounding
+// letters down with it. Split the token so every control byte becomes its own
+// keypress and the printable runs between them survive.
+//
+// CR (\r) and LF (\n) are deliberately NOT treated as split points: a lone
+// Enter already arrives as its own read, while a newline embedded in a text
+// token only happens for non-bracketed paste, where peeling it into a
+// `return` keypress would prematurely submit the composer. Leaving them in
+// the token preserves the existing paste/return handling byte-for-byte.
+function isControlChar(ch: string): boolean {
+  const code = ch.charCodeAt(0)
+
+  if (code === 0x0a || code === 0x0d) {
+    return false
+  }
+
+  return code < 0x20 || code === 0x7f
+}
+
+function parseTextKeypresses(text: string): ParsedKey[] {
+  const keys: ParsedKey[] = []
+  let textStart = 0
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
+
+    if (!isControlChar(ch)) {
+      continue
+    }
+
+    if (i > textStart) {
+      keys.push(parseKeypress(text.slice(textStart, i)))
+    }
+
+    keys.push(parseKeypress(ch))
+    textStart = i + 1
+  }
+
+  if (textStart < text.length) {
+    keys.push(parseKeypress(text.slice(textStart)))
+  }
+
+  return keys
+}
+
 export type KeyParseState = {
   mode: 'NORMAL' | 'IN_PASTE'
   incomplete: string
@@ -278,7 +330,7 @@ export function parseMultipleKeypresses(
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(parseKeypress(token.value))
+        keys.push(...parseTextKeypresses(token.value))
       }
     }
   }

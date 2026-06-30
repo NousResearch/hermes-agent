@@ -1,18 +1,16 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { ErrorIcon } from '@/components/ui/error-state'
-import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { FileText, Loader2, LogIn, RefreshCw, Settings2 } from '@/lib/icons'
 import { $desktopBoot, completeDesktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import { GatewayRecoveryPanel, GatewaySetupPanel } from './gateway-launcher-overlay'
+import { classifyGatewayStartup, type GatewayStartupState } from './gateway-launcher-state'
 
 type BusyAction = 'retry' | 'signin' | null
 
@@ -33,6 +31,7 @@ export function BootFailureOverlay() {
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
+  const [startup, setStartup] = useState<GatewayStartupState | null>(null)
 
   const visible = Boolean(boot.error) && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
@@ -51,12 +50,13 @@ export function BootFailureOverlay() {
       .catch(() => undefined)
   }, [boot.error, visible])
 
-  // Resolve whether this boot failure is a remote-gateway reauth so we can
-  // offer the actionable "Sign in" path instead of the local-only recovery
-  // buttons. Runs whenever the overlay becomes visible.
+  // Classify startup through the remote-client lens:
+  // missing saved URL -> first-run setup; saved URL + auth failure -> sign-in;
+  // saved URL + network/unexpected failure -> configured gateway recovery.
   useEffect(() => {
     if (!visible) {
       setRemoteReauth(null)
+      setStartup(null)
 
       return
     }
@@ -66,19 +66,24 @@ export function BootFailureOverlay() {
     void (async () => {
       const desktop = window.hermesDesktop
 
-      if (!desktop?.getConnectionConfig) {
-        return
-      }
-
-      let config: DesktopConnectionConfig
+      let config: DesktopConnectionConfig | null = null
 
       try {
-        config = await desktop.getConnectionConfig()
+        config = desktop?.getConnectionConfig ? await desktop.getConnectionConfig() : null
       } catch {
+        config = null
+      }
+
+      const next = classifyGatewayStartup(config, boot.error)
+
+      if (cancelled) {
         return
       }
 
-      if (cancelled || !isRemoteReauthFailure(config, boot.error)) {
+      setStartup(next)
+      setRemoteReauth(null)
+
+      if (!config || !isRemoteReauthFailure(config, boot.error)) {
         return
       }
 
@@ -88,7 +93,7 @@ export function BootFailureOverlay() {
       let shape = deriveProviderShape(null)
 
       try {
-        const probe = await desktop.probeConnectionConfig(config.remoteUrl)
+        const probe = await desktop?.probeConnectionConfig?.(config.remoteUrl)
         shape = deriveProviderShape(probe?.providers)
       } catch {
         // Generic copy is fine.
@@ -102,7 +107,7 @@ export function BootFailureOverlay() {
     return () => {
       cancelled = true
     }
-  }, [visible])
+  }, [boot.error, visible])
 
   if (!visible || suppressed) {
     return null
@@ -124,14 +129,16 @@ export function BootFailureOverlay() {
   // re-established in the persistent partition; reload so boot re-runs and the
   // reconnect now mints a ticket against a live session.
   const signInRemote = async () => {
-    if (!remoteReauth) {
+    const url = remoteReauth?.url || startup?.remoteUrl
+
+    if (!url) {
       return
     }
 
     setBusy('signin')
 
     try {
-      const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
+      const result = await window.hermesDesktop?.oauthLoginConnectionConfig(url)
 
       if (result?.connected) {
         notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
@@ -161,66 +168,30 @@ export function BootFailureOverlay() {
     withProvider: copy.signInWithProvider
   })
 
+  const content =
+    !startup || startup.kind === 'setup' ? (
+      <GatewaySetupPanel onConfigured={() => window.location.reload()} />
+    ) : (
+      <GatewayRecoveryPanel
+        busy={busy}
+        diagnostic={startup.diagnostic}
+        kind={startup.kind}
+        logs={logs}
+        onOpenLogs={openLogs}
+        onRetry={() => void retry()}
+        onSettings={openGatewaySettings}
+        onSignIn={() => void signInRemote()}
+        remoteUrl={startup.remoteUrl}
+        showLogs={showLogs}
+        signInLabel={label}
+        toggleLogs={() => setShowLogs(v => !v)}
+      />
+    )
+
   return (
     <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
-        <div className="flex items-start gap-3 px-5 py-4">
-          <ErrorIcon className="mt-0.5" size="1.25rem" />
-          <div>
-            <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : copy.title}
-            </h2>
-            <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : copy.description}
-            </p>
-          </div>
-        </div>
-
-        <div className="grid gap-4 p-5">
-          <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-            {boot.error}
-          </div>
-
-          <div className="grid gap-2">
-            <div className="flex flex-wrap gap-2">
-              {remoteReauth ? (
-                <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
-                  {busy === 'signin' ? <Loader2 className="animate-spin" /> : <LogIn />}
-                  {label}
-                </Button>
-              ) : (
-                <Button disabled={Boolean(busy)} onClick={() => void retry()}>
-                  {busy === 'retry' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                  {copy.retry}
-                </Button>
-              )}
-              <Button disabled={Boolean(busy)} onClick={openGatewaySettings} variant="secondary">
-                <Settings2 />
-                {copy.configureGateway}
-              </Button>
-              <Button onClick={openLogs} variant="ghost">
-                <FileText />
-                {copy.openLogs}
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">{remoteReauth ? copy.remoteSignInHint : copy.repairHint}</p>
-          </div>
-
-          {logs.length > 0 ? (
-            <div className="grid gap-2">
-              <Button
-                className="-ml-2 self-start font-medium"
-                onClick={() => setShowLogs(v => !v)}
-                size="xs"
-                type="button"
-                variant="text"
-              >
-                {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
-              </Button>
-              {showLogs ? <LogView className="max-h-48">{logs.slice(-40).join('')}</LogView> : null}
-            </div>
-          ) : null}
-        </div>
+      <div className="w-full max-w-[43rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-5 shadow-nous">
+        {content}
       </div>
     </div>
   )

@@ -295,6 +295,31 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_400_anthropic_oauth_extra_usage_exhausted_is_billing(self):
+        """Anthropic OAuth reports exhausted extra usage as HTTP 400, not 402.
+
+        The turn should fail over like a quota/billing condition instead of
+        being treated as a deterministic request-format error.
+        """
+        e = MockAPIError(
+            "Error code: 400",
+            status_code=400,
+            body={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.",
+                },
+            },
+        )
+
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-8")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     def test_404_free_tier_model_block_is_billing(self):
         e = MockAPIError(
             "Not Found",

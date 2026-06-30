@@ -112,6 +112,8 @@ _BILLING_PATTERNS = [
     "balance_depleted",
     "model_not_supported_on_free_tier",
     "not available on the free tier",
+    "out of extra usage",
+    "add more at claude.ai/settings/usage",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)

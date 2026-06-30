@@ -11,6 +11,7 @@ exhausting remaining entries and falling through to cross-provider fallback.
 import json
 import logging
 import time
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -220,3 +221,49 @@ class TestRestorePrimaryPoolReselect:
         assert result is True
         assert "custom-endpoint.example.com" in agent.base_url
         assert "custom-endpoint.example.com" in agent._client_kwargs["base_url"]
+
+    def test_restore_skips_stale_cross_provider_pool(self):
+        """An older Codex pool must not contaminate a restored Anthropic primary.
+
+        Regression: after switching a long-lived TUI session from OpenAI Codex
+        to Anthropic, restore-time pool re-selection could still use the stale
+        Codex pool. ``_swap_credential`` then copied ChatGPT's base_url onto the
+        Anthropic runtime, sending Claude requests to the wrong endpoint.
+        """
+        pool = _build_mock_pool([
+            _make_entry("codex-entry", "codex-token", priority=0),
+        ])
+        agent = cast(Any, self._make_agent(pool))
+        agent.model = "claude-opus-4-8"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        agent.api_mode = "anthropic_messages"
+        agent.api_key = "anthropic-token"
+        agent._anthropic_api_key = "anthropic-token"
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+        agent._swap_credential = MagicMock()
+        agent._primary_runtime.update({
+            "model": "claude-opus-4-8",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+            "api_key": "anthropic-token",
+            "anthropic_api_key": "anthropic-token",
+            "anthropic_base_url": "https://api.anthropic.com",
+            "is_anthropic_oauth": True,
+            "compressor_model": "claude-opus-4-8",
+            "compressor_base_url": "https://api.anthropic.com",
+            "compressor_api_key": "anthropic-token",
+            "compressor_provider": "anthropic",
+        })
+
+        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        agent._swap_credential.assert_not_called()
+        assert agent.provider == "anthropic"
+        assert agent.base_url == "https://api.anthropic.com"
+        assert agent.api_key == "anthropic-token"

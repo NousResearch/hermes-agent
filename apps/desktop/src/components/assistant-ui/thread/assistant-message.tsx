@@ -13,10 +13,10 @@ import {
   contentHasVisibleText,
   messageContentText,
   pickPrimaryPreviewTarget
-} from '@/components/assistant-ui/thread-content'
-import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread-message-parts'
-import { StreamStallIndicator } from '@/components/assistant-ui/thread-status'
-import { formatMessageTimestamp } from '@/components/assistant-ui/thread-timestamp'
+} from '@/components/assistant-ui/thread/content'
+import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
+import { StreamStallIndicator } from '@/components/assistant-ui/thread/status'
+import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'

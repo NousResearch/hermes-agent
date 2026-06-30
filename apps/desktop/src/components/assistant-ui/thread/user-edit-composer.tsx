@@ -52,7 +52,7 @@ import {
   USER_ACTION_ICON_BUTTON_CLASS,
   USER_ACTION_ICON_SIZE,
   USER_BUBBLE_BASE_CLASS
-} from '@/components/assistant-ui/user-message'
+} from '@/components/assistant-ui/thread/user-message'
 import { Codicon } from '@/components/ui/codicon'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'

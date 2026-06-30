@@ -15,7 +15,7 @@ import {
   slashStatusText,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal
-} from './use-prompt-actions-utils'
+} from './utils'
 
 describe('isSessionIdCandidate', () => {
   it('accepts the timestamped and hex id forms', () => {

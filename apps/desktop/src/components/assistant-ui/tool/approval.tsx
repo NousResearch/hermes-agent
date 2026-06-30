@@ -27,7 +27,7 @@ import {
   registerApprovalInlineAnchor
 } from '@/store/prompts'
 
-import type { ToolPart } from './tool-fallback-model'
+import type { ToolPart } from './fallback-model'
 
 // Inline approval control. Rendered as a compact button strip
 // under the pending tool row that raised the approval (the row already shows

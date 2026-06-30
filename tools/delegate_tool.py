@@ -786,6 +786,24 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _emit_parent_console(parent_agent, line: str) -> None:
+    """Emit a human-readable progress line to the parent's console.
+
+    Routes through ``parent_agent._safe_print`` when available so headless
+    stdio hosts (ACP, gateway API) can redirect non-protocol output to
+    stderr via their configured ``_print_fn``. A bare ``print()`` would
+    otherwise land on stdout and corrupt JSON-RPC framing.
+    """
+    printer = getattr(parent_agent, "_safe_print", None)
+    if callable(printer):
+        try:
+            printer(line)
+            return
+        except Exception:
+            pass
+    print(line)
+
+
 def _build_child_progress_callback(
     task_index: int,
     goal: str,
@@ -2421,9 +2439,9 @@ def delegate_task(
                             try:
                                 spinner_ref.print_above(completion_line)
                             except Exception:
-                                print(f"  {completion_line}")
+                                _emit_parent_console(parent_agent, f"  {completion_line}")
                         else:
-                            print(f"  {completion_line}")
+                            _emit_parent_console(parent_agent, f"  {completion_line}")
 
                         # Update spinner text to show remaining count
                         if spinner_ref and remaining > 0:

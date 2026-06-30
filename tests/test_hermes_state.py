@@ -1012,6 +1012,21 @@ class TestFTS5Search:
         sources = [r["source"] for r in results]
         assert all(s == "telegram" for s in sources)
 
+    def test_search_with_session_ids_filter(self, db):
+        for sid in ("project-a", "project-b", "outside"):
+            db.create_session(session_id=sid, source="telegram")
+            db.append_message(sid, role="user", content="sharedtopic planning notes")
+
+        results = db.search_messages("sharedtopic", session_ids=["project-a", "project-b"])
+
+        assert {row["session_id"] for row in results} == {"project-a", "project-b"}
+
+    def test_search_with_empty_session_ids_returns_no_results(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="sharedtopic planning notes")
+
+        assert db.search_messages("sharedtopic", session_ids=[]) == []
+
     def test_search_default_sources_include_acp(self, db):
         db.create_session(session_id="s1", source="acp")
         db.append_message("s1", role="user", content="ACP question about Python")
@@ -1356,6 +1371,31 @@ class TestCJKSearchFallback:
         results = db.search_messages("记忆断裂", role_filter=["assistant"])
         assert len(results) == 1
         assert results[0]["role"] == "assistant"
+
+    def test_cjk_like_fallback_preserves_session_ids_filter(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="今天讨论A2A通信协议")
+        db.append_message("s2", role="user", content="今天讨论A2A通信协议")
+
+        results = db.search_messages("通信", session_ids=["s2"])
+
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s2"
+
+    def test_cjk_trigram_preserves_session_ids_filter(self, db):
+        if not db._trigram_available:
+            pytest.skip("SQLite trigram tokenizer unavailable")
+
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="记忆系统项目规划")
+        db.append_message("s2", role="user", content="记忆系统项目规划")
+
+        results = db.search_messages("记忆系统", session_ids=["s2"])
+
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s2"
 
     def test_cjk_snippet_is_centered_on_match(self, db):
         """Snippet should contain the search term, not just the first N chars."""

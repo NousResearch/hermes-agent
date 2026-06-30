@@ -3473,6 +3473,7 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        session_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -3501,6 +3502,10 @@ class SessionDB:
         the live context but remain part of the conversation's record, so the
         pre-compaction transcript stays discoverable after in-place compaction
         (#38763). Pass ``include_inactive=True`` to search every row regardless.
+
+        Pass ``session_ids`` to restrict results to a deterministic set of
+        sessions (for example, a Mini App project-linked session list). An empty
+        list is an explicit empty scope and returns no results.
         """
         if not self._fts_enabled:
             return []
@@ -3554,6 +3559,13 @@ class SessionDB:
             role_placeholders = ",".join("?" for _ in role_filter)
             where_clauses.append(f"m.role IN ({role_placeholders})")
             params.extend(role_filter)
+
+        if session_ids is not None:
+            if not session_ids:
+                return []
+            session_placeholders = ",".join("?" for _ in session_ids)
+            where_clauses.append(f"m.session_id IN ({session_placeholders})")
+            params.extend(session_ids)
 
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
@@ -3630,6 +3642,11 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
+                if session_ids is not None:
+                    if not session_ids:
+                        return []
+                    tri_where.append(f"m.session_id IN ({','.join('?' for _ in session_ids)})")
+                    tri_params.extend(session_ids)
                 tri_sql = f"""
                     SELECT
                         m.id,
@@ -3687,6 +3704,11 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
+                if session_ids is not None:
+                    if not session_ids:
+                        return []
+                    like_where.append(f"m.session_id IN ({','.join('?' for _ in session_ids)})")
+                    like_params.extend(session_ids)
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,

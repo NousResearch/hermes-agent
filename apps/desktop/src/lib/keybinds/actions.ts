@@ -103,6 +103,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
   { id: 'view.showTerminal', category: 'view', defaults: TERMINAL_TOGGLE_DEFAULTS },
+  // Embedded browser pane. Avoids ⌘⇧B/Ctrl+Shift+B because Hermes already
+  // ships that chord for new worktrees/branches.
+  { id: 'view.openBrowser', category: 'view', defaults: ['mod+alt+b'] },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },

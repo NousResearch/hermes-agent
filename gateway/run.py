@@ -8750,9 +8750,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                    # Plugin commands run before the normal agent-session path,
+                    # but some plugins still need gateway session context (chat,
+                    # thread, user, platform) for scoped runtime state. Seed the
+                    # same contextvars used by tools during agent turns, then
+                    # restore them after the plugin returns.
+                    _plugin_context = build_session_context(source, self.config)
+                    # Plugin commands execute before the normal session-entry
+                    # lookup/creation path, but plugins still need the same
+                    # stable routing scope tools see during agent turns.
+                    if not _plugin_context.session_key:
+                        _plugin_context.session_key = _quick_key
+                    _plugin_tokens = self._set_session_env(_plugin_context)
+                    try:
+                        result = plugin_handler(user_args)
+                        if asyncio.iscoroutine(result):
+                            result = await result
+                    finally:
+                        self._clear_session_env(_plugin_tokens)
                     return str(result) if result else None
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)

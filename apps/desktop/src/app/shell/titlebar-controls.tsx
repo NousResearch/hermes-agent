@@ -8,6 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { enableBrowserAndOpenTab } from '@/store/browser'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleKeybindPanel } from '@/store/keybinds'
 import {
@@ -18,6 +19,8 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { $activeSessionId } from '@/store/session'
+import { $showBrowserGlobe } from '@/store/show-browser-globe'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
@@ -54,6 +57,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
+  const showBrowserGlobe = useStore($showBrowserGlobe)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -125,6 +129,16 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       onSelect: () => {
         triggerHaptic('open')
         toggleKeybindPanel()
+      }
+    },
+    {
+      hidden: !showBrowserGlobe,
+      icon: <Codicon name="globe" />,
+      id: 'browser-globe',
+      label: t.titlebar.openBrowser,
+      onSelect: () => {
+        triggerHaptic('open')
+        enableBrowserAndOpenTab({ sessionId: $activeSessionId.get() })
       }
     },
     {

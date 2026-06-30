@@ -200,6 +200,10 @@ const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
     icon: 'globe',
     tone: 'browser'
   },
+  browser_screenshot: {
+    icon: 'file-media',
+    tone: 'browser'
+  },
   browser_take_screenshot: {
     icon: 'file-media',
     tone: 'browser'
@@ -1192,6 +1196,13 @@ function toolSubtitle(
     return snapshot ? summarizeBrowserSnapshot(snapshot) : 'Captured a browser accessibility snapshot'
   }
 
+  if (toolName === 'browser_screenshot') {
+    const path = firstStringField(resultRecord, ['screenshot_path', 'path'])
+    const url = firstStringField(resultRecord, ['url'])
+
+    return [path && `Path: ${path}`, url && `URL: ${url}`].filter(Boolean).join(' · ') || 'Captured a browser screenshot artifact'
+  }
+
   if (toolName === 'browser_click') {
     const clicked = firstStringField(resultRecord, ['clicked']) || firstStringField(argsRecord, ['ref', 'target'])
 
@@ -1291,6 +1302,10 @@ function toolDetailLabel(toolName: string): string {
     return 'Snapshot summary'
   }
 
+  if (toolName === 'browser_screenshot') {
+    return 'Screenshot artifact'
+  }
+
   return ''
 }
 
@@ -1303,6 +1318,13 @@ function toolDetailText(
     const snapshot = firstStringField(resultRecord, ['snapshot'])
 
     return snapshot ? summarizeBrowserSnapshot(snapshot) : fallbackDetailText(argsRecord, resultRecord)
+  }
+
+  if (part.toolName === 'browser_screenshot') {
+    const path = firstStringField(resultRecord, ['screenshot_path', 'path'])
+    const url = firstStringField(resultRecord, ['url'])
+
+    return [path && `Path: ${path}`, url && `URL: ${url}`].filter(Boolean).join('\n') || fallbackDetailText(argsRecord, resultRecord)
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
@@ -1438,6 +1460,14 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
 
     if (url) {
       return { label: copy.url, text: url }
+    }
+  }
+
+  if (part.toolName === 'browser_screenshot') {
+    const path = firstStringField(result, ['screenshot_path', 'path'])
+
+    if (path) {
+      return { label: copy.path, text: path }
     }
   }
 

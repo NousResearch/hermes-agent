@@ -52,6 +52,9 @@ class TestToolKindMap:
     def test_tool_kind_execute_code(self):
         assert get_tool_kind("execute_code") == "execute"
 
+    def test_tool_kind_browser_screenshot_is_read(self):
+        assert get_tool_kind("browser_screenshot") == "read"
+
     def test_tool_kind_todo(self):
         assert get_tool_kind("todo") == "other"
 
@@ -134,6 +137,9 @@ class TestBuildToolTitle:
             {"action": "patch", "name": "hermes-agent-operations", "file_path": "references/acp.md"},
         )
         assert title == "skill patch: hermes-agent-operations/references/acp.md"
+
+    def test_browser_screenshot_title(self):
+        assert build_tool_title("browser_screenshot", {}) == "browser screenshot"
 
     def test_unknown_tool_uses_name(self):
         title = build_tool_title("some_new_tool", {"foo": "bar"})
@@ -440,6 +446,20 @@ class TestBuildToolComplete:
         assert "README.md:3" in text
         assert "TODO: fix this" in text
         assert "Results truncated" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_browser_screenshot_exposes_artifact_path_without_analysis(self):
+        result = build_tool_complete(
+            "tc-shot",
+            "browser_screenshot",
+            '{"success":true,"screenshot_path":"C:/tmp/browser.png","title":"App","url":"https://example.com","browser_surface":"desktop_visible"}',
+        )
+        text = result.content[0].content.text
+        assert "browser_screenshot captured" in text
+        assert "screenshot_path" in text
+        assert "C:/tmp/browser.png" in text
+        assert "desktop_visible" in text
+        assert "analysis" not in text.lower()
         assert result.raw_output is None
 
     def test_build_tool_complete_for_process_list_formats_table(self):

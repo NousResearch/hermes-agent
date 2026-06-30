@@ -2214,6 +2214,11 @@ export const ja = defineLocale({
           pending: 'ページスナップショットを取得中',
           pendingAction: '取得中'
         },
+        browser_screenshot: {
+          done: 'ブラウザーのスクリーンショットを取得しました',
+          pending: 'ブラウザーのスクリーンショットを取得中',
+          pendingAction: '取得中'
+        },
         browser_take_screenshot: {
           done: 'スクリーンショットを取得しました',
           pending: 'スクリーンショットを取得中',

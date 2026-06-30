@@ -6,6 +6,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { enableBrowserAndOpenTab } from '@/store/browser'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
@@ -28,7 +29,7 @@ import {
 } from '@/store/profile'
 import { requestNewWorktree } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import { setModelPickerOpen } from '@/store/session'
+import { $activeSessionId, setModelPickerOpen } from '@/store/session'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -164,6 +165,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleReview': toggleReview,
     'view.showFiles': showFiles,
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
+    'view.openBrowser': () => enableBrowserAndOpenTab({ sessionId: $activeSessionId.get() }),
     'view.flipPanes': togglePanesFlipped,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),

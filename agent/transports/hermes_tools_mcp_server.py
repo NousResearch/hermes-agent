@@ -77,6 +77,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "browser_back",
     "browser_get_images",
     "browser_console",
+    "browser_screenshot",
     "browser_vision",
     "vision_analyze",
     "image_generate",

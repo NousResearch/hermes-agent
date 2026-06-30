@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { persistentAtom } from '@/lib/persisted'
 
+import { $browserTabs, clearBrowserTabs, closeBrowserTab, isBrowserTabId } from './browser'
 import {
   $rightRailActiveTabId,
   PREVIEW_PANE_ID,
@@ -121,6 +122,14 @@ function isSamePreviewTarget(a: PreviewTarget | null, b: PreviewTarget | null): 
 function showLivePreviewTab() {
   setPaneOpen(PREVIEW_PANE_ID, true)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+}
+
+function firstFallbackRightRailTab(fileTabs = $filePreviewTabs.get()): RightRailTabId {
+  return fileTabs[0]?.id ?? $browserTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID
+}
+
+function rightRailHasTabs(): boolean {
+  return Boolean($previewTarget.get() || $filePreviewTabs.get().length > 0 || $browserTabs.get().length > 0)
 }
 
 export function setPreviewTarget(target: PreviewTarget | null) {
@@ -416,10 +425,10 @@ export function dismissPreviewTarget() {
   $previewTarget.set(null)
 
   if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID) {
-    selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    selectRightRailTab(firstFallbackRightRailTab())
   }
 
-  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0)
+  setPaneOpen(PREVIEW_PANE_ID, rightRailHasTabs())
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
@@ -439,10 +448,10 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
   $filePreviewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? ($previewTarget.get() ? RIGHT_RAIL_PREVIEW_TAB_ID : firstFallbackRightRailTab(next)))
   }
 
-  if (next.length === 0 && !$previewTarget.get()) {
+  if (!rightRailHasTabs()) {
     setPaneOpen(PREVIEW_PANE_ID, false)
   }
 }
@@ -452,6 +461,13 @@ export function closeRightRailTab(tabId: RightRailTabId) {
     if ($previewTarget.get()) {
       dismissPreviewTarget()
     }
+
+    return
+  }
+
+  if (isBrowserTabId(tabId)) {
+    closeBrowserTab(tabId)
+    setPaneOpen(PREVIEW_PANE_ID, rightRailHasTabs())
 
     return
   }
@@ -472,6 +488,10 @@ function rightRailTabOrder(): RightRailTabId[] {
   }
 
   for (const tab of $filePreviewTabs.get()) {
+    ids.push(tab.id)
+  }
+
+  for (const tab of $browserTabs.get()) {
     ids.push(tab.id)
   }
 
@@ -510,6 +530,7 @@ export function closeRightRail() {
   }
 
   $filePreviewTabs.set([])
+  clearBrowserTabs()
   setPaneOpen(PREVIEW_PANE_ID, false)
 }
 
@@ -517,6 +538,7 @@ export function clearSessionPreviewRegistry() {
   $sessionPreviewRegistry.set({})
   setPreviewTarget(null)
   $filePreviewTabs.set([])
+  clearBrowserTabs()
   setPaneOpen(PREVIEW_PANE_ID, false)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }

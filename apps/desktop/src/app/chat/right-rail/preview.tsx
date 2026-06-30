@@ -15,6 +15,17 @@ import { translateNow, useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import {
+  $browserEnabled,
+  $browserTabs,
+  type BrowserTabState,
+  clearBrowserTabs,
+  closeBrowserTab,
+  enableBrowserAndOpenTab,
+  isBrowserTabId,
+  moveBrowserTab,
+  openBrowserTab
+} from '@/store/browser'
+import {
   $panesFlipped,
   $rightRailActiveTabId,
   RIGHT_RAIL_PREVIEW_TAB_ID,
@@ -25,14 +36,14 @@ import {
   $filePreviewTabs,
   $previewReloadRequest,
   $previewTarget,
-  closeOtherRightRailTabs,
   closeRightRail,
   closeRightRailTab,
-  closeRightRailTabsToRight,
   type PreviewTarget
 } from '@/store/preview'
 import { $dirtyPreviewUrls } from '@/store/preview-edit'
+import { $activeSessionId } from '@/store/session'
 
+import { BrowserPane } from './browser-pane'
 import { PreviewPane } from './preview-pane'
 
 export const PREVIEW_RAIL_MIN_WIDTH = '18rem'
@@ -51,11 +62,19 @@ interface ChatPreviewRailProps {
   setTitlebarToolGroup?: SetTitlebarToolGroup
 }
 
-interface RailTab {
-  id: RightRailTabId
-  label: string
-  target: PreviewTarget
-}
+type RailTab =
+  | {
+      id: RightRailTabId
+      kind: 'preview'
+      label: string
+      target: PreviewTarget
+    }
+  | {
+      id: RightRailTabId
+      kind: 'browser'
+      label: string
+      tab: BrowserTabState
+    }
 
 function tabLabelFor(target: PreviewTarget): string {
   const value = target.label || target.path || target.source || target.url
@@ -70,15 +89,32 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const activeTabId = useStore($rightRailActiveTabId)
   const panesFlipped = useStore($panesFlipped)
   const filePreviewTabs = useStore($filePreviewTabs)
+  const browserTabs = useStore($browserTabs)
+  const browserEnabled = useStore($browserEnabled)
+  const activeSessionId = useStore($activeSessionId)
   const previewTarget = useStore($previewTarget)
   const dirtyPreviewUrls = useStore($dirtyPreviewUrls)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
-      ...(previewTarget ? [{ id: RIGHT_RAIL_PREVIEW_TAB_ID, label: t.preview.tab, target: previewTarget } as RailTab] : []),
-      ...filePreviewTabs.map(({ id, target }) => ({ id, label: tabLabelFor(target), target }) as RailTab)
+      ...(previewTarget
+        ? [
+            {
+              id: RIGHT_RAIL_PREVIEW_TAB_ID,
+              kind: 'preview' as const,
+              label: t.preview.tab,
+              target: previewTarget
+            } as RailTab
+          ]
+        : []),
+      ...filePreviewTabs.map(
+        ({ id, target }) => ({ id, kind: 'preview' as const, label: tabLabelFor(target), target }) as RailTab
+      ),
+      ...(browserEnabled
+        ? browserTabs.map(tab => ({ id: tab.id, kind: 'browser' as const, label: tab.title || tab.url, tab }) as RailTab)
+        : [])
     ],
-    [filePreviewTabs, previewTarget, t.preview.tab]
+    [browserTabs, browserEnabled, filePreviewTabs, previewTarget, t.preview.tab]
   )
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
@@ -94,6 +130,57 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   }
 
   const isPreview = activeTab.id === RIGHT_RAIL_PREVIEW_TAB_ID
+
+  const closeTab = (tab: RailTab) => {
+    if (tab.kind === 'browser' && isBrowserTabId(tab.id)) {
+      closeBrowserTab(tab.id)
+    } else {
+      closeRightRailTab(tab.id)
+    }
+  }
+
+  const closeOtherTabs = (keepId: RightRailTabId) => {
+    for (const tab of tabs) {
+      if (tab.id !== keepId) {
+        closeTab(tab)
+      }
+    }
+
+    selectRightRailTab(keepId)
+  }
+
+  const closeTabsToRight = (tabId: RightRailTabId) => {
+    const index = tabs.findIndex(tab => tab.id === tabId)
+
+    if (index === -1) {
+      return
+    }
+
+    for (const tab of tabs.slice(index + 1)) {
+      closeTab(tab)
+    }
+  }
+
+  const closeAllTabs = () => {
+    closeRightRail()
+    clearBrowserTabs()
+  }
+
+  const openExternalUrl = (url: string) => {
+    if (window.hermesDesktop?.openExternal) {
+      void window.hermesDesktop.openExternal(url)
+
+      return
+    }
+
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  const enableAndOpenBrowserTab = () => {
+    enableBrowserAndOpenTab({ sessionId: activeSessionId })
+  }
+
+  const tabTip = (tab: RailTab): string => (tab.kind === 'browser' ? tab.tab.url : tab.target.path || tab.target.url || tab.label)
 
   return (
     <aside
@@ -111,7 +198,8 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             const active = tab.id === activeTab.id
             const hasOthers = tabs.length > 1
             const hasTabsToRight = index < tabs.length - 1
-            const dirty = Boolean(dirtyPreviewUrls[tab.target.url])
+            const dirty = tab.kind === 'preview' ? Boolean(dirtyPreviewUrls[tab.target.url]) : false
+            const browserIndex = tab.kind === 'browser' ? browserTabs.findIndex(browserTab => browserTab.id === tab.id) : -1
 
             return (
               <ContextMenu key={tab.id}>
@@ -132,7 +220,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                       }
 
                       event.preventDefault()
-                      closeRightRailTab(tab.id)
+                      closeTab(tab)
                     }}
                     onMouseDown={event => {
                       if (event.button === 1) {
@@ -143,7 +231,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     {active && (
                       <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-(--ui-stroke-primary)" />
                     )}
-                    <Tip label={tab.target.path || tab.target.url || tab.label}>
+                    <Tip label={tabTip(tab)}>
                       <button
                         aria-selected={active}
                         className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
@@ -171,7 +259,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     <button
                       aria-label={t.preview.closeTab(tab.label)}
                       className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-(--ui-text-tertiary) opacity-0 transition-[background-color,color,opacity] hover:bg-(--ui-bg-secondary) hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100 group-focus-within/tab:pointer-events-auto group-focus-within/tab:opacity-100"
-                      onClick={() => closeRightRailTab(tab.id)}
+                      onClick={() => closeTab(tab)}
                       type="button"
                     >
                       <Codicon name="close" size="0.75rem" />
@@ -179,27 +267,61 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                   </div>
                 </ContextMenuTrigger>
                 <ContextMenuContent>
-                  <ContextMenuItem onSelect={() => closeRightRailTab(tab.id)}>
+                  <ContextMenuItem onSelect={() => closeTab(tab)}>
                     {t.common.close}
                     <span className="ml-auto pl-4 text-(--ui-text-tertiary)">{formatCombo('mod+w')}</span>
                   </ContextMenuItem>
-                  <ContextMenuItem disabled={!hasOthers} onSelect={() => closeOtherRightRailTabs(tab.id)}>
+                  <ContextMenuItem disabled={!hasOthers} onSelect={() => closeOtherTabs(tab.id)}>
                     {t.preview.closeOthers}
                   </ContextMenuItem>
-                  <ContextMenuItem disabled={!hasTabsToRight} onSelect={() => closeRightRailTabsToRight(tab.id)}>
+                  <ContextMenuItem disabled={!hasTabsToRight} onSelect={() => closeTabsToRight(tab.id)}>
                     {t.preview.closeToRight}
                   </ContextMenuItem>
+                  {tab.kind === 'browser' ? (
+                    <>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem disabled={browserIndex <= 0} onSelect={() => moveBrowserTab(tab.tab.id, 'left')}>
+                        Move tab left
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        disabled={browserIndex === -1 || browserIndex >= browserTabs.length - 1}
+                        onSelect={() => moveBrowserTab(tab.tab.id, 'right')}
+                      >
+                        Move tab right
+                      </ContextMenuItem>
+                      <ContextMenuItem onSelect={() => openExternalUrl(tab.tab.url)}>Open externally</ContextMenuItem>
+                    </>
+                  ) : null}
                   <ContextMenuSeparator />
-                  <ContextMenuItem onSelect={closeRightRail}>{t.preview.closeAll}</ContextMenuItem>
+                  <ContextMenuItem onSelect={closeAllTabs}>{t.preview.closeAll}</ContextMenuItem>
                 </ContextMenuContent>
               </ContextMenu>
             )
           })}
         </div>
+        {browserEnabled ? (
+          <button
+            aria-label="New Browser tab"
+            className="grid size-6 shrink-0 self-center place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
+            onClick={() => openBrowserTab({ sessionId: activeSessionId })}
+            type="button"
+          >
+            <Codicon name="globe" size="0.75rem" />
+          </button>
+        ) : (
+          <button
+            aria-label="Enable Browser"
+            className="grid size-6 shrink-0 self-center place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
+            onClick={enableAndOpenBrowserTab}
+            type="button"
+          >
+            <Codicon name="globe" size="0.75rem" />
+          </button>
+        )}
         <button
           aria-label={t.preview.closePane}
           className="mr-1.5 grid size-6 shrink-0 self-center place-items-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/rail-tabs:opacity-100 [-webkit-app-region:no-drag]"
-          onClick={closeRightRail}
+          onClick={closeAllTabs}
           type="button"
         >
           <Codicon name="close" size="0.75rem" />
@@ -207,13 +329,17 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <PreviewPane
-          embedded
-          onRestartServer={isPreview ? onRestartServer : undefined}
-          reloadRequest={previewReloadRequest}
-          setTitlebarToolGroup={setTitlebarToolGroup}
-          target={activeTab.target}
-        />
+        {activeTab.kind === 'browser' ? (
+          <BrowserPane tab={activeTab.tab} />
+        ) : (
+          <PreviewPane
+            embedded
+            onRestartServer={isPreview ? onRestartServer : undefined}
+            reloadRequest={previewReloadRequest}
+            setTitlebarToolGroup={setTitlebarToolGroup}
+            target={activeTab.target}
+          />
+        )}
       </div>
     </aside>
   )

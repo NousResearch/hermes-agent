@@ -12,6 +12,7 @@ export type ToolTitleKey =
   | 'browser_fill'
   | 'browser_navigate'
   | 'browser_snapshot'
+  | 'browser_screenshot'
   | 'browser_take_screenshot'
   | 'browser_type'
   | 'clarify'
@@ -224,6 +225,7 @@ export interface Translations {
     unmuteHaptics: string
     openSettings: string
     openKeybinds: string
+    openBrowser: string
   }
 
   keybinds: {
@@ -301,6 +303,8 @@ export interface Translations {
       toolViewDesc: string
       translucencyTitle: string
       translucencyDesc: string
+      showBrowserGlobeTitle: string
+      showBrowserGlobeDesc: string
       product: string
       productDesc: string
       technical: string

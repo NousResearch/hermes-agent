@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { $browserTabs, clearBrowserTabs, createBrowserTab } from './browser'
 import { $rightRailActiveTabId, PREVIEW_PANE_ID, RIGHT_RAIL_PREVIEW_TAB_ID } from './layout'
 import { $paneOpen } from './panes'
 import {
@@ -42,6 +43,7 @@ describe('preview store', () => {
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
+    clearBrowserTabs()
   })
 
   afterEach(() => {
@@ -50,6 +52,7 @@ describe('preview store', () => {
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
     clearSessionPreviewRegistry()
+    clearBrowserTabs()
   })
 
   it('does not notify status subscribers for restart progress text', () => {
@@ -134,5 +137,28 @@ describe('preview store', () => {
     expect($filePreviewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
+  })
+
+  it('keeps the rail open when dismissing Preview while a Browser tab remains', () => {
+    const live = previewTarget('/work/live.html')
+
+    setCurrentSessionPreviewTarget(live, 'tool-result')
+    const browser = createBrowserTab({ sessionId: 'session-1', url: 'https://example.com' })
+
+    dismissPreviewTarget()
+
+    expect($previewTarget.get()).toBeNull()
+    expect($browserTabs.get().map(tab => tab.id)).toEqual([browser.id])
+    expect($paneOpen(PREVIEW_PANE_ID).get()).toBe(true)
+    expect($rightRailActiveTabId.get()).toBe(browser.id)
+  })
+
+  it('closes Browser tabs through the shared rail tab lifecycle', () => {
+    const browser = createBrowserTab({ sessionId: 'session-1', url: 'https://example.com' })
+
+    closeActiveRightRailTab()
+
+    expect($browserTabs.get()).toEqual([])
+    expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
   })
 })

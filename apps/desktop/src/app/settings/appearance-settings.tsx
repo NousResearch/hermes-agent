@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -11,6 +12,7 @@ import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $showBrowserGlobe, setShowBrowserGlobe } from '@/store/show-browser-globe'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { getBaseColors, useTheme } from '@/themes/context'
@@ -216,6 +218,7 @@ export function AppearanceSettings() {
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const translucency = useStore($translucency)
+  const showBrowserGlobe = useStore($showBrowserGlobe)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
@@ -424,6 +427,21 @@ export function AppearanceSettings() {
             }
             description={a.toolViewDesc}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <Switch
+                aria-label={a.showBrowserGlobeTitle}
+                checked={showBrowserGlobe}
+                onCheckedChange={checked => {
+                  triggerHaptic('selection')
+                  setShowBrowserGlobe(checked)
+                }}
+              />
+            }
+            description={a.showBrowserGlobeDesc}
+            title={a.showBrowserGlobeTitle}
           />
         </div>
       </div>

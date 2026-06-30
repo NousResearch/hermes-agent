@@ -43,11 +43,14 @@ import {
   Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { enableBrowserAndOpenTab } from '@/store/browser'
+import { browserDevServerCandidates } from '@/store/browser-dev-servers'
 import { $repoWorktrees } from '@/store/coding-status'
 import { $commandPaletteOpen, $commandPalettePage, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
 import { requestStartWorkSession } from '@/store/projects'
+import { $activeSessionId, $currentCwd } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
@@ -216,6 +219,8 @@ export function CommandPalette() {
   const open = useStore($commandPaletteOpen)
   const pendingPage = useStore($commandPalettePage)
   const bindings = useStore($bindings)
+  const activeSessionId = useStore($activeSessionId)
+  const currentCwd = useStore($currentCwd)
   const worktrees = useStore($repoWorktrees)
   const navigate = useNavigate()
   const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
@@ -319,6 +324,24 @@ export function CommandPalette() {
           ]
         : []
 
+    const devServerCandidates = browserDevServerCandidates({ cwd: currentCwd, worktrees })
+
+    const devServerGroup: PaletteGroup[] =
+      devServerCandidates.length > 0
+        ? [
+            {
+              heading: 'Dev servers',
+              items: devServerCandidates.map(candidate => ({
+                icon: Globe,
+                id: `browser-dev-${candidate.id}`,
+                keywords: ['browser', 'dev server', 'localhost', 'vite', 'next', 'preview', candidate.url],
+                label: candidate.label,
+                run: () => enableBrowserAndOpenTab({ sessionId: activeSessionId, title: candidate.label, url: candidate.url })
+              }))
+            }
+          ]
+        : []
+
     return [
       {
         heading: cc.goTo,
@@ -338,6 +361,14 @@ export function CommandPalette() {
             keywords: ['terminal', 'shell', 'console'],
             label: t.keybinds.actions['view.showTerminal'],
             run: () => setTerminalTakeover(true)
+          },
+          {
+            action: 'view.openBrowser',
+            icon: Globe,
+            id: 'nav-browser',
+            keywords: ['browser', 'web', 'preview', 'agent browser'],
+            label: t.keybinds.actions['view.openBrowser'],
+            run: () => enableBrowserAndOpenTab({ sessionId: activeSessionId })
           },
           {
             action: 'nav.settings',
@@ -380,6 +411,7 @@ export function CommandPalette() {
           { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
         ]
       },
+      ...devServerGroup,
       ...branchGroup,
       {
         heading: cc.commandCenter,
@@ -470,7 +502,7 @@ export function CommandPalette() {
         ]
       }
     ]
-  }, [go, settingsSectionLabel, t, worktrees])
+  }, [activeSessionId, currentCwd, go, settingsSectionLabel, t, worktrees])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the

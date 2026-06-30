@@ -128,6 +128,8 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+_browser_command_pending: dict[str, dict] = {}
+_browser_command_lock = threading.Lock()
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -176,6 +178,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 _LONG_HANDLERS = frozenset(
     {
         "billing.step_up",
+        "browser.desktop.command",
         "browser.manage",
         "cli.exec",
         "llm.oneshot",
@@ -5548,6 +5551,153 @@ def _(rid, params: dict) -> dict:
     }
     _emit("session.info", params.get("session_id", ""), info)
     return _ok(rid, info)
+
+
+def _browser_desktop_timeout(params: dict) -> float:
+    try:
+        raw = float(params.get("timeout", 30.0))
+    except (TypeError, ValueError):
+        raw = 30.0
+    return max(0.01, min(raw, 120.0))
+
+
+@method("browser.desktop.command")
+def _(rid, params: dict) -> dict:
+    """Request that the desktop renderer execute a command against BrowserPane.
+
+    The TUI gateway cannot touch Electron webviews directly, so it emits a
+    browser.command.request event to the session transport and waits for the
+    renderer to answer via browser.desktop.respond. This method is intentionally
+    a long handler; the matching respond method stays fast so it can unblock us.
+    """
+    _session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    sid = str(params.get("session_id") or "")
+    command = str(params.get("command") or "").strip()
+    if not command:
+        return _err(rid, 4018, "browser command required")
+
+    request_params = params.get("params")
+    if not isinstance(request_params, dict):
+        request_params = {}
+
+    request_id = uuid.uuid4().hex[:12]
+    event = threading.Event()
+    record = {"event": event, "response": None}
+    payload = {
+        "command": command,
+        "params": dict(request_params),
+        "request_id": request_id,
+    }
+    tab_id = params.get("tab_id", params.get("tabId"))
+    if isinstance(tab_id, str) and tab_id.strip():
+        payload["tab_id"] = tab_id.strip()
+
+    with _browser_command_lock:
+        _browser_command_pending[request_id] = record
+
+    try:
+        _emit("browser.command.request", sid, payload)
+        if not event.wait(_browser_desktop_timeout(params)):
+            return _err(rid, 5040, "visible browser command timed out")
+    finally:
+        with _browser_command_lock:
+            _browser_command_pending.pop(request_id, None)
+
+    response = record.get("response")
+    if not isinstance(response, dict):
+        return _err(rid, 5041, "visible browser command returned no response")
+    if response.get("ok") is False:
+        return _err(
+            rid,
+            5042,
+            str(response.get("error") or "visible browser command failed"),
+        )
+    return _ok(rid, response)
+
+
+@method("browser.desktop.respond")
+def _(rid, params: dict) -> dict:
+    request_id = str(params.get("request_id") or params.get("requestId") or "").strip()
+    if not request_id:
+        return _err(rid, 4019, "request_id required")
+
+    with _browser_command_lock:
+        record = _browser_command_pending.get(request_id)
+        if record is None:
+            return _err(rid, 4040, "unknown visible browser request")
+        record["response"] = dict(params)
+        event = record.get("event")
+
+    if isinstance(event, threading.Event):
+        event.set()
+    return _ok(rid, {"ok": True})
+
+
+def _live_desktop_sid_for_session_key(session_key: str) -> str:
+    """Resolve a persisted agent task/session key to the live Desktop websocket id."""
+    key = str(session_key or "").strip()
+    if not key:
+        return ""
+    with _sessions_lock:
+        if key in _sessions:
+            return key
+        for sid, sess in list(_sessions.items()):
+            if str(sess.get("session_key") or "") == key:
+                return sid
+    return ""
+
+
+def _desktop_browser_command_runner(
+    session_key: str,
+    command: str,
+    params: dict,
+    *,
+    tab_id: str | None = None,
+    timeout: float | None = None,
+) -> dict:
+    """Runner consumed by tools.browser_tool for visible BrowserPane routing."""
+    sid = _live_desktop_sid_for_session_key(session_key)
+    if not sid:
+        return {
+            "ok": False,
+            "desktop_unavailable": True,
+            "error": "No live Desktop session is available for this browser task",
+        }
+
+    payload = {
+        "session_id": sid,
+        "command": command,
+        "params": dict(params or {}),
+    }
+    if tab_id:
+        payload["tab_id"] = tab_id
+    if timeout is not None:
+        payload["timeout"] = timeout
+
+    response = _methods["browser.desktop.command"](
+        f"browser-tool-{uuid.uuid4().hex[:8]}",
+        payload,
+    )
+    if "error" in response:
+        return {
+            "ok": False,
+            "error": str((response.get("error") or {}).get("message") or "visible browser command failed"),
+        }
+    result = response.get("result")
+    if isinstance(result, dict):
+        return dict(result)
+    return {"ok": False, "error": "visible browser command returned malformed response"}
+
+
+try:
+    from tui_gateway import browser_desktop_bridge as _browser_desktop_bridge
+
+    _browser_desktop_bridge.set_desktop_browser_command_runner(_desktop_browser_command_runner)
+except Exception:
+    logger.debug("Failed to register Desktop browser command runner", exc_info=True)
 
 
 def _session_pending_kind(sid: str) -> str:

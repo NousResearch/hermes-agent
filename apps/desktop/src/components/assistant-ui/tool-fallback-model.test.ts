@@ -45,6 +45,26 @@ describe('buildToolView image handling', () => {
 
     expect(buildToolView(part({ result: { url } }), '').imageUrl).toBe(url)
   })
+
+  it('renders browser_screenshot as a file-backed artifact without inline vision/image analysis', () => {
+    const view = buildToolView(
+      part({
+        result: {
+          browser: 'desktop-visible',
+          screenshot_path: '/tmp/hermes/browser_screenshots/shot.png',
+          url: 'https://example.com/app'
+        },
+        toolName: 'browser_screenshot'
+      }),
+      ''
+    )
+
+    expect(view.icon).toBe('file-media')
+    expect(view.title).toBe('Captured browser screenshot')
+    expect(view.detail).toContain('shot.png')
+    expect(view.detail).toContain('https://example.com/app')
+    expect(view.imageUrl).toBe('')
+  })
 })
 
 describe('buildToolView terminal exit-code status', () => {

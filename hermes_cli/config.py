@@ -3477,7 +3477,7 @@ OPTIONAL_ENV_VARS = {
         "description": "Browser engine for local mode: auto (default Chrome), lightpanda (faster, no screenshots), chrome",
         "prompt": "Browser engine (auto/lightpanda/chrome)",
         "url": "https://github.com/vercel-labs/agent-browser",
-        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        "tools": ["browser_navigate", "browser_snapshot", "browser_click", "browser_screenshot", "browser_vision"],
         "password": False,
         "category": "tool",
         "advanced": True,

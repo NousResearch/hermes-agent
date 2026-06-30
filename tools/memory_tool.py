@@ -991,6 +991,13 @@ def memory_tool(
         return json.dumps(result, ensure_ascii=False)
 
     # --- Single-op path ---------------------------------------------------
+    # Validate action BEFORE checking required params so invalid/missing
+    # actions produce a clear error instead of falling through silently.
+    if action is None:
+        return tool_error("Action is required. Use: add, replace, remove", success=False)
+    if action not in {"add", "replace", "remove"}:
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+
     # Validate required params BEFORE the gate so an invalid write is rejected
     # immediately instead of being staged and only failing at approve time.
     if action == "add" and not content:

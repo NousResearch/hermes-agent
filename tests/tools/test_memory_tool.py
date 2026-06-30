@@ -895,3 +895,36 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+# ── Action validation regression tests (#55755) ────────────────────────
+
+class TestMemoryToolActionValidation:
+    """Regression tests for #55755: invalid action should show actual value, not None."""
+
+    def test_none_action_returns_clear_error(self, tmp_path, monkeypatch):
+        """Calling memory_tool() with no action should produce a clear error."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore()
+        result = json.loads(memory_tool(action=None, store=store))
+        assert result["success"] is False
+        assert "Action is required" in result["error"]
+        assert "add, replace, remove" in result["error"]
+
+    def test_invalid_action_shows_actual_value(self, tmp_path, monkeypatch):
+        """Calling memory_tool(action='list') should show 'list' in the error, not None."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore()
+        result = json.loads(memory_tool(action="list", store=store))
+        assert result["success"] is False
+        assert "'list'" in result["error"]
+        assert "add, replace, remove" in result["error"]
+
+    def test_valid_actions_still_work(self, tmp_path, monkeypatch):
+        """Valid actions (add, replace, remove) should not be affected by the validation."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore()
+        # add
+        result = json.loads(memory_tool(action="add", content="test entry", store=store))
+        assert result["success"] is True
+

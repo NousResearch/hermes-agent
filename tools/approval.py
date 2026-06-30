@@ -1025,6 +1025,36 @@ def save_permanent_allowlist(patterns: set):
 # Approval prompting + orchestration
 # =========================================================================
 
+def build_approval_explanation(command: str, description: str) -> dict[str, str]:
+    """Return user-facing context for an approval prompt.
+
+    Approval prompts already show the raw command and detector reason.  This
+    helper adds the two pieces users need before deciding: what Hermes is
+    trying to do, and what permission the approval grants.  Keep the wording
+    platform-neutral so CLI, gateway adapters, and ACP can share it.
+    """
+    command_text = (command or "").strip()
+    description_text = (description or "").strip()
+
+    if command_text.startswith("execute_code <<"):
+        action = "Run an execute_code Python script."
+        permission = (
+            "Allow this one Python script to execute. It may read/write files "
+            "or spawn subprocesses, so it is gated as a whole."
+        )
+    elif command_text:
+        action = "Run the shown terminal command."
+        permission = "Allow Hermes to execute this command on the configured terminal backend."
+    else:
+        action = "Continue the shown gated action."
+        permission = "Allow Hermes to proceed with this action."
+
+    if description_text:
+        permission = f"{permission} Safety trigger: {description_text}"
+
+    return {"action": action, "permission": permission}
+
+
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
@@ -1046,8 +1076,12 @@ def prompt_dangerous_approval(command: str, description: str,
 
     if approval_callback is not None:
         try:
-            return approval_callback(command, description,
-                                     allow_permanent=allow_permanent)
+            return approval_callback(
+                command,
+                description,
+                allow_permanent=allow_permanent,
+                approval_explanation=build_approval_explanation(command, description),
+            )
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
@@ -1086,7 +1120,10 @@ def prompt_dangerous_approval(command: str, description: str,
         from agent.i18n import t
         while True:
             print()
+            explanation = build_approval_explanation(command, description)
             print(f"  {t('approval.dangerous_header', description=description)}")
+            print(f"  What Hermes is trying to do: {explanation['action']}")
+            print(f"  Permission requested: {explanation['permission']}")
             print(f"      {command}")
             print()
             if allow_permanent:
@@ -1805,6 +1842,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "explanation": build_approval_explanation(command, combined_desc),
                 # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
                 # "always" to session scope below, so the UI must not offer it.
                 "allow_permanent": not has_tirith,
@@ -1874,6 +1912,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": combined_desc,
+            "explanation": build_approval_explanation(command, combined_desc),
         })
         return {
             "approved": False,
@@ -2062,6 +2101,7 @@ def check_execute_code_guard(code: str, env_type: str,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
             "description": description,
+            "explanation": build_approval_explanation(command, description),
         })
         return {
             "approved": False,
@@ -2081,6 +2121,7 @@ def check_execute_code_guard(code: str, env_type: str,
         "pattern_key": pattern_key,
         "pattern_keys": [pattern_key],
         "description": description,
+        "explanation": build_approval_explanation(command, description),
     }
     decision = _await_gateway_decision(
         session_key, notify_cb, approval_data, surface="gateway"
@@ -2176,6 +2217,7 @@ def request_elicitation_consent(
             "description": description,
             "pattern_key": "mcp_elicitation",
             "pattern_keys": ["mcp_elicitation"],
+            "explanation": build_approval_explanation(message, description),
         }
         try:
             decision = _await_gateway_decision(

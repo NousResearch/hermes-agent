@@ -1924,9 +1924,18 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
+        explanation = (metadata or {}).get("approval_explanation") or {}
+        action_text = str(explanation.get("action") or "")
+        permission_text = str(explanation.get("permission") or "")
+        explanation_lines = ""
+        if action_text:
+            explanation_lines += f"What Hermes is trying to do: {action_text}\n"
+        if permission_text:
+            explanation_lines += f"Permission requested: {permission_text}\n"
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         text = (
             "⚠️ **Dangerous command requires approval**\n"
+            f"{explanation_lines}"
             f"```\n{cmd_preview}\n```\n"
             f"Reason: {description}\n\n"
             "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, "

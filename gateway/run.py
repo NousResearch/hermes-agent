@@ -16825,6 +16825,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                explanation = approval_data.get("explanation") or {}
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
@@ -16845,7 +16846,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata={
+                                    **(_status_thread_metadata or {}),
+                                    "approval_explanation": explanation,
+                                },
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -16871,8 +16875,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                action_line = (
+                    f"What Hermes is trying to do: {explanation.get('action')}\n"
+                    if explanation.get("action") else ""
+                )
+                permission_line = (
+                    f"Permission requested: {explanation.get('permission')}\n"
+                    if explanation.get("permission") else ""
+                )
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{action_line}"
+                    f"{permission_line}"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "

@@ -70,7 +70,7 @@ def _build_permission_options(*, allow_permanent: bool) -> list[PermissionOption
     return options
 
 
-def _build_permission_tool_call(command: str, description: str):
+def _build_permission_tool_call(command: str, description: str, explanation: dict | None = None):
     """Return the ACP tool-call update attached to a permission request.
 
     ``request_permission`` expects a ``ToolCallUpdate`` payload — produced
@@ -81,14 +81,23 @@ def _build_permission_tool_call(command: str, description: str):
 
     tool_call_id = f"perm-check-{next(_PERMISSION_REQUEST_IDS)}"
     title = f"{description}: {command}" if description else command
-    content_text = f"{description}\n$ {command}" if description else f"$ {command}"
+    action = str((explanation or {}).get("action") or "")
+    permission = str((explanation or {}).get("permission") or "")
+    explanation_lines = []
+    if action:
+        explanation_lines.append(f"What Hermes is trying to do: {action}")
+    if permission:
+        explanation_lines.append(f"Permission requested: {permission}")
+    explanation_text = "\n".join(explanation_lines)
+    base_text = f"{description}\n$ {command}" if description else f"$ {command}"
+    content_text = f"{explanation_text}\n{base_text}" if explanation_text else base_text
     return _acp.update_tool_call(
         tool_call_id,
         title=title,
         kind="execute",
         status="pending",
         content=[_acp.tool_content(_acp.text_block(content_text))],
-        raw_input={"command": command, "description": description},
+        raw_input={"command": command, "description": description, "explanation": explanation or {}},
     )
 
 
@@ -129,13 +138,14 @@ def make_approval_callback(
         description: str,
         *,
         allow_permanent: bool = True,
+        approval_explanation: dict | None = None,
         **_: object,
     ) -> str:
         from agent.async_utils import safe_schedule_threadsafe
 
         options = _build_permission_options(allow_permanent=allow_permanent)
 
-        tool_call = _build_permission_tool_call(command, description)
+        tool_call = _build_permission_tool_call(command, description, approval_explanation)
         coro = request_permission_fn(
             session_id=session_id,
             tool_call=tool_call,

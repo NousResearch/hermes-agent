@@ -5118,11 +5118,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(target_id))
 
             # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
+            explanation = (metadata or {}).get("approval_explanation") or {}
+            action_text = str(explanation.get("action") or "")
+            permission_text = str(explanation.get("permission") or "")
+            explanation_parts = []
+            if action_text:
+                explanation_parts.append(f"**What Hermes is trying to do:** {action_text}")
+            if permission_text:
+                explanation_parts.append(f"**Permission requested:** {permission_text}")
+            explanation_prefix = "\n".join(explanation_parts)
+            if explanation_prefix:
+                explanation_prefix += "\n\n"
+            max_desc = max(200, 4088 - len(explanation_prefix))
             cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                description=f"{explanation_prefix}```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
             embed.add_field(name="Reason", value=description, inline=False)

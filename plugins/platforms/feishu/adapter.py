@@ -1941,6 +1941,14 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             approval_id = next(self._approval_counter)
             cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            explanation = (metadata or {}).get("approval_explanation") or {}
+            action_text = str(explanation.get("action") or "")
+            permission_text = str(explanation.get("permission") or "")
+            explanation_lines = ""
+            if action_text:
+                explanation_lines += f"**What Hermes is trying to do:** {action_text}\n"
+            if permission_text:
+                explanation_lines += f"**Permission requested:** {permission_text}\n"
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -1959,7 +1967,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": f"{explanation_lines}```\n{cmd_preview}\n```\n**Reason:** {description}",
                     },
                     {
                         "tag": "action",

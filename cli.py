@@ -11225,7 +11225,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return ""
 
     def _approval_callback(self, command: str, description: str,
-                           *, allow_permanent: bool = True) -> str:
+                           *, allow_permanent: bool = True,
+                           approval_explanation: dict | None = None) -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
 
@@ -11248,6 +11249,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._approval_state = {
                 "command": command,
                 "description": description,
+                "explanation": approval_explanation or {},
                 "choices": self._approval_choices(command, allow_permanent=allow_permanent),
                 "selected": 0,
                 "response_queue": response_queue,
@@ -11389,6 +11391,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         command = state["command"]
         description = state["description"]
+        explanation = state.get("explanation") or {}
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
@@ -11404,6 +11407,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         }
 
         preview_lines = _wrap_panel_text(description, 60)
+        action_text = explanation.get("action")
+        permission_text = explanation.get("permission")
+        if action_text:
+            preview_lines.extend(_wrap_panel_text(f"What: {action_text}", 60))
+        if permission_text:
+            preview_lines.extend(_wrap_panel_text(f"Permission: {permission_text}", 60))
         preview_lines.extend(_wrap_panel_text(cmd_display, 60))
         for i, choice in enumerate(choices):
             prefix = '❯ ' if i == selected else '  '
@@ -11416,7 +11425,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         box_width = _panel_box_width(title, preview_lines)
         inner_text_width = max(8, box_width - 2)
 
-        # Pre-wrap the mandatory content — command + choices must always render.
+        # Pre-wrap the mandatory content — explanation + command + choices must always render.
+        explanation_wrapped: list[str] = []
+        if action_text:
+            explanation_wrapped.extend(_wrap_panel_text(f"What: {action_text}", inner_text_width))
+        if permission_text:
+            explanation_wrapped.extend(_wrap_panel_text(f"Permission: {permission_text}", inner_text_width))
         cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
         if not show_full and "view" in choices and len(cmd_wrapped) > 4:
             cmd_wrapped = cmd_wrapped[:3] + _wrap_panel_text(
@@ -11459,7 +11473,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         reserved_below = 6
 
         available = max(0, term_rows - reserved_below)
-        mandatory_full = chrome_full + len(cmd_wrapped) + len(choice_wrapped)
+        mandatory_full = chrome_full + len(explanation_wrapped) + len(cmd_wrapped) + len(choice_wrapped)
 
         # If the full-chrome panel doesn't fit, drop the separator blanks.
         # This keeps the command and every choice on-screen in compact terminals.
@@ -11469,7 +11483,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # If the command itself is too long to leave room for choices (e.g. user
         # hit "view" on a multi-hundred-character command), truncate it so the
         # approve/deny buttons still render. Keep at least 1 row of command.
-        max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
+        max_cmd_rows = max(1, available - chrome_rows - len(explanation_wrapped) - len(choice_wrapped))
         if len(cmd_wrapped) > max_cmd_rows:
             keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
             cmd_wrapped = cmd_wrapped[:keep] + _wrap_panel_text(
@@ -11479,7 +11493,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Allocate any remaining rows to description. The extra -1 in full mode
         # accounts for the blank separator between choices and description.
-        mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(choice_wrapped)
+        mandatory_no_desc = chrome_rows + len(explanation_wrapped) + len(cmd_wrapped) + len(choice_wrapped)
         desc_sep_cost = 0 if use_compact_chrome else 1
         available_for_desc = available - mandatory_no_desc - desc_sep_cost
         # Even on huge terminals, cap description height so the panel stays compact.
@@ -11500,6 +11514,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         lines.append(('class:approval-border', '╭' + ('─' * box_width) + '╮\n'))
         _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
         if not use_compact_chrome:
+            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+
+        for wrapped in explanation_wrapped:
+            _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+        if explanation_wrapped and not use_compact_chrome:
             _append_blank_panel_line(lines, 'class:approval-border', box_width)
 
         for wrapped in cmd_wrapped:

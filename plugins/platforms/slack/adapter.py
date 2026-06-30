@@ -3129,9 +3129,18 @@ class SlackAdapter(BasePlatformAdapter):
             # ``command``, so budget the preview against the fixed parts
             # instead of a flat truncation that overflows once the header +
             # reason are added.
+            explanation = (metadata or {}).get("approval_explanation") or {}
+            action_text = str(explanation.get("action") or "")
+            permission_text = str(explanation.get("permission") or "")
             header = ":warning: *Command Approval Required*\n"
+            explanation_text = ""
+            if action_text:
+                explanation_text += f"What Hermes is trying to do: {action_text}\n"
+            if permission_text:
+                explanation_text += f"Permission requested: {permission_text}\n"
             reason = f"Reason: {description[:500]}"
-            budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
+            budget = 3000 - len(header) - len(explanation_text) - len(reason) - len("``````\n") - len("...")
+            budget = max(200, budget)
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
             blocks = [
@@ -3139,7 +3148,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"{header}```{cmd_preview}```\n{reason}",
+                        "text": f"{header}{explanation_text}```{cmd_preview}```\n{reason}",
                     },
                 },
                 {

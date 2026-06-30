@@ -3917,8 +3917,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            explanation = (metadata or {}).get("approval_explanation") or {}
+            action_text = str(explanation.get("action") or "")
+            permission_text = str(explanation.get("permission") or "")
+            explanation_lines = ""
+            if action_text:
+                explanation_lines += f"What Hermes is trying to do: {_html.escape(action_text)}\n"
+            if permission_text:
+                explanation_lines += f"Permission requested: {_html.escape(permission_text)}\n"
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"{explanation_lines}"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )

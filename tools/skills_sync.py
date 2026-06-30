@@ -575,9 +575,31 @@ def sync_skills(quiet: bool = False) -> dict:
             # name differs, so never delete or re-baseline it. Drop the stale
             # manifest entry so the skill isn't later misread as user-deleted.
             if dest.exists() and _dir_hash(dest) == bundled_hash:
-                _rmtree_writable(dest)
-                if not quiet:
-                    print(f"  ✓ removed stale shadow of {skill_name}")
+                # Remove the stale local shadow ONLY when it is a real local
+                # directory. ``dest`` may be reached *through* a symlinked
+                # skills category (e.g. ``skills/email ->
+                # ~/.cc-switch/skills/email``) whose target overlaps this
+                # external_dirs tree; there ``dest`` resolves to the EXTERNAL
+                # source itself, and rmtree would destroy foreign content
+                # external_dirs is contractually meant to defer to, not own
+                # (#28126). ``shutil.rmtree`` follows an *intermediate*
+                # symlink (only a top-level dir-symlink is refused), so the
+                # global lexical guard does not confine this deletion.
+                # Resolve (follow symlinks) for THIS decision only; the global
+                # guard stays lexical so legitimate backup cleanups through a
+                # symlinked category still work. See
+                # test_symlinked_shadow_pointing_at_external_source_not_deleted.
+                _resolved_dest = Path(os.path.realpath(str(dest)))
+                _resolved_root = Path(os.path.realpath(str(SKILLS_DIR)))
+                if _resolved_root in _resolved_dest.parents:
+                    _rmtree_writable(dest)
+                    if not quiet:
+                        print(f"  ✓ removed stale shadow of {skill_name}")
+                elif not quiet:
+                    print(
+                        f"  ⇢ {skill_name} shadow is behind a symlink to "
+                        "external content — not removing"
+                    )
                 manifest.pop(skill_name, None)
             continue
 
@@ -728,11 +750,16 @@ def _rmtree_writable(path: Path) -> None:
     (``r-xr-xr-x``).  Removing a child requires write permission on its
     parent directory, so the retry handler makes the failing path **and its
     parent** writable before re-attempting.  See #34860, #34972.
+
+    Contract: returns ``None`` and removes nothing when ``path`` is itself a
+    top-level symlink to a directory (``shutil.rmtree`` raises internally and
+    ``_on_error`` swallows it). Callers that branch on "did the deletion
+    happen?" must re-check ``path.exists() or path.is_symlink()`` afterwards.
     """
     # Defense in depth (#48200): refuse to rmtree anything outside
     # ``HERMES_HOME/skills/`` to prevent the catastrophic wipe of
     # ``~/.hermes/`` (``.env``, ``MEMORY.md``, ``kanban.db``, custom
-    # skills, scripts, …) that an earlier incident observed. Five call
+    # skills, scripts, …) that an earlier incident observed. Six call
     # sites in this file invoke this helper; if any one of them ever
     # computes a destination outside the skills root — through a bad
     # path join, a missing ``HERMES_HOME`` default, a malicious
@@ -740,16 +767,32 @@ def _rmtree_writable(path: Path) -> None:
     # stale path in scope — this guard turns the resulting
     # ``shutil.rmtree(~/.hermes)`` into a loud, recoverable ``ValueError``
     # instead of silently destroying the user's install.
-    target = Path(path).resolve()
-    skills_root = SKILLS_DIR.resolve()
-    # Every legitimate caller passes a skill directory or its ``.bak``
-    # sibling — always a strict child of the skills root. The skills root
-    # itself must never be removed: a ``dest`` that collapses to
-    # ``SKILLS_DIR`` (e.g. a relative path resolving to ``.``) would wipe
-    # every installed skill, and its ``.bak`` sibling lands one level up in
-    # ``HERMES_HOME``. Require a strict-child relationship so both escape
-    # into the skills root and out of it are refused.
-    if skills_root not in target.parents:
+    # Compare the *logical* path the caller passed (symlinks NOT followed)
+    # against the skills root. The earlier ``Path.resolve()`` check followed a
+    # symlinked skills sub-tree all the way out to its real location (e.g.
+    # ``~/.hermes/skills/email -> ~/.cc-switch/skills/email``), so a dest/.bak
+    # behind that symlink resolved outside SKILLS_DIR and the guard refused a
+    # routine backup cleanup — raising an uncaught ValueError that aborted the
+    # whole per-profile sync (surfacing as ``default: sync failed``).
+    #
+    # The catastrophic case #48200 guards against is a ``dest`` that collapses
+    # to SKILLS_DIR itself or escapes *upward* into ~/.hermes (and beyond) via
+    # a bad join / missing default / ``..`` — all detectable on the lexical
+    # path without following links. Operating on a path that merely resolves
+    # *downward* through a user-created symlink is the user's intent: they
+    # linked that tree into skills precisely so bundled updates flow into it.
+    # (``shutil.rmtree`` itself still refuses to follow a top-level directory
+    # symlink on CPython 3.x — it raises internally and our ``_on_error``
+    # swallows that, leaving both the link and its target untouched. So
+    # ``ln -s ~/somewhere skills/cat`` is not a silent-erase footgun. The
+    # regression test ``test_symlink_to_dir_does_not_wipe_target`` locks this
+    # invariant empirically so a future Python behavior change is caught.)
+    target = Path(os.path.abspath(str(path)))
+    skills_root = Path(os.path.abspath(str(SKILLS_DIR)))
+    # Require a strict-child relationship: the skills root itself, and anything
+    # at or above it, must be refused (a dest collapsing to SKILLS_DIR would
+    # wipe every installed skill; its ``.bak`` sibling lands in HERMES_HOME).
+    if target == skills_root or skills_root not in target.parents:
         raise ValueError(
             f"refusing to rmtree {target!r}: not strictly under {skills_root!r} "
             f"(scope guard — see #48200)"
@@ -759,9 +802,9 @@ def _rmtree_writable(path: Path) -> None:
     def _on_error(func, fpath, exc_info):
         # Unlinking a child requires the parent dir to be writable, so chmod
         # the parent as well as the failing path, then retry.
-        for target in (os.path.dirname(fpath), fpath):
+        for _chmod_target in (os.path.dirname(fpath), fpath):
             try:
-                os.chmod(target, stat.S_IRWXU)
+                os.chmod(_chmod_target, stat.S_IRWXU)
             except OSError:
                 pass
         func(fpath)
@@ -831,6 +874,26 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         if dest.exists():
             try:
                 _rmtree_writable(dest)
+                # ``_rmtree_writable`` refuses to wipe a directory reached
+                # through a top-level symlink (``shutil.rmtree`` raises
+                # internally and ``_on_error`` swallows it), so it can return
+                # having removed nothing. Detect that honestly instead of
+                # reporting a "Restored" that did not happen — otherwise the
+                # next sync re-collides on the still-present link
+                # (sync_skills name-collision path). See test_symlinked_user_copy_not_silently_reset.
+                if dest.exists() or dest.is_symlink():
+                    return {
+                        "ok": False,
+                        "action": "not_reset",
+                        "message": (
+                            f"'{name}' at {dest} is a symbolic link, which was "
+                            f"left in place (refuse-to-wipe through a symlink). "
+                            f"Remove the link manually, then re-run "
+                            f"`hermes skills reset {name} --restore`. Manifest "
+                            f"entry preserved — nothing was changed."
+                        ),
+                        "synced": None,
+                    }
                 deleted_user_copy = True
             except (OSError, IOError) as e:
                 return {
@@ -1144,6 +1207,16 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
             _rmtree_writable(dest)
         except (OSError, IOError) as e:
             skipped.append({"name": name, "reason": f"delete failed: {e}"})
+            continue
+        # A top-level symlink-to-dir is left untouched by ``_rmtree_writable``
+        # (refuse-to-wipe through a link). Report it as skipped instead of
+        # dropping the manifest entry, which would make every later sync
+        # re-collide on the still-present link. See
+        # test_symlinked_pristine_skill_not_silently_removed.
+        if dest.exists() or dest.is_symlink():
+            skipped.append(
+                {"name": name, "reason": "symlink to directory (left in place; refuse-to-wipe)"}
+            )
             continue
         if name in manifest:
             del manifest[name]

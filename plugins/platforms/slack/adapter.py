@@ -4396,7 +4396,9 @@ class SlackAdapter(BasePlatformAdapter):
         #    @mentioning another user without also mentioning the bot — then
         #    stay silent regardless of the rules below)
         #   0. Channel is in free_response_channels, OR require_mention is
-        #      disabled — always process regardless of mention.
+        #      disabled - process without mention. If thread_require_mention is
+        #      enabled, this free-response behavior is limited to top-level
+        #      channel messages and thread replies must still @mention the bot.
         #   1. The bot is @mentioned in this message, OR
         #   2. The message is a reply in a thread the bot started/participated in, OR
         #   3. The message is in a thread where the bot was previously @mentioned, OR
@@ -4462,12 +4464,40 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-            if channel_id in self._slack_free_response_channels():
-                pass  # Free-response channel — always process
-            elif not self._slack_require_mention():
-                pass  # Mention requirement disabled globally for Slack
+            if (
+                channel_id in self._slack_free_response_channels()
+                or not self._slack_require_mention()
+            ):
+                # Free-response channel, or mention requirement disabled
+                # globally.  thread_require_mention still gates thread
+                # replies: top-level messages stay free-response, but a bot
+                # must be re-mentioned to join thread follow-ups.
+                if (
+                    self._slack_thread_require_mention()
+                    and is_thread_reply
+                    and not is_mentioned
+                ):
+                    logger.debug(
+                        "[Slack] Ignoring thread reply without mention "
+                        "(thread_require_mention=true): channel=%s thread_ts=%s",
+                        channel_id,
+                        event_thread_ts,
+                    )
+                    return
             elif self._slack_strict_mention() and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
+            elif (
+                self._slack_thread_require_mention()
+                and is_thread_reply
+                and not is_mentioned
+            ):
+                logger.debug(
+                    "[Slack] Ignoring thread reply without mention "
+                    "(thread_require_mention=true): channel=%s thread_ts=%s",
+                    channel_id,
+                    event_thread_ts,
+                )
+                return
             elif not is_mentioned:
                 if not await self._should_wake_on_unmentioned_message(
                     event_thread_ts=event_thread_ts,
@@ -4501,15 +4531,20 @@ class SlackAdapter(BasePlatformAdapter):
                 command_probe_text = command_text
                 is_command_text = True
             # Register this thread so all future messages auto-trigger the bot.
-            # Skipped in strict mode: strict_mention=true bots must be
-            # re-mentioned every turn, so remembering the thread would
-            # defeat the feature (and re-enable agent-to-agent ack loops).
+            # Skipped in strict/thread-gated mode: strict_mention=true and
+            # thread_require_mention=true bots must be re-mentioned for
+            # follow-up thread turns, so remembering the thread would defeat
+            # the feature (and re-enable agent-to-agent ack loops).
             #
             # Use the session-scoped ``thread_ts`` (which falls back to the
             # message ts for top-level mentions) rather than the raw event
             # thread_ts: a top-level @mention STARTS a thread, and replies to
             # it must auto-trigger the bot too (#24848).
-            if thread_ts and not self._slack_strict_mention():
+            if (
+                thread_ts
+                and not self._slack_strict_mention()
+                and not self._slack_thread_require_mention()
+            ):
                 self._register_mentioned_thread(thread_ts)
 
         # Thread context rules:
@@ -6751,6 +6786,27 @@ class SlackAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _slack_thread_require_mention(self) -> bool:
+        """When true, Slack thread replies require an explicit @-mention.
+
+        This is narrower than ``strict_mention``: top-level channel messages can
+        still be processed without a mention when ``require_mention`` is false
+        or the channel is listed in ``free_response_channels``. Thread replies
+        remain gated to prevent a bot from joining every follow-up in busy
+        support threads.
+        """
+        configured = self.config.extra.get("thread_require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("SLACK_THREAD_REQUIRE_MENTION", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
     def _slack_message_addressed_to_other_user(self, text: str, self_uids: set) -> bool:
         """Return True when ``text`` opens by @-mentioning a non-bot user.
 
@@ -7229,6 +7285,12 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
         os.environ["SLACK_IGNORE_OTHER_USER_MENTIONS"] = str(
             slack_cfg["ignore_other_user_mentions"]
         ).lower()
+    if "thread_require_mention" in slack_cfg and not os.getenv(
+        "SLACK_THREAD_REQUIRE_MENTION"
+    ):
+        os.environ["SLACK_THREAD_REQUIRE_MENTION"] = str(
+            slack_cfg["thread_require_mention"]
+        ).lower()
     if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
         os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
     frc = slack_cfg.get("free_response_channels")
@@ -7279,8 +7341,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of config.yaml slack:
         # keys (require_mention, strict_mention, ignore_other_user_mentions,
-        # allow_bots, free_response_channels, reactions, allowed_channels) into
-        # SLACK_* env vars that the adapter reads via os.getenv(). Replaces the
+        # thread_require_mention, allow_bots, free_response_channels,
+        # reactions, allowed_channels) into SLACK_* env vars that the adapter
+        # reads via os.getenv(). Replaces the
         # hardcoded block in gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
         # Auth env vars for _is_user_authorized() integration

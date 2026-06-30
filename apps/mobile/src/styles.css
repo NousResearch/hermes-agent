@@ -990,6 +990,16 @@ html.hermes-mobile-standalone .mobile-done-pill:active {
   background: var(--chrome-action-hover);
 }
 
+/* PageSearchShell header (used by Skills & Tools, Messaging, Cron, etc.)
+   was sliding under the iPhone 17 Pro Dynamic Island. The container was
+   relying on --titlebar-height alone, but inside an overlay context the
+   variable can resolve to a smaller value than the actual safe-area inset.
+   Floor the header padding to the real safe-area inset so the title +
+   search row always sits below the camera island. */
+html.hermes-mobile-standalone [data-slot='page-search-header-row'] {
+  padding-top: calc(env(safe-area-inset-top) + 1rem) !important;
+}
+
 /* Skills view (and any PageSearchShell filter row): horizontal tag cloud
    becomes a vertical drill-down list on mobile so each category is a
    thumb-sized row instead of a wrapped chip. */

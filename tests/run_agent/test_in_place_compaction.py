@@ -166,6 +166,10 @@ class TestInPlaceCompaction:
             assert payload["trigger"] == "preflight_threshold"
             assert payload["status"] == "success"
             assert payload["reason"] == "threshold_exceeded"
+            assert payload["compaction_id"] == getattr(agent, "_last_compaction_id")
+            assert isinstance(payload["compaction_id"], str) and payload["compaction_id"]
+            assert payload["compaction_sequence"] == 1
+            assert getattr(agent, "_last_compaction_sequence") == 1
             assert payload["message_count_before"] == 8
             assert payload["message_count_after"] == 2
             assert payload["message_count_archived"] == 6

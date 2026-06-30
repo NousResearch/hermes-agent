@@ -3748,6 +3748,7 @@ def run_conversation(
                         turn_budget_max=agent.iteration_budget.max_total,
                         compaction_count=int(getattr(agent, "_compaction_count", 0) or 0),
                         last_compaction_id=getattr(agent, "_last_compaction_id", "") or "",
+                        last_compaction_sequence=getattr(agent, "_last_compaction_sequence", None),
                         last_compaction_turn_index=getattr(agent, "_last_compaction_turn_index", None),
                         after_compaction=bool(getattr(agent, "_last_compaction_turn_index", 0) or 0),
                         conversation_compacted=bool(getattr(agent, "_compaction_count", 0) or 0),

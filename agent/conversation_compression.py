@@ -108,11 +108,16 @@ def _emit_conversation_compaction_hook(
     if status == "success":
         mode = "in_place" if in_place else "rotate"
     archived = max(0, message_count_before - message_count_after) if in_place else 0
+    compaction_id = ""
+    compaction_sequence: Optional[int] = None
     if status == "success":
         try:
-            agent._last_compaction_id = uuid.uuid4().hex
+            compaction_id = uuid.uuid4().hex
+            compaction_sequence = int(getattr(agent, "_compaction_count", 0) or 0) + 1
+            agent._last_compaction_id = compaction_id
+            agent._last_compaction_sequence = compaction_sequence
             agent._last_compaction_turn_index = int(getattr(agent, "_user_turn_count", 0) or 0)
-            agent._compaction_count = int(getattr(agent, "_compaction_count", 0) or 0) + 1
+            agent._compaction_count = compaction_sequence
         except Exception:
             pass
     try:
@@ -137,6 +142,8 @@ def _emit_conversation_compaction_hook(
             trigger=trigger or "unknown",
             status=status,
             reason=reason,
+            compaction_id=compaction_id,
+            compaction_sequence=compaction_sequence,
             message_count_before=int(message_count_before),
             message_count_after=int(message_count_after),
             message_count_archived=int(archived),

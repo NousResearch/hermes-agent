@@ -206,7 +206,13 @@ export function usePet(): PetRender {
       try {
         const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
 
-        if (!res) {
+        // Count BOTH a null response AND a fail-open {enabled:false} as a
+        // failure. Otherwise the server's defensive swallow
+        // (tui_gateway/server.py:6530) makes us poll forever — the original
+        // MAX_CONSECUTIVE_FAILURES cap only fired on `!res`, which the
+        // fail-open path never produces.
+        const failed = !res || (res.enabled === false && !res.slug)
+        if (failed) {
           failCountRef.current += 1
           return
         }
@@ -258,7 +264,7 @@ export function usePet(): PetRender {
 
         setEnabled(true)
       } catch {
-        // cosmetic — ignore RPC failures
+        failCountRef.current += 1
       }
     },
     [rpc, releaseKitty]

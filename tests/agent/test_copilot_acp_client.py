@@ -23,6 +23,49 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.client = CopilotACPClient(acp_cwd="/tmp")
 
 
+    def test_invalid_tool_call_block_remains_visible_as_text(self) -> None:
+        tool_response = (
+            "I tried to inspect that.\n"
+            "<tool_call>"
+            '{"id":"call_bad","type":"function",'
+            '"function":{"name":"read_file","arguments":{"path":"README.md",}}}'
+            "</tool_call>"
+            "\nPlease retry with valid JSON."
+        )
+
+        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+            response = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "read README.md"}],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {"name": "read_file", "parameters": {}},
+                    }
+                ],
+            )
+
+        choice = response.choices[0]
+        self.assertEqual(choice.finish_reason, "stop")
+        self.assertEqual(choice.message.tool_calls, [])
+        self.assertEqual(choice.message.content, tool_response)
+
+    def test_invalid_bare_tool_call_json_remains_visible_as_text(self) -> None:
+        tool_response = (
+            'Before {"id":"call_bad","type":"function",'
+            '"function":{"name":"read_file","arguments":{"path":"README.md",}}} after'
+        )
+
+        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+            response = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "read README.md"}],
+            )
+
+        choice = response.choices[0]
+        self.assertEqual(choice.finish_reason, "stop")
+        self.assertEqual(choice.message.tool_calls, [])
+        self.assertEqual(choice.message.content, tool_response)
 
     def test_stream_true_preserves_tool_call_deltas(self) -> None:
         tool_response = (

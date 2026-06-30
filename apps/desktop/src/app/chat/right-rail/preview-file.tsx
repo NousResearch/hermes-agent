@@ -6,7 +6,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
@@ -14,10 +14,13 @@ import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/comp
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
-import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { PageLoader } from '@/components/page-loader'
+
+const LazyCodeEditor = lazy(() =>
+  import('@/components/chat/code-editor').then(m => ({ default: m.CodeEditor }))
+)
 import { translateNow, useI18n } from '@/i18n'
 import {
   desktopFileDiff,
@@ -845,7 +848,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-hidden">
-          <CodeEditor
+          <Suspense fallback={<PageLoader />}>
+          <LazyCodeEditor
             filePath={filePath}
             initialValue={baselineRef.current}
             key={editorKey}
@@ -853,6 +857,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             onChange={handleEditorChange}
             onSave={() => void saveEdit()}
           />
+          </Suspense>
         </div>
       </div>
     )

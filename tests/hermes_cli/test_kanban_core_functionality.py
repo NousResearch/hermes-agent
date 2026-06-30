@@ -3428,6 +3428,10 @@ def test_config_default_dispatch_in_gateway_is_true():
         "kanban.dispatch_in_gateway default should be True; got "
         f"{kanban.get('dispatch_in_gateway')!r}"
     )
+    assert kanban.get("auto_subscribe_on_create") is True, (
+        "kanban.auto_subscribe_on_create default should be True; got "
+        f"{kanban.get('auto_subscribe_on_create')!r}"
+    )
     interval = kanban.get("dispatch_interval_seconds")
     assert isinstance(interval, (int, float)) and interval >= 1, (
         f"dispatch_interval_seconds must be a positive number, got {interval!r}"

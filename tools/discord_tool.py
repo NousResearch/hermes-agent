@@ -38,6 +38,7 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
+DISCORD_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 
 # Application flag bits (from GET /applications/@me → "flags").
 # Source: https://discord.com/developers/docs/resources/application#application-object-application-flags
@@ -53,6 +54,13 @@ _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
 def _get_bot_token() -> Optional[str]:
     """Resolve the Discord bot token from environment."""
     return os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
+
+
+def _read_limited_response_body(stream: Any) -> Tuple[bytes, bool]:
+    raw = stream.read(DISCORD_RESPONSE_MAX_BYTES + 1)
+    if len(raw) > DISCORD_RESPONSE_MAX_BYTES:
+        return raw[:DISCORD_RESPONSE_MAX_BYTES], True
+    return raw, False
 
 
 def _discord_request(
@@ -87,11 +95,24 @@ def _discord_request(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 204:
                 return None
-            return json.loads(resp.read().decode("utf-8"))
+            raw_body, truncated = _read_limited_response_body(resp)
+            if truncated:
+                raise DiscordAPIError(
+                    resp.status,
+                    f"Discord API response exceeded {DISCORD_RESPONSE_MAX_BYTES} bytes",
+                )
+            return json.loads(raw_body.decode("utf-8"))
     except urllib.error.HTTPError as e:
         error_body = ""
         try:
-            error_body = e.read().decode("utf-8", errors="replace")
+            raw_body, truncated = _read_limited_response_body(e)
+            if truncated:
+                error_body = (
+                    "Discord API error body exceeded "
+                    f"{DISCORD_RESPONSE_MAX_BYTES} bytes"
+                )
+            else:
+                error_body = raw_body.decode("utf-8", errors="replace")
         except Exception:
             pass
         raise DiscordAPIError(e.code, error_body) from e

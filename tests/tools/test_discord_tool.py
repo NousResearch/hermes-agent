@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tools import discord_tool as discord_tool_mod
 from tools.discord_tool import (
     DiscordAPIError,
     _ACTIONS,
@@ -127,6 +128,20 @@ class TestDiscordRequest:
         assert result is None
 
     @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_success_response_body_is_bounded(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setattr(discord_tool_mod, "DISCORD_RESPONSE_MAX_BYTES", 8)
+        mock_resp = _mock_urlopen({}, status=200)
+        mock_resp.read.return_value = b'{"oversized": true}'
+        mock_urlopen_fn.return_value = mock_resp
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 200
+        assert "exceeded 8 bytes" in exc_info.value.body
+        mock_resp.read.assert_called_once_with(9)
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
     def test_http_error(self, mock_urlopen_fn):
         error_body = json.dumps({"message": "Missing Access"}).encode()
         http_error = urllib.error.HTTPError(
@@ -141,6 +156,27 @@ class TestDiscordRequest:
             _discord_request("GET", "/test", "tok")
         assert exc_info.value.status == 403
         assert "Missing Access" in exc_info.value.body
+
+    def test_http_error_body_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(discord_tool_mod, "DISCORD_RESPONSE_MAX_BYTES", 8)
+        http_error = urllib.error.HTTPError(
+            url="https://discord.com/api/v10/test",
+            code=500,
+            msg="Server Error",
+            hdrs={},
+            fp=BytesIO(b"x" * 32),
+        )
+
+        with patch(
+            "tools.discord_tool.urllib.request.urlopen",
+            side_effect=http_error,
+        ):
+            with pytest.raises(DiscordAPIError) as exc_info:
+                _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 500
+        assert "error body exceeded 8 bytes" in exc_info.value.body
+        assert "xxxxxxxxxxxxxxxx" not in exc_info.value.body
 
 
 # ---------------------------------------------------------------------------

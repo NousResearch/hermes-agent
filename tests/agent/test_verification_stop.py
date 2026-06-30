@@ -215,6 +215,7 @@ def test_nudge_after_unverified_edit_with_known_command(tmp_path, monkeypatch):
     assert "fresh passing verification evidence" in nudge
     assert "`pnpm run test`" in nudge
     assert changed in nudge
+    assert "creative UI/visual work" in nudge
 
 
 def test_nudge_includes_failed_output_summary(tmp_path, monkeypatch):
@@ -249,6 +250,23 @@ def test_no_suite_nudge_requests_temp_script(tmp_path, monkeypatch):
     assert tempfile.gettempdir() in nudge
     assert "ad-hoc verification" in nudge
     assert "suite green" in nudge
+    assert "creative UI/visual work" in nudge
+
+
+def test_verify_guidance_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+
+    from agent import verify_hooks
+
+    monkeypatch.setattr(verify_hooks, "coding_verify_guidance", lambda: None)
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+
+    assert nudge is not None
+    assert "fresh passing verification evidence" in nudge
+    assert "creative UI/visual work" not in nudge
 
 
 def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):

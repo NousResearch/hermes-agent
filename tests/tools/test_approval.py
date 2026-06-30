@@ -1997,3 +1997,78 @@ class TestTirithImportErrorFailOpenPolicy:
                         result = check_all_command_guards("echo hello", "local")
 
         assert result.get("approved") is True
+
+
+class TestApprovalPromptRedaction:
+    """Secrets are masked in user-facing approval surfaces (#13139).
+
+    The flagged command/script is rendered so the user can decide whether to
+    approve. If it carries a credential (Bearer token, DB password, prefixed
+    key), that secret would land on stdout and -- via the gateway notify
+    payload -- in Discord/Slack messages, which are screenshottable. Redaction
+    is display-only: the raw command still executes after approval and the
+    allowlist keys off pattern_key, not the command text.
+    """
+
+    SECRET_CMD = (
+        'curl -H "Authorization: Bearer sk-proj-abc123xyz4567890abcdef" '
+        "https://api.openai.com/v1/models"
+    )
+
+    def test_callback_receives_redacted_command(self):
+        """prompt_dangerous_approval hands the callback a masked command."""
+        seen = {}
+
+        def cb(command, description, *, allow_permanent=True):
+            seen["command"] = command
+            seen["description"] = description
+            return "deny"
+
+        prompt_dangerous_approval(
+            self.SECRET_CMD,
+            "pipe remote content; token sk-proj-abc123xyz4567890abcdef",
+            approval_callback=cb,
+        )
+        # Secret value gone, decision context (scheme, URL, flag) preserved.
+        assert "sk-proj-abc123xyz4567890abcdef" not in seen["command"]
+        assert "Authorization: Bearer ***" in seen["command"]
+        assert "https://api.openai.com/v1/models" in seen["command"]
+        assert "sk-proj-abc123xyz4567890abcdef" not in seen["description"]
+
+    def test_clean_command_passes_through_unredacted(self):
+        """A command with no secret is shown verbatim -- no over-redaction."""
+        seen = {}
+
+        def cb(command, description, *, allow_permanent=True):
+            seen["command"] = command
+            return "deny"
+
+        prompt_dangerous_approval("rm -rf /var/data", "recursive delete",
+                                  approval_callback=cb)
+        assert seen["command"] == "rm -rf /var/data"
+
+    def test_execute_code_pending_fallback_redacts_script(self):
+        """check_execute_code_guard's no-notifier fallback masks an embedded
+        secret in both the pending record and the returned approval message."""
+        from unittest.mock import patch as _patch
+
+        from tools.approval import check_execute_code_guard
+
+        code = (
+            "import os\n"
+            'api_key = "sk-proj-abc123xyz4567890abcdef"\n'
+            "print(api_key)"
+        )
+        cfg = {"approvals": {"mode": "manual"}}
+        with _patch("hermes_cli.config.load_config", return_value=cfg):
+            with _patch("tools.approval._is_gateway_approval_context",
+                        return_value=True):
+                with _patch("tools.approval._get_approval_mode",
+                            return_value="manual"):
+                    # No gateway notify callback registered -> pending fallback.
+                    result = check_execute_code_guard(code, "local")
+
+        assert result.get("status") == "pending_approval"
+        # The script's credential must not appear in the user-facing message.
+        assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
+        assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]

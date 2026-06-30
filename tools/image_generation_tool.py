@@ -898,7 +898,7 @@ def image_generate_tool(
     start_time = datetime.datetime.now()
 
     try:
-        if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
+        if not prompt or not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("Prompt is required and must be a non-empty string")
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):

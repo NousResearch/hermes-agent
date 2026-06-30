@@ -316,7 +316,7 @@ def main():
     try:
         from hermes_cli.config import read_raw_config
         _mcp_servers = (read_raw_config() or {}).get("mcp_servers")
-        _has_mcp_servers = isinstance(_mcp_servers, dict) and len(_mcp_servers) > 0
+        _has_mcp_servers = isinstance(_mcp_servers, dict) and bool(_mcp_servers)
     except Exception:
         # Be conservative: if we can't decide, fall back to attempting
         # discovery (still backgrounded, so it can't block startup).

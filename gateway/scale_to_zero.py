@@ -80,7 +80,7 @@ def messaging_is_relay_only_or_absent(platforms: Iterable[Any]) -> bool:
     """
     names = {_platform_name(p) for p in platforms}
     names.discard("relay")
-    return len(names) == 0
+    return not names
 
 
 def _platform_name(platform: Any) -> str:

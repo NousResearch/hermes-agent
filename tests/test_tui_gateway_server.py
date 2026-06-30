@@ -9083,7 +9083,12 @@ def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tm
     finally:
         reset_hermes_home_override(token)
 
-    assert resp["result"]["verification"]["status"] == "not_applicable"
+    assert isinstance(resp, dict)
+    result = resp.get("result")
+    assert isinstance(result, dict)
+    verification = result.get("verification")
+    assert isinstance(verification, dict)
+    assert verification["status"] == "not_applicable"
 
 
 # ── browser.manage ───────────────────────────────────────────────────

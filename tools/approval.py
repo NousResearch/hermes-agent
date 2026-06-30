@@ -2172,15 +2172,18 @@ def is_current_session_yolo_enabled() -> bool:
 def is_approved(session_key: str, pattern_key: str) -> bool:
     """Check if a pattern is approved (session-scoped or permanent).
 
-    Accept both the current canonical key and the legacy regex-derived key so
-    existing command_allowlist entries continue to work after key migrations.
+    Permanent approvals accept both the current canonical key and the legacy
+    regex-derived key so old ``command_allowlist`` entries continue to work
+    after key migrations. Session approvals are intentionally exact-match
+    only: a legacy colliding key such as ``find`` must not let approving
+    ``find -exec rm`` silently approve ``find -delete`` in the same session.
     """
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         if any(alias in _permanent_approved for alias in aliases):
             return True
         session_approvals = _session_approved.get(session_key, set())
-        return any(alias in session_approvals for alias in aliases)
+        return pattern_key in session_approvals
 
 
 def approve_permanent(pattern_key: str):

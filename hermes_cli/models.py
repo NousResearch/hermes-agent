@@ -281,6 +281,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
         "claude-sonnet-4.6",
+        "claude-sonnet-5",
         "claude-sonnet-4",
         "claude-sonnet-4.5",
         "claude-haiku-4.5",
@@ -366,6 +367,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-sonnet-5",
         "claude-fable-5",
         "claude-sonnet-5",
         "claude-opus-4-8",
@@ -406,6 +408,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3.1-flash-lite-preview",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-sonnet-5",
         "openai/gpt-5.4",
     ],
     "opencode-zen": [

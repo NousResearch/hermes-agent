@@ -29,6 +29,10 @@
           "description": ""
         },
         {
+          "id": "anthropic/claude-sonnet-5",
+          "description": ""
+        },
+        {
           "id": "anthropic/claude-haiku-4.5",
           "description": ""
         },
@@ -182,6 +186,9 @@
         },
         {
           "id": "anthropic/claude-opus-4.8"
+        },
+        {
+          "id": "anthropic/claude-sonnet-5"
         },
         {
           "id": "anthropic/claude-sonnet-5"

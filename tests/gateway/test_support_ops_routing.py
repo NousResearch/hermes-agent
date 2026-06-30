@@ -141,6 +141,28 @@ def test_backend_resolver_thread_title_passes_in_backend_lane():
     result = lint_discord_thread_create_target(
         "Алекс: Игрите на града — стари линкове",
         channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+        initial_message="@Alex моля провери старите линкове.",
+    )
+
+    assert result.ok is True
+
+
+def test_backend_resolver_thread_title_requires_initial_message_for_standalone_thread():
+    result = lint_discord_thread_create_target(
+        "Алекс: Игрите на града — стари линкове",
+        channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+    )
+
+    assert result.ok is False
+    assert result.blocked_reason == "blocked_backend_resolver_thread_missing_initial_message"
+    assert result.expected_channel_id == SKYVISION_BACKEND_CHANNEL_ID
+
+
+def test_backend_resolver_thread_title_allows_existing_message_anchor_without_initial_message():
+    result = lint_discord_thread_create_target(
+        "Алекс: Игрите на града — стари линкове",
+        channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+        message_id="1521397000000000000",
     )
 
     assert result.ok is True

@@ -580,6 +580,7 @@ class TestCreateThread:
         result = json.loads(discord_core(action="create_thread", channel_id="11", name="New Thread"))
         assert result["success"] is True
         assert result["thread_id"] == "800"
+        assert result["starter_message_sent"] is False
         # Verify the API call
         mock_req.assert_called_once_with(
             "POST", "/channels/11/threads", "test-token",
@@ -607,6 +608,7 @@ class TestCreateThread:
             action="create_thread",
             channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
             name="Алекс: Игрите на града — стари линкове",
+            initial_message="@Alex моля провери старите линкове.",
         ))
 
         assert "error" in result
@@ -615,9 +617,8 @@ class TestCreateThread:
         mock_req.assert_not_called()
 
     @patch("tools.discord_tool._discord_request")
-    def test_create_thread_allows_backend_resolver_title_in_backend_lane(self, mock_req, monkeypatch):
+    def test_create_thread_blocks_backend_resolver_title_without_starter_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        mock_req.return_value = {"id": "802", "name": "Алекс: Игрите на града — стари линкове"}
 
         result = json.loads(discord_core(
             action="create_thread",
@@ -625,9 +626,57 @@ class TestCreateThread:
             name="Алекс: Игрите на града — стари линкове",
         ))
 
+        assert "error" in result
+        assert "blocked_backend_resolver_thread_missing_initial_message" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_allows_backend_resolver_title_in_backend_lane(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "802", "name": "Алекс: Игрите на града — стари линкове"},
+            {"id": "starter-802"},
+        ]
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BACKEND_CHANNEL_ID,
+            name="Алекс: Игрите на града — стари линкове",
+            initial_message="@Alex моля провери старите линкове.",
+        ))
+
         assert result["success"] is True
         assert result["thread_id"] == "802"
-        mock_req.assert_called_once()
+        assert result["starter_message_sent"] is True
+        assert result["starter_message_id"] == "starter-802"
+        assert mock_req.call_count == 2
+        mock_req.assert_any_call(
+            "POST", "/channels/1504852408227069993/threads", "test-token",
+            body={
+                "name": "Алекс: Игрите на града — стари линкове",
+                "auto_archive_duration": 1440,
+                "type": 11,
+            },
+        )
+        mock_req.assert_any_call(
+            "POST", "/channels/802/messages", "test-token",
+            body={"content": "@Alex моля провери старите линкове."},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_rejects_oversized_initial_message_before_api_call(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id="11",
+            name="New Thread",
+            initial_message="x" * 2001,
+        ))
+
+        assert "error" in result
+        assert "2000 character limit" in result["error"]
+        mock_req.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

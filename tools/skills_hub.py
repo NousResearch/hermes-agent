@@ -62,36 +62,55 @@ logger = logging.getLogger(__name__)
 INDEX_CACHE_TTL = 3600  # 1 hour  (defined early; referenced below)
 
 
+# The legacy path names (SKILLS_DIR, HUB_DIR, ...) are not real module
+# attributes — they are synthesized on access by the PEP 562 ``__getattr__``
+# below so they reflect the active profile override.  Tests, however, set them
+# as *real* module attributes via ``patch.object(hub, "SKILLS_DIR", ...)`` /
+# ``monkeypatch.setattr``.  ``_override`` lets each resolver honor such an
+# injected real attribute (the test seam) before falling back to dynamic
+# resolution.  ``globals().get`` returns None when only the __getattr__-backed
+# name exists (no real attribute set), so dynamic resolution wins by default.
+def _override(name: str):
+    return globals().get(name)
+
+
 def _hermes_home() -> Path:
     return get_hermes_home()
 
 
 def _skills_dir() -> Path:
-    return _hermes_home() / "skills"
+    forced = _override("SKILLS_DIR")
+    return Path(forced) if forced is not None else _hermes_home() / "skills"
 
 
 def _hub_dir() -> Path:
-    return _skills_dir() / ".hub"
+    forced = _override("HUB_DIR")
+    return Path(forced) if forced is not None else _skills_dir() / ".hub"
 
 
 def _lock_file() -> Path:
-    return _hub_dir() / "lock.json"
+    forced = _override("LOCK_FILE")
+    return Path(forced) if forced is not None else _hub_dir() / "lock.json"
 
 
 def _quarantine_dir() -> Path:
-    return _hub_dir() / "quarantine"
+    forced = _override("QUARANTINE_DIR")
+    return Path(forced) if forced is not None else _hub_dir() / "quarantine"
 
 
 def _audit_log() -> Path:
-    return _hub_dir() / "audit.log"
+    forced = _override("AUDIT_LOG")
+    return Path(forced) if forced is not None else _hub_dir() / "audit.log"
 
 
 def _taps_file() -> Path:
-    return _hub_dir() / "taps.json"
+    forced = _override("TAPS_FILE")
+    return Path(forced) if forced is not None else _hub_dir() / "taps.json"
 
 
 def _index_cache_dir() -> Path:
-    return _hub_dir() / "index-cache"
+    forced = _override("INDEX_CACHE_DIR")
+    return Path(forced) if forced is not None else _hub_dir() / "index-cache"
 
 
 _DYNAMIC_PATH_RESOLVERS = {
@@ -110,7 +129,8 @@ def __getattr__(name: str):
     """Resolve the legacy path constants dynamically per access.
 
     PEP 562 module ``__getattr__``: only called for names NOT found as real
-    module attributes, so it does not slow down ordinary lookups.  This lets
+    module attributes, so it does not slow down ordinary lookups and a test's
+    ``patch.object``-set real attribute shadows it.  This lets
     ``tools.skills_hub.SKILLS_DIR`` (and the rest) reflect the active profile
     override instead of an import-time snapshot.
     """

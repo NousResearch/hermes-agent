@@ -69,6 +69,14 @@ export function useComposerQueue({
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   queueEditRef.current = queueEdit
 
+  const setQueueEditSnapshot = useCallback(
+    (next: QueueEditState | null) => {
+      queueEditRef.current = next
+      setQueueEdit(next)
+    },
+    [queueEditRef]
+  )
+
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
 
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
@@ -80,7 +88,7 @@ export function useComposerQueue({
       return
     }
 
-    setQueueEdit({
+    setQueueEditSnapshot({
       attachments: cloneAttachments(attachments),
       draft: draftRef.current,
       entryId: entry.id,
@@ -114,10 +122,10 @@ export function useComposerQueue({
     const next = queuedPrompts[target]
 
     if (next) {
-      setQueueEdit({ ...queueEdit, entryId: next.id })
+      setQueueEditSnapshot({ ...queueEdit, entryId: next.id })
       loadIntoComposer(next.text, next.attachments)
     } else {
-      setQueueEdit(null)
+      setQueueEditSnapshot(null)
       loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     }
 
@@ -146,8 +154,8 @@ export function useComposerQueue({
       triggerHaptic('cancel')
     }
 
+    setQueueEditSnapshot(null)
     loadIntoComposer(queueEdit.draft, queueEdit.attachments)
-    setQueueEdit(null)
     focusInput()
 
     return true
@@ -319,11 +327,14 @@ export function useComposerQueue({
         return
       }
 
+      setQueueEditSnapshot(null)
       loadIntoComposer(queueEdit.draft, queueEdit.attachments)
+
+      return
     }
 
-    setQueueEdit(null)
-  }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
+    setQueueEditSnapshot(null)
+  }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit, setQueueEditSnapshot]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     beginQueuedEdit,

@@ -4212,12 +4212,25 @@ def _make_agent(
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
 
-        skills_prompt, _loaded_skills, missing_skills = build_preloaded_skills_prompt(
+        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
             startup_skills,
             task_id=session_id or key,
         )
         if missing_skills:
-            raise ValueError(f"Unknown skill(s): {', '.join(missing_skills)}")
+            missing_display = ", ".join(missing_skills)
+            # Degrade gracefully when some skills loaded; only hard-fail when
+            # every requested skill is missing. Mirrors cli.py — a typo'd skill
+            # name should not crash the worker and auto-block the Kanban task.
+            if loaded_skills:
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. "
+                    "Continuing with: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                    ", ".join(loaded_skills),
+                )
+            else:
+                raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             system_prompt = "\n\n".join(
                 part for part in (system_prompt, skills_prompt) if part

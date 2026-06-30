@@ -45,6 +45,8 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures.thread import _worker
 from typing import Any, Callable, Dict, List, Optional
 
+from tools.thread_context import propagate_context_to_thread
+
 logger = logging.getLogger(__name__)
 
 
@@ -247,7 +249,11 @@ def dispatch_async_delegation(
             _finalize(delegation_id, result, status)
 
     try:
-        executor.submit(_worker)
+        # Capture the dispatching turn's ContextVars (notably the
+        # _HERMES_HOME_OVERRIDE profile scope) so the detached child resolves
+        # get_hermes_home() under the right profile in single-process
+        # multi-profile runtimes (desktop tui_gateway).
+        executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
             _records.pop(delegation_id, None)
@@ -432,7 +438,10 @@ def dispatch_async_delegation_batch(
             _finalize_batch(delegation_id, combined, status)
 
     try:
-        executor.submit(_worker)
+        # Capture the dispatching turn's ContextVars (notably the
+        # _HERMES_HOME_OVERRIDE profile scope) so the detached batch children
+        # resolve get_hermes_home() under the right profile.
+        executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover
         with _records_lock:
             _records.pop(delegation_id, None)

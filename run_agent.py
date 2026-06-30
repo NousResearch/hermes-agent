@@ -1525,13 +1525,22 @@ class AIAgent:
         keep working.
         """
         from agent.background_review import spawn_background_review_thread
+        from tools.thread_context import propagate_context_to_thread
         target, _prompt = spawn_background_review_thread(
             self,
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
         )
-        t = threading.Thread(target=target, daemon=True, name="bg-review")
+        # Propagate the spawning turn's ContextVars (notably the
+        # _HERMES_HOME_OVERRIDE profile scope) into the review thread.  A bare
+        # threading.Thread starts with an empty context, so the review would
+        # resolve get_hermes_home() to the launch/default profile and write
+        # MEMORY.md / skill review into the wrong profile in single-process
+        # multi-profile runtimes (desktop tui_gateway) — see #54937.
+        t = threading.Thread(
+            target=propagate_context_to_thread(target), daemon=True, name="bg-review"
+        )
         t.start()
 
     def _build_memory_write_metadata(

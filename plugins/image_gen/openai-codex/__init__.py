@@ -31,6 +31,7 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_reference_images,
     resolve_aspect_ratio,
     save_b64_image,
     success_response,
@@ -84,6 +85,7 @@ _CODEX_INSTRUCTIONS = (
     "requests by using the image_generation tool when provided."
 )
 
+_MAX_REFERENCE_IMAGES = 16
 _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
 _IMAGE_MAGIC_MIME = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -236,10 +238,9 @@ def _normalize_input_images(
     values: List[str] = []
     if isinstance(image_url, str) and image_url.strip():
         values.append(image_url.strip())
-    if isinstance(reference_image_urls, (list, tuple)):
-        for ref in reference_image_urls:
-            if isinstance(ref, str) and ref.strip():
-                values.append(ref.strip())
+    for ref in (normalize_reference_images(reference_image_urls) or []):
+        values.append(ref)
+    values = values[:_MAX_REFERENCE_IMAGES]
     return [_to_input_image_part(value) for value in values]
 
 
@@ -453,7 +454,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         # images as `input_image` message content parts. Keep this capability
         # honest so the dynamic `image_generate` schema encourages identity-
         # preserving edits instead of unrelated text-to-image redraws.
-        return {"modalities": ["text", "image"], "max_reference_images": 16}
+        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
 
     def generate(
         self,

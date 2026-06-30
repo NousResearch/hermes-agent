@@ -3658,7 +3658,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         existing = self.adapters.get(adapter.platform)
         if existing is adapter:
             try:
-                await adapter.disconnect()
+                await self._safe_adapter_disconnect(adapter, adapter.platform)
             finally:
                 self.adapters.pop(adapter.platform, None)
                 self.delivery_router.adapters = self.adapters

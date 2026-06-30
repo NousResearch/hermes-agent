@@ -11,15 +11,13 @@ declare global {
   interface Window {
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
-      // the window's backend; pass a named profile to lazily spawn/reuse that
-      // profile's backend from the pool.
+      // the active remote gateway; pass a named profile to resolve that
+      // profile's remote descriptor.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
-      // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
-      // and drop it if a remote one has gone unreachable, so the next
+      // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY
+      // remote and drop it if it has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
-      // re-dialing a dead remote forever. No-op for local backends (they
-      // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
-      // remote cache was dropped.
+      // re-dialing a dead remote forever.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
@@ -57,9 +55,8 @@ declare global {
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
       profile: {
         get: () => Promise<DesktopActiveProfile>
-        // Persists the desktop's profile choice and relaunches the local
-        // backend under the new HERMES_HOME (reloads the window). Pass null to
-        // clear the preference.
+        // Persists the desktop's remote profile choice and reloads the window.
+        // Pass null to clear the preference.
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
@@ -232,17 +229,15 @@ export interface DesktopVersionInfo {
   electronVersion: string
   nodeVersion: string
   platform: string
-  hermesRoot: string
+  hermesRoot: null | string
 }
 
-export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
+export type DesktopUninstallMode = 'app'
 
 export interface DesktopUninstallSummary {
-  hermes_home: string
-  agent_installed: boolean
+  app_installed: boolean
+  backend_managed: false
   gui_installed: boolean
-  source_built_artifacts: string[]
-  packaged_app_paths: string[]
   userdata_dir: string
   userdata_exists: boolean
   platform: string
@@ -293,11 +288,11 @@ export interface DesktopUpdateApplyResult {
   branch?: string
   error?: string
   message?: string
-  /** True when no staged updater exists (CLI install) and the user should run
-   *  `hermes update` themselves. `command` is the exact line to run. */
+  /** True when a client update must be completed outside the app. `command`
+   *  carries a displayable hint when available. */
   manual?: boolean
   command?: string
-  hermesRoot?: string
+  hermesRoot?: null | string
   /** True when the backend was updated but the GUI couldn't be relaunched in
    *  place (AppImage / dev run): the new version loads on next launch. */
   backendUpdated?: boolean

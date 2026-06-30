@@ -133,9 +133,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
 // Profile that profile-scoped REST settings (config/env/skills/tools/model/…)
 // should target. Mirrors $activeGatewayProfile, pushed in from the store via
 // setApiRequestProfile so this module needs no store import (avoids a cycle).
-// Electron main consumes request.profile to pick which backend *process* serves
-// the call; each pooled backend already has its own HERMES_HOME, so no backend
-// change is needed. Null → primary, so single-profile users are unaffected.
+// Electron main consumes request.profile to pick the configured remote gateway
+// scope for the call. Null → primary, so single-profile users are unaffected.
 let _apiProfile: null | string = null
 
 export function setApiRequestProfile(profile: null | string): void {
@@ -777,29 +776,19 @@ export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelA
 }
 
 export function restartGateway(): Promise<ActionResponse> {
-  return window.hermesDesktop.api<ActionResponse>({
-    ...profileScoped(),
-    path: '/api/gateway/restart',
-    method: 'POST'
-  })
+  return Promise.reject(new Error('Reuben Desktop does not restart remote backends.'))
 }
 
 export function updateHermes(): Promise<ActionResponse> {
-  return window.hermesDesktop.api<ActionResponse>({
-    ...profileScoped(),
-    path: '/api/hermes/update',
-    method: 'POST'
-  })
+  return Promise.reject(new Error('Reuben Desktop does not update or mutate remote backends.'))
 }
 
 /** Query the connected backend's own update state. In remote mode this is the
  *  authoritative source for the backend's behind-count + "what's changed",
  *  distinct from the Electron client clone's git state. */
 export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResponse> {
-  return window.hermesDesktop.api<BackendUpdateCheckResponse>({
-    ...profileScoped(),
-    path: `/api/hermes/update/check${force ? '?force=true' : ''}`
-  })
+  void force
+  return Promise.reject(new Error('Remote backend updates are managed outside Reuben Desktop.'))
 }
 
 export function getActionStatus(name: string, lines = 200): Promise<ActionStatusResponse> {

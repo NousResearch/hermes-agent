@@ -5,8 +5,8 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import { getLogs, getStatus, getUsageAnalytics } from '@/hermes'
+import type { AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -21,7 +21,6 @@ import {
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
-import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
 
@@ -127,7 +126,6 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [logs, setLogs] = useState<string[]>([])
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
-  const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -223,47 +221,6 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   })
 
   const sessionListHasResults = filteredSessions.length > 0
-
-  const runSystemAction = useCallback(
-    async (kind: 'restart' | 'update') => {
-      setSystemError('')
-
-      try {
-        const started = kind === 'restart' ? await restartGateway() : await updateHermes()
-        let nextStatus: ActionStatusResponse | null = null
-
-        for (let attempt = 0; attempt < 18; attempt += 1) {
-          await new Promise(resolve => window.setTimeout(resolve, 1200))
-          const polled = await getActionStatus(started.name, 180)
-          nextStatus = polled
-          setSystemAction(polled)
-          upsertDesktopActionTask(polled)
-
-          if (!polled.running) {
-            break
-          }
-        }
-
-        if (!nextStatus) {
-          const pendingStatus = {
-            exit_code: null,
-            lines: [cc.actionStartedWaiting],
-            name: started.name,
-            pid: started.pid,
-            running: true
-          }
-
-          setSystemAction(pendingStatus)
-          upsertDesktopActionTask(pendingStatus)
-        }
-      } catch (error) {
-        setSystemError(error instanceof Error ? error.message : String(error))
-      } finally {
-        void refreshSystem()
-      }
-    },
-    [cc, refreshSystem]
-  )
 
   return (
     <OverlayView closeLabel={cc.close} onClose={onClose}>
@@ -390,25 +347,10 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                           {cc.hermesActiveSessions(status.version, status.active_sessions)}
                         </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
-                          {cc.restartGateway}
-                        </Button>
-                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
-                          {cc.updateHermes}
-                        </Button>
+                      <div className="shrink-0 whitespace-nowrap text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                        Remote managed
                       </div>
                     </div>
-                    {systemAction && (
-                      <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {systemAction.name} ·{' '}
-                        {systemAction.running
-                          ? cc.actionRunning
-                          : systemAction.exit_code === 0
-                            ? cc.actionDone
-                            : cc.actionFailed}
-                      </div>
-                    )}
                   </div>
                 ) : (
                   <PageLoader className="min-h-32" label={cc.loadingStatus} />

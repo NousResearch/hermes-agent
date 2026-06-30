@@ -13,12 +13,10 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
-import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $connection } from '@/store/session'
-import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
 export interface UpdateApplyState {
   applying: boolean
@@ -135,17 +133,11 @@ export function reportBackendContract(contract: number | undefined): void {
   }
 
   notify({
-    action: {
-      label: translateNow('notifications.updateHermes'),
-      onClick: () => {
-        snoozeSkewToast()
-        void applyBackendUpdate()
-      }
-    },
     durationMs: 0,
     id: SKEW_TOAST_ID,
     kind: 'warning',
-    message: translateNow('notifications.backendOutOfDateMessage'),
+    message:
+      'The connected remote backend is older than this desktop expects. Update the backend through its own deployment channel.',
     onDismiss: () => snoozeSkewToast(),
     title: translateNow('notifications.backendOutOfDateTitle')
   })
@@ -243,44 +235,23 @@ function isRemoteMode(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
-function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
-  const behind = res.behind ?? 0
-
-  return {
-    supported: res.can_apply,
-    message: res.message ?? undefined,
-    updateAvailable: res.update_available,
-    behind: behind > 0 ? behind : 0,
-    targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
-    commits: res.commits,
-    fetchedAt: Date.now()
-  }
-}
-
 export async function checkBackendUpdates(): Promise<DesktopUpdateStatus | null> {
-  if (!isRemoteMode() || $backendUpdateChecking.get()) {
+  if ($backendUpdateChecking.get()) {
     return $backendUpdateStatus.get()
   }
 
   $backendUpdateChecking.set(true)
 
   try {
-    const status = mapBackendCheck(await checkHermesUpdate(true))
-    $backendUpdateStatus.set(status)
-    maybeNotifyUpdateAvailable(status)
-
-    return status
-  } catch (error) {
-    const fallback: DesktopUpdateStatus = {
-      supported: $backendUpdateStatus.get()?.supported ?? true,
-      error: 'check-failed',
-      message: error instanceof Error ? error.message : String(error),
+    const status: DesktopUpdateStatus = {
+      supported: false,
+      reason: 'remote-frontend-only',
+      message: 'Remote backend updates are managed outside Reuben Desktop.',
       fetchedAt: Date.now()
     }
+    $backendUpdateStatus.set(status)
 
-    $backendUpdateStatus.set(fallback)
-
-    return fallback
+    return status
   } finally {
     $backendUpdateChecking.set(false)
   }
@@ -334,16 +305,15 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   try {
     const result = await bridge.apply(opts)
 
-    // CLI install with no staged updater: not an error — the user just runs
-    // `hermes update` themselves. Land on a dedicated manual state so the
-    // overlay shows the command + copy button instead of a dead retry loop.
+    // No staged client updater: not an error. Land on a dedicated manual state
+    // so the overlay shows the external update hint instead of a dead retry loop.
     if (result?.manual) {
       $updateApply.set({
         ...IDLE,
         applying: false,
         stage: 'manual',
-        message: result.command ?? 'hermes update',
-        command: result.command ?? 'hermes update'
+        message: result.command ?? 'Update Reuben Desktop outside the app.',
+        command: result.command ?? null
       })
 
       return result
@@ -420,151 +390,20 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   }
 }
 
-const BACKEND_RETURN_POLL_MS = 1500
-const BACKEND_RETURN_MAX_ATTEMPTS = 40
-
-async function waitForBackendReturn(): Promise<boolean> {
-  for (let attempt = 0; attempt < BACKEND_RETURN_MAX_ATTEMPTS; attempt += 1) {
-    await new Promise(resolve => globalThis.setTimeout(resolve, BACKEND_RETURN_POLL_MS))
-
-    try {
-      await checkHermesUpdate()
-
-      return true
-    } catch {
-      continue
-    }
-  }
-
-  return false
-}
-
-function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
-  if (returned) {
-    $backendUpdateApply.set(IDLE)
-    setUpdateOverlayOpen(false)
-    void checkBackendUpdates()
-
-    return { ok: true, message: 'Backend update applied.' }
-  }
-
-  $backendUpdateApply.set({
-    ...$backendUpdateApply.get(),
-    applying: false,
-    stage: 'error',
-    error: 'apply-failed',
-    message: translateNow('updates.applyStatus.noReturn')
-  })
-
-  return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
-}
-
-function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
-  const current = $backendUpdateApply.get()
-
-  const log = status.lines
-    .filter(line => line.trim().length > 0)
-    .map(line => ({ at: Date.now(), message: line, stage: current.stage }))
-    .slice(-50)
-
-  const latest = log.at(-1)?.message
-
-  if (log.length === 0 && !latest) {
-    return
-  }
-
-  $backendUpdateApply.set({
-    ...current,
-    log,
-    message: latest ?? current.message
-  })
-}
-
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({
     ...IDLE,
-    applying: true,
-    stage: 'prepare',
-    message: translateNow('updates.applyStatus.preparing')
+    applying: false,
+    stage: 'error',
+    error: 'remote-frontend-only',
+    message: 'Reuben Desktop will not update or mutate a remote backend.'
   })
 
-  try {
-    const started = await updateHermes()
-
-    if (!started.ok) {
-      const message = (started as { message?: string }).message || translateNow('updates.applyStatus.notAvailable')
-      const command = (started as { update_command?: string }).update_command || 'hermes update'
-      $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
-
-      return { ok: false, error: 'manual', manual: true, message, command }
-    }
-
-    $backendUpdateApply.set({
-      ...IDLE,
-      applying: true,
-      stage: 'pull',
-      message: translateNow('updates.applyStatus.pulling')
-    })
-
-    let last: Awaited<ReturnType<typeof getActionStatus>> | null = null
-
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
-
-      try {
-        last = await getActionStatus(started.name, 200)
-        ingestBackendActionStatus(last)
-      } catch {
-        // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
-        $backendUpdateApply.set({
-          ...$backendUpdateApply.get(),
-          applying: true,
-          stage: 'restart',
-          message: translateNow('updates.applyStatus.restarting')
-        })
-
-        return finishBackendApply(await waitForBackendReturn())
-      }
-
-      if (last && !last.running) {
-        break
-      }
-    }
-
-    const ok = !!last && (last.exit_code ?? 1) === 0
-
-    if (ok) {
-      $backendUpdateApply.set({
-        ...$backendUpdateApply.get(),
-        applying: true,
-        stage: 'restart',
-        message: translateNow('updates.applyStatus.restarting')
-      })
-
-      return finishBackendApply(await waitForBackendReturn())
-    }
-
-    $backendUpdateApply.set({
-      ...$backendUpdateApply.get(),
-      applying: false,
-      stage: 'error',
-      error: 'apply-failed',
-      message: translateNow('updates.applyStatus.failed')
-    })
-
-    return { ok: false, error: 'apply-failed', message: 'Backend update failed.' }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    $backendUpdateApply.set({
-      ...$backendUpdateApply.get(),
-      applying: false,
-      stage: 'error',
-      error: 'apply-failed',
-      message
-    })
-
-    return { ok: false, error: 'apply-failed', message }
+  return {
+    ok: false,
+    error: 'remote-frontend-only',
+    message: 'Remote backend updates are managed outside Reuben Desktop.'
   }
 }
 

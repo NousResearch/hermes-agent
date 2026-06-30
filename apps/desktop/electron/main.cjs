@@ -28,7 +28,6 @@ const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { installEmbedReferer } = require('./embed-referer.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
-const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -36,29 +35,14 @@ const {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
-const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
-const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
-const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
-const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
-const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
 const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
-const { readLiveUpdateMarker } = require('./update-marker.cjs')
-const {
-  resolveUnpackedRelease,
-  decideRelaunchOutcome,
-  sandboxPreflight,
-  sandboxFallbackFromEnv,
-  collectRelaunchArgs,
-  collectRelaunchEnv,
-  buildRelaunchScript
-} = require('./update-relaunch.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { addWorktree, listBranches, listWorktrees, removeWorktree, switchBranch } = require('./git-worktree-ops.cjs')
 const {
@@ -77,17 +61,10 @@ const {
   reviewUnstage
 } = require('./git-review-ops.cjs')
 const { scanGitRepos } = require('./git-repo-scan.cjs')
-const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
-const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
-const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
-  buildPosixCleanupScript,
-  buildWindowsCleanupScript,
-  modeRemovesAgent,
-  modeRemovesUserData,
+  buildAppOnlyCleanupScript,
   resolveRemovableAppPath,
-  shouldRemoveAppBundle,
-  uninstallArgsForMode
+  shouldRemoveAppBundle
 } = require('./desktop-uninstall.cjs')
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
 const {
@@ -219,153 +196,18 @@ app.commandLine.appendSwitch('disable-background-timer-throttling')
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
-// Build-time install stamp -- the git ref this .exe was built against.
-//
-// Written by apps/desktop/scripts/write-build-stamp.cjs during `npm run build`
-// and bundled into packaged apps via electron-builder's extraResources entry,
-// so the runtime stamp ends up at process.resourcesPath/install-stamp.json
-// after install. The bootstrap runner (Phase 1D) reads it to know which
-// commit to clone when running install.ps1 stages at first launch.
-//
-// Returns null when the file is missing (dev runs from a checkout where
-// build hasn't been invoked, or schema mismatch). Callers must handle null.
-//
-// Schema:
-//   { schemaVersion: 1, commit, branch, builtAt, dirty, source }
-const INSTALL_STAMP_SCHEMA_VERSION = 1
-function loadInstallStamp() {
-  // Try packaged location first (resources/install-stamp.json), then the
-  // dev/local build output (apps/desktop/build/install-stamp.json) so
-  // someone running `npm run start` after a local `npm run build` also
-  // sees a stamp without needing a packaged build.
-  const candidates = [
-    process.resourcesPath ? path.join(process.resourcesPath, 'install-stamp.json') : null,
-    path.join(APP_ROOT, 'build', 'install-stamp.json')
-  ].filter(Boolean)
-  for (const p of candidates) {
-    try {
-      const raw = fs.readFileSync(p, 'utf8')
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object' && typeof parsed.commit === 'string' && parsed.commit.length >= 7) {
-        if (parsed.schemaVersion !== INSTALL_STAMP_SCHEMA_VERSION) {
-          console.warn(
-            `[hermes] install-stamp.json schemaVersion ${parsed.schemaVersion} != expected ${INSTALL_STAMP_SCHEMA_VERSION}; ignoring`
-          )
-          continue
-        }
-        return Object.freeze({
-          schemaVersion: parsed.schemaVersion,
-          commit: parsed.commit,
-          branch: parsed.branch || null,
-          builtAt: parsed.builtAt || null,
-          dirty: Boolean(parsed.dirty),
-          source: parsed.source || null,
-          path: p
-        })
-      }
-    } catch {
-      // Either ENOENT or malformed JSON; try the next candidate
-    }
-  }
-  return null
-}
-const INSTALL_STAMP = loadInstallStamp()
-if (INSTALL_STAMP) {
-  console.log(
-    `[hermes] install stamp: ${INSTALL_STAMP.commit.slice(0, 12)}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
-  )
-} else if (IS_PACKAGED) {
-  // Dev builds without a stamp are normal; packaged builds without one
-  // mean the bootstrap won't know what to clone. Surface clearly.
-  console.error(
-    '[hermes] WARNING: no install-stamp.json found in packaged build. First-launch bootstrap will not have a pinned ref to install.'
-  )
-}
-
-// HERMES_HOME — the user-facing root for everything Hermes-related. Mirrors
-// scripts/install.ps1's $HermesHome and scripts/install.sh's $HERMES_HOME.
-//
-// Defaults:
-//   Windows: %LOCALAPPDATA%\hermes (matches install.ps1)
-//   macOS / Linux: ~/.hermes (matches install.sh)
-//
-// Special case for Windows: if the user has a legacy ~/.hermes directory
-// (e.g., from a prior pip install or a manual setup) AND no
-// %LOCALAPPDATA%\hermes yet, prefer the legacy path so we don't orphan their
-// existing config / sessions / .env. New installs go to %LOCALAPPDATA%.
-//
-// HERMES_DESKTOP_USER_DATA_DIR (used by test:desktop:fresh) puts the sandbox
-// HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
-// touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
-function resolveHermesHome() {
-  if (process.env.HERMES_HOME) return normalizeHermesHomeRoot(process.env.HERMES_HOME)
-  if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
-  if (IS_WINDOWS) {
-    // A GUI app launched from Explorer inherits the environment block captured
-    // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
-    // process.env even though the CLI (a fresh shell) sees it. Without this the
-    // backend silently falls back to %LOCALAPPDATA%\hermes and reports "No
-    // inference provider configured" despite a valid configured home (#45471).
-    // Consult the live User-scoped registry value before the default below.
-    const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
-    if (fromRegistry) return normalizeHermesHomeRoot(fromRegistry)
-  }
-  if (IS_WINDOWS && process.env.LOCALAPPDATA) {
-    const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
-    const legacy = path.join(app.getPath('home'), '.hermes')
-    // Migrate transparently to LOCALAPPDATA, but honour an existing legacy
-    // ~/.hermes setup (no LOCALAPPDATA install yet) so users don't lose state.
-    if (!directoryExists(localappdata) && directoryExists(legacy)) return legacy
-    return localappdata
-  }
-  return path.join(app.getPath('home'), '.hermes')
-}
-
-const HERMES_HOME = resolveHermesHome()
-
-function hermesManagedNodePathEntries() {
-  // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
-  // hermes_constants.py — this Node main process cannot import the Python
-  // module, so the platform-ordering rule is mirrored here.
-  const root = path.join(HERMES_HOME, 'node')
-  const bin = path.join(root, 'bin')
-  const entries = IS_WINDOWS ? [root, bin] : [bin, root]
-  return entries.filter(directoryExists)
-}
-
-function pathWithHermesManagedNode(...entries) {
-  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
-}
-
-// ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
-// install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
-// up with identical layouts and can share one install.
-const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
-// VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
-const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
-// BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
-// (Phase 1D) after install.ps1 has completed all stages and the user has
-// finished initial configuration. Presence of this marker means the install
-// is in a known-good state and we can skip the bootstrap flow on subsequent
-// boots, going straight to `resolveHermesBackend()`. Missing or stale marker
-// means we re-run the bootstrap; install.ps1's stages are idempotent so a
-// re-run on an already-good install just discovers everything in place.
-//
-// We deliberately put the marker INSIDE ACTIVE_HERMES_ROOT (not alongside)
-// so that deleting the checkout to start fresh also deletes the marker --
-// avoids the confusing "marker exists but checkout is gone" state.
-const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
-const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
+// Reuben Desktop is a strict remote client. It stores only desktop-owned state
+// under Electron's isolated userData path and never resolves, creates, repairs,
+// or mutates a Hermes/Reuben backend home such as ~/.hermes.
+const DESKTOP_DATA_ROOT = app.getPath('userData')
+const INSTALL_STAMP = null
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
-// active-profile.json records which Hermes profile the desktop launches its
-// local backend as. When set, startHermes() passes `hermes --profile <name>
-// dashboard …`, which deterministically pins HERMES_HOME (see
-// _apply_profile_override in hermes_cli/main.py) and bypasses the sticky
-// ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
-// no --profile flag, so the backend honors active_profile / default.
+// active-profile.json records which remote profile the desktop targets for
+// profile-scoped API calls. It is desktop client state only; it never launches
+// or re-homes a backend.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
@@ -374,17 +216,16 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
-// desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
-// errors.log, gateway.log produced by hermes_logging.setup_logging — one log
-// directory per user, regardless of which UI surface produced the line.
-const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
+// desktop.log is desktop-owned client state. Keep it in the isolated Reuben
+// app support directory instead of ~/.hermes so the frontend never creates or
+// depends on a backend home.
+const DESKTOP_LOG_PATH = path.join(DESKTOP_DATA_ROOT, 'logs', 'desktop.log')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
-// (version-skew crash -> backend exits instantly -> renderer keeps hitting
-// Retry) appends the full bootstrap transcript every attempt and grows without
-// bound — we have seen it reach ~326 GB and exhaust the disk, which then breaks
-// update/install (no room for git/venv/npm temp files).
+// (version-skew crash -> connection fails instantly -> renderer keeps hitting
+// Retry) appends the full connection transcript every attempt and grows without
+// bound.
 //
 // Mirror the Python logs (hermes_logging.py RotatingFileHandler, maxBytes x
 // backupCount): cascade live -> .1 -> .2 -> .3, drop the oldest. Steady-state
@@ -688,10 +529,8 @@ function previewFileMetadata(filePath, mimeType) {
 if (IS_WINDOWS) {
   app.setAppUserModelId(APP_ID)
 }
-// Seed the native About panel with the live Hermes version. This is refreshed
-// on every open via the explicit "About" menu handler (refreshAboutPanel), so
-// an in-place `hermes update` mid-session is reflected without an app restart;
-// the seed here just covers the first open and any non-menu invocation path.
+// Seed the native About panel with the Reuben desktop app version. This is
+// refreshed on every open via the explicit "About" menu handler.
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
   applicationVersion: resolveHermesVersion(),
@@ -761,15 +600,12 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
-// Additional per-profile backends, keyed by profile name. The PRIMARY backend
-// (the desktop's launch profile) stays managed by hermesProcess +
-// connectionPromise + startHermes(); this pool only holds EXTRA profile
-// backends spawned lazily when a session belongs to a different profile. A user
-// with no named profiles never populates this map, so their experience is
-// byte-for-byte the single-backend behavior.
+// Additional per-profile remote connection descriptors, keyed by profile name.
+// The primary launch profile stays managed by connectionPromise + startHermes();
+// this pool only holds extra profile remotes. No local backend is spawned.
 const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
-// Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
-// idle ones. A user idles at exactly the primary backend; pool backends only
+// Keep the pool light: cap concurrent profile remotes (LRU eviction) and reap
+// idle entries. A user idles at exactly the primary remote; pool entries only
 // exist while a non-primary profile is actively being chatted through.
 const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
 const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
@@ -786,18 +622,9 @@ let poolIdleReaper = null
 const RENDERER_RELOAD_WINDOW_MS = 60_000
 const RENDERER_RELOAD_MAX = 3
 let rendererReloadTimes = []
-// Latched bootstrap failure: when the first-launch install fails, we hold
-// onto the error so subsequent startHermes() calls (e.g. the renderer's
-// ensureGatewayOpen retrying after the WS won't open) return the same error
-// instead of re-running install.ps1 in a hot loop. Cleared explicitly by
-// the renderer's "Reload and retry" path or by quitting the app.
-let bootstrapFailure = null
-// Latched non-bootstrap backend spawn failure — stops getConnection() from
-// respawning hermes serve backend children in a tight loop while boot is broken.
+// Latched gateway connection failure — stops getConnection() from retrying a
+// dead remote forever while the user is reading the failure overlay.
 let backendStartFailure = null
-// Active first-launch install, so the renderer's Cancel button (and app quit)
-// can abort the in-flight install.sh/ps1 instead of leaving it running.
-let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -1087,77 +914,6 @@ function broadcastBootProgress() {
   webContents.send('hermes:boot-progress', bootProgressState)
 }
 
-// Bootstrap-event broadcast channel + state. The bootstrap runner emits a
-// stream of events (manifest, stage, log, complete, failed) that the renderer
-// install overlay subscribes to. We also keep a running snapshot:
-//   - manifest: the stage list (rendered as a checklist in the overlay)
-//   - stages:   per-stage state ('pending' | 'running' | 'succeeded' |
-//               'skipped' | 'failed') keyed by stage name
-//   - active:   true while a bootstrap is in flight; false otherwise
-//   - error:    last 'failed' event's error message
-//   - log:      bounded ring buffer of the last 200 log lines for the
-//               "Show details" affordance in the overlay
-//
-// Bootstrap log ring: bounded buffer so a long install (npm + playwright
-// downloads can emit thousands of lines) doesn't grow unbounded in memory
-// during legacy bootstrap paths.
-const BOOTSTRAP_LOG_RING_MAX = 500
-let bootstrapState = {
-  active: false,
-  manifest: null,
-  stages: {},
-  error: null,
-  log: [],
-  startedAt: null,
-  completedAt: null,
-  unsupportedPlatform: null
-}
-
-function broadcastBootstrapEvent(ev) {
-  if (ev.type === 'manifest') {
-    bootstrapState.manifest = ev
-    bootstrapState.active = true
-    bootstrapState.startedAt = bootstrapState.startedAt || Date.now()
-    bootstrapState.stages = {}
-    for (const stage of ev.stages || []) {
-      bootstrapState.stages[stage.name] = { state: 'pending', json: null, durationMs: null, error: null }
-    }
-  } else if (ev.type === 'stage') {
-    bootstrapState.stages[ev.name] = {
-      state: ev.state,
-      durationMs: ev.durationMs ?? null,
-      json: ev.json ?? null,
-      error: ev.error ?? null
-    }
-  } else if (ev.type === 'log') {
-    bootstrapState.log.push({ ts: Date.now(), stage: ev.stage || null, line: ev.line, stream: ev.stream || 'stdout' })
-    if (bootstrapState.log.length > BOOTSTRAP_LOG_RING_MAX) {
-      bootstrapState.log.splice(0, bootstrapState.log.length - BOOTSTRAP_LOG_RING_MAX)
-    }
-  } else if (ev.type === 'complete') {
-    bootstrapState.active = false
-    bootstrapState.completedAt = Date.now()
-    bootstrapState.error = null
-    bootstrapState.unsupportedPlatform = null
-  } else if (ev.type === 'failed') {
-    bootstrapState.active = false
-    bootstrapState.error = ev.error || 'unknown error'
-  } else if (ev.type === 'unsupported-platform') {
-    bootstrapState.active = false
-    bootstrapState.unsupportedPlatform = {
-      platform: ev.platform,
-      activeRoot: ev.activeRoot,
-      installCommand: ev.installCommand,
-      docsUrl: ev.docsUrl
-    }
-  }
-
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  const { webContents } = mainWindow
-  if (!webContents || webContents.isDestroyed()) return
-  webContents.send('hermes:bootstrap:event', ev)
-}
-
 function updateBootProgress(update, options = {}) {
   const nextProgressRaw =
     typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
@@ -1209,58 +965,9 @@ function directoryExists(filePath) {
   }
 }
 
-// --- in-app update mutual exclusion (#50238) -------------------------------
-// The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
-// duration of an `--update` run (see update.rs UpdateMarkerGuard). If the user
-// relaunches the desktop mid-update — because the window vanished with no
-// progress and looks crashed — a fresh instance must NOT spawn its own local
-// backend: that backend re-locks the venv shim, the updater's straggler cleanup
-// (`force_kill_other_hermes`, taskkill /IM hermes.exe) kills it, the launch
-// fails with the 45s "backend didn't come up" error, and the relaunch/kill
-// cycle loops. Instead the fresh instance parks until the update finishes, then
-// brings the backend up itself (it is the surviving instance — the updater's
-// own relaunch hits our single-instance lock and quits). Marker parsing +
-// staleness self-heal live in update-marker.cjs (unit-tested).
-
-// How long we'll park the launch waiting for a live update to finish before
-// giving up and starting the backend anyway (belt-and-suspenders alongside the
-// marker's own age ceiling; covers a stuck-but-alive updater).
-const UPDATE_WAIT_TIMEOUT_MS = 20 * 60 * 1000
-const UPDATE_WAIT_POLL_MS = 1000
-// How long the desktop lingers on the "updating, don't reopen" overlay after
-// spawning the detached updater, before it quits to release the venv shim. The
-// old 600ms was long enough to register the child process but far too short for
-// the user to READ the overlay — the window just vanished, looked like a crash,
-// and the user relaunched mid-update (the #50238 restart-loop trigger). A
-// couple of seconds lets the message land and bridges the gap until the
-// updater's own progress window appears. (#50419)
+// Kept for legacy update result shape only; Reuben Desktop no longer hands off
+// backend installers or waits on backend-owned update markers.
 const UPDATE_HANDOFF_DWELL_MS = 2500
-
-// Block until no live update is in progress (or we hit the wait timeout).
-// Emits a boot-progress phase so the renderer shows "Update in progress…"
-// rather than a frozen splash. Returns true if it parked at all.
-async function waitForUpdateToFinish() {
-  let marker = readLiveUpdateMarker(HERMES_HOME)
-  if (!marker) return false
-
-  rememberLog(`[updates] update in progress (pid=${marker.pid}); deferring backend start until it finishes`)
-  const deadline = Date.now() + UPDATE_WAIT_TIMEOUT_MS
-  while (marker && Date.now() < deadline) {
-    await advanceBootProgress(
-      'backend.update-wait',
-      'An update is finishing — Hermes will start automatically when it completes…',
-      12
-    )
-    await new Promise(r => setTimeout(r, UPDATE_WAIT_POLL_MS))
-    marker = readLiveUpdateMarker(HERMES_HOME)
-  }
-  if (marker) {
-    rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
-  } else {
-    rememberLog('[updates] update finished; proceeding with backend start')
-  }
-  return true
-}
 
 function unpackedPathFor(filePath) {
   return filePath.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
@@ -1302,95 +1009,24 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
-function unwrapWindowsVenvHermesCommand(command, backendArgs) {
-  if (!IS_WINDOWS || !command || isCommandScript(command)) return null
-
-  const resolved = path.resolve(String(command))
-  if (!/^hermes(?:\.exe)?$/i.test(path.basename(resolved))) return null
-
-  const scriptsDir = path.dirname(resolved)
-  if (path.basename(scriptsDir).toLowerCase() !== 'scripts') return null
-
-  const venvRoot = path.dirname(scriptsDir)
-  const python = getVenvPython(venvRoot)
-  if (!fileExists(python)) return null
-
-  const root = path.dirname(venvRoot)
-  return {
-    label: `existing Hermes Python at ${python}`,
-    command: python,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    bootstrap: false,
-    env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
-      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
-    }),
-    kind: 'python',
-    // Surfaced so backendSupportsServe() can read this runtime's source for the
-    // `serve` capability check instead of falling back to a heavyweight probe.
-    root,
-    shell: false
-  }
+function unwrapWindowsVenvHermesCommand() {
+  return null
 }
 
-// Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
-// detect support so getBackendArgsForRuntime() can route old runtimes through
-// the legacy `dashboard --no-open` form instead of crashing on an unknown
-// subcommand (would brick every user mid-upgrade — #54568 follow-up).
-//
-// Fast path: read the runtime's own dashboard.py (instant, covers managed
-// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
-// (covers a bare `hermes` resolved from PATH with no known source root). Result
-// is cached per resolved runtime so we probe at most once per backend.
-const _serveSupportCache = new Map()
-function backendSupportsServe(backend) {
-  if (!backend || !backend.command) return true
-  const key = `${backend.command}::${backend.root || ''}`
-  if (_serveSupportCache.has(key)) return _serveSupportCache.get(key)
-
-  let supported = null
-  if (backend.root) {
-    try {
-      const src = fs.readFileSync(
-        path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
-        'utf8'
-      )
-      supported = sourceDeclaresServe(src)
-    } catch {
-      supported = null // source unreadable — fall through to the probe
-    }
-  }
-
-  if (supported === null) {
-    try {
-      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
-      execFileSync(backend.command, [...prefix, 'serve', '--help'], {
-        cwd: backend.root || undefined,
-        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
-        timeout: 15000,
-        stdio: 'ignore',
-        windowsHide: true
-      })
-      supported = true
-    } catch {
-      supported = false
-    }
-  }
-
-  _serveSupportCache.set(key, supported)
-  rememberLog(
-    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
+function localBackendDisabledError(feature) {
+  const error = new Error(
+    `${feature} is disabled. Reuben Desktop is a remote frontend; configure a gateway URL instead of installing, spawning, repairing, or updating a local backend.`
   )
-  return supported
+  error.code = 'REUBEN_REMOTE_FRONTEND_ONLY'
+  return error
 }
 
-// Given a resolved backend whose args target `serve`, return the args the
-// runtime actually understands: unchanged when `serve` is supported, or
-// rewritten to `dashboard --no-open` for older runtimes.
-function getBackendArgsForRuntime(backend) {
-  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
+function backendSupportsServe() {
+  throw localBackendDisabledError('Local backend command probing')
+}
+
+function getBackendArgsForRuntime() {
+  throw localBackendDisabledError('Local backend command construction')
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -1428,249 +1064,9 @@ function looksLikeDesktopAppBinary(commandPath) {
   )
 }
 
-function isHermesSourceRoot(root) {
-  return directoryExists(root) && fileExists(path.join(root, 'hermes_cli', 'main.py'))
-}
-
-function findPythonForRoot(root) {
-  const override = process.env.HERMES_DESKTOP_PYTHON
-  if (override && fileExists(override)) return override
-
-  const relativePaths = IS_WINDOWS
-    ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
-    : [path.join('.venv', 'bin', 'python'), path.join('venv', 'bin', 'python')]
-
-  for (const relativePath of relativePaths) {
-    const candidate = path.join(root, relativePath)
-    if (fileExists(candidate)) return candidate
-  }
-
-  return findSystemPython()
-}
-
-function findSystemPython() {
-  if (!IS_WINDOWS) {
-    // POSIX systems: PATH lookup is safe.
-    for (const command of ['python3', 'python']) {
-      const candidate = findOnPath(command)
-      if (candidate) return candidate
-    }
-    return null
-  }
-
-  // Windows: PATH-based detection has TWO landmines we have to dodge.
-  //
-  //  (1) The Microsoft Store "Python stub" lives at
-  //      %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe and is on PATH
-  //      by default on modern Windows. It's a redirector that opens the
-  //      Store window if no Store Python is installed. Running it for
-  //      `-m venv` would either succeed (real Store install — fine) or
-  //      pop the Store dialog (bad UX during boot).
-  //  (2) `py.exe` (Python launcher) is missing from per-user installs
-  //      that didn't check the launcher option, so PATH-only checks
-  //      miss real Python 3.13 installs (user-reported case).
-  //
-  // We also restrict ourselves to Python 3.11–3.13. 3.14 is the latest
-  // CPython but several Hermes deps (notably pywinpty's Rust-built
-  // windows_x86_64_msvc crate) don't yet publish 3.14 wheels, and
-  // `pip install -e .` falls back to source-build, which fails without
-  // a Rust toolchain. install.ps1 sidesteps this by pinning to 3.11
-  // via uv; until we add the same uv-managed Python pathway here, the
-  // simplest fix is to refuse 3.14 detection and let the NSIS prereq
-  // page offer to install 3.11 alongside.
-  //
-  // Strategy: probe in three passes, in order from most-precise to
-  // least-precise, and ONLY use PATH lookup as a last resort after
-  // confirming the candidate isn't the WindowsApps redirector.
-  //
-  //  Pass 1: PEP 514 registry — every standards-compliant Python
-  //          installer registers itself at SOFTWARE\Python\PythonCore.
-  //          The MS Store stub does NOT register here, so a hit means
-  //          a real Python install. Versions are explicit so we
-  //          inherently filter 3.14 out.
-  //  Pass 2: Filesystem probe of standard install locations
-  //          (Program Files, LocalAppData\Programs\Python). Same
-  //          version filtering by directory name.
-  //  Pass 3: PATH lookup of `py.exe` (the launcher itself never
-  //          triggers the Store) — but call it with a version flag so
-  //          we resolve to a SPECIFIC supported version, not whatever
-  //          py.exe's default is (which on a 3.14-only box would be
-  //          3.14).
-
-  const SUPPORTED_VERSIONS = ['3.11', '3.12', '3.13']
-  const SUPPORTED_VERSIONS_NO_DOT = ['311', '312', '313']
-
-  // Pass 1: registry. Use `reg query` since main process doesn't have
-  // a reliable in-process registry API across all electron versions.
-  for (const hive of ['HKLM', 'HKCU']) {
-    for (const version of SUPPORTED_VERSIONS) {
-      try {
-        const out = execFileSync(
-          'reg',
-          ['query', `${hive}\\SOFTWARE\\Python\\PythonCore\\${version}\\InstallPath`, '/ve', '/reg:64'],
-          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-        )
-        // Output format: "    (Default)    REG_SZ    C:\Path\To\Python\"
-        const match = out.match(/REG_SZ\s+(.+?)\s*$/m)
-        if (match) {
-          const installPath = match[1].trim()
-          const pythonExe = path.join(installPath, 'python.exe')
-          if (fileExists(pythonExe)) return pythonExe
-        }
-      } catch {
-        // Key not present — try next.
-      }
-    }
-  }
-
-  // Pass 2: filesystem probe of standard locations.
-  const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files'
-  const localAppData = process.env.LOCALAPPDATA || ''
-  for (const versionDir of SUPPORTED_VERSIONS_NO_DOT) {
-    const systemWide = path.join(programFiles, `Python${versionDir}`, 'python.exe')
-    if (fileExists(systemWide)) return systemWide
-    if (localAppData) {
-      const perUser = path.join(localAppData, 'Programs', 'Python', `Python${versionDir}`, 'python.exe')
-      if (fileExists(perUser)) return perUser
-    }
-  }
-
-  // Pass 3: py.exe with explicit version flag. The launcher itself is
-  // safe to invoke (no Store popup) and `py -3.13 -c "import sys;
-  // print(sys.executable)"` resolves to the actual python.exe path of
-  // the requested version. We try in version-priority order so the
-  // first hit wins.
-  const pyExe = findOnPath('py.exe')
-  if (pyExe) {
-    for (const version of SUPPORTED_VERSIONS) {
-      try {
-        const out = execFileSync(
-          pyExe,
-          [`-${version}`, '-c', 'import sys; print(sys.executable)'],
-          hiddenWindowsChildOptions({
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore']
-          })
-        )
-        const candidate = out.trim()
-        if (candidate && fileExists(candidate)) return candidate
-      } catch {
-        // py couldn't find that version — try next.
-      }
-    }
-  }
-
-  // We deliberately do NOT fall back to plain `python.exe` on PATH.
-  // Without a way to verify the version safely (running `python -V`
-  // risks the Microsoft Store popup), accepting whatever's there
-  // could land us on 3.14 and trigger the Rust-build-from-source
-  // failure. Better to return null and let the NSIS prereq page
-  // offer to install a known-good 3.11 via winget.
-  return null
-}
-
-// findGitBash — locate bash.exe on Windows. Hermes' terminal tool requires
-// bash (POSIX shell), and on Windows that's almost always Git for Windows'
-// bundled Git Bash. We check the same set of locations tools/environments/
-// local.py:_find_bash() checks at runtime, so a positive result here means
-// the agent will be able to start a terminal too.
-//
-// On non-Windows hosts bash is part of the OS and this just returns the
-// first bash on PATH.
-function findGitBash() {
-  if (!IS_WINDOWS) {
-    return findOnPath('bash')
-  }
-
-  // install.ps1 drops PortableGit at %LOCALAPPDATA%\hermes\git\... — checked
-  // first so users who installed via install.ps1 are detected before we
-  // start probing system-wide locations.
-  const localAppData = process.env.LOCALAPPDATA || ''
-  const candidates = []
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'bash.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
-  }
-
-  // Standard Git for Windows install locations.
-  candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'))
-  candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'))
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'))
-  }
-
-  for (const candidate of candidates) {
-    if (fileExists(candidate)) return candidate
-  }
-
-  // Last resort — bash on PATH (covers WSL bash, MSYS2, custom installs).
-  // On WSL hosts findOnPath itself filters out Windows-binary paths via
-  // isWindowsBinaryPathInWsl, so we won't hand back a wsl.exe shim either.
-  return findOnPath('bash')
-}
-
-function getVenvPython(venvRoot) {
-  return path.join(venvRoot, IS_WINDOWS ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'))
-}
-
-// Windows console-window flashes are governed by the *parent's* console, not by
-// each child spawn. A GUI-subsystem parent (pythonw.exe) has no console, so every
-// console-subsystem child it spawns (git, gh, cmd, ...) must allocate its own —
-// which flashes a window. A console-subsystem parent (python.exe) instead owns a
-// single console that all of its children inherit, so none of them flash.
-//
-// Note this change adds no new creationflag: the backend spawn is ALREADY wrapped
-// in hiddenWindowsChildOptions() (windowsHide: true), but that setting is INERT
-// against pythonw.exe — a GUI-subsystem process has no console for it to act on.
-// Switching the backend to the venv's console python.exe is what makes the
-// existing wrapper load-bearing: with windowsHide the process comes up owning a
-// *windowless* console (verified at runtime — it has an attachable console whose
-// window handle is NULL), and its children inherit that one windowless console
-// instead of each allocating a visible one.
-//
-// This makes "no flashing windows" a property of the one backend launch rather
-// than a flag that has to be remembered at every descendant spawn site. Restoring
-// console python also restores stdout, so the backend announces its port on the
-// normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
-// needed.
-
-function getVenvSitePackagesEntries(venvRoot) {
-  const entries = []
-  if (!venvRoot) return entries
-
-  if (IS_WINDOWS) {
-    const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
-    if (directoryExists(sitePackages)) entries.push(sitePackages)
-    return entries
-  }
-
-  const version = (() => {
-    try {
-      const cfg = fs.readFileSync(path.join(venvRoot, 'pyvenv.cfg'), 'utf8')
-      const match = cfg.match(/^version_info\s*=\s*(\d+\.\d+)/im)
-      return match ? match[1].trim() : null
-    } catch {
-      return null
-    }
-  })()
-  if (version) {
-    const sitePackages = path.join(venvRoot, 'lib', `python${version}`, 'site-packages')
-    if (directoryExists(sitePackages)) entries.push(sitePackages)
-  }
-  return entries
-}
-
-function makeDashboardReadyFile() {
-  const dir = path.join(app.getPath('userData'), 'backend-ready')
-  fs.mkdirSync(dir, { recursive: true })
-  return path.join(dir, `dashboard-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`)
-}
-
-// resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
-// install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
-// PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
-// "Couldn't check for updates". Mirror findGitBash: PortableGit first, then
-// standard Git-for-Windows locations, then PATH. Cached after first probe.
+// resolveGitBinary — locate git.exe on Windows for desktop git features. Reuben
+// Desktop does not provide a managed Git, so use standard Git-for-Windows
+// locations and PATH. Cached after first probe.
 let _gitBinaryCache = null
 function resolveGitBinary() {
   if (_gitBinaryCache) return _gitBinaryCache
@@ -1679,14 +1075,10 @@ function resolveGitBinary() {
     return _gitBinaryCache
   }
 
-  const localAppData = process.env.LOCALAPPDATA || ''
   const candidates = []
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
-  }
   candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
   candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
+  const localAppData = process.env.LOCALAPPDATA || ''
   if (localAppData) {
     candidates.push(path.join(localAppData, 'Programs', 'Git', 'cmd', 'git.exe'))
   }
@@ -1778,55 +1170,6 @@ function persistWindowState() {
 // resized/moved fire many times mid-drag on Linux; debounce to one write.
 const schedulePersistWindowState = debounce(persistWindowState, 250)
 
-// Match the backend's source resolution but bias toward a real git checkout.
-// Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
-// HERMES_DESKTOP_HERMES_ROOT always wins so devs can pin a worktree.
-function resolveUpdateRoot() {
-  const candidates = [
-    process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT),
-    !IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT) ? SOURCE_REPO_ROOT : null,
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : null
-  ].filter(Boolean)
-
-  return candidates.find(c => directoryExists(path.join(c, '.git'))) || candidates[0] || ACTIVE_HERMES_ROOT
-}
-
-function runGit(args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      resolveGitBinary(),
-      IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args,
-      hiddenWindowsChildOptions({
-        cwd: options.cwd,
-        env: { ...process.env, ...(options.env || {}), GIT_TERMINAL_PROMPT: '0' },
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-    )
-
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', chunk => {
-      const text = chunk.toString()
-      stdout += text
-      options.onLine?.('stdout', text)
-    })
-    child.stderr.on('data', chunk => {
-      const text = chunk.toString()
-      stderr += text
-      options.onLine?.('stderr', text)
-    })
-    child.once('error', reject)
-    child.once('exit', code => resolve({ code, stdout, stderr }))
-  })
-}
-
-const firstLine = text => (text || '').split('\n').find(Boolean) || ''
-
-async function getOriginUrl(updateRoot) {
-  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
-  return origin.code === 0 ? origin.stdout.trim() : ''
-}
-
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
@@ -1835,248 +1178,29 @@ function emitUpdateProgress(payload) {
   }
 }
 
-// Self-heal the tracked update branch: if origin no longer publishes it (e.g.
-// bb/gui was merged into main and deleted), fall back to main and persist so
-// every later check/apply follows main — no manual flip, even for already-
-// installed clients. Read-only ls-remote probe; only flips on a definitive
-// "ref absent" (exit 2), never on a transient network error, so a flaky
-// connection can't strand a user on the wrong branch.
-async function resolveHealedBranch(updateRoot, branch) {
-  if (!branch || branch === 'main') {
-    return branch || 'main'
-  }
-
-  const originUrl = await getOriginUrl(updateRoot)
-  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
-  if (probe.code !== 2) {
-    return branch
-  }
-
-  rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
-  const config = readDesktopUpdateConfig()
-  if (config.branch !== 'main') {
-    writeDesktopUpdateConfig({ ...config, branch: 'main' })
-  }
-  return 'main'
-}
-
 async function checkUpdates() {
-  const updateRoot = resolveUpdateRoot()
-  let { branch } = readDesktopUpdateConfig()
-  const gitDir = path.join(updateRoot, '.git')
-  if (!directoryExists(gitDir)) {
-    return {
-      supported: false,
-      reason: 'not-a-git-checkout',
-      message: `${updateRoot} isn't a git checkout — desktop self-update only runs against a source install.`,
-      hermesRoot: updateRoot,
-      branch
-    }
-  }
-
-  branch = await resolveHealedBranch(updateRoot, branch)
-  const originUrl = await getOriginUrl(updateRoot)
-  if (isOfficialSshRemote(originUrl)) {
-    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
-      git(['rev-parse', 'HEAD']),
-      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
-      git(['status', '--porcelain']),
-      git(['rev-parse', '--abbrev-ref', 'HEAD'])
-    ])
-    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
-    if (target.code !== 0 || !targetSha) {
-      return {
-        supported: true,
-        branch,
-        error: 'fetch-failed',
-        message: firstLine(target.stderr) || 'git ls-remote failed.',
-        hermesRoot: updateRoot,
-        fetchedAt: Date.now()
-      }
-    }
-    return {
-      supported: true,
-      branch,
-      currentBranch,
-      behind: currentSha && currentSha === targetSha ? 0 : 1,
-      currentSha,
-      targetSha,
-      commits: [],
-      dirty: dirtyStr.length > 0,
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
-  if (fetched.code !== 0) {
-    return {
-      supported: true,
-      branch,
-      error: 'fetch-failed',
-      message: firstLine(fetched.stderr) || 'git fetch failed.',
-      hermesRoot: updateRoot,
-      fetchedAt: Date.now()
-    }
-  }
-
-  const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
-    git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
-    git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    git(['rev-parse', '--is-shallow-repository']),
-    // merge-base exits non-zero with empty stdout when HEAD shares no common
-    // ancestor with the freshly fetched tip — exactly the shallow-clone case.
-    git(['merge-base', 'HEAD', `origin/${branch}`])
-  ])
-
-  const isShallow = shallowStr === 'true'
-  const hasMergeBase = Boolean(mergeBaseStr)
-  // Only enumerate the commit count when it is meaningful. On a shallow checkout
-  // with no merge-base, `rev-list --count` walks the entire remote ancestry
-  // (thousands of commits, see #51922) and resolveBehindCount discards the
-  // result anyway in favour of a SHA compare — so skip the expensive query.
-  const countStr = shouldCountCommits({ isShallow, hasMergeBase })
-    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
-    : ''
-
-  const behind = resolveBehindCount({
-    countStr,
-    currentSha,
-    targetSha,
-    isShallow,
-    hasMergeBase
-  })
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
-
   return {
-    supported: true,
-    branch,
-    currentBranch,
-    behind,
-    currentSha,
-    targetSha,
-    commits,
-    dirty: dirtyStr.length > 0,
-    hermesRoot: updateRoot,
+    supported: false,
+    branch: readDesktopUpdateConfig().branch,
+    reason: 'remote-frontend-only',
+    message:
+      'Reuben Desktop is a remote frontend. Desktop and backend updates are managed outside the app; the frontend will not install, repair, or mutate a backend.',
+    hermesRoot: null,
     fetchedAt: Date.now()
   }
 }
 
-async function readCommitLog(cwd, branch) {
-  const SEP = '\x1f'
-  const REC = '\x1e'
-  const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
-    { cwd }
-  )
-
-  return stdout
-    .split(REC)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => {
-      const [sha, summary, author, at] = line.split(SEP)
-      return { sha, summary, author, at: Number.parseInt(at, 10) * 1000 }
-    })
-}
-
-let updateInFlight = false
-
-// Set to true when the desktop is about to quit so a detached swap/install/
+// Set to true when the desktop is about to quit so a detached app-only
 // uninstall script can take over. On macOS, app.quit() closes windows but
 // window-all-closed deliberately keeps the process alive (standard Electron
-// macOS convention). Without this flag the process never exits — the detached
-// hand-off script spins its PID-wait for the full timeout, and the user sees a
-// blank app with no window (and an uninstall that appears to do nothing). When
-// set, window-all-closed calls app.quit() on every platform so the process
-// actually dies and the hand-off script can proceed immediately.
+// macOS convention). Without this flag the process never exits and the cleanup
+// script spins its PID-wait for the full timeout. When set, window-all-closed
+// calls app.quit() on every platform.
 let isQuittingForHandoff = false
 
-// Resolve the staged updater binary. The Tauri installer copies itself to
-// HERMES_HOME/hermes-setup.exe on a successful install (see
-// apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
-// ALL repo mutation — running `hermes update` + rebuilding the desktop — so
-// the desktop never touches its own bits while running. Returns null when the
-// updater isn't staged (e.g. a dev/source run that never went through the
-// installer); callers degrade gracefully.
-function resolveUpdaterBinary() {
-  const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
-  const candidate = path.join(HERMES_HOME, name)
-  return fileExists(candidate) ? candidate : null
-}
-
-function repairMacUpdaterHelper(updater) {
-  if (!IS_MAC || !updater) return
-
-  try {
-    execFileSync('/usr/bin/xattr', ['-cr', updater], { stdio: 'ignore' })
-  } catch (err) {
-    rememberLog(`[updates] macOS updater helper quarantine repair skipped: ${err.message}`)
-  }
-
-  try {
-    execFileSync('/usr/bin/codesign', ['--verify', updater], { stdio: 'ignore' })
-    return
-  } catch {
-    // Unsigned or invalid helper. Apply a local ad-hoc signature so Gatekeeper
-    // does not block the staged updater before it can run.
-  }
-
-  try {
-    execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', updater], { stdio: 'ignore' })
-    rememberLog('[updates] repaired macOS updater helper signature')
-  } catch (err) {
-    rememberLog(`[updates] macOS updater helper signature repair skipped: ${err.message}`)
-  }
-}
-
-// Path to the venv shim whose lock decides whether `hermes update` can write
-// fresh entry points. On Windows this is the file the running backend
-// `hermes.exe` holds open; on POSIX it's never mandatory-locked.
-function venvHermesShimPath(updateRoot) {
-  return IS_WINDOWS
-    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
-    : path.join(updateRoot, 'venv', 'bin', 'hermes')
-}
-
-// Best-effort lock probe mirroring the Rust updater's is_locked(): a running
-// .exe on Windows refuses an O_RDWR open with a sharing violation. On POSIX
-// this practically always succeeds (no mandatory locking), so it returns false
-// — correct, since the shim-contention brick is Windows-only.
-function isShimLocked(shimPath) {
-  if (!IS_WINDOWS) return false
-  let fd
-  try {
-    fd = fs.openSync(shimPath, 'r+')
-    return false
-  } catch (err) {
-    // ENOENT ⇒ not there ⇒ nothing locking it. Anything else (EBUSY/EPERM/
-    // EACCES) on Windows means a live handle holds it.
-    return err && err.code !== 'ENOENT'
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd)
-      } catch {
-        void 0
-      }
-    }
-  }
-}
-
-// Force-kill the entire process TREE rooted at each PID. Node's child.kill()
-// only signals the direct child, so on Windows a backend `hermes.exe` that
-// spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
-// gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
-// the whole tree synchronously. Windows-only: this is called solely from the
-// Windows shim-unlock path, and the backend is NOT spawned detached (so it's
-// not a process-group leader — a POSIX negative-pgid kill would be meaningless
-// here anyway). POSIX teardown stays with the existing before-quit SIGTERM.
+// Force-kill a child process tree on Windows when a renderer-owned helper must
+// be torn down. Reuben no longer starts a local backend, but this remains useful
+// for bounded cleanup of other child helpers.
 function forceKillProcessTree(pid) {
   if (!IS_WINDOWS) return
   if (!Number.isInteger(pid) || pid <= 0) return
@@ -2088,545 +1212,25 @@ function forceKillProcessTree(pid) {
   }
 }
 
-// Before handing off the update on Windows, the desktop MUST stop every backend
-// it spawned and WAIT for the venv shim to actually unlock. The old code did
-// `hermesProcess.kill('SIGTERM')` + `app.quit()` fire-and-forget: SIGTERM on
-// Windows doesn't reap the backend's grandchildren, and quit didn't wait for
-// teardown, so the updater raced a still-locked `hermes.exe`, the quarantine
-// rename failed, uv's `pip install` hit "Access is denied", and the git path
-// bailed into a full ZIP re-download that ALSO couldn't write the locked shim —
-// a half-applied install (ryanc's update.log). Here we tree-kill the primary +
-// pool backends and poll the shim until it's writable (or a bounded timeout),
-// so by the time we spawn the updater the lock is genuinely gone.
-//
-// Windows-only: the venv-shim mandatory lock is a Windows phenomenon. On
-// macOS/Linux there's no REPLACE-on-running-exe block, the existing before-quit
-// SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
-// aggressively SIGKILL-ing the backend here would be an untested behavior change
-// for no benefit. So we no-op off Windows and leave that path exactly as it was.
-async function releaseBackendLockForUpdate(updateRoot) {
-  return releaseBackendLock(updateRoot, 'updates')
-}
-
-// Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
-// hand-off and the desktop uninstaller — they have the identical Windows
-// problem: the desktop's backend (and the grandchildren IT spawned — a hermes
-// REPL, a pty terminal, the gateway) keep `hermes.exe` and other files in the
-// venv mandatory-locked, so any in-place replace/delete of the install tree
-// races a live handle and half-fails (#37532). We tree-kill every backend PID
-// the desktop owns, then poll the shim until it's genuinely writable.
-//
-// `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
-// locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
-async function releaseBackendLock(updateRoot, tag) {
-  if (!IS_WINDOWS) return { unlocked: true }
-
-  // Collect every backend PID the desktop owns: primary window backend + pool.
-  const pids = []
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) pids.push(hermesProcess.pid)
-  for (const entry of backendPool.values()) {
-    if (entry.process && Number.isInteger(entry.process.pid)) pids.push(entry.process.pid)
-  }
-
-  // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
-  if (hermesProcess && !hermesProcess.killed) {
-    try {
-      hermesProcess.kill('SIGTERM')
-    } catch {
-      void 0
-    }
-  }
-  stopAllPoolBackends()
-  for (const pid of pids) forceKillProcessTree(pid)
-
-  const shim = venvHermesShimPath(updateRoot)
-  const deadlineMs = Date.now() + 15000
-  while (Date.now() < deadlineMs) {
-    if (!isShimLocked(shim)) {
-      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
-      return { unlocked: true }
-    }
-    await new Promise(r => setTimeout(r, 300))
-  }
-  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
-  return { unlocked: false }
-}
-
-// applyUpdates — hand off to the installer's --update flow, then exit.
-//
-// The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
-// itself (the old open-coded git dance lived here and drifted from
-// `hermes update`). Instead we spawn the staged Hermes-Setup binary with
-// --update and quit, so it can run `hermes update` (which refuses while we
-// hold the venv shim) and rebuild the desktop with our exe already gone.
-//
-// Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
-// only this apply action changed.
-async function applyUpdates(opts = {}) {
-  if (updateInFlight) {
-    throw new Error('An update is already in progress.')
-  }
-  updateInFlight = true
-
-  try {
-    const updater = resolveUpdaterBinary()
-    if (!updater && !IS_WINDOWS) {
-      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
-      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
-      // there's no mandatory file locking here, so the desktop can drive the
-      // whole update itself: `hermes update` (backend) + `hermes desktop
-      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
-      // with the freshly built one and relaunch.
-      return await applyUpdatesPosixInApp(opts)
-    }
-    if (!updater) {
-      // No staged updater binary — this is a CLI-installed user (they ran
-      // `hermes desktop`, never the Tauri installer that self-copies
-      // hermes-setup.exe into HERMES_HOME). They DO have a working `hermes`
-      // on PATH / in the venv, so the correct path is the one-liner in their
-      // native medium. We show the EXACT command, branch-pinned to the
-      // checkout they're on — bare `hermes update` defaults to main and would
-      // silently switch a bb/gui (or any non-main) install off-branch. Mirror
-      // the GUI button's contract: append --branch <current> for non-main
-      // checkouts, keep it bare for main so the card stays clean.
-      const updateRoot = resolveUpdateRoot()
-      let command = 'hermes update'
-      try {
-        const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-        const current = (head.stdout || '').trim()
-        if (head.code === 0 && current && current !== 'HEAD') {
-          const branch = await resolveHealedBranch(updateRoot, current)
-          if (branch !== 'main') command = `hermes update --branch ${branch}`
-        }
-      } catch {
-        // Best-effort: fall back to bare `hermes update` if branch detection fails.
-      }
-      rememberLog(`[updates] no staged updater; surfacing manual \`${command}\` for CLI install at ${updateRoot}`)
-      emitUpdateProgress({ stage: 'manual', message: command, percent: null })
-      return { ok: true, manual: true, command, hermesRoot: updateRoot }
-    }
-
-    emitUpdateProgress({
-      stage: 'restart',
-      message:
-        'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
-      percent: 100
-    })
-    repairMacUpdaterHelper(updater)
-
-    const updateRoot = resolveUpdateRoot()
-    const { branch: configuredBranch } = readDesktopUpdateConfig()
-    const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    const updaterArgs = ['--update', '--branch', branch]
-    const targetApp = IS_MAC ? runningAppBundle() : null
-    if (targetApp) {
-      updaterArgs.push('--target-app', targetApp)
-    }
-    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-
-    // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
-    // spawn the updater. Without this the updater races a still-locked
-    // hermes.exe (held by the backend child / its grandchildren) and the update
-    // bricks. See releaseBackendLockForUpdate for the full failure analysis.
-    await releaseBackendLockForUpdate(updateRoot)
-
-    // Detached so the updater outlives this process — it needs us GONE before
-    // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawn(updater, updaterArgs, {
-      cwd: HERMES_HOME,
-      env: {
-        ...process.env,
-        HERMES_HOME,
-        PATH: pathWithHermesManagedNode(venvBin)
-      },
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: false
-    })
-    child.unref()
-
-    rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
-
-    // Linger on the "updating — don't reopen" overlay long enough for the user
-    // to actually read it (and to bridge the gap until the updater's own window
-    // appears), THEN quit to release the venv shim. The updater rebuilds and
-    // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
-    // and lured users into the #50238 relaunch loop.)
-    isQuittingForHandoff = true
-    setTimeout(() => {
-      app.quit()
-    }, UPDATE_HANDOFF_DWELL_MS)
-
-    return { ok: true, handedOff: true, updater }
-  } finally {
-    updateInFlight = false
+async function applyUpdates() {
+  emitUpdateProgress({
+    stage: 'error',
+    message:
+      'Reuben Desktop is a remote frontend. Update the desktop app and backend through their separate release/deployment channels.',
+    error: 'remote-frontend-only',
+    percent: null
+  })
+  return {
+    ok: false,
+    error: 'remote-frontend-only',
+    message:
+      'Reuben Desktop will not install, repair, update, or mutate a backend. Update the desktop app and backend separately.'
   }
 }
 
 async function handOffWindowsBootstrapRecovery(reason) {
-  if (!IS_WINDOWS || !IS_PACKAGED) return false
-
-  const updater = resolveUpdaterBinary()
-  if (!updater) return false
-
-  const updateRoot = resolveUpdateRoot()
-  const { branch: configuredBranch } = readDesktopUpdateConfig()
-  const branch = directoryExists(path.join(updateRoot, '.git'))
-    ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    : configuredBranch || DEFAULT_UPDATE_BRANCH
-  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
-  const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
-  const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
-  // Choose the gentle in-place --update when ANY real-install signal is present,
-  // not just the `hermes.exe` console-script shim. That shim is generated at the
-  // END of venv setup and is absent in exactly the interrupted/quarantined states
-  // this recovery exists to heal — gating on it alone forced the destructive
-  // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
-  // and the bootstrap-complete marker are present earlier and are better signals.
-  const haveRealInstall =
-    fileExists(venvPython) ||
-    fileExists(venvHermes) ||
-    fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
-  const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
-
-  await releaseBackendLockForUpdate(updateRoot)
-
-  const child = spawn(updater, updaterArgs, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      PATH: pathWithHermesManagedNode(venvBin)
-    },
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false
-  })
-  child.unref()
-
-  rememberLog(
-    `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
-  )
-  // Same dwell as the in-app update hand-off (#50419): give the updater's
-  // window time to appear before we vanish, so the recovery doesn't look like
-  // a crash and provoke a mid-recovery relaunch.
-  isQuittingForHandoff = true
-  setTimeout(() => {
-    app.quit()
-  }, UPDATE_HANDOFF_DWELL_MS)
-
-  return true
-}
-
-// Resolve the hermes CLI to drive an in-app update: prefer the venv shim in
-// the install we're updating, fall back to `hermes` on PATH.
-function resolveHermesCliBinary(updateRoot) {
-  const venvHermes = path.join(updateRoot, 'venv', 'bin', 'hermes')
-  if (fileExists(venvHermes)) return venvHermes
-  return findOnPath('hermes') || null
-}
-
-// Spawn a command and stream each output line to the update progress channel.
-function runStreamedUpdate(command, args, { cwd, env, stage } = {}) {
-  return new Promise(resolve => {
-    let child
-    try {
-      child = spawn(
-        command,
-        args,
-        hiddenWindowsChildOptions({
-          cwd,
-          env: { ...process.env, ...(env || {}) },
-          stdio: ['ignore', 'pipe', 'pipe']
-        })
-      )
-    } catch (err) {
-      resolve({ code: 1, error: err.message })
-      return
-    }
-    const emitLines = chunk => {
-      for (const line of chunk.toString().split('\n')) {
-        const trimmed = line.trim()
-        if (trimmed) emitUpdateProgress({ stage, message: trimmed, percent: null })
-      }
-    }
-    child.stdout.on('data', emitLines)
-    child.stderr.on('data', emitLines)
-    child.once('error', err => resolve({ code: 1, error: err.message }))
-    child.once('exit', code => resolve({ code }))
-  })
-}
-
-// The running app's .app bundle (packaged macOS): execPath is
-// <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
-function runningAppBundle() {
-  if (!IS_MAC) return null
-  let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
-  for (let i = 0; i < 2; i++) dir = path.dirname(dir) // -> .../X.app
-  return dir.endsWith('.app') ? dir : null
-}
-
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
-// macOS/Linux in-app update: backend (`hermes update`) + OS-aware GUI rebuild
-// (`hermes desktop --build-only`), then atomically swap the running .app bundle
-// with the freshly built one and relaunch. Degrades to "backend updated,
-// restart to load the new GUI" if the swap can't be performed.
-async function applyUpdatesPosixInApp() {
-  const updateRoot = resolveUpdateRoot()
-  const hermes = resolveHermesCliBinary(updateRoot)
-  if (!hermes) {
-    emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
-    return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
-  }
-
-  // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
-  // npm build can find them on a machine with no system Node. Windows portable
-  // Node lives directly under %LOCALAPPDATA%\hermes\node, not node\bin.
-  const env = {
-    HERMES_HOME,
-    PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
-  }
-
-  // `hermes update` reaps stale `hermes serve` backends (a code update
-  // leaves the running process serving old Python against the freshly-updated
-  // JS bundle). But OUR backend is one of those processes, and killing it
-  // mid-update produces the boot→kill→crash loop in #37532 — the desktop
-  // already restarts its own backend via the rebuild+relaunch below, so the
-  // reap must spare it. Hand the live backend's PID to the update process;
-  // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
-  // it while still reaping any genuinely-orphaned backends. (#37532)
-  // Exclude every desktop-managed backend (primary + all pool profiles) from
-  // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
-  // list (a single int still parses for back-compat).
-  const desktopChildPids = []
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
-    desktopChildPids.push(hermesProcess.pid)
-  }
-  for (const entry of backendPool.values()) {
-    if (entry.process && Number.isInteger(entry.process.pid)) {
-      desktopChildPids.push(entry.process.pid)
-    }
-  }
-  if (desktopChildPids.length) {
-    env.HERMES_DESKTOP_CHILD_PID = desktopChildPids.join(',')
-  }
-
-  // Branch-pin so a non-main checkout doesn't get switched to main (and self-heal
-  // to main when the pinned branch no longer exists on origin).
-  let branchArgs = []
-  try {
-    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branchArgs = ['--branch', await resolveHealedBranch(updateRoot, current)]
-    }
-  } catch {
-    // best effort
-  }
-
-  emitUpdateProgress({ stage: 'update', message: 'Updating Hermes (git + dependencies)…', percent: 10 })
-  const updated = await runStreamedUpdate(hermes, ['update', '--yes', ...branchArgs], {
-    cwd: updateRoot,
-    env,
-    stage: 'update'
-  })
-  if (updated.code !== 0) {
-    emitUpdateProgress({ stage: 'error', message: 'hermes update failed.', error: updated.error || 'update-failed' })
-    return { ok: false, error: 'hermes update failed' }
-  }
-
-  emitUpdateProgress({ stage: 'rebuild', message: 'Rebuilding the desktop app…', percent: 60 })
-  // Retry-once: a first rebuild can fail on a still-settling tree or a
-  // self-healed (network-blocked) Electron download; a second run builds clean
-  // off the healed dist so we reach the swap+relaunch below instead of bailing.
-  const rebuilt = await runRebuildWithRetry(attempt => {
-    if (attempt > 0) {
-      emitUpdateProgress({ stage: 'rebuild', message: 'Retrying the desktop rebuild…', percent: 60 })
-    }
-    return runStreamedUpdate(hermes, ['desktop', '--build-only'], { cwd: updateRoot, env, stage: 'rebuild' })
-  })
-  if (rebuilt.code !== 0) {
-    emitUpdateProgress({
-      stage: 'error',
-      message: 'Backend updated, but the desktop rebuild failed. Restart Hermes to retry.',
-      error: rebuilt.error || 'rebuild-failed'
-    })
-    return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
-  }
-
-  // Linux in-app update terminal state (#45205). `hermes desktop --build-only`
-  // rebuilds the unpacked app in place under apps/desktop/release/<plat>-unpacked.
-  // We can only HONESTLY relaunch into the new GUI when the *running* binary IS
-  // that rebuilt one — i.e. execPath lives under release/<plat>-unpacked. The
-  // outcome is decided by three signals (see update-relaunch.cjs):
-  //
-  //   underUnpacked + sandboxOk  → 'relaunch': detached watcher re-execs us in
-  //       place (mirrors the macOS handoff). Without it the update succeeds but
-  //       the app never restarts and the overlay hangs on "applying" forever.
-  //   !underUnpacked             → 'guiSkew': the running shell is an AppImage/
-  //       .deb/.rpm/dev/unresolved binary we did NOT replace. Claiming "loads
-  //       next launch" is a lie (GUI/backend skew, #37541) — surface an
-  //       explicit closeable terminal state telling the user the GUI package
-  //       was NOT changed and must be updated/reinstalled.
-  //   underUnpacked + !sandboxOk → 'manual': we'd be relaunching the rebuilt
-  //       binary, but a fresh rebuild can leave chrome-sandbox without
-  //       root:root + setuid (mode 4755) and Electron then refuses to launch
-  //       ("quit and never came back"). DO NOT quit into a dead app — keep the
-  //       working window and surface the closeable manual-restart state.
-  if (!IS_MAC) {
-    const unpackedDir = resolveUnpackedRelease(process.execPath, updateRoot, process.platform)
-    const underUnpacked = unpackedDir !== null
-
-    const preflight = underUnpacked
-      ? sandboxPreflight(unpackedDir, p => fs.statSync(p))
-      : { ok: false, reason: 'not-under-unpacked', path: null }
-    const sandboxFallback = sandboxFallbackFromEnv(process.env, process.argv.slice(1))
-    const sandboxOk = preflight.ok || sandboxFallback
-    if (underUnpacked && !preflight.ok) {
-      rememberLog(
-        `[updates] sandbox preflight: not launchable (${preflight.reason}) at ${preflight.path}; ` +
-          `fallback=${sandboxFallback ? 'env/--no-sandbox' : 'none'}`
-      )
-    }
-
-    const outcome = decideRelaunchOutcome({ underUnpacked, sandboxOk })
-
-    if (outcome === 'relaunch') {
-      emitUpdateProgress({ stage: 'restart', message: 'Restarting Hermes…', percent: 100 })
-      // Preserve launch context across the re-exec: replay the original args
-      // (filtered of Electron internals) and the env/cwd that define which
-      // backend/profile/root this instance talks to. Without this the
-      // relaunched instance comes up with default context instead of the user's.
-      const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
-      const relaunchEnv = collectRelaunchEnv(process.env)
-      const relaunchScript = buildRelaunchScript({
-        pid: process.pid,
-        execPath: process.execPath,
-        args: relaunchArgs,
-        env: relaunchEnv,
-        cwd: process.cwd()
-      })
-      const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
-      try {
-        fs.writeFileSync(scriptPath, relaunchScript, { mode: 0o755 })
-        const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
-        child.unref()
-        rememberLog(
-          `[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath} ` +
-            `(args=${relaunchArgs.length}, env=${Object.keys(relaunchEnv).length})`
-        )
-        isQuittingForHandoff = true
-        setTimeout(() => app.quit(), UPDATE_HANDOFF_DWELL_MS)
-        return { ok: true, handedOff: true }
-      } catch (err) {
-        rememberLog(`[updates] linux relaunch failed: ${err.message}; falling back to manual restart`)
-        return {
-          ok: true,
-          backendUpdated: true,
-          guiUpdated: false,
-          manualRestart: true,
-          message: 'Backend updated. Quit and reopen Hermes to load the new version.'
-        }
-      }
-    }
-
-    if (outcome === 'guiSkew') {
-      emitUpdateProgress({
-        stage: 'guiSkew',
-        message:
-          'Backend updated, but the desktop app package was not changed. ' +
-          'Update or reinstall the Hermes desktop app to match.',
-        percent: 100
-      })
-      rememberLog(
-        `[updates] gui/backend skew: execPath ${process.execPath} not under release/*-unpacked; ` +
-          'backend updated, GUI package unchanged (AppImage/.deb/.rpm/dev/unresolved)'
-      )
-      return { ok: true, backendUpdated: true, guiUpdated: false, guiSkew: true }
-    }
-
-    // outcome === 'manual': we're the rebuilt binary, but its sandbox helper is
-    // not launchable and no fallback applies. Keep this working window alive.
-    rememberLog(
-      `[updates] sandbox not launchable (${preflight.reason}); skipping auto-relaunch, ` +
-        'returning manual-restart so the user keeps a working window'
-    )
-    return {
-      ok: true,
-      backendUpdated: true,
-      guiUpdated: false,
-      manualRestart: true,
-      sandboxBlocked: true,
-      message:
-        'Backend updated. The rebuilt app can’t relaunch automatically ' +
-        '(sandbox helper needs root). Quit and reopen Hermes to finish.'
-    }
-  }
-
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', `${APP_NAME}.app`),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', `${APP_NAME}.app`)
-  ].find(directoryExists)
-  const targetApp = runningAppBundle()
-
-  // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
-  // backend is updated; the next launch picks up the rebuilt GUI.
-  if (!rebuiltApp || !targetApp) {
-    emitUpdateProgress({
-      stage: 'done',
-      message: 'Backend updated. Restart Hermes to load the new version.',
-      percent: 100
-    })
-    return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
-  }
-
-  emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
-
-  // Detached swapper: wait for THIS process to exit (so the bundle is free),
-  // ditto the rebuilt app over the running one, clear quarantine, relaunch.
-  const swapScript = `#!/bin/bash
-set -u
-APP_PID=${process.pid}
-SRC=${shellQuote(rebuiltApp)}
-DST=${shellQuote(targetApp)}
-for _ in $(seq 1 240); do
-  kill -0 "$APP_PID" 2>/dev/null || break
-  sleep 0.5
-done
-if [ "$SRC" != "$DST" ]; then
-  if /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-    mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
-    mv "$DST.hermes-update-new" "$DST"
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-  fi
-fi
-/usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
-/usr/bin/open "$DST"
-`
-  const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
-  try {
-    fs.writeFileSync(scriptPath, swapScript, { mode: 0o755 })
-  } catch (err) {
-    emitUpdateProgress({
-      stage: 'done',
-      message: 'Backend + app updated. Restart Hermes to load the new version.',
-      percent: 100
-    })
-    rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${rebuiltApp}`)
-    return { ok: true, backendUpdated: true, rebuiltApp }
-  }
-
-  const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
-  child.unref()
-  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
-
-  isQuittingForHandoff = true
-  setTimeout(() => app.quit(), 600)
-  return { ok: true, handedOff: true, rebuiltApp, targetApp }
+  rememberLog(`[backend] ignored local bootstrap recovery request (${reason}); Reuben Desktop is remote-only`)
+  return false
 }
 
 function readJson(filePath) {
@@ -2637,68 +1241,20 @@ function readJson(filePath) {
   }
 }
 
-// Bootstrap-complete marker helpers. The marker is written ONCE by the
-// first-launch bootstrap runner (Phase 1D) after install.ps1 stages succeed
-// AND the user has finished initial configuration. On every subsequent boot
-// we check `isBootstrapComplete()` and skip the bootstrap flow entirely if
-// the marker is present and current-schema.
-//
-// Marker schema (version 1):
-//   {
-//     schemaVersion: 1,
-//     pinnedCommit: "<40-char SHA>",       // what install.ps1 was driven against
-//     pinnedBranch: "<branch name>" | null,
-//     completedAt:  "<ISO 8601>",
-//     desktopVersion: "<app.getVersion()>"  // for forensics
-//   }
 function readBootstrapMarker() {
-  return readJson(BOOTSTRAP_COMPLETE_MARKER)
+  return null
 }
 
-// Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually
-// runnable right now? A complete CLI install (`install.sh --include-desktop`)
-// or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
-// ever having written the bootstrap marker -- so we must be able to recognise
-// "already installed" off the filesystem alone, not just the marker.
 function isActiveRuntimeUsable() {
-  const venvPython = getVenvPython(VENV_ROOT)
-  return (
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
-    fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
-      env: {
-        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      }
-    })
-  )
+  return false
 }
 
 function isBootstrapComplete() {
-  const marker = readBootstrapMarker()
-  if (!marker || typeof marker !== 'object') return false
-  if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) return false
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) return false
-  // We DELIBERATELY do NOT verify that the checkout is currently at the
-  // pinned commit -- users update via the in-app update path or `hermes
-  // update`, which moves HEAD legitimately. The marker just attests "we
-  // ran the bootstrap successfully at least once." We DO additionally require
-  // a runnable venv: an interrupted or split-home install can leave the marker
-  // + checkout without a venv, and trusting that spawns a dead backend
-  // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isActiveRuntimeUsable()
+  return false
 }
 
-function writeBootstrapMarker(payload) {
-  fs.mkdirSync(path.dirname(BOOTSTRAP_COMPLETE_MARKER), { recursive: true })
-  const merged = {
-    schemaVersion: BOOTSTRAP_MARKER_SCHEMA_VERSION,
-    pinnedCommit: payload.pinnedCommit || null,
-    pinnedBranch: payload.pinnedBranch || null,
-    completedAt: new Date().toISOString(),
-    desktopVersion: app.getVersion()
-  }
-  writeFileAtomic(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
-  return merged
+function writeBootstrapMarker() {
+  throw localBackendDisabledError('Local bootstrap marker writes')
 }
 
 function resolveWebDist() {
@@ -2848,351 +1404,20 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
-function createPythonBackend(root, label, backendArgs, options = {}) {
-  const python = findPythonForRoot(root)
-  if (!python) return null
-
-  const venvRoot = path.join(root, 'venv')
-  const venvPython = getVenvPython(venvRoot)
-  const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
-
-  return {
-    kind: 'python',
-    label,
-    command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
-      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
-    }),
-    root,
-    bootstrap: Boolean(options.bootstrap),
-    shell: false
-  }
+function createPythonBackend() {
+  throw localBackendDisabledError('Local Python backend creation')
 }
 
-// createActiveBackend — build a backend pointing at ACTIVE_HERMES_ROOT, the
-// canonical install location shared with the CLI installer. The venv at
-// VENV_ROOT may not exist yet on first run; bootstrap=true tells
-// ensureRuntime() to create / refresh it before launch.
-function createActiveBackend(backendArgs) {
-  const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? venvPython : findSystemPython()
-
-  return {
-    kind: 'python',
-    label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
-    command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv({
-      hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
-      venvRoot: VENV_ROOT
-    }),
-    root: ACTIVE_HERMES_ROOT,
-    bootstrap: true,
-    shell: false
-  }
+function createActiveBackend() {
+  throw localBackendDisabledError('Managed local backend creation')
 }
 
-function resolveHermesBackend(backendArgs) {
-  // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
-  //    checkout. Honour it as-is (no bootstrap; the user is driving).
-  const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
-  if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
-    if (backend) return backend
-  }
-
-  // 2. Development source -- when running `npm run dev` from a checkout, the
-  //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
-  //    installed `hermes` on PATH so local Python edits are actually exercised.
-  //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
-  if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
-    if (backend) return backend
-  }
-
-  // 3. Bootstrap-complete ACTIVE_HERMES_ROOT -- the canonical install at
-  //    %LOCALAPPDATA%\hermes\hermes-agent (Windows) or ~/.hermes/hermes-agent.
-  //    The bootstrap marker means install.ps1 stages finished and the user
-  //    completed initial configuration; we trust the install and go straight
-  //    to spawning hermes. Updates flow through the in-app update path
-  //    (applyUpdates -> git pull) or `hermes update` from the CLI.
-  if (isBootstrapComplete()) {
-    return createActiveBackend(backendArgs)
-  }
-
-  // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
-  //    a previous tool-only setup, or pip-installed system-wide. Use it but
-  //    do NOT write a bootstrap marker; the user did this themselves and we
-  //    don't want to take ownership of an install we didn't perform.
-  //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
-    let hermesCommand = null
-    const hermesOverride = process.env.HERMES_DESKTOP_HERMES
-
-    if (hermesOverride) {
-      const resolvedOverride = findOnPath(hermesOverride)
-      if (resolvedOverride) {
-        hermesCommand = resolvedOverride
-      } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
-        hermesCommand = hermesOverride
-      } else {
-        rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
-      }
-    } else {
-      hermesCommand = findOnPath('hermes')
-    }
-
-    if (hermesCommand) {
-      if (looksLikeDesktopAppBinary(hermesCommand)) {
-        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
-        hermesCommand = null
-      }
-    }
-
-    if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
-      if (unwrapped) {
-        return unwrapped
-      }
-
-      // Smoke-test the candidate before trusting it. A `hermes` shim
-      // left behind by a half-uninstalled pip install (or a venv
-      // entry-point pointing at a deleted interpreter) still resolves
-      // via findOnPath but explodes on spawn -- the user then sees a
-      // dead backend instead of the first-launch installer. The cheap
-      // `--version` probe (see backend-probes.cjs) catches that case
-      // and lets the resolver fall through to step 6 / bootstrap.
-      const shellForProbe = isCommandScript(hermesCommand)
-      if (verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-        return (
-          unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
-            label: `existing Hermes CLI at ${hermesCommand}`,
-            command: hermesCommand,
-            args: backendArgs,
-            bootstrap: false,
-            env: {},
-            kind: 'command',
-            shell: shellForProbe
-          }
-        )
-      }
-      rememberLog(
-        `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
-      )
-    }
-  }
-
-  // 5. Last-ditch: pip-installed hermes_cli module via system Python.
-  //    Same rationale as #4 -- the user installed this; we use it but don't
-  //    take ownership.
-  const python = findSystemPython()
-  if (python) {
-    // Same smoke-test rationale as step 4: a system Python in the
-    // SUPPORTED_VERSIONS range can be registered (PEP 514) without
-    // having hermes_cli installed -- common on dev boxes that have
-    // a python.org install from prior unrelated work. Returning that
-    // backend hands the spawn step a guaranteed ModuleNotFoundError.
-    // Verify the import works before trusting the candidate; on
-    // failure, fall through to step 6 so the bootstrap runner pulls
-    // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
-    if (canImportHermesCli(python)) {
-      return {
-        kind: 'python',
-        label: `installed hermes_cli module via ${python}`,
-        command: python,
-        args: ['-m', 'hermes_cli.main', ...backendArgs],
-        bootstrap: false,
-        env: {},
-        shell: false
-      }
-    }
-    rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
-  }
-
-  // 6. Nothing usable yet -- signal the bootstrap runner that we need to
-  //    clone+install. Phase 1D's bootstrap-runner consumes this sentinel
-  //    and drives install.ps1 stages with a progress UI. Until 1D lands,
-  //    callers see the sentinel and surface it as a user-facing error
-  //    explaining what's missing.
-  //
-  //    We deliberately do NOT throw here -- throwing inside
-  //    resolveHermesBackend was the old "no payload" path and forced the
-  //    user into a dead end. With the bootstrap protocol, "no install yet"
-  //    is a recoverable state the GUI can drive through.
-  return {
-    kind: 'bootstrap-needed',
-    label: 'Hermes Agent not installed yet; bootstrap required',
-    command: null,
-    args: backendArgs,
-    bootstrap: true,
-    env: {},
-    shell: false,
-    // Hints for the bootstrap runner / UI layer:
-    activeRoot: ACTIVE_HERMES_ROOT,
-    installStamp: INSTALL_STAMP, // may be null in dev
-    isPackaged: IS_PACKAGED,
-    platform: process.platform
-  }
+function resolveHermesBackend() {
+  throw localBackendDisabledError('Local backend resolution')
 }
 
-async function ensureRuntime(backend) {
-  if (!backend.bootstrap) {
-    await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
-    return backend
-  }
-
-  // backend.kind === 'bootstrap-needed' means resolveHermesBackend couldn't
-  // find anything to spawn. Hand off to the bootstrap runner which drives the
-  // platform installer, writes the bootstrap-complete marker on success, then
-  // we re-resolve to get the now-installed backend.
-  //
-  // Phase 1D status: bootstrap runs but events go to desktop.log only
-  // (renderer window isn't created until later in startBackend). Phase 1E
-  // will rewire startup to spawn the window first and route bootstrap events
-  // to a renderer-side install overlay.
-  if (backend.kind === 'bootstrap-needed') {
-    rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
-
-    if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
-      const handoffError = new Error(
-        'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
-      )
-      handoffError.isBootstrapFailure = true
-      handoffError.bootstrapHandedOff = true
-      bootstrapFailure = handoffError
-      throw handoffError
-    }
-
-    // Eagerly flip the bootstrap UI state to 'active' so the renderer
-    // shows the install overlay BEFORE the runner finishes fetching the
-    // manifest (which on slow networks can take tens of seconds and would
-    // otherwise leave the user staring at the generic 'Preparing' splash).
-    // We emit a synthetic manifest with an empty stages list -- the real
-    // manifest event will overwrite it once install.ps1 -Manifest returns.
-    try {
-      broadcastBootstrapEvent({
-        type: 'manifest',
-        stages: [],
-        protocolVersion: null
-      })
-    } catch {
-      void 0
-    }
-
-    bootstrapAbortController = new AbortController()
-
-    const bootstrapResult = await runBootstrap({
-      installStamp: backend.installStamp,
-      activeRoot: backend.activeRoot,
-      sourceRepoRoot: SOURCE_REPO_ROOT,
-      hermesHome: HERMES_HOME,
-      logRoot: path.join(HERMES_HOME, 'logs'),
-      abortSignal: bootstrapAbortController.signal,
-      onEvent: ev => {
-        // Tee every bootstrap event to (a) the desktop log for forensics
-        // and (b) the renderer for live progress UI. Either may be absent;
-        // tolerate both gracefully so a renderer crash doesn't stall the
-        // bootstrap and a log-write failure doesn't suppress the UI signal.
-        try {
-          rememberLog(`[bootstrap] ${JSON.stringify(ev)}`)
-        } catch {
-          void 0
-        }
-        try {
-          broadcastBootstrapEvent(ev)
-        } catch {
-          void 0
-        }
-      },
-      writeMarker: writeBootstrapMarker
-    })
-
-    bootstrapAbortController = null
-
-    if (bootstrapResult.cancelled) {
-      const cancelledError = new Error('Hermes install was cancelled.')
-      cancelledError.isBootstrapFailure = true
-      cancelledError.bootstrapCancelled = true
-      bootstrapFailure = cancelledError
-      throw cancelledError
-    }
-
-    if (!bootstrapResult.ok) {
-      const bootstrapError = new Error(
-        `Hermes bootstrap failed${bootstrapResult.failedStage ? ` at stage '${bootstrapResult.failedStage}'` : ''}: ` +
-          `${bootstrapResult.error || 'unknown error'}. ` +
-          `Check ${path.join(HERMES_HOME, 'logs', 'desktop.log')} for the full transcript.`
-      )
-      bootstrapError.isBootstrapFailure = true
-      bootstrapError.failedStage = bootstrapResult.failedStage || null
-      // Latch the failure so subsequent startHermes() calls return this
-      // same error without re-running install.ps1.
-      bootstrapFailure = bootstrapError
-      throw bootstrapError
-    }
-
-    rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
-    // Re-resolve now that the install exists. The new resolution lands in
-    // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
-    return ensureRuntime(resolveHermesBackend(backend.args))
-  }
-
-  // bootstrap=true with a real backend (createActiveBackend path) means we
-  // have a checkout and need to ensure the venv-derived Python command is
-  // wired into the backend before launch. Same code path the old factory
-  // sync flow exited through, minus all the factory/pip/marker machinery
-  // (install.ps1 owns those concerns now and the bootstrap-complete marker
-  // attests they ran successfully).
-  if (!isHermesSourceRoot(ACTIVE_HERMES_ROOT)) {
-    throw new Error(
-      `Hermes install at ${ACTIVE_HERMES_ROOT} is missing or incomplete. ` +
-        'Reinstall via the desktop installer or scripts/install.ps1.'
-    )
-  }
-
-  // On Windows, preflight Git Bash. Hermes' terminal tool calls bash.exe
-  // directly (tools/environments/local.py); without it the agent can't run
-  // terminal commands. install.ps1's Stage-Git puts PortableGit at
-  // %LOCALAPPDATA%\hermes\git\, which findGitBash() picks up, so for any
-  // user who completed the bootstrap this is a no-op. For users who got
-  // here via an external `hermes` on PATH, this check still helps.
-  if (IS_WINDOWS && !findGitBash()) {
-    throw new Error(
-      'Git for Windows is required for Hermes on Windows (provides Git Bash, ' +
-        "which the agent's terminal tool uses). Install it from " +
-        'https://git-scm.com/download/win or run `winget install -e --id Git.Git`, ' +
-        'then relaunch Hermes.'
-    )
-  }
-
-  const venvPython = getVenvPython(VENV_ROOT)
-  if (!fileExists(venvPython)) {
-    // No venv at the expected location AND no bootstrap-needed sentinel
-    // means we have a half-installed checkout: .git exists, source files
-    // exist, but venv is missing or broken. This shouldn't happen in
-    // normal flow because isBootstrapComplete() requires
-    // isHermesSourceRoot() and the bootstrap writes the marker only after
-    // install.ps1 succeeds. If we hit this, the user (or a deleted venv)
-    // broke the invariant; tell them to re-run the install.
-    throw new Error(
-      `Hermes venv missing at ${VENV_ROOT}. Re-run the desktop installer or ` + '`scripts/install.ps1` to rebuild it.'
-    )
-  }
-
-  backend.command = getVenvPython(VENV_ROOT)
-  backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
-  updateBootProgress({
-    phase: 'runtime.ready',
-    message: 'Hermes runtime is ready',
-    progress: 82,
-    running: true,
-    error: null
-  })
-  return backend
+async function ensureRuntime() {
+  throw localBackendDisabledError('Local backend runtime preparation')
 }
 
 function fetchJson(url, token, options = {}) {
@@ -3888,8 +2113,8 @@ function sendClosePreviewRequested() {
   webContents.send('hermes:close-preview-requested')
 }
 
-// Tell the renderer the machine just woke. Sleep silently drops the
-// renderer's WebSocket to the local backend; the renderer reconnects on this
+// Tell the renderer the machine just woke. Sleep can silently drop the
+// renderer's WebSocket to the remote gateway; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
 function sendPowerResume() {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -4708,9 +2933,7 @@ function writeDesktopConnectionConfig(config) {
   connectionConfigCacheMtime = fs.statSync(DESKTOP_CONNECTION_CONFIG_PATH).mtimeMs
 }
 
-// Returns the desktop's chosen profile name, or null when unset. "default" is
-// a valid stored value (pins the root HERMES_HOME explicitly); null means "no
-// preference" and preserves the legacy launch (no --profile flag).
+// Returns the desktop's chosen remote profile name, or null when unset.
 function readActiveDesktopProfile() {
   try {
     const raw = fs.readFileSync(DESKTOP_PROFILE_CONFIG_PATH, 'utf8')
@@ -5162,10 +3385,9 @@ function resetHermesConnection() {
   resetBootProgressForReconnect()
 }
 
-// Re-home the primary backend: reset connection state, then wait for the live
-// dashboard process to actually exit (SIGKILL after 5s) so the next
-// startHermes() spawns fresh instead of racing the dying one. Shared by the
-// connection-config and profile switch flows.
+// Reset the primary remote connection state. The wait is retained for stale
+// child references from older sessions, but current Reuben builds do not start
+// a local dashboard process.
 async function teardownPrimaryBackendAndWait() {
   // Capture the reference before resetHermesConnection() nulls hermesProcess.
   const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
@@ -5209,10 +3431,9 @@ function primaryProfileKey() {
   return readActiveDesktopProfile() || 'default'
 }
 
-// Resolve a backend connection for the given profile. Routes the primary
-// profile to startHermes() (the window backend: boot UI, bootstrap, remote
-// mode), and any OTHER profile to a lazily-spawned pool backend. An empty /
-// unknown profile resolves to the primary, so all legacy callers are unchanged.
+// Resolve a backend connection for the given profile. The primary profile uses
+// startHermes(); other profiles resolve per-profile remote descriptors. An
+// empty or unknown profile resolves to the primary.
 async function ensureBackend(profile) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
 
@@ -5391,9 +3612,6 @@ async function prepareProfileDeleteRequest(request) {
 async function startHermes() {
   // Latched-failure short-circuit: keep repeated renderer retries from hiding
   // the actionable boot error while the user is reading the failure overlay.
-  if (bootstrapFailure) {
-    throw bootstrapFailure
-  }
   if (backendStartFailure) {
     throw backendStartFailure
   }
@@ -6060,9 +4278,8 @@ ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopPr
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 
-  // Switching profiles is a backend re-home: relaunch the dashboard under the
-  // new HERMES_HOME. Pool backends keep their own homes, so only the primary
-  // is torn down.
+  // Switching profiles invalidates the primary remote connection descriptor so
+  // subsequent API/WebSocket calls resolve against the selected profile.
   await teardownPrimaryBackendAndWait()
   mainWindow?.reload()
 
@@ -6928,32 +5145,10 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   return { branch }
 })
 
-// Resolve the canonical Hermes version (the one `release.py` bumps in
-// hermes_cli/__init__.py + pyproject.toml) so the desktop About panel shows the
-// real Hermes version instead of the Electron app's own package.json version,
-// which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
-// when the source tree can't be read (e.g. a packaged build without the repo).
 function resolveHermesVersion() {
-  try {
-    const root = resolveUpdateRoot()
-    const initPath = path.join(root, 'hermes_cli', '__init__.py')
-    if (fileExists(initPath)) {
-      const raw = fs.readFileSync(initPath, 'utf8')
-      const match = raw.match(/__version__\s*=\s*["']([^"']+)["']/)
-      if (match) {
-        return match[1]
-      }
-    }
-  } catch {
-    // Fall through to the Electron app version below.
-  }
   return app.getVersion()
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
 function showAboutPanelFresh() {
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
@@ -6968,156 +5163,49 @@ ipcMain.handle('hermes:version', async () => ({
   electronVersion: process.versions.electron,
   nodeVersion: process.versions.node,
   platform: process.platform,
-  hermesRoot: resolveUpdateRoot()
+  hermesRoot: null
 }))
 
 // ===========================================================================
-// Uninstall — remove the Chat GUI (and optionally the agent / user data).
+// Uninstall — remove only the Reuben desktop app bundle.
 // ===========================================================================
-//
-// The renderer's About → Danger Zone surfaces three options that mirror the
-// CLI exactly: GUI only, Lite (keep user data), Full. We ask the agent to do
-// the actual removal via `hermes uninstall …` so the cross-platform PATH /
-// registry / service / node-symlink cleanup all lives in one place
-// (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
-//
-// getUninstallSummary() shells out to `--gui-summary` (a fast, no-side-effect
-// JSON probe) so the UI can gate options on what's actually installed — and
-// detect a missing agent (a future "lite client" that ships without the
-// bundled agent), hiding the agent/full options when there's nothing to remove.
-
-function uninstallVenvPython() {
-  return getVenvPython(VENV_ROOT)
-}
 
 async function getUninstallSummary() {
-  const py = uninstallVenvPython()
-  const agentRoot = ACTIVE_HERMES_ROOT
-  // Fast JS-side fallback used when the agent venv is gone (lite client) or the
-  // probe fails — the renderer still needs *something* to render options from.
-  const fallback = () => ({
-    hermes_home: HERMES_HOME,
-    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
+  return {
+    backend_managed: false,
+    app_installed: true,
     gui_installed: true,
-    source_built_artifacts: [],
-    packaged_app_paths: [],
-    userdata_dir: app.getPath('userData'),
-    userdata_exists: true,
     platform: process.platform,
-    probe: 'fallback'
-  })
-
-  if (!fileExists(py)) {
-    return fallback()
+    running_app_path: resolveRemovableAppPath(process.execPath, process.platform, process.env),
+    userdata_dir: app.getPath('userData'),
+    userdata_exists: directoryExists(app.getPath('userData')),
+    probe: 'remote-client'
   }
-
-  return new Promise(resolve => {
-    let stdout = ''
-    let settled = false
-    const done = value => {
-      if (settled) return
-      settled = true
-      resolve(value)
-    }
-    try {
-      const child = spawn(
-        py,
-        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
-        hiddenWindowsChildOptions({
-          cwd: agentRoot,
-          env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
-          stdio: ['ignore', 'pipe', 'ignore']
-        })
-      )
-      child.stdout.on('data', chunk => {
-        stdout += chunk.toString()
-      })
-      child.on('error', () => done(fallback()))
-      child.on('exit', code => {
-        if (code !== 0) return done(fallback())
-        try {
-          const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
-          const parsed = JSON.parse(line)
-          // The app bundle the renderer would be removing on *this* machine,
-          // resolved from the running exe (the Python probe only knows the
-          // standard locations, not where THIS build actually runs from).
-          parsed.running_app_path = resolveRemovableAppPath(process.execPath, process.platform, process.env)
-          done(parsed)
-        } catch {
-          done(fallback())
-        }
-      })
-      setTimeout(() => done(fallback()), 8000)
-    } catch {
-      done(fallback())
-    }
-  })
 }
 
 async function runDesktopUninstall(mode) {
-  let uninstallArgs
-  try {
-    uninstallArgs = uninstallArgsForMode(mode)
-  } catch (error) {
-    return { ok: false, error: 'invalid-mode', message: error.message }
-  }
-
-  const venvPy = uninstallVenvPython()
-  if (!fileExists(venvPy)) {
+  if (mode !== 'app') {
     return {
       ok: false,
-      error: 'agent-missing',
-      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
-    }
-  }
-
-  // Interpreter choice (Finding 3): lite/full rmtree the venv that holds the
-  // running python.exe. On Windows a running .exe is mandatory-locked, so the
-  // rmtree must NOT be driven by the venv's own interpreter — use a system
-  // Python with PYTHONPATH=<agentRoot> so `import hermes_cli` resolves from
-  // source while the venv is torn down. gui-only doesn't touch the venv, so the
-  // venv python is fine there. If no system Python exists (the Windows edge
-  // case), fall back to the venv python — gui-only is unaffected; lite/full may
-  // leave venv remnants the user can delete, which we log.
-  let py = venvPy
-  let pythonPath = null
-  if (modeRemovesAgent(mode)) {
-    const sysPy = findSystemPython()
-    if (sysPy) {
-      py = sysPy
-      pythonPath = ACTIVE_HERMES_ROOT
-    } else if (IS_WINDOWS) {
-      rememberLog(
-        '[uninstall] no system Python found for lite/full on Windows; falling back ' +
-          'to the venv python — venv files locked by the running interpreter may ' +
-          'remain and need manual deletion.'
-      )
+      error: 'invalid-mode',
+      message: 'Reuben Desktop can only uninstall the desktop app. Remote backends are managed separately.'
     }
   }
 
   const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
   const removeBundle = shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
 
-  // CRITICAL (Windows): tear down every backend the desktop owns and wait for
-  // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete
-  // the venv, and even gui-only removes the install tree's GUI artifacts — a
-  // live backend grandchild (gateway / pty / REPL) holding a mandatory file
-  // lock would make the script's rmdir half-fail (#37532 for the update path).
-  // Reuses the incident-hardened update teardown; no-op on macOS/Linux.
-  try {
-    await releaseBackendLock(ACTIVE_HERMES_ROOT, 'uninstall')
-  } catch (error) {
-    rememberLog(`[uninstall] backend teardown errored (continuing): ${error.message}`)
+  if (!removeBundle) {
+    return {
+      ok: false,
+      error: 'not-packaged',
+      message: 'This Reuben build is not running from a removable packaged app bundle.'
+    }
   }
 
   const scriptArgs = {
     desktopPid: process.pid,
-    pythonExe: py,
-    pythonPath,
-    agentRoot: ACTIVE_HERMES_ROOT,
-    uninstallArgs,
-    appPath: removeBundle,
-    hermesHome: HERMES_HOME
+    appPath: removeBundle
   }
 
   let scriptPath
@@ -7125,13 +5213,15 @@ async function runDesktopUninstall(mode) {
   let runnerArgs
   try {
     if (IS_WINDOWS) {
-      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.cmd`)
-      fs.writeFileSync(scriptPath, buildWindowsCleanupScript(scriptArgs))
+      scriptPath = path.join(app.getPath('temp'), `reuben-uninstall-${Date.now()}.cmd`)
+      fs.writeFileSync(scriptPath, buildAppOnlyCleanupScript({ ...scriptArgs, platform: 'win32' }))
       runner = process.env.ComSpec || 'cmd.exe'
       runnerArgs = ['/c', scriptPath]
     } else {
-      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.sh`)
-      fs.writeFileSync(scriptPath, buildPosixCleanupScript(scriptArgs), { mode: 0o755 })
+      scriptPath = path.join(app.getPath('temp'), `reuben-uninstall-${Date.now()}.sh`)
+      fs.writeFileSync(scriptPath, buildAppOnlyCleanupScript({ ...scriptArgs, platform: process.platform }), {
+        mode: 0o755
+      })
       runner = '/bin/bash'
       runnerArgs = [scriptPath]
     }
@@ -7150,13 +5240,10 @@ async function runDesktopUninstall(mode) {
     return { ok: false, error: 'spawn-failed', message: error.message }
   }
 
-  rememberLog(
-    `[uninstall] launched detached cleanup (${mode}): ${scriptPath} ` +
-      `(removesAgent=${modeRemovesAgent(mode)} removesUserData=${modeRemovesUserData(mode)} bundle=${removeBundle || 'none'})`
-  )
+  rememberLog(`[uninstall] launched detached Reuben app cleanup: ${scriptPath} (bundle=${removeBundle})`)
 
   // Give the renderer a beat to show its "uninstalling…" state, then quit so
-  // the venv python shim + app bundle unlock and the cleanup script can run.
+  // the app bundle unlocks and the cleanup script can remove it.
   isQuittingForHandoff = true
   setTimeout(() => app.quit(), 800)
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
@@ -7333,15 +5420,6 @@ app.on('before-quit', () => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
-
-  // Quitting mid-install should stop the installer, not orphan it.
-  if (bootstrapAbortController) {
-    try {
-      bootstrapAbortController.abort()
-    } catch {
-      void 0
-    }
-  }
 
   if (desktopLogFlushTimer) {
     clearTimeout(desktopLogFlushTimer)

@@ -31,16 +31,6 @@ vi.mock('@/store/notifications', () => ({
   dismissNotification: (...args: unknown[]) => dismissSpy(...args)
 }))
 
-const checkHermesUpdateSpy = vi.fn()
-const updateHermesSpy = vi.fn()
-const getActionStatusSpy = vi.fn()
-
-vi.mock('@/hermes', () => ({
-  checkHermesUpdate: (...args: unknown[]) => checkHermesUpdateSpy(...args),
-  updateHermes: (...args: unknown[]) => updateHermesSpy(...args),
-  getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
-}))
-
 const {
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
@@ -53,8 +43,6 @@ const {
   $updateOverlayOpen,
   resetUpdateApplyState
 } = await import('./updates')
-
-const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
   supported: true,
@@ -166,87 +154,22 @@ describe('checkBackendUpdates', () => {
   beforeEach(() => {
     storage.clear()
     notifySpy.mockClear()
-    checkHermesUpdateSpy.mockReset()
     $backendUpdateStatus.set(null)
     vi.useRealTimers()
   })
 
-  const setRemote = (on: boolean) =>
-    setConnection({
-      baseUrl: 'http://box:9119',
-      isFullscreen: false,
-      mode: on ? 'remote' : 'local',
-      nativeOverlayWidth: 0,
-      token: 't',
-      wsUrl: 'ws://box:9119',
-      logs: [],
-      windowButtonPosition: null
-    })
-
-  it('maps the backend /update/check onto the backend status, including commits', async () => {
-    setRemote(true)
-    checkHermesUpdateSpy.mockResolvedValue({
-      install_method: 'git',
-      current_version: '0.16.0',
-      behind: 2,
-      update_available: true,
-      can_apply: true,
-      update_command: 'hermes update',
-      message: null,
-      commits: [{ sha: 'abc1234', summary: 'feat: x', author: 'a', at: 1 }]
-    })
-
+  it('reports backend updates as externally managed', async () => {
     const result = await checkBackendUpdates()
 
-    expect(checkHermesUpdateSpy).toHaveBeenCalled()
-    expect(result?.behind).toBe(2)
-    expect(result?.updateAvailable).toBe(true)
-    expect(result?.commits?.[0]?.sha).toBe('abc1234')
-    expect(result?.supported).toBe(true)
-    expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
-  })
-
-  it('preserves backend update_available when the backend cannot count commits', async () => {
-    setRemote(true)
-    checkHermesUpdateSpy.mockResolvedValue({
-      install_method: 'nixos',
-      current_version: '0.16.0',
-      behind: -1,
-      update_available: true,
-      can_apply: false,
-      update_command: 'managed outside dashboard',
-      message: 'Update available.'
+    expect(result).toMatchObject({
+      supported: false,
+      reason: 'remote-frontend-only',
+      message: 'Remote backend updates are managed outside Reuben Desktop.'
     })
-
-    const result = await checkBackendUpdates()
-
-    expect(result?.behind).toBe(0)
-    expect(result?.updateAvailable).toBe(true)
-    expect(result?.targetSha).toBe('backend:0.16.0')
-  })
-
-  it('honours can_apply=false (docker/nix): not supported, carries message', async () => {
-    setRemote(true)
-    checkHermesUpdateSpy.mockResolvedValue({
-      install_method: 'docker',
-      current_version: '0.16.0',
-      behind: null,
-      update_available: false,
-      can_apply: false,
-      update_command: 'docker pull ...',
-      message: 'Docker images are immutable.'
+    expect($backendUpdateStatus.get()).toMatchObject({
+      supported: false,
+      reason: 'remote-frontend-only'
     })
-
-    const result = await checkBackendUpdates()
-
-    expect(result?.supported).toBe(false)
-    expect(result?.message).toBe('Docker images are immutable.')
-  })
-
-  it('is a no-op in local mode (backend check only runs when remote)', async () => {
-    setRemote(false)
-    await checkBackendUpdates()
-    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -306,13 +229,13 @@ describe('applyUpdates terminal state', () => {
     expect($updateApply.get().error).toBe('rebuild-failed')
   })
 
-  it('keeps the manual command state for CLI installs with no staged updater', async () => {
-    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
+  it('keeps the manual state for client updates with no staged updater', async () => {
+    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'Install a new Reuben Desktop build.' })
 
     await applyUpdates()
 
     expect($updateApply.get().stage).toBe('manual')
-    expect($updateApply.get().command).toBe('hermes update')
+    expect($updateApply.get().command).toBe('Install a new Reuben Desktop build.')
     expect($updateOverlayOpen.get()).toBe(true)
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -363,12 +286,9 @@ describe('applyUpdates terminal state', () => {
   })
 })
 
-describe('applyBackendUpdate recovery', () => {
+describe('applyBackendUpdate', () => {
   beforeEach(() => {
     storage.clear()
-    checkHermesUpdateSpy.mockReset()
-    updateHermesSpy.mockReset()
-    getActionStatusSpy.mockReset()
     $backendUpdateApply.set({
       applying: false,
       stage: 'idle',
@@ -378,79 +298,15 @@ describe('applyBackendUpdate recovery', () => {
       command: null,
       log: []
     })
-    vi.useFakeTimers()
-  })
-
-  afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('waits for the backend to return after the restart drops the connection, then clears the overlay', async () => {
-    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
-    getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
-    checkHermesUpdateSpy.mockResolvedValue({
-      install_method: 'git',
-      current_version: '0.16.0',
-      behind: 0,
-      update_available: false,
-      can_apply: true,
-      update_command: 'hermes update',
-      message: null
-    })
-
-    const promise = applyBackendUpdate()
-    await vi.advanceTimersByTimeAsync(5000)
-    const result = await promise
-
-    expect(result.ok).toBe(true)
-    expect($backendUpdateApply.get().stage).toBe('idle')
-    expect($backendUpdateApply.get().applying).toBe(false)
-  })
-
-  it('surfaces backend update action log lines while the action is running', async () => {
-    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
-    getActionStatusSpy
-      .mockResolvedValueOnce({
-        exit_code: null,
-        lines: ['Pulling updates...', 'Installing dependencies...'],
-        name: 'update',
-        pid: 1,
-        running: true
-      })
-      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
-    checkHermesUpdateSpy.mockResolvedValue({
-      install_method: 'git',
-      current_version: '0.16.0',
-      behind: 0,
-      update_available: false,
-      can_apply: true,
-      update_command: 'hermes update',
-      message: null
-    })
-
-    const promise = applyBackendUpdate()
-    await vi.advanceTimersByTimeAsync(1500)
-
-    expect($backendUpdateApply.get().message).toBe('Installing dependencies...')
-    expect($backendUpdateApply.get().log.map(entry => entry.message)).toEqual([
-      'Pulling updates...',
-      'Installing dependencies...'
-    ])
-
-    await vi.advanceTimersByTimeAsync(5000)
-    await promise
-  })
-
-  it('surfaces an error when the backend never comes back after the restart', async () => {
-    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
-    getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
-    checkHermesUpdateSpy.mockRejectedValue(new Error('ECONNREFUSED'))
-
-    const promise = applyBackendUpdate()
-    await vi.advanceTimersByTimeAsync(70000)
-    const result = await promise
+  it('fails closed because remote backend updates are external', async () => {
+    const result = await applyBackendUpdate()
 
     expect(result.ok).toBe(false)
+    expect(result.error).toBe('remote-frontend-only')
     expect($backendUpdateApply.get().stage).toBe('error')
+    expect($backendUpdateApply.get().message).toBe('Reuben Desktop will not update or mutate a remote backend.')
   })
 })

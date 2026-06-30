@@ -6,7 +6,7 @@
  * auth-mode classification, and the auth-mode coercion rules.
  *
  * Kept standalone (no `require('electron')`) so it can be unit-tested with
- * `node --test` — same pattern as backend-probes.cjs / bootstrap-platform.cjs.
+ * `node --test` — same pattern as bootstrap-platform.cjs.
  * main.cjs requires these and wires them into the electron-coupled IPC layer.
  *
  * Background on the two auth models a remote gateway can use:

@@ -21,11 +21,9 @@
 // HOW IT RUNS
 // -----------
 // Primarily as an electron-builder `afterPack` hook (scripts/after-pack.cjs),
-// so EVERY packed build — first install, `hermes desktop`, the installer's
-// --update rebuild, or a dev's manual `npm run pack` — gets a branded exe from
-// one place. Previously this stamp lived only in install.ps1, so the update
-// path (which rebuilds via `hermes desktop --build-only`, never install.ps1)
-// shipped a stock "Electron" exe. Keeping it in afterPack closes that gap.
+// so EVERY packed build gets a branded exe from one place. Keeping it in
+// afterPack means identity stamping belongs to desktop packaging, independent
+// of how the app is distributed.
 //
 // Also runnable standalone for ad-hoc re-stamping:
 //   node scripts/set-exe-identity.cjs <path-to-Reuben.exe>

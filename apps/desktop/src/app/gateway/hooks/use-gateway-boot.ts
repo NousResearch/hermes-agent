@@ -137,11 +137,9 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
-        // Drop a stale REMOTE backend cache before re-dialing. After sleep/wake a
-        // remote backend can become unreachable, but it has no child process
-        // whose 'exit' would clear the main process's cached descriptor — without
-        // this the renderer re-dials the same dead endpoint forever and stays on
-        // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
+        // Drop a stale remote cache before re-dialing. After sleep/wake a remote
+        // gateway can become unreachable; without this the renderer re-dials the
+        // same dead endpoint forever and stays on "Starting Hermes…".
         await desktop.revalidateConnection?.().catch(() => undefined)
 
         const conn = await desktop.getConnection($activeGatewayProfile.get())

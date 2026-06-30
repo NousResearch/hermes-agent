@@ -13,10 +13,9 @@ const RELEASE_ROOT = path.join(DESKTOP_ROOT, 'release')
 const PLATFORM = process.platform
 const PRODUCT_NAME = PACKAGE_JSON.productName || 'Reuben'
 
-// Platform-specific packaged-app layout. The thin installer ships an Electron
-// app shell plus extraResources (install-stamp.json + native-deps/) -- it
-// no longer bundles the Hermes Agent Python payload (that's fetched at first
-// launch via install.ps1 / install.sh, per the Phase 1 thin-installer flow).
+// Platform-specific packaged-app layout. Reuben ships an Electron frontend
+// shell plus desktop assets/native deps. It does not bundle, install, or
+// bootstrap a Hermes/Reuben backend.
 const APP = (() => {
   if (PLATFORM === 'darwin') {
     const appPath = path.join(RELEASE_ROOT, `mac-${ARCH}`, `${PRODUCT_NAME}.app`)
@@ -49,18 +48,7 @@ const APP = (() => {
   }
 })()
 
-// Default HERMES_HOME for non-sandboxed runs -- matches main.cjs's
-// resolveHermesHome(). On Windows it's %LOCALAPPDATA%\hermes; elsewhere
-// it's ~/.hermes. The fresh-install sandbox launchFresh() sets its own
-// HERMES_HOME and never touches this.
-const DEFAULT_HERMES_HOME = (() => {
-  if (PLATFORM === 'win32' && process.env.LOCALAPPDATA) {
-    return path.join(process.env.LOCALAPPDATA, 'hermes')
-  }
-  return path.join(os.homedir(), '.hermes')
-})()
-const VENV_ROOT = path.join(DEFAULT_HERMES_HOME, 'hermes-agent', 'venv')
-const FRESH_SANDBOX_ROOT = path.join(os.tmpdir(), 'hermes-desktop-fresh-install')
+const FRESH_SANDBOX_ROOT = path.join(os.tmpdir(), 'reuben-desktop-fresh-client')
 
 function die(message) {
   console.error(`\n${message}`)
@@ -104,8 +92,7 @@ function ensurePlatformBuilds() {
   if (PLATFORM === 'win32') return
   die(
     `Desktop bundle validation is only wired for darwin / win32 today; platform=${PLATFORM} ` +
-      `is not yet supported. The thin-installer story for Linux ships in Phase 2 alongside ` +
-      `install.sh's stage protocol.`
+      `is not yet supported by this smoke-test script.`
   )
 }
 
@@ -237,11 +224,9 @@ function launchFresh() {
 
   const sandbox = fs.mkdtempSync(`${FRESH_SANDBOX_ROOT}-`)
   const userDataDir = path.join(sandbox, 'electron-user-data')
-  const hermesHome = path.join(sandbox, 'hermes-home')
   const cwd = path.join(sandbox, 'workspace')
 
   fs.mkdirSync(userDataDir, { recursive: true })
-  fs.mkdirSync(hermesHome, { recursive: true })
   fs.mkdirSync(cwd, { recursive: true })
 
   // Strip every credential-shaped env var so the sandbox is actually fresh.
@@ -252,12 +237,11 @@ function launchFresh() {
   }
 
   env.HERMES_DESKTOP_CWD = cwd
-  env.HERMES_DESKTOP_IGNORE_EXISTING = '1'
-  env.HERMES_DESKTOP_TEST_MODE = 'fresh-install'
+  env.HERMES_DESKTOP_TEST_MODE = 'fresh-client'
   env.HERMES_DESKTOP_USER_DATA_DIR = userDataDir
-  env.HERMES_HOME = hermesHome
   delete env.HERMES_DESKTOP_HERMES
   delete env.HERMES_DESKTOP_HERMES_ROOT
+  delete env.HERMES_HOME
 
   const child = spawn(APP.binary, [], {
     cwd: os.homedir(),
@@ -270,16 +254,14 @@ function launchFresh() {
   console.log('\nFresh install sandbox:')
   console.log(`  root: ${sandbox}`)
   console.log(`  electron userData: ${userDataDir}`)
-  console.log(`  HERMES_HOME: ${hermesHome}`)
   console.log(`  cwd: ${cwd}`)
 
-  return { runtimeRoot: path.join(hermesHome, 'hermes-agent', 'venv') }
+  return { userDataDir }
 }
 
-// Validate the packaged bundle matches the thin-installer architecture:
-//   - The Hermes Agent Python payload is NOT shipped (it's fetched at first
-//     launch via install.ps1's stage protocol).
-//   - install-stamp.json IS shipped in resources/ with a valid commit + branch.
+// Validate the packaged bundle matches the remote-client architecture:
+//   - The Hermes Agent Python payload is NOT shipped.
+//   - install-stamp.json is NOT shipped; there is no first-launch bootstrap.
 //   - native-deps/@homebridge/node-pty-prebuilt-multiarch/ IS shipped with
 //     the package.json + lib/ + at least one .node binary (the renderer's
 //     integrated terminal needs this; see Phase 1F.6).
@@ -296,26 +278,13 @@ function validateBundle() {
   const staleFactoryMarker = path.join(APP.resourcesPath, 'hermes-agent', 'hermes_cli', 'main.py')
   if (exists(staleFactoryMarker)) {
     die(
-      `Thin-installer regression: factory-payload file should NOT be in the package: ${staleFactoryMarker}`
+      `Remote-client regression: backend payload file should NOT be in the package: ${staleFactoryMarker}`
     )
   }
 
-  // Positive assertion: install-stamp.json carries a sane commit + branch
   const stampPath = path.join(APP.resourcesPath, 'install-stamp.json')
-  if (!exists(stampPath)) {
-    die(`Missing install-stamp.json (required for first-launch bootstrap pinning): ${stampPath}`)
-  }
-  let stamp
-  try {
-    stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'))
-  } catch (err) {
-    die(`install-stamp.json is not valid JSON: ${err.message}`)
-  }
-  if (!stamp.commit || typeof stamp.commit !== 'string' || stamp.commit.length < 7) {
-    die(`install-stamp.json is missing a usable commit field: ${JSON.stringify(stamp)}`)
-  }
-  if (!stamp.branch || typeof stamp.branch !== 'string') {
-    die(`install-stamp.json is missing the branch field: ${JSON.stringify(stamp)}`)
+  if (exists(stampPath)) {
+    die(`Remote-client regression: install-stamp.json should NOT be packaged: ${stampPath}`)
   }
 
   // Positive assertion: node-pty native deps shipped
@@ -344,7 +313,7 @@ function validateBundle() {
 
   // Renderer payload check (either unpacked or in the asar)
   if (exists(APP.unpackedDistIndex)) {
-    return { stamp, nodeBinaries }
+    return { nodeBinaries }
   }
   if (!exists(APP.asarPath)) {
     die(`Missing renderer payload: neither ${APP.unpackedDistIndex} nor ${APP.asarPath} exists`)
@@ -357,13 +326,10 @@ function validateBundle() {
   if (!normalized.includes('dist/index.html')) {
     die(`Missing renderer payload file in app.asar: ${APP.asarPath} (expected dist/index.html)`)
   }
-  return { stamp, nodeBinaries }
+  return { nodeBinaries }
 }
 
 function printArtifacts(options = {}) {
-  const runtimeRoot = options.runtimeRoot || VENV_ROOT
-  const stamp = options.stamp
-
   console.log('\nDesktop artifacts:')
   console.log(`  app: ${APP.appPath}`)
   if (PLATFORM === 'darwin') {
@@ -372,9 +338,8 @@ function printArtifacts(options = {}) {
     const exe = resolveNsisPath()
     if (exe) console.log(`  installer: ${exe}`)
   }
-  console.log(`  runtime: ${runtimeRoot}`)
-  if (stamp) {
-    console.log(`  install-stamp: ${stamp.commit.slice(0, 12)} on ${stamp.branch}`)
+  if (options.userDataDir) {
+    console.log(`  userData: ${options.userDataDir}`)
   }
   if (options.nodeBinaries && options.nodeBinaries.length > 0) {
     console.log(`  node-pty binaries: ${options.nodeBinaries.join(', ')}`)
@@ -384,7 +349,7 @@ function printArtifacts(options = {}) {
 function help() {
   console.log(`Usage:
   npm run test:desktop:existing  # build packaged app, launch with normal PATH/existing Hermes
-  npm run test:desktop:fresh     # build packaged app, launch with temp userData + HERMES_HOME
+  npm run test:desktop:fresh     # build packaged app, launch with temp isolated userData
   npm run test:desktop:dmg       # (macOS only) build DMG and open it
   npm run test:desktop:nsis      # (win32 only) build NSIS installer
   npm run test:desktop:all       # build installer, validate app payload, print paths

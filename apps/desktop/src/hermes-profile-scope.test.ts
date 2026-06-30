@@ -1,19 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  checkHermesUpdate,
   getActionStatus,
   getStatus,
-  restartGateway,
-  setApiRequestProfile,
-  updateHermes
+  setApiRequestProfile
 } from './hermes'
 
-// Contract: every backend-targeted action helper must carry the active gateway
-// profile, so a multi-profile / global-remote user's restart, status poll, and
-// update hit the backend they're actually on — not the primary/default. The
-// System-panel "restart does nothing" bug was these helpers dropping it.
-describe('backend action helpers are profile-scoped', () => {
+// Contract: every backend-targeted read/action-status helper must carry the
+// active gateway profile, so multi-profile remote users query the backend
+// profile they are actually on.
+describe('backend status helpers are profile-scoped', () => {
   const api = vi.fn(async (_req: { path: string; profile?: string }) => ({}) as never)
 
   beforeEach(() => {
@@ -33,13 +29,10 @@ describe('backend action helpers are profile-scoped', () => {
     expect(lastProfile()).toBeUndefined()
   })
 
-  it('forwards the active profile to every backend action', () => {
+  it('forwards the active profile to backend status helpers', () => {
     setApiRequestProfile('coder')
 
     void getStatus()
-    void restartGateway()
-    void updateHermes()
-    void checkHermesUpdate()
     void getActionStatus('gateway-restart')
 
     for (const call of api.mock.calls) {

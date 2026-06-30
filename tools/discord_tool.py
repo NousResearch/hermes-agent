@@ -582,6 +582,7 @@ def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
     initial_message: str = "",
+    target_person: str = "",
     auto_archive_duration: int = 1440,
     **_kwargs: Any,
 ) -> str:
@@ -877,6 +878,15 @@ def _build_schema(
                 "Required for operational handoff threads whose title names an exact teammate such as Алекс/Ивчо."
             ),
         },
+        "target_person": {
+            "type": "string",
+            "description": (
+                "Optional structured Support Ops recipient key or known alias, e.g. "
+                "emil_lomliev, alex, ivcho, fatih, emil_kozhuharov, plamenka. "
+                "Use this for handoff threads instead of relying on the title. "
+                "If the person is unknown, do not guess; ask for clarification."
+            ),
+        },
         "limit": {
             "type": "integer",
             "minimum": 1,
@@ -1024,6 +1034,7 @@ def _run_discord_action(
     query: str = "",
     name: str = "",
     initial_message: str = "",
+    target_person: str = "",
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -1063,6 +1074,7 @@ def _run_discord_action(
         "query": query,
         "name": name,
         "initial_message": initial_message,
+        "target_person": target_person,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -1079,6 +1091,7 @@ def _run_discord_action(
                 channel_id=channel_id,
                 message_id=message_id,
                 initial_message=initial_message,
+                target_person=target_person,
             )
         except Exception as e:
             return json.dumps({"error": f"Discord Support Ops thread target lint failed: {e}"})
@@ -1092,6 +1105,7 @@ def _run_discord_action(
                 "error": (
                     "Discord Support Ops thread target lint blocked creation: "
                     f"{target_lint.blocked_reason}.{expected}"
+                    + (f" Guidance: {target_lint.guidance}" if target_lint.guidance else "")
                 )
             })
 
@@ -1107,6 +1121,7 @@ def _run_discord_action(
             query=query,
             name=name,
             initial_message=initial_message,
+            target_person=target_person,
             limit=limit,
             before=before,
             after=after,
@@ -1139,7 +1154,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "thread_id": "", "role_id": "", "message_id": "", "query": "", "name": "",
-    "initial_message": "",
+    "initial_message": "", "target_person": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 

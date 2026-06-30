@@ -3869,6 +3869,7 @@ def _inject_w3c_trace_context(
     *,
     hermes_tool_name: Optional[str] = None,
     task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> None:
     """Inject W3C trace context into *carrier* when OpenTelemetry is active.
 
@@ -3883,17 +3884,35 @@ def _inject_w3c_trace_context(
         return
 
     context = None
-    if hermes_tool_name and task_id:
-        try:
-            from importlib import import_module
-            from opentelemetry.trace import set_span_in_context
+    try:
+        from importlib import import_module
+        from opentelemetry.trace import set_span_in_context
 
-            get_tracer = import_module("hermes_otel.tracer").get_tracer
-            span = get_tracer().spans.get_span(f"{hermes_tool_name}:{task_id}")
-            if span is not None and hasattr(span, "get_span_context"):
-                context = set_span_in_context(span)
-        except Exception:
-            context = None
+        get_tracer = None
+        for module_name in ("hermes_plugins.hermes_otel.tracer", "hermes_otel.tracer"):
+            try:
+                get_tracer = import_module(module_name).get_tracer
+                break
+            except Exception:
+                continue
+        if get_tracer is None:
+            return
+        spans = get_tracer().spans
+        span = None
+        if hermes_tool_name and task_id:
+            span = spans.get_span(f"{hermes_tool_name}:{task_id}")
+        if span is None and hermes_tool_name:
+            active_spans = getattr(spans, "_active_spans", {}) or {}
+            prefix = f"{hermes_tool_name}:"
+            matches = [candidate for key, candidate in active_spans.items() if str(key).startswith(prefix)]
+            if len(matches) == 1:
+                span = matches[0]
+        if span is None:
+            span = spans.get_current_parent(session_id=session_id)
+        if span is not None and hasattr(span, "get_span_context"):
+            context = set_span_in_context(span)
+    except Exception:
+        context = None
 
     try:
         if context is not None:
@@ -3933,6 +3952,7 @@ def _build_mcp_call_meta(
         carrier,
         hermes_tool_name=context.get("hermes_tool_name"),
         task_id=context.get("task_id"),
+        session_id=session_id or None,
     )
     for key in ("traceparent", "tracestate"):
         value = carrier.get(key)

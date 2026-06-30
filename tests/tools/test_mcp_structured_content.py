@@ -190,6 +190,7 @@ class TestMcpPropagationMeta:
         assert inject.call_args.kwargs == {
             "hermes_tool_name": "mcp_money_server_lookup_budget",
             "task_id": "task-1",
+            "session_id": "conv-1",
         }
         assert meta["traceparent"] == "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
         assert meta["tracestate"] == "vendor=value"

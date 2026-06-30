@@ -5322,6 +5322,7 @@ class TestSlashEphemeralAck:
 
         mock_resp = AsyncMock()
         mock_resp.status = 500
+        mock_resp.content = None
         mock_resp.text = AsyncMock(return_value="Internal Server Error")
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
@@ -5342,6 +5343,73 @@ class TestSlashEphemeralAck:
 
         # Still success — the user saw the initial ack already
         assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_slash_ephemeral_limits_error_body(self, adapter):
+        """response_url failures should not read oversized bodies unbounded."""
+        import time
+
+        class _FakeContent:
+            def __init__(self, payload: bytes):
+                self._payload = payload
+                self._offset = 0
+                self.bytes_read = 0
+
+            async def read(self, size: int = -1):
+                if size is None or size < 0:
+                    size = len(self._payload) - self._offset
+                chunk = self._payload[self._offset : self._offset + size]
+                self._offset += len(chunk)
+                self.bytes_read += len(chunk)
+                return chunk
+
+        class _FakeResponse:
+            status = 500
+
+            def __init__(self, text: str):
+                self.content = _FakeContent(text.encode("utf-8"))
+                self.text_calls = 0
+                self.released = False
+
+            async def text(self):
+                self.text_calls += 1
+                return "should not be called"
+
+            def release(self):
+                self.released = True
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        adapter._slash_command_contexts[("C1", "U1")] = {
+            "response_url": "https://hooks.slack.com/commands/oversized",
+            "ts": time.monotonic(),
+        }
+        response = _FakeResponse(
+            ("slack response_url failure " * 1000) + "tail-marker"
+        )
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(return_value=response)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            result = await adapter.send("C1", "Some response")
+
+        assert result.success is True
+        assert response.text_calls == 0
+        assert (
+            response.content.bytes_read
+            == _slack_mod._SLACK_ERROR_BODY_LIMIT_BYTES + 1
+        )
+        assert response.released is True
 
     @pytest.mark.asyncio
     async def test_send_slash_ephemeral_fallback_on_exception(self, adapter):

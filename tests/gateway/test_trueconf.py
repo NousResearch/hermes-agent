@@ -13,14 +13,16 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-from trueconf.enums import ChatType, MessageType
-from trueconf.types import Message
-
 # Ensure the repo root is in sys.path
 _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
+
+import pytest
+from trueconf.enums import ChatType, MessageType
+from trueconf.types import Message
+
+
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType as GatewayMessageType, SendResult

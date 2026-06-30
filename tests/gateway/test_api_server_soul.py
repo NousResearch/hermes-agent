@@ -42,6 +42,9 @@ class TestRead:
     @pytest.mark.asyncio
     async def test_get_absent(self, home):
         adapter = _make_adapter()
+        # Adapter construction seeds a default SOUL.md (managed-mode); drop it so
+        # this case actually exercises the absent-file path.
+        (home / "SOUL.md").unlink(missing_ok=True)
         async with TestClient(TestServer(_app(adapter))) as cli:
             resp = await cli.get("/api/soul")
             assert resp.status == 200
@@ -63,6 +66,9 @@ class TestWrite:
     @pytest.mark.asyncio
     async def test_put_creates_and_flags_reload(self, home):
         adapter = _make_adapter()
+        # Adapter construction seeds a default SOUL.md; drop it so this exercises
+        # the first-write (no prior file ⇒ no backup) path.
+        (home / "SOUL.md").unlink(missing_ok=True)
         async with TestClient(TestServer(_app(adapter))) as cli:
             resp = await cli.put("/api/soul", json={"soul": "# SOUL\n\nv1\n"})
             assert resp.status == 200

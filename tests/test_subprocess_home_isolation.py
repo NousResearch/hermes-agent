@@ -333,6 +333,27 @@ class TestSanitizeSubprocessEnvHomeInjection:
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
 
+    def test_session_context_overrides_stale_session_env(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.environments.local import _sanitize_subprocess_env
+
+        tokens = set_session_vars(session_key="current-key", session_id="current-id")
+        try:
+            result = _sanitize_subprocess_env(
+                {
+                    "HERMES_SESSION_KEY": "stale-key",
+                    "HERMES_SESSION_ID": "stale-id",
+                    "PATH": "/usr/bin",
+                }
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["HERMES_SESSION_KEY"] == "current-key"
+        assert result["HERMES_SESSION_ID"] == "current-id"
+
 
 # ---------------------------------------------------------------------------
 # Profile bootstrap

@@ -339,6 +339,15 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
+        # A zero (or sub-minute) interval is not a valid recurrence: the next
+        # run computes to last_run + 0 == last_run, which is always in the
+        # past, so the job is perpetually due and re-fires on every scheduler
+        # tick. Reject it with a clear message instead of accepting a runaway.
+        if minutes < 1:
+            raise ValueError(
+                f"Invalid interval '{original}': recurring interval must be at "
+                f"least 1 minute. Use e.g. 'every 1m', 'every 30m', or 'every 2h'."
+            )
         return {
             "kind": "interval",
             "minutes": minutes,
@@ -528,7 +537,10 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         return _recoverable_oneshot_run_at(schedule, now, last_run_at=last_run_at)
 
     elif schedule["kind"] == "interval":
-        minutes = schedule["minutes"]
+        # Clamp to a 1-minute floor so a legacy/persisted job that somehow
+        # carries a zero (or negative) interval still advances instead of
+        # re-firing every tick. New jobs are already rejected at parse time.
+        minutes = max(1, schedule["minutes"])
         if last_run_at:
             # Next run is last_run + interval
             last = _ensure_aware(datetime.fromisoformat(last_run_at))

@@ -48,9 +48,15 @@ class TestBuildSSHCommand:
     def test_base_flags(self):
         env = SSHEnvironment(host="h", user="u")
         cmd = " ".join(env._build_ssh_command())
-        for flag in ("ControlMaster=auto", "ControlPersist=300",
-                      "BatchMode=yes", "StrictHostKeyChecking=accept-new"):
+        for flag in ("BatchMode=yes", "StrictHostKeyChecking=accept-new"):
             assert flag in cmd
+        if os.name == "nt":
+            # Windows: ControlMaster is disabled (ProxyCommand incompatibility)
+            assert "ControlMaster=auto" not in cmd
+            assert "ControlPersist=300" not in cmd
+        else:
+            for flag in ("ControlMaster=auto", "ControlPersist=300", "ControlPath="):
+                assert flag in cmd
 
     def test_custom_port(self):
         env = SSHEnvironment(host="h", user="u", port=2222)

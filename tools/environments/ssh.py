@@ -82,9 +82,15 @@ class SSHEnvironment(BaseEnvironment):
 
     def _build_ssh_command(self, extra_args: list | None = None) -> list:
         cmd = ["ssh"]
-        cmd.extend(["-o", f"ControlPath={self.control_socket}"])
-        cmd.extend(["-o", "ControlMaster=auto"])
-        cmd.extend(["-o", "ControlPersist=300"])
+        # ControlMaster multiplexing passes file descriptors over a Unix-domain
+        # control socket. On Windows / MSYS this fails with "getsockname failed:
+        # Not a socket" or "mm_receive_fd: no message header" when the connection
+        # is a ProxyCommand stream (Cloudflare Access, bastions, etc.).
+        # Skip multiplexing on Windows — fresh SSH process per call instead.
+        if os.name != "nt":
+            cmd.extend(["-o", f"ControlPath={self.control_socket}"])
+            cmd.extend(["-o", "ControlMaster=auto"])
+            cmd.extend(["-o", "ControlPersist=300"])
         cmd.extend(["-o", "BatchMode=yes"])
         cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
         cmd.extend(["-o", "ConnectTimeout=10"])

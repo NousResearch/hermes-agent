@@ -528,9 +528,17 @@ def _convert_content_to_converse(content) -> List[Dict]:
                         mime_part = header[5:].split(";")[0]
                         if mime_part:
                             media_type = mime_part
+                    # Bedrock Converse only accepts {png, jpeg, gif, webp}.
+                    # Normalize common aliases (jpg → jpeg) and validate.
+                    _CONVERSE_FORMATS = {"png", "jpeg", "gif", "webp"}
+                    raw_fmt = media_type.split("/")[-1].lower() if "/" in media_type else "jpeg"
+                    _FORMAT_ALIASES = {"jpg": "jpeg", "jpe": "jpeg", "jfif": "jpeg", "pjpeg": "jpeg"}
+                    fmt = _FORMAT_ALIASES.get(raw_fmt, raw_fmt)
+                    if fmt not in _CONVERSE_FORMATS:
+                        fmt = "jpeg"
                     blocks.append({
                         "image": {
-                            "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
+                            "format": fmt,
                             "source": {"bytes": data},
                         }
                     })

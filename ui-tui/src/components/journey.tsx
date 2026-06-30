@@ -205,7 +205,9 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         return setMode('timeline')
       }
 
-      if ((key.return || key.rightArrow || ch === 'l') && nodes.length) {
+      // Only memories carry body text; a skill row is already its own full
+      // detail, so don't let it drill into an empty page.
+      if ((key.return || key.rightArrow || ch === 'l') && activeNode?.body) {
         return setMode('item')
       }
 
@@ -357,7 +359,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
                   cells={[
                     { color: t.color.muted, text: ` ${String(idx + 1).padStart(2, ' ')} ` },
                     { color: fadeInk(palette, node.style, 1), text: `${node.glyph} ${node.fullLabel || node.label}` },
-                    { color: t.color.muted, text: `  ${node.meta}` }
+                    { color: t.color.muted, text: `  ${node.meta}${node.body ? '  ›' : ''}` }
                   ]}
                   key={`${node.label}:${idx}`}
                   t={t}
@@ -371,8 +373,8 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
         <Footer>
           <Hint t={t}>
-            {nodes.length ? `${selectedNode + 1}/${nodes.length} · ` : ''}↑↓/jk move · Enter/→ open · g/G top/bottom · Esc/← back ·
-            q close
+            {nodes.length ? `${selectedNode + 1}/${nodes.length} · ` : ''}↑↓/jk move
+            {activeNode?.body ? ' · Enter/→ open' : ''} · g/G top/bottom · Esc/← back · q close
           </Hint>
         </Footer>
       </Box>

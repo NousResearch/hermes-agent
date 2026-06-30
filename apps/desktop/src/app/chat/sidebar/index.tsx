@@ -1888,7 +1888,7 @@ function SidebarSessionsSection({
         onArchiveSession={onArchiveSession}
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
-        onResumeSession={resumeAndCloseDrawer}
+        onResumeSession={onResumeSession}
         onTogglePin={onTogglePin}
         pinned={pinned}
         sortable={sessionsDraggable}

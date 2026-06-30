@@ -115,6 +115,7 @@ class MemoryStore:
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
+            isolation_level=None,
             timeout=10.0,
         )
         self._lock = threading.RLock()

@@ -90,6 +90,40 @@ class MemoryProvider(ABC):
         """
         return ""
 
+    def prefetch_with_intent(
+        self,
+        intent_context: Any,
+        *,
+        session_id: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return scored memory candidates given a structured intent context.
+
+        Default fallback: calls self.prefetch() with the raw message and
+        wraps the result as a single neutral-scored entry. Providers that
+        implement structured scoring should override this.
+
+        intent_context has fields:
+            task_type (str|None), task_confidence (float),
+            entities (list of (name, salience)),
+            keywords (list of (keyword, weight)),
+            expanded_query (str), raw_message (str)
+
+        Returns list of scored dicts with fields:
+            {content, score, provider, source_file, entry_index,
+             context_tag, signal_strength,
+             score_semantic, score_keyword, score_context, ...}
+
+        Return empty list for no relevant context.
+        """
+        raw = self.prefetch(intent_context.raw_message, session_id=session_id)
+        if not raw:
+            return []
+        return [{
+            "content": raw,
+            "score": 0.5,
+            "provider": self.name,
+        }]
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall relevant context for the upcoming turn.
 

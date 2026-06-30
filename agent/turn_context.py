@@ -59,6 +59,8 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Scored memory context block (relevance-filtered, per-turn).
+    scored_memory_context: str = ""
 
 
 def build_turn_context(
@@ -393,6 +395,129 @@ def build_turn_context(
         except Exception:
             pass
 
+    # Scored memory context: relevance-filtered entries from builtin + providers.
+    scored_memory_context = ""
+    try:
+        _raw_msg = original_user_message if isinstance(original_user_message, str) else ""
+        if _raw_msg:
+            from agent.memory.intent_extractor import extract_intent, IntentContext
+            from agent.memory.gating import select_and_format
+
+            _intent_ctx = extract_intent(_raw_msg)
+            _builtin_entries = _get_builtin_entries(agent) if _intent_ctx.is_actionable() else None
+
+            if _builtin_entries or (agent._memory_manager and agent._memory_manager.providers):
+                # Read relevance config from agent
+                _rel_enabled = getattr(agent, "_memory_relevance_enabled", True)
+                _context_length = getattr(agent, "context_length", None)
+                _max_chars = getattr(agent, "_memory_relevance_max_chars", 2000)
+                _window_frac = getattr(agent, "_memory_relevance_window_frac", 0.03)
+                _min_score = getattr(agent, "_memory_relevance_min_score", 0.15)
+
+                if not _rel_enabled:
+                    logger.debug("Memory relevance disabled via config")
+                    _scored = []
+                    _budget = 0
+                else:
+                    from agent.memory.gating import compute_memory_budget
+                    _budget = compute_memory_budget(
+                        context_length=_context_length,
+                        max_context_chars=_max_chars,
+                        window_fraction=_window_frac,
+                    )
+
+                    if agent._memory_manager:
+                        _scored = agent._memory_manager.prefetch_all_scored(
+                            _intent_ctx,
+                            session_id=getattr(agent, "session_id", ""),
+                            builtin_entries=_builtin_entries,
+                            memory_store=getattr(agent, "_memory_store", None),
+                        )
+                    else:
+                        # Use instance method with FTS5+embedding when MemoryStore available
+                        _mem_store = getattr(agent, "_memory_store", None)
+                        if _mem_store is not None:
+                            _scored_raw = _mem_store.scored_prefetch_instance(
+                                task_type=_intent_ctx.task_type,
+                                task_confidence=_intent_ctx.task_confidence,
+                                keywords=_intent_ctx.keywords,
+                                expanded_query=_intent_ctx.expanded_query,
+                            )
+                            # Apply score threshold
+                            if _scored_raw:
+                                from agent.memory.fusion import apply_score_threshold
+                                from agent.memory.scored_memory import ScoredMemory
+                                _scored_objs = [
+                                    ScoredMemory(
+                                        content=c.get("content", ""),
+                                        provider=c.get("provider", "builtin"),
+                                        score=c.get("score", 0.0),
+                                    ) for c in _scored_raw
+                                ]
+                                _scored_filtered = apply_score_threshold(_scored_objs, _min_score)
+                                _scored = [{"content": s.content, "score": s.score, "provider": s.provider}
+                                           for s in _scored_filtered]
+                            else:
+                                _scored = []
+                        else:
+                            from tools.memory_tool import MemoryStore
+                            _scored_raw = MemoryStore.scored_prefetch(
+                                _builtin_entries or [],
+                                task_type=_intent_ctx.task_type,
+                                task_confidence=_intent_ctx.task_confidence,
+                                keywords=_intent_ctx.keywords,
+                                expanded_query=_intent_ctx.expanded_query,
+                            )
+                            if _scored_raw:
+                                from agent.memory.fusion import apply_score_threshold
+                                from agent.memory.scored_memory import ScoredMemory
+                                _scored_objs = [
+                                    ScoredMemory(
+                                        content=c.get("content", ""),
+                                        provider=c.get("provider", "builtin"),
+                                        score=c.get("score", 0.0),
+                                    ) for c in _scored_raw
+                                ]
+                                _scored_filtered = apply_score_threshold(_scored_objs, _min_score)
+                                _scored = [{"content": s.content, "score": s.score, "provider": s.provider}
+                                           for s in _scored_filtered]
+                            else:
+                                _scored = []
+
+                # Format scored entries into context block
+                if _scored:
+                    from agent.memory.scored_memory import ScoredMemory as _SM
+                    _scored_objs = [
+                        _SM(content=c["content"], provider=c["provider"], score=c["score"])
+                        for c in _scored
+                    ]
+                    scored_memory_context = select_and_format(_scored_objs, max_chars=_budget)
+
+                # Record diagnostics
+                try:
+                    from agent.memory.diagnostics import record_turn
+                    _injected_count = len(_scored) if _scored else 0
+                    _injected_chars = len(scored_memory_context) if scored_memory_context else 0
+                    _total_candidates = len(_builtin_entries) if _builtin_entries else 0
+                    for _ext_provider in (agent._memory_manager.providers if agent._memory_manager else []):
+                        _total_candidates += _injected_count
+                    record_turn(
+                        turn_number=getattr(agent, "_user_turn_count", 0),
+                        intent=_intent_ctx,
+                        candidates_total=_total_candidates,
+                        candidates_after_gating=_injected_count,
+                        injected_count=_injected_count,
+                        injected_chars=_injected_chars,
+                        budget=_budget,
+                        top_scores=[c["score"] for c in (_scored or [])],
+                        provider_counts={},
+                    )
+                except Exception:
+                    pass
+
+    except Exception:
+        logger.debug("Scored memory prefetch failed (non-fatal)", exc_info=True)
+
     return TurnContext(
         user_message=user_message,
         original_user_message=original_user_message,
@@ -405,4 +530,22 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        scored_memory_context=scored_memory_context,
     )
+
+
+def _get_builtin_entries(agent) -> Optional[List[str]]:
+    """Get raw memory entries from the builtin MemoryStore for scoring.
+
+    Returns all memory entries (not user profile) as a flat list of
+    raw strings with [context:] / [signal:] tags intact, or None if
+    the builtin store is unavailable.
+    """
+    mem_store = getattr(agent, "_memory_store", None)
+    if mem_store is None:
+        return None
+    try:
+        entries = getattr(mem_store, "memory_entries", None)
+        return list(entries) if entries else None
+    except Exception:
+        return None

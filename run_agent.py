@@ -3136,6 +3136,43 @@ class AIAgent:
         except Exception:
             pass
 
+        # Collaboration learning: observe post-turn patterns
+        self._observe_collaboration_turn(user_text, response_text, messages=messages)
+
+    def _observe_collaboration_turn(
+        self,
+        user_text: str,
+        response_text: str,
+        messages: Optional[List[Dict]] = None,
+    ) -> None:
+        """Fire-and-forget observation capture for the collaboration framework."""
+        manager = getattr(self, "_collaboration_manager", None)
+        if not manager or not getattr(manager, "enabled", False):
+            return
+        try:
+            tool_calls = 0
+            tools_used = []
+            if messages:
+                for msg in reversed(messages):
+                    if msg.get("role") == "assistant" and "tool_calls" in msg:
+                        for tc in msg["tool_calls"]:
+                            tool_calls += 1
+                            tools_used.append(tc.get("function", {}).get("name", ""))
+            from agent.memory.intent_extractor import extract_intent
+            intent = extract_intent(user_text)
+            manager.observe_turn(
+                user_message=user_text,
+                response_text=response_text,
+                tool_calls=tool_calls,
+                tool_iterations=1,
+                tools_used=list(set(tools_used)),
+                task_type=intent.task_type or "",
+                task_confidence=intent.task_confidence,
+                latency_ms=0,
+            )
+        except Exception:
+            pass
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 

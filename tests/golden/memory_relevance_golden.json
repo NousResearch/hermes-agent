@@ -1,0 +1,188 @@
+[
+  {
+    "query": "deploy the kanban service to GKE",
+    "task_type": "deploy",
+    "relevant_indices": [0, 1, 3],
+    "note": "Matches GKE deploy entries — cluster, manifests, container naming"
+  },
+  {
+    "query": "how do i deploy to production",
+    "task_type": "deploy",
+    "relevant_indices": [0, 1],
+    "note": "Matches deploy context entries"
+  },
+  {
+    "query": "what's the API hostname",
+    "task_type": "deploy",
+    "relevant_indices": [0],
+    "note": "api.xentropy.ai — exact deploy entry"
+  },
+  {
+    "query": "where is the storage service code",
+    "task_type": "feature",
+    "relevant_indices": [4],
+    "note": "xentropy/ai/apps/storage/ — feature entry"
+  },
+  {
+    "query": "fix the telegram bot, it's a stub",
+    "task_type": "feature",
+    "relevant_indices": [],
+    "note": "No memory about telegram bot — should return empty"
+  },
+  {
+    "query": "review the memory relevance framework implementation",
+    "task_type": "review",
+    "relevant_indices": [2, 5],
+    "note": "context-relevance-framework entries"
+  },
+  {
+    "query": "what do you know about the storage service",
+    "task_type": "feature",
+    "relevant_indices": [4],
+    "note": "NestJS, Neo4j+GCS, GKE port 3006"
+  },
+  {
+    "query": "how do i access the GKE cluster",
+    "task_type": "deploy",
+    "relevant_indices": [0, 1],
+    "note": "GKE cluster info in deploy entries"
+  },
+  {
+    "query": "what's the container naming convention",
+    "task_type": "deploy",
+    "relevant_indices": [3],
+    "note": "Container naming migration done June 30"
+  },
+  {
+    "query": "check the roadmap for storage service",
+    "task_type": "planning",
+    "relevant_indices": [4],
+    "note": "Roadmap at /root/xentropy/strategy/storage-service-roadmap.md"
+  },
+  {
+    "query": "debug the kanban daemon crash",
+    "task_type": "debug",
+    "relevant_indices": [],
+    "note": "No specific crash entry — tests graceful empty return"
+  },
+  {
+    "query": "what model does the relevance framework use for embeddings",
+    "task_type": "feature",
+    "relevant_indices": [5],
+    "note": "all-MiniLM-L6-v2 via ONNX Runtime"
+  },
+  {
+    "query": "clean up stale repos from the container migration",
+    "task_type": "maintenance",
+    "relevant_indices": [3],
+    "note": "6 stale repos remain after container naming migration"
+  },
+  {
+    "query": "write a blog post about the relevance framework",
+    "task_type": "content",
+    "relevant_indices": [2, 5],
+    "note": "Framework entries for content generation"
+  },
+  {
+    "query": "plan the next sprint for the AI ecosystem",
+    "task_type": "planning",
+    "relevant_indices": [],
+    "note": "No sprint plan in memory — tests graceful empty"
+  },
+  {
+    "query": "migrate to the new storage service",
+    "task_type": "feature",
+    "relevant_indices": [4],
+    "note": "Storage service feature entry"
+  },
+  {
+    "query": "did we finish the GKE parity migration",
+    "task_type": "deploy",
+    "relevant_indices": [1],
+    "note": "GKE Hermes parity complete 2026-06-29"
+  },
+  {
+    "query": "where is the mobile app code",
+    "task_type": "feature",
+    "relevant_indices": [0],
+    "note": "Expo 54 at /root/xentropy/client/apps/mobile/"
+  },
+  {
+    "query": "research alternatives to Neo4j for the storage layer",
+    "task_type": "research",
+    "relevant_indices": [4],
+    "note": "Storage service uses Neo4j"
+  },
+  {
+    "query": "update the artifact registry image tag",
+    "task_type": "deploy",
+    "relevant_indices": [1],
+    "note": "hermes-agent:v1 in europe-central2 Artifact Registry"
+  },
+  {
+    "query": "add a new GKE deployment manifest",
+    "task_type": "deploy",
+    "relevant_indices": [1],
+    "note": "K8s manifests mentioned in deploy entry"
+  },
+  {
+    "query": "create a kanban task for the storage service",
+    "task_type": "kanban",
+    "relevant_indices": [],
+    "note": "No kanban-specific memory entry — empty expected"
+  },
+  {
+    "query": "what project uses Expo 54",
+    "task_type": "feature",
+    "relevant_indices": [0],
+    "note": "Mobile app uses Expo 54"
+  },
+  {
+    "query": "how are tenants isolated in the storage service",
+    "task_type": "feature",
+    "relevant_indices": [4],
+    "note": "Tenant isolation via path prefix + Neo4j properties"
+  },
+  {
+    "query": "what testing strategy should i use",
+    "task_type": "research",
+    "relevant_indices": [],
+    "note": "No testing strategy in memory — graceful empty"
+  },
+  {
+    "query": "verify the container naming migration is complete",
+    "task_type": "review",
+    "relevant_indices": [3],
+    "note": "Container naming migration DONE 2026-06-30"
+  },
+  {
+    "query": "set up the neo4j cluster for storage",
+    "task_type": "deploy",
+    "relevant_indices": [4],
+    "note": "Storage service uses Neo4j — deploy context"
+  },
+  {
+    "query": "who is the founder of xentropy",
+    "task_type": "research",
+    "relevant_indices": [],
+    "note": "Not in MEMORY.md — this is in USER.md"
+  },
+  {
+    "query": "can you summarize the memory framework architecture",
+    "task_type": "content",
+    "relevant_indices": [2, 5],
+    "note": "Framework entries for summarization"
+  },
+  {
+    "query": "what docker images are we using",
+    "task_type": "deploy",
+    "relevant_indices": [1, 3],
+    "note": "Image: hermes-agent:v1 + container naming migration"
+  },
+  {
+    "query": "why did the GKE deployment fail",
+    "task_type": "debug",
+    "relevant_indices": [],
+    "note": "No error entry — tests graceful empty return"
+  }
+]

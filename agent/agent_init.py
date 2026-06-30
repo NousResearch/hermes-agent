@@ -1132,6 +1132,11 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
+    # Relevance framework defaults (overridden by config if present)
+    agent._memory_relevance_enabled = True
+    agent._memory_relevance_min_score = 0.15
+    agent._memory_relevance_max_chars = 2000
+    agent._memory_relevance_window_frac = 0.03
     if not skip_memory:
         try:
             mem_config = _agent_cfg.get("memory", {})
@@ -1145,8 +1150,16 @@ def init_agent(
                     user_char_limit=mem_config.get("user_char_limit", 1375),
                 )
                 agent._memory_store.load_from_disk()
+
+            # Relevance framework config
+            _rel_cfg = mem_config.get("relevance", {}) if isinstance(mem_config, dict) else {}
+            agent._memory_relevance_enabled = bool(_rel_cfg.get("enabled", agent._memory_relevance_enabled))
+            agent._memory_relevance_min_score = float(_rel_cfg.get("min_relevance_score", agent._memory_relevance_min_score))
+            agent._memory_relevance_max_chars = int(_rel_cfg.get("max_context_chars", agent._memory_relevance_max_chars))
+            agent._memory_relevance_window_frac = float(_rel_cfg.get("window_fraction", agent._memory_relevance_window_frac))
         except Exception:
             pass  # Memory is optional -- don't break agent init
+
     
 
 
@@ -1764,6 +1777,16 @@ def init_agent(
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+
+    # Collaboration learning framework — observes patterns, extracts preferences
+    agent._collaboration_manager = None
+    if getattr(agent, "_memory_relevance_enabled", True):
+        try:
+            from agent.collaboration.manager import CollaborationLearningManager
+            agent._collaboration_manager = CollaborationLearningManager()
+            agent._collaboration_manager.initialize(session_id=agent.session_id)
+        except Exception as e:
+            logger.debug("Collaboration learning init failed: %s", e)
 
 
 

@@ -3239,6 +3239,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "LONGCAT_API_KEY": {
+        "description": "LongCat API key for Meituan LongCat models",
+        "prompt": "LongCat API key",
+        "url": "https://longcat.chat/platform/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "LONGCAT_BASE_URL": {
+        "description": "LongCat base URL override",
+        "prompt": "LongCat base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "ARCEEAI_API_KEY": {
         "description": "Arcee AI API key",
         "prompt": "Arcee AI API key",

@@ -117,6 +117,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.stepfun.ai/step_plan/v1",
         base_url_env_var="STEPFUN_BASE_URL",
     ),
+    "longcat": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("LONGCAT_API_KEY",),
+        base_url_override="https://api.longcat.chat/openai/v1",
+        base_url_env_var="LONGCAT_BASE_URL",
+    ),
     "minimax": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
@@ -272,6 +278,10 @@ ALIASES: Dict[str, str] = {
     "step": "stepfun",
     "stepfun-coding-plan": "stepfun",
 
+    # longcat
+    "long-cat": "longcat",
+    "meituan-longcat": "longcat",
+
     # minimax-cn
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
@@ -365,6 +375,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",
+    "longcat": "LongCat",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "tencent-tokenhub": "Tencent TokenHub",

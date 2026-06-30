@@ -1110,6 +1110,18 @@ def _normalize_codex_response(
         error_msg = _format_responses_error(error_obj, response_status)
         raise RuntimeError(error_msg)
 
+    # Detect content-filter refusal: Codex returns status="incomplete" with
+    # incomplete_details.reason="content_filter" (#55637).  This is a terminal
+    # provider refusal, not an incomplete generation.
+    _incomplete_details = getattr(response, "incomplete_details", None)
+    _incomplete_reason = None
+    if _incomplete_details is not None:
+        _incomplete_reason = str(getattr(_incomplete_details, "reason", "") or "").strip().lower()
+    is_content_filter_refusal = (
+        response_status == "incomplete"
+        and _incomplete_reason == "content_filter"
+    )
+
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
@@ -1315,7 +1327,10 @@ def _normalize_codex_response(
         codex_message_items=message_items_raw or None,
     )
 
-    if tool_calls:
+    # Content-filter refusal takes priority over all other finish reasons.
+    if is_content_filter_refusal:
+        finish_reason = "content_filter"
+    elif tool_calls:
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"

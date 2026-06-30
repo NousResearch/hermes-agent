@@ -792,6 +792,8 @@ async def web_extract_tool(
             if not raw_content:
                 continue
             clean = convert_base64_images_to_links(raw_content)
+            from agent.redact import redact_sensitive_text
+            clean = redact_sensitive_text(clean, force=True)
             model_text, truncated = _truncate_with_footer(clean, url, effective_char_limit)
             result["content"] = model_text
             if truncated:

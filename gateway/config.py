@@ -1028,6 +1028,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
                 if "allow_from" in platform_cfg:
                     bridged["allow_from"] = platform_cfg["allow_from"]
+                elif plat == Platform.TELEGRAM and "allowed_users" in platform_cfg:
+                    bridged["allow_from"] = platform_cfg["allowed_users"]
                 if "allow_admin_from" in platform_cfg:
                     bridged["allow_admin_from"] = platform_cfg["allow_admin_from"]
                 if "user_allowed_commands" in platform_cfg:
@@ -1036,6 +1038,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                elif plat == Platform.TELEGRAM and "group_allowed_users" in platform_cfg:
+                    bridged["group_allow_from"] = platform_cfg["group_allowed_users"]
                 if "group_allow_admin_from" in platform_cfg:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:

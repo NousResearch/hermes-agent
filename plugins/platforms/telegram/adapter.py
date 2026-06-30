@@ -631,6 +631,38 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         return any(os.getenv(key, "").strip() for key in keys)
 
+    def _telegram_sender_auth_env_configured(self) -> bool:
+        """Return True when env can authorize a concrete sender, not just a chat."""
+        keys = (
+            "TELEGRAM_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "TELEGRAM_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        )
+        return any(os.getenv(key, "").strip() for key in keys)
+
+    @staticmethod
+    def _coerce_telegram_allowlist(raw: Any) -> set[str]:
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            values = raw.split(",")
+        elif isinstance(raw, (list, tuple, set)):
+            values = raw
+        else:
+            values = [raw]
+        return {str(value).strip() for value in values if str(value).strip()}
+
+    def _telegram_config_allowlist(self, *keys: str) -> set[str]:
+        extra = self.config.extra if self.config and self.config.extra else {}
+        for key in keys:
+            if key in extra:
+                values = self._coerce_telegram_allowlist(extra.get(key))
+                if values:
+                    return values
+        return set()
+
     def _is_user_authorized_from_message(self, message: Message) -> bool:
         """Check if the sender of a Telegram message is authorized.
 
@@ -651,11 +683,31 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
-        # Adapter-level allow_from: when set, it is the sole authority.
-        adapter_allow_from = self.config.extra.get("allow_from")
-        if adapter_allow_from is not None:
-            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
-            return user_id in allowed or "*" in allowed
+        adapter_allow_from = self._telegram_config_allowlist("allow_from", "allowed_users")
+        adapter_group_allow_from = self._telegram_config_allowlist(
+            "group_allow_from",
+            "group_allowed_users",
+        )
+        adapter_group_allowed_chats = self._telegram_config_allowlist("group_allowed_chats")
+
+        if adapter_allow_from:
+            if user_id in adapter_allow_from or "*" in adapter_allow_from:
+                return True
+            if source.chat_type not in {"group", "forum"}:
+                return False
+            if adapter_group_allow_from:
+                return user_id in adapter_group_allow_from or "*" in adapter_group_allow_from
+            if not self._telegram_sender_auth_env_configured():
+                return False
+
+        if source.chat_type in {"group", "forum"}:
+            if adapter_group_allow_from:
+                return user_id in adapter_group_allow_from or "*" in adapter_group_allow_from
+            if adapter_group_allowed_chats:
+                return (
+                    "*" in adapter_group_allowed_chats
+                    or bool(source.chat_id and source.chat_id in adapter_group_allowed_chats)
+                )
 
         # Test/custom injection only. The class method named
         # _is_callback_user_authorized is for inline button callbacks and must
@@ -693,10 +745,24 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
+        if source.chat_type in {"group", "forum"}:
+            group_allowed_csv = os.getenv("TELEGRAM_GROUP_ALLOWED_USERS", "").strip()
+            if group_allowed_csv:
+                group_allowed_ids = self._coerce_telegram_allowlist(group_allowed_csv)
+                return "*" in group_allowed_ids or user_id in group_allowed_ids
+
+            group_chats_csv = os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "").strip()
+            if group_chats_csv:
+                group_allowed_chats = self._coerce_telegram_allowlist(group_chats_csv)
+                return (
+                    "*" in group_allowed_chats
+                    or bool(source.chat_id and source.chat_id in group_allowed_chats)
+                )
+
         allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
         if not allowed_csv:
             return True
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        allowed_ids = self._coerce_telegram_allowlist(allowed_csv)
         return "*" in allowed_ids or user_id in allowed_ids
 
     @classmethod
@@ -7912,11 +7978,15 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _rtm_str = "off" if _telegram_rtm is False else str(_telegram_rtm).lower()
         os.environ["TELEGRAM_REPLY_TO_MODE"] = _rtm_str
     allowed_users = telegram_cfg.get("allow_from")
+    if allowed_users is None:
+        allowed_users = telegram_cfg.get("allowed_users")
     if allowed_users is not None and not os.getenv("TELEGRAM_ALLOWED_USERS"):
         if isinstance(allowed_users, list):
             allowed_users = ",".join(str(v) for v in allowed_users)
         os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
     group_allowed_users = telegram_cfg.get("group_allow_from")
+    if group_allowed_users is None:
+        group_allowed_users = telegram_cfg.get("group_allowed_users")
     if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
         if isinstance(group_allowed_users, list):
             group_allowed_users = ",".join(str(v) for v in group_allowed_users)

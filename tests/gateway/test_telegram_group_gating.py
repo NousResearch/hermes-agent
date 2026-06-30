@@ -797,6 +797,29 @@ def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
 
 
+def test_config_bridges_telegram_allowed_users_aliases(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  allowed_users:\n"
+        "    - \"111\"\n"
+        "  group_allowed_users:\n"
+        "    - \"333\"\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_ALLOWED_USERS"] == "111"
+    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_USERS"] == "333"
+
+
 def test_config_env_overrides_telegram_user_allowlists(monkeypatch, tmp_path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

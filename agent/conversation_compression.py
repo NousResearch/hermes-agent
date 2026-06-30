@@ -1163,11 +1163,29 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
-            compressed.append({
-                "role": "user",
-                "content": todo_snapshot,
-                "_todo_snapshot_synthetic": True,
-            })
+            # Fold the snapshot into a trailing user message so compression
+            # never introduces a synthetic user/user pair. When it must stand
+            # alone, retain the marker so the real-user preservation pass does
+            # not mistake todo scaffolding for human intent.
+            if compressed and compressed[-1].get("role") == "user":
+                from agent.context_compressor import _append_text_to_content
+
+                _tail = compressed[-1]
+                _tail_content = _tail.get("content")
+                _snapshot_text = (
+                    f"\n\n{todo_snapshot}"
+                    if isinstance(_tail_content, str) and _tail_content
+                    else todo_snapshot
+                )
+                _tail["content"] = _append_text_to_content(
+                    _tail_content, _snapshot_text
+                )
+            else:
+                compressed.append({
+                    "role": "user",
+                    "content": todo_snapshot,
+                    "_todo_snapshot_synthetic": True,
+                })
         _ensure_compressed_has_user_turn(messages, compressed)
 
         cached_system_prompt = agent._cached_system_prompt

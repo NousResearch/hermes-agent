@@ -728,7 +728,7 @@ class GatewayKanbanWatchersMixin:
         # Read max_spawn config to limit concurrent kanban tasks
         max_spawn = kanban_cfg.get("max_spawn", None)
         if max_spawn is not None:
-            logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
+            logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
 
         # Cap the number of simultaneously running tasks so slow workers
         # (local LLMs, resource-constrained hosts) don't pile up and time
@@ -753,7 +753,7 @@ class GatewayKanbanWatchersMixin:
                     )
                     max_in_progress = None
                 else:
-                    logger.info(f"kanban dispatcher: max_in_progress={max_in_progress}")
+                    logger.info("kanban dispatcher: max_in_progress=%s", max_in_progress)
 
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:

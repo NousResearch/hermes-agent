@@ -79,6 +79,8 @@ export function useComposerDraft({
   activeQueueSessionKeyRef.current = activeQueueSessionKey
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
+  const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
+  queueEditStateRef.current = queueEditRef.current
 
   const [focusRequestId, setFocusRequestId] = useState(0)
 
@@ -288,7 +290,7 @@ export function useComposerDraft({
 
     return () => {
       const latestText = syncDraftFromEditor()
-      const editing = queueEditRef.current
+      const editing = queueEditStateRef.current
 
       if (editing?.sessionKey === activeQueueSessionKey) {
         stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
@@ -303,7 +305,7 @@ export function useComposerDraft({
   useEffect(() => {
     const flushPendingDraftPersist = () => {
       const scope = activeQueueSessionKeyRef.current
-      const editing = queueEditRef.current
+      const editing = queueEditStateRef.current
 
       if (editing?.sessionKey === scope || isBrowsingHistory(sessionIdRef.current)) {
         return
@@ -320,7 +322,7 @@ export function useComposerDraft({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [queueEditRef, syncDraftFromEditor])
+  }, [syncDraftFromEditor])
 
   return {
     activeQueueSessionKeyRef,

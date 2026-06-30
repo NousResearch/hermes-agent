@@ -100,6 +100,14 @@ interface HandoffResult {
   error?: string
 }
 
+function sessionResumeParams(storedSessionId: string, sessionProfile?: string | null) {
+  return {
+    session_id: storedSessionId,
+    cols: 96,
+    ...(sessionProfile ? { profile: sessionProfile } : {})
+  }
+}
+
 /**
  * Stage one file/image attachment into the session workspace and return the
  * attachment rewritten with the gateway-side ref. Images upload their bytes in

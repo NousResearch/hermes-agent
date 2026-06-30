@@ -177,7 +177,7 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     result = await runner._handle_branch_command(_make_event("/branch"))
 
     assert "Branched to" in result
-    assert runner._session_db.create_session.call_args.kwargs["user_id"] == "u1"
+    assert runner._session_db._db.create_session.call_args.kwargs["user_id"] == "u1"
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
     assert session_key not in runner._pending_approvals

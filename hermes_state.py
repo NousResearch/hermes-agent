@@ -2525,6 +2525,7 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
+        user_id: str = None,
         exclude_sources: List[str] = None,
         cwd_prefix: str = None,
         limit: int = 20,
@@ -2588,6 +2589,9 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if user_id is not None:
+            where_clauses.append("(s.user_id = ? OR s.user_id IS NULL)")
+            params.append(user_id)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

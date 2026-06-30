@@ -3139,7 +3139,11 @@ class GatewaySlashCommandsMixin:
 
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+            sessions = await self._session_db.list_sessions_rich(
+                source=user_source,
+                user_id=source.user_id,
+                limit=10,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -3197,10 +3201,18 @@ class GatewaySlashCommandsMixin:
             # Try direct session ID lookup first (so `/resume <session_id>`
             # works in the gateway, not just `/resume <title>`).
             session = await self._session_db.get_session(name)
-            if session:
+            if session and (
+                source.user_id is None
+                or session.get("user_id") in {source.user_id, None}
+            ):
                 target_id = session["id"]
             else:
-                target_id = await self._session_db.resolve_session_by_title(name)
+                user_source = source.platform.value if source.platform else None
+                target_id = await self._session_db.resolve_session_by_title(
+                    name,
+                    source=user_source,
+                    user_id=source.user_id,
+                )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.

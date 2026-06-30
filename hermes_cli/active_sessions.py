@@ -185,6 +185,28 @@ def _optional_float(value: Any) -> Optional[float]:
         return None
 
 
+def _is_zombie(pid: int) -> bool:
+    """Return True when *pid* is a zombie (defunct) process.
+
+    ``os.kill(pid, 0)`` (and therefore ``psutil.pid_exists``) returns
+    ``True`` for zombies because the PID still occupies a slot in the
+    kernel's process table — it will not be recycled until the parent
+    calls ``waitpid``.  A zombie can never release its session lease, so
+    ``_pid_alive`` must treat it as dead.
+
+    psutil's ``Process.status()`` reads ``/proc/<pid>/stat`` on Linux
+    and the equivalent on macOS/BSD.  Any failure (process vanished,
+    permission error, unsupported platform) is treated as *not a zombie*
+    so the remaining checks in ``_pid_alive`` can still run.
+    """
+    try:
+        import psutil  # type: ignore
+
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except Exception:
+        return False
+
+
 def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
     try:
         pid_int = int(pid)
@@ -199,6 +221,8 @@ def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
     except Exception:
         return False
     if not exists:
+        return False
+    if _is_zombie(pid_int):
         return False
     expected_start = _optional_float(process_start_time)
     if expected_start is None:

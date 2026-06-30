@@ -157,6 +157,79 @@ def test_pid_alive_uses_safe_pid_exists_without_signalling(monkeypatch):
     assert checked == [12345]
 
 
+def test_is_zombie_returns_true_for_zombie_process(monkeypatch):
+    """_is_zombie() should return True when psutil reports STATUS_ZOMBIE."""
+    import types
+
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.STATUS_ZOMBIE = "zombie"
+
+    class FakeProcess:
+        def __init__(self, pid):
+            pass
+
+        def status(self):
+            return "zombie"
+
+    fake_psutil.Process = FakeProcess
+    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+    assert active_sessions._is_zombie(99999) is True
+
+
+def test_is_zombie_returns_false_for_running_process(monkeypatch):
+    """_is_zombie() should return False when psutil reports a normal status."""
+    import types
+
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.STATUS_ZOMBIE = "zombie"
+
+    class FakeProcess:
+        def __init__(self, pid):
+            pass
+
+        def status(self):
+            return "running"
+
+    fake_psutil.Process = FakeProcess
+    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+    assert active_sessions._is_zombie(99999) is False
+
+
+def test_is_zombie_returns_false_on_exception(monkeypatch):
+    """_is_zombie() should return False when psutil raises (process vanished)."""
+    import types
+
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.STATUS_ZOMBIE = "zombie"
+
+    class FakeProcess:
+        def __init__(self, pid):
+            raise ProcessLookupError("no such process")
+
+    fake_psutil.Process = FakeProcess
+    monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+
+    assert active_sessions._is_zombie(99999) is False
+
+
+def test_pid_alive_rejects_zombie_processes(monkeypatch):
+    """_pid_alive() must return False for zombie PIDs even when _pid_exists
+    reports True — zombies occupy a PID slot but can never do work."""
+    monkeypatch.setattr(
+        "gateway.status._pid_exists",
+        lambda pid: True,
+    )
+    monkeypatch.setattr(
+        active_sessions,
+        "_is_zombie",
+        lambda pid: True,
+    )
+
+    assert active_sessions._pid_alive(12345) is False
+
+
 def test_active_session_hard_exit_is_reclaimed(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

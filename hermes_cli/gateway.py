@@ -4224,10 +4224,15 @@ def _running_under_gateway_supervisor() -> bool:
       - launchd sets ``XPC_SERVICE_NAME`` to the job label for jobs it spawns;
         interactive shells inherit the sentinel ``"0"`` instead.
       - the s6-overlay container longrun exports ``HERMES_S6_SUPERVISED_CHILD``.
+      - a FreeBSD rc.d service exports ``HERMES_RCD_SUPERVISED_CHILD`` from its
+        ``daemon(8)`` invocation, so the child can identify itself as the
+        supervised instance (daemon(8) sets none of the markers above).
     """
     if os.environ.get("INVOCATION_ID"):
         return True
     if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        return True
+    if os.environ.get("HERMES_RCD_SUPERVISED_CHILD"):
         return True
     xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
     if xpc_service and xpc_service != "0":

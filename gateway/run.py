@@ -4736,35 +4736,76 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # When the agent is blocked waiting for a dangerous-command approval,
         # plain-text responses like "yes" or "approve" must be routed to the
         # approval handler instead of being steered/queued/interrupted.
-        # Otherwise approval via messaging platforms never succeeds.
+        # Otherwise approval via messaging platforms never succeeds — the
+        # reply is queued behind a turn that can't start until the approval
+        # resolves, so the approval times out and auto-denies (a deadlock).
+        #
+        # Slash forms (/approve, /deny) already bypass to the runner at the
+        # base-adapter guard.  This handles the bare-word forms (Signal/SMS
+        # users naturally type "yes" rather than "/approve").  Gating on
+        # has_blocking_approval(session_key) is the disambiguator that keeps
+        # a conversational "yes" from triggering a dangerous command when no
+        # approval is actually pending (design intent — see run.py "Pending
+        # exec approvals are handled by /approve and /deny" note).
+        #
+        # We reuse the canonical /approve and /deny handlers rather than
+        # re-deriving the resolution + i18n messaging: they resolve the
+        # waiting thread, resume typing, AND return a localized confirmation
+        # string.  The busy-handler path does not auto-send that return, so
+        # we deliver it ourselves (mirroring the draining-case send above).
         try:
-            from tools.approval import has_blocking_approval, resolve_gateway_approval
+            from tools.approval import has_blocking_approval
             if has_blocking_approval(session_key):
                 _raw_text = (event.text or "").strip().lower()
-                _approval_choice = None
-                if _raw_text in {"approve", "yes", "ok", "confirm", "y"}:
-                    _approval_choice = "once"
-                elif _raw_text in {"deny", "no", "reject", "n"}:
-                    _approval_choice = "deny"
+                _approve_words = {"approve", "yes", "ok", "okay", "confirm", "y", "👍"}
+                _deny_words = {"deny", "no", "reject", "cancel", "n", "👎"}
+                _approval_handler = None
+                _normalized_args = ""
+                if _raw_text in _approve_words:
+                    _approval_handler = self._handle_approve_command
+                elif _raw_text in _deny_words:
+                    _approval_handler = self._handle_deny_command
                 elif _raw_text in {"always", "approve always", "always approve"}:
-                    _approval_choice = "always"
+                    _approval_handler = self._handle_approve_command
+                    _normalized_args = "always"
                 elif _raw_text in {"session", "approve session", "session approve"}:
-                    _approval_choice = "session"
-                if _approval_choice is not None:
-                    if _approval_choice == "deny":
-                        resolve_gateway_approval(session_key, "deny")
-                    else:
-                        resolve_gateway_approval(session_key, _approval_choice)
-                    _adapter = self.adapters.get(event.source.platform)
-                    if _adapter:
-                        _adapter.resume_typing_for_chat(event.source.chat_id)
+                    _approval_handler = self._handle_approve_command
+                    _normalized_args = "session"
+                if _approval_handler is not None:
+                    # Synthesize the canonical "/approve [args]" / "/deny"
+                    # command text so the slash handlers parse modifiers via
+                    # event.get_command_args().  Always use a literal "/" —
+                    # MessageEvent.is_command()/get_command_args() only
+                    # recognize the "/" prefix, not the per-platform display
+                    # prefix ("!" on Slack/Matrix).
+                    _verb = "approve" if _approval_handler is self._handle_approve_command else "deny"
+                    _synth = f"/{_verb}"
+                    if _normalized_args:
+                        _synth = f"{_synth} {_normalized_args}"
+                    event.text = _synth
+                    _reply = await _approval_handler(event)
                     logger.info(
-                        "Approval response via plain text: session=%s choice=%s",
-                        session_key, _approval_choice,
+                        "Approval response via plain text: session=%s verb=%s args=%r",
+                        session_key, _verb, _normalized_args,
                     )
+                    _adapter = self.adapters.get(event.source.platform)
+                    if _adapter and _reply:
+                        _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
+                        if _text:
+                            _anchor = self._reply_anchor_for_event(event)
+                            await _adapter._send_with_retry(
+                                chat_id=event.source.chat_id,
+                                content=_text,
+                                reply_to=_anchor,
+                                metadata=self._thread_metadata_for_source(event.source, _anchor),
+                            )
                     return True
         except Exception:
-            pass  # non-fatal — fall through to normal busy handling
+            logger.warning(
+                "Plain-text approval routing failed for session %s; "
+                "falling through to busy handling",
+                session_key, exc_info=True,
+            )
 
         # Normal busy case (agent actively running a task)
         adapter = self.adapters.get(event.source.platform)

@@ -1,7 +1,7 @@
 # Hermes Deployment & Migration — Handoff / Tracking
 
 > Living tracking doc for the Spacebot→Hermes migration + the deployment.
-> **No secrets, IPs, or identifiers here on purpose** — those live in `ops/INFRA.local.md` (gitignored, local-only). This file references it where specifics are needed.
+> **No secrets, IPs, or identifiers here on purpose** — those live in a **separate private ops repo** (not in this public fork).
 
 ## TL;DR
 - Spacebot's upstream maintainer is abandoning it → the prod deployment was migrated to **Hermes Agent** (NousResearch). Prod is LIVE on Hermes with Microsoft Teams working.
@@ -13,22 +13,22 @@ Spacebot is better-designed (Rust, co-equal multi-agent, in-box SurrealDB vector
 
 ## Prod deployment
 - Proxmox LXC (Debian 13), reached over a **NetBird overlay**; web admin dashboard on the overlay (basic auth). LLM = OpenRouter. Gateway = systemd **user** service `hermes-gateway`. Hermes is 0.x/fast-moving → **pin the version**.
-- Host IP / SSH / dashboard URL / credential locations → **`ops/INFRA.local.md`**.
+- Host IP / SSH / dashboard URL / credential locations → the **private ops repo**.
 
 ## Teams — LIVE on Hermes
 - New Azure bot created via the **Teams CLI** (`@microsoft/teams.cli` `teams app create`) — it uses the **Teams Developer Portal / Bot Framework registration path, with NO Azure Bot Service resource / billing / F0 tier** (that Azure resource is *optional* for a Teams bot; the mandatory parts are the Entra app + a bot registration + endpoint + Teams channel).
 - Enabling Teams required: (1) toggle the platform ON in the dashboard Messaging tab, (2) `pip install microsoft-teams-apps aiohttp` into the Hermes venv (lazy dep; the gateway logs the exact command). Webhook path `/api/messages`. Allowlist locked to the operator; allow-all off.
 - Public chain: Azure bot → public endpoint → **cloudflared** tunnel → `localhost:3978` (Hermes webhook). Verified live (real Teams message → reply).
 - Teams app: CLI-created; manifest enriched (real descriptions, accentColor) + **SHODAN-style icons** (color 192 + outline 32).
-- Bot / tenant / endpoint / allowlist identifiers → **`ops/INFRA.local.md`**.
+- Bot / tenant / endpoint / allowlist identifiers → the **private ops repo**.
 
 ## Spacebot decommission + upstream
-- `spacebot.service` stopped + disabled; data backed up on the LXC (paths in `ops/INFRA.local.md`). Binary + data dir still on disk (full `rm` pending).
+- `spacebot.service` stopped + disabled; data backed up on the LXC (paths in the private ops repo). Binary + data dir still on disk (full `rm` pending).
 - Upstream PRs (spacedriveapp/spacebot), clean/pushed: **#605** (DM `"*"` wildcard), **#607** (Teams adapter backend + `broadcast` serviceUrl routing-key fix), **#608** (Teams Channels UI + app-package generator), **#609** (`find_by_name` case-insensitive channel-id match — generic bug exposed by Teams' mixed-case ids).
 
 ## Dev setup (for the SurrealDB provider)
-- Hermes **forked → this fork**; cloned locally (path in `ops/INFRA.local.md`). **MemoryProvider ABC:** `agent/memory_provider.py` (+ `hermes_cli/memory_providers.py`).
-- **Spacebot work archived** — designs, deep research, plans, and the production SurrealDB impl to port — at **`ops/archive.local/`** (gitignored, local-only). See its `README.local.md` for the relevance map (`surreal_store.rs`, `design.md`, `research-llm-memory-feasibility.md`, the Rust spike). Preserved before Spacebot is deleted.
+- Hermes **forked → this fork**; cloned locally. **MemoryProvider ABC:** `agent/memory_provider.py` (+ `hermes_cli/memory_providers.py`).
+- **Spacebot work archived** — designs, deep research, plans, and the production SurrealDB impl to port — kept in the **separate private ops repo** (preserved before Spacebot is deleted). Its relevance map points to `surreal_store.rs`, `design.md`, `research-llm-memory-feasibility.md`, and the Rust spike.
 
 ## NEXT — SurrealDB memory provider
 - **Out-of-tree plugin** — Hermes `AGENTS.md` has a "no new in-tree memory providers" policy. Ship as a standalone repo installed into `~/.hermes/plugins/` OR a pip package exposing the `hermes_agent.plugins` entry-point. **Not a fork edit.**

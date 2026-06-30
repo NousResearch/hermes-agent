@@ -323,6 +323,22 @@ class TestInitSessionFailure:
 
         assert env._snapshot_ready is False
 
+    def test_snapshot_ready_false_on_nonzero_bootstrap_exit(self):
+        """A non-zero bootstrap result should trigger fallback mode."""
+        env = _TestableEnv()
+
+        def mock_run_bash(*args, **kwargs):
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 127
+            mock.stdout = iter([])
+            return mock
+
+        env._run_bash = mock_run_bash
+        env.init_session()
+
+        assert env._snapshot_ready is False
+
     def test_login_flag_when_snapshot_not_ready(self):
         """When _snapshot_ready=False, execute() should pass login=True to _run_bash."""
         env = _TestableEnv()

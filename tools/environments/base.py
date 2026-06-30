@@ -357,7 +357,7 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
-        # Full capture: env vars, functions (filtered), aliases, shell options.
+        # Full capture: env vars, functions, aliases, shell options.
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
@@ -391,7 +391,21 @@ class BaseEnvironment(ABC):
         _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"export -p > {_snap_tmp}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_snap_tmp}\n"
+            # Dump function definitions, filtering out private (``_``-prefixed)
+            # helpers — mainly bash-completion internals (``_git``, ``_make``…)
+            # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
+            # is line-based: it strips the function *header* line but leaves the
+            # orphaned ``{ … }`` body behind, which corrupts the snapshot and
+            # makes every sourced command fail (e.g. exit 127).  Selecting the
+            # wanted names with ``declare -F`` first, then dumping only those
+            # whole definitions, preserves the filter's intent without ever
+            # tearing a function body.  The non-empty guard matters: bare
+            # ``declare -f`` with no name args dumps ALL functions, so an empty
+            # name list (only private funcs present) would otherwise leak the
+            # very functions we meant to drop.
+            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]') || true\n"
+            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns "
+            f">> {_snap_tmp} 2>/dev/null || true\n"
             f"alias -p >> {_snap_tmp}\n"
             f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
             f"echo 'set +e' >> {_snap_tmp}\n"
@@ -406,6 +420,10 @@ class BaseEnvironment(ABC):
         try:
             proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
             result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            if int(result.get("returncode") or 0) != 0:
+                raise RuntimeError(
+                    f"snapshot bootstrap failed with exit code {result.get('returncode')}"
+                )
             self._snapshot_ready = True
             self._update_cwd(result)
             logger.info(

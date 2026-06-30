@@ -138,11 +138,27 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
 
 
 def _is_sensitive_auto_approve_path(path: str) -> bool:
-    parts = Path(path).expanduser().parts
-    lowered = {part.lower() for part in parts}
-    if ".git" in lowered or ".ssh" in lowered:
-        return True
-    return Path(path).name.lower() in SENSITIVE_AUTO_APPROVE_NAMES
+    raw = Path(path).expanduser()
+    # Check the path as written *and* its symlink-resolved target. A symlink
+    # whose own name is innocuous (e.g. ``notes.txt`` -> ``~/.ssh/authorized_keys``)
+    # slips past a literal-only check, letting an auto-approving session write to
+    # a sensitive file without ever prompting. resolve() also follows a symlinked
+    # parent directory and normalizes ``..``.
+    candidates = [raw]
+    try:
+        resolved = raw.resolve(strict=False)
+    except (OSError, RuntimeError):
+        resolved = None
+    if resolved is not None and resolved != raw:
+        candidates.append(resolved)
+
+    for candidate in candidates:
+        lowered = {part.lower() for part in candidate.parts}
+        if ".git" in lowered or ".ssh" in lowered:
+            return True
+        if candidate.name.lower() in SENSITIVE_AUTO_APPROVE_NAMES:
+            return True
+    return False
 
 
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:

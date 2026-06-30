@@ -205,3 +205,42 @@ def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_
         "session",
         str(tmp_path),
     )
+
+
+def test_symlink_to_sensitive_path_is_not_auto_approved(tmp_path):
+    """A symlink whose own name is innocuous must not let an auto-approving
+    session write to a sensitive target. The sensitive-path guard has to resolve
+    the link, not just inspect the literal path string."""
+    import os
+
+    secret = tmp_path / "outside" / ".ssh" / "authorized_keys"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("original")
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    link = workspace / "notes.txt"  # innocuous name, points at the secret
+    os.symlink(secret, link)
+
+    # Under the most permissive policy the link target is still sensitive.
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(link), None, "ssh-rsa AAAA attacker", {}),
+        "session",
+        str(workspace),
+    )
+    # A symlinked parent directory is covered too.
+    dir_link = tmp_path / "cfg"
+    os.symlink(secret.parent, dir_link)
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(dir_link / "known_hosts"), None, "x", {}),
+        "session",
+        str(tmp_path),
+    )
+    # A genuinely ordinary file is unaffected.
+    plain = workspace / "src.py"
+    plain.write_text("x")
+    assert should_auto_approve_edit(
+        EditProposal("write_file", str(plain), None, "x", {}),
+        "session",
+        str(workspace),
+    )

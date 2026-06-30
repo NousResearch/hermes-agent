@@ -5329,8 +5329,13 @@ class BasePlatformAdapter(ABC):
                 stripped = line.strip()
                 if stripped.startswith("```"):
                     if in_code:
-                        in_code = False
-                        lang = ""
+                        # A closing fence must be ``` followed by only whitespace
+                        # (CommonMark spec). A line like ```text inside a code
+                        # block is content, not a fence boundary.
+                        after = stripped[3:]
+                        if not after or after.isspace():
+                            in_code = False
+                            lang = ""
                     else:
                         in_code = True
                         tag = stripped[3:].strip()

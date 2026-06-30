@@ -3499,6 +3499,15 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+        assert all(c["turn_index"] == agent._user_turn_count for c in post_request_calls)
+        assert [c["turn_budget_remaining"] for c in post_request_calls] == [
+            agent.iteration_budget.max_total - call["api_call_count"]
+            for call in post_request_calls
+        ]
+        assert [c["turn_budget_used"] for c in post_request_calls] == [1, 2]
+        assert all(c["turn_budget_max"] == agent.iteration_budget.max_total for c in post_request_calls)
+        assert all(c["conversation_compacted"] is False for c in post_request_calls)
+        assert all(c["compaction_count"] == 0 for c in post_request_calls)
 
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False

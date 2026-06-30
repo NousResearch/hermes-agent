@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,160 @@ COMPACTION_STATUS_MARKER = "Compacting context"
 COMPACTION_STATUS = (
     f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
+
+
+def _compaction_db_counts(agent: Any, session_id: str) -> dict[str, int]:
+    """Best-effort live/archive counters for compaction telemetry.
+
+    Counts rows only and never reads message content. Fail-open: these counters
+    are diagnostic attributes, not part of compression correctness.
+    """
+    db = getattr(agent, "_session_db", None)
+    if not db or not session_id:
+        return {}
+    try:
+        with db._lock:
+            active = db._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()[0]
+            archived = db._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 0 AND compacted = 1",
+                (session_id,),
+            ).fetchone()[0]
+        return {
+            "db_active": int(active or 0),
+            "db_compacted_archived": int(archived or 0),
+        }
+    except Exception:
+        return {}
+
+
+def _emit_conversation_compaction_hook(
+    agent: Any,
+    *,
+    status: str,
+    reason: str,
+    trigger: str,
+    started_at: float,
+    session_id_before: str,
+    session_id_after: str,
+    message_count_before: int,
+    message_count_after: int,
+    approx_tokens: Optional[int],
+    focus_topic: Optional[str],
+    task_id: str,
+    in_place: bool = False,
+    attempt: Optional[int] = None,
+    max_attempts: Optional[int] = None,
+    api_request_id: Optional[str] = None,
+    api_call_count: Optional[int] = None,
+    lock_acquired: Optional[bool] = None,
+    lock_contended: bool = False,
+    error_type: Optional[str] = None,
+) -> None:
+    """Emit the observer-only compaction hook without transcript contents."""
+    duration_ms = int(max(0.0, time.time() - started_at) * 1000)
+    mode = "none"
+    if status == "success":
+        mode = "in_place" if in_place else "rotate"
+    archived = max(0, message_count_before - message_count_after) if in_place else 0
+    if status == "success":
+        try:
+            agent._last_compaction_id = uuid.uuid4().hex
+            agent._last_compaction_turn_index = int(getattr(agent, "_user_turn_count", 0) or 0)
+            agent._compaction_count = int(getattr(agent, "_compaction_count", 0) or 0) + 1
+        except Exception:
+            pass
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+        if not has_hook("conversation_compaction"):
+            return
+        compressor = getattr(agent, "context_compressor", None)
+        db_counts_after = _compaction_db_counts(agent, session_id_after)
+        summary_model = getattr(compressor, "last_summary_model", None) or getattr(
+            compressor, "_last_summary_model", None
+        )
+        used_main_fallback = bool(
+            getattr(compressor, "_last_aux_model_failure_model", None)
+        )
+        invoke_hook(
+            "conversation_compaction",
+            operation_name="conversation.compact",
+            session_id=session_id_after or "",
+            session_id_before=session_id_before or "",
+            session_id_after=session_id_after or "",
+            mode=mode,
+            trigger=trigger or "unknown",
+            status=status,
+            reason=reason,
+            message_count_before=int(message_count_before),
+            message_count_after=int(message_count_after),
+            message_count_archived=int(archived),
+            in_place=bool(in_place),
+            duration_ms=duration_ms,
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            turn_index=int(getattr(agent, "_user_turn_count", 0) or 0),
+            task_id=task_id or "",
+            api_request_id=api_request_id or getattr(agent, "_current_api_request_id", "") or "",
+            api_call_count=api_call_count,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            tokens_before_estimate=approx_tokens,
+            tokens_after_estimate=getattr(compressor, "last_compression_rough_tokens", None),
+            threshold_tokens=getattr(compressor, "threshold_tokens", None),
+            context_length=getattr(compressor, "context_length", None),
+            protect_first_n=getattr(compressor, "protect_first_n", None),
+            protect_last_n=getattr(compressor, "protect_last_n", None),
+            focus_topic_present=bool(focus_topic),
+            summary_model=summary_model,
+            summary_used_main_model_fallback=used_main_fallback,
+            summary_error_type=error_type,
+            lock_acquired=lock_acquired,
+            lock_contended=bool(lock_contended),
+            db_active_after=db_counts_after.get("db_active"),
+            db_compacted_archived_after=db_counts_after.get("db_compacted_archived"),
+        )
+    except Exception:
+        pass
+
+
+def emit_conversation_compaction_event(
+    agent: Any,
+    *,
+    status: str,
+    reason: str,
+    trigger: str,
+    message_count_before: int,
+    message_count_after: int,
+    approx_tokens: Optional[int] = None,
+    task_id: str = "default",
+    attempt: Optional[int] = None,
+    max_attempts: Optional[int] = None,
+    api_request_id: Optional[str] = None,
+    api_call_count: Optional[int] = None,
+) -> None:
+    """Public lightweight emitter for terminal no-compaction outcomes."""
+    sid = getattr(agent, "session_id", "") or ""
+    _emit_conversation_compaction_hook(
+        agent,
+        status=status,
+        reason=reason,
+        trigger=trigger,
+        started_at=time.time(),
+        session_id_before=sid,
+        session_id_after=sid,
+        message_count_before=message_count_before,
+        message_count_after=message_count_after,
+        approx_tokens=approx_tokens,
+        focus_topic=None,
+        task_id=task_id,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        api_request_id=api_request_id,
+        api_call_count=api_call_count,
+        lock_acquired=None,
+    )
 
 
 def _compression_lock_holder(agent: Any) -> str:
@@ -287,6 +442,11 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    trigger: str = "unknown",
+    attempt: Optional[int] = None,
+    max_attempts: Optional[int] = None,
+    api_request_id: Optional[str] = None,
+    api_call_count: Optional[int] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -328,6 +488,8 @@ def compress_context(
         agent._compression_feasibility_checked = True
 
     _pre_msg_count = len(messages)
+    _compaction_started_at = time.time()
+    _session_id_before = agent.session_id or ""
     # In-place compaction (config: compression.in_place, see #38763). When True,
     # this compaction rewrites the message list + rebuilds the system prompt but
     # keeps the SAME session_id — no end_session, no parent_session_id child, no
@@ -433,6 +595,26 @@ def compress_context(
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
+            _emit_conversation_compaction_hook(
+                agent,
+                status="skipped",
+                reason="lock_contended",
+                trigger="concurrent_lock",
+                started_at=_compaction_started_at,
+                session_id_before=_session_id_before,
+                session_id_after=agent.session_id or _session_id_before,
+                message_count_before=_pre_msg_count,
+                message_count_after=len(messages),
+                approx_tokens=approx_tokens,
+                focus_topic=focus_topic,
+                task_id=task_id,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                api_request_id=api_request_id,
+                api_call_count=api_call_count,
+                lock_acquired=False,
+                lock_contended=True,
+            )
             return messages, _existing_sp
 
     def _release_lock() -> None:
@@ -460,6 +642,26 @@ def compress_context(
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.
         _release_lock()
+        _emit_conversation_compaction_hook(
+            agent,
+            status="error",
+            reason="unexpected_exception",
+            trigger=trigger,
+            started_at=_compaction_started_at,
+            session_id_before=_session_id_before,
+            session_id_after=agent.session_id or _session_id_before,
+            message_count_before=_pre_msg_count,
+            message_count_after=len(messages),
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            task_id=task_id,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            api_request_id=api_request_id,
+            api_call_count=api_call_count,
+            lock_acquired=bool(_lock_holder),
+            error_type="compress_exception",
+        )
         raise
 
     # If compression aborted (aux LLM failed to produce a usable summary)
@@ -480,6 +682,26 @@ def compress_context(
         if not _existing_sp:
             _existing_sp = agent._build_system_prompt(system_message)
         _release_lock()  # compression aborted — no rotation will happen
+        _emit_conversation_compaction_hook(
+            agent,
+            status="aborted",
+            reason="summary_failed",
+            trigger=trigger,
+            started_at=_compaction_started_at,
+            session_id_before=_session_id_before,
+            session_id_after=agent.session_id or _session_id_before,
+            message_count_before=_pre_msg_count,
+            message_count_after=len(messages),
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            task_id=task_id,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            api_request_id=api_request_id,
+            api_call_count=api_call_count,
+            lock_acquired=bool(_lock_holder),
+            error_type="summary_error",
+        )
         return messages, _existing_sp
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
@@ -516,6 +738,7 @@ def compress_context(
     new_system_prompt = agent._build_system_prompt(system_message)
     agent._cached_system_prompt = new_system_prompt
 
+    _db_error_reason: Optional[str] = None
     if agent._session_db:
         try:
             # Trigger memory extraction on the current session before the
@@ -675,6 +898,7 @@ def compress_context(
                 )
             else:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+            _db_error_reason = "db_archive_failed" if in_place else "child_session_create_failed"
 
     # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
     # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`
@@ -789,6 +1013,31 @@ def compress_context(
     # release will see the NEW session_id in state.db / SessionEntry and
     # acquire on that — no race against our just-finished work.
     _release_lock()
+    _emit_conversation_compaction_hook(
+        agent,
+        status="error" if _db_error_reason else "success",
+        reason=_db_error_reason or (
+            "manual_force" if trigger == "manual" else
+            "threshold_exceeded" if trigger == "preflight_threshold" else
+            trigger or "unknown"
+        ),
+        trigger=trigger,
+        started_at=_compaction_started_at,
+        session_id_before=_session_id_before,
+        session_id_after=agent.session_id or _session_id_before,
+        message_count_before=_pre_msg_count,
+        message_count_after=len(compressed),
+        approx_tokens=approx_tokens,
+        focus_topic=focus_topic,
+        task_id=task_id,
+        in_place=compacted_in_place,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        api_request_id=api_request_id,
+        api_call_count=api_call_count,
+        lock_acquired=bool(_lock_holder),
+        error_type=_db_error_reason,
+    )
     return compressed, new_system_prompt
 
 

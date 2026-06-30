@@ -2775,6 +2775,11 @@ def run_conversation(
                             messages, system_message,
                             approx_tokens=approx_tokens,
                             task_id=effective_task_id,
+                            trigger="provider_context_overflow",
+                            attempt=compression_attempts,
+                            max_attempts=max_compression_attempts,
+                            api_request_id=api_request_id,
+                            api_call_count=api_call_count,
                         )
                         # Compression created a new session — clear history
                         # so _flush_messages_to_session_db writes compressed
@@ -2790,6 +2795,19 @@ def run_conversation(
                             break
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
+                    agent._emit_conversation_compaction_event(
+                        status="exhausted" if compression_attempts > max_compression_attempts else "failed",
+                        reason="max_attempts" if compression_attempts > max_compression_attempts else "did_not_reduce_context",
+                        trigger="provider_context_overflow",
+                        message_count_before=len(messages),
+                        message_count_after=len(messages),
+                        approx_tokens=approx_tokens,
+                        task_id=effective_task_id,
+                        attempt=compression_attempts,
+                        max_attempts=max_compression_attempts,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                    )
 
                 # Eager fallback for rate-limit errors (429 or quota exhaustion).
                 # When a fallback model is configured, switch immediately instead
@@ -2965,6 +2983,19 @@ def run_conversation(
                 if is_payload_too_large:
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
+                        agent._emit_conversation_compaction_event(
+                            status="exhausted",
+                            reason="max_attempts",
+                            trigger="provider_payload_too_large",
+                            message_count_before=len(messages),
+                            message_count_after=len(messages),
+                            approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
+                            attempt=compression_attempts,
+                            max_attempts=max_compression_attempts,
+                            api_request_id=api_request_id,
+                            api_call_count=api_call_count,
+                        )
                         # Terminal — surface the buffered retry trace.
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
@@ -2986,6 +3017,11 @@ def run_conversation(
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
+                        trigger="provider_payload_too_large",
+                        attempt=compression_attempts,
+                        max_attempts=max_compression_attempts,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
                     )
                     # Compression created a new session — clear history
                     # so _flush_messages_to_session_db writes compressed
@@ -2998,6 +3034,19 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
+                        agent._emit_conversation_compaction_event(
+                            status="failed",
+                            reason="did_not_reduce_context",
+                            trigger="provider_payload_too_large",
+                            message_count_before=original_len,
+                            message_count_after=len(messages),
+                            approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
+                            attempt=compression_attempts,
+                            max_attempts=max_compression_attempts,
+                            api_request_id=api_request_id,
+                            api_call_count=api_call_count,
+                        )
                         # Terminal — surface buffered context so the user
                         # sees what compression attempts were made.
                         agent._flush_status_buffer()
@@ -3122,6 +3171,19 @@ def run_conversation(
 
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
+                        agent._emit_conversation_compaction_event(
+                            status="exhausted",
+                            reason="max_attempts",
+                            trigger="provider_context_overflow",
+                            message_count_before=len(messages),
+                            message_count_after=len(messages),
+                            approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
+                            attempt=compression_attempts,
+                            max_attempts=max_compression_attempts,
+                            api_request_id=api_request_id,
+                            api_call_count=api_call_count,
+                        )
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
@@ -3142,6 +3204,11 @@ def run_conversation(
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
+                        trigger="provider_context_overflow",
+                        attempt=compression_attempts,
+                        max_attempts=max_compression_attempts,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
                     )
                     # Compression created a new session — clear history
                     # so _flush_messages_to_session_db writes compressed
@@ -3155,6 +3222,19 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
+                        agent._emit_conversation_compaction_event(
+                            status="failed",
+                            reason="did_not_reduce_context",
+                            trigger="provider_context_overflow",
+                            message_count_before=original_len,
+                            message_count_after=len(messages),
+                            approx_tokens=approx_tokens,
+                            task_id=effective_task_id,
+                            attempt=compression_attempts,
+                            max_attempts=max_compression_attempts,
+                            api_request_id=api_request_id,
+                            api_call_count=api_call_count,
+                        )
                         # Can't compress further and already at minimum tier
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
@@ -3662,6 +3742,21 @@ def run_conversation(
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
+                        turn_index=int(getattr(agent, "_user_turn_count", 0) or 0),
+                        turn_budget_remaining=agent.iteration_budget.remaining,
+                        turn_budget_used=agent.iteration_budget.used,
+                        turn_budget_max=agent.iteration_budget.max_total,
+                        compaction_count=int(getattr(agent, "_compaction_count", 0) or 0),
+                        last_compaction_id=getattr(agent, "_last_compaction_id", "") or "",
+                        last_compaction_turn_index=getattr(agent, "_last_compaction_turn_index", None),
+                        after_compaction=bool(getattr(agent, "_last_compaction_turn_index", 0) or 0),
+                        conversation_compacted=bool(getattr(agent, "_compaction_count", 0) or 0),
+                        turns_since_last_compaction=(
+                            int(getattr(agent, "_user_turn_count", 0) or 0)
+                            - int(getattr(agent, "_last_compaction_turn_index", 0) or 0)
+                            if getattr(agent, "_last_compaction_turn_index", None) is not None
+                            else None
+                        ),
                     )
             except Exception:
                 pass
@@ -4129,6 +4224,9 @@ def run_conversation(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
+                        trigger="preflight_threshold",
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
                     )
                     # Compression created a new session — clear history so
                     # _flush_messages_to_session_db writes compressed messages

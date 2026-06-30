@@ -5132,7 +5132,21 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, force: bool = False) -> tuple:
+    def _compress_context(
+        self,
+        messages: list,
+        system_message: str,
+        *,
+        approx_tokens: Optional[int] = None,
+        task_id: str = "default",
+        focus_topic: Optional[str] = None,
+        force: bool = False,
+        trigger: str = "unknown",
+        attempt: Optional[int] = None,
+        max_attempts: Optional[int] = None,
+        api_request_id: Optional[str] = None,
+        api_call_count: Optional[int] = None,
+    ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
 
         ``force=True`` is passed by the manual ``/compress`` slash command
@@ -5144,8 +5158,16 @@ class AIAgent:
         return compress_context(
             self, messages, system_message,
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
-            force=force,
+            force=force, trigger=trigger, attempt=attempt,
+            max_attempts=max_attempts, api_request_id=api_request_id,
+            api_call_count=api_call_count,
         )
+
+    def _emit_conversation_compaction_event(self, **kwargs) -> None:
+        """Forward observer-only compaction lifecycle events."""
+        from agent.conversation_compression import emit_conversation_compaction_event
+
+        emit_conversation_compaction_event(self, **kwargs)
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""

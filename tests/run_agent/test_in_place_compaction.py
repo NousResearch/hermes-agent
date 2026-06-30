@@ -124,6 +124,107 @@ class TestInPlaceCompaction:
             # Live transcript actually shrank.
             assert len(compressed) == 2
 
+    def test_conversation_compaction_hook_reports_counts_without_content(self, monkeypatch):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+        import hermes_cli.plugins as plugins_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_120100_hooked"
+            _seed(db, sid, "hooked")
+            agent = _make_agent(db, sid, in_place=True)
+            agent._user_turn_count = 7
+            setattr(agent, "_current_turn_id", "turn-7")
+            calls = []
+            mgr = plugins_mod.PluginManager()
+            mgr._hooks.setdefault("conversation_compaction", []).append(lambda **kw: calls.append(kw))
+            monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+            compressed, _sp = compress_context(
+                agent,
+                [{"role": "user", "content": f"secret transcript {i}"} for i in range(8)],
+                approx_tokens=100_000,
+                system_message="sys",
+                trigger="preflight_threshold",
+                attempt=1,
+                max_attempts=3,
+                api_request_id="turn-7:api:1",
+                api_call_count=1,
+                task_id="task-7",
+                focus_topic="private focus text",
+            )
+
+            assert len(compressed) == 2
+            assert len(calls) == 1
+            payload = calls[0]
+            assert payload["telemetry_schema_version"] == "hermes.observer.v1"
+            assert payload["operation_name"] == "conversation.compact"
+            assert payload["session_id_before"] == sid
+            assert payload["session_id_after"] == sid
+            assert payload["mode"] == "in_place"
+            assert payload["trigger"] == "preflight_threshold"
+            assert payload["status"] == "success"
+            assert payload["reason"] == "threshold_exceeded"
+            assert payload["message_count_before"] == 8
+            assert payload["message_count_after"] == 2
+            assert payload["message_count_archived"] == 6
+            assert payload["db_active_after"] == 2
+            assert payload["db_compacted_archived_after"] == 8
+            assert payload["turn_id"] == "turn-7"
+            assert payload["turn_index"] == 7
+            assert payload["task_id"] == "task-7"
+            assert payload["api_request_id"] == "turn-7:api:1"
+            assert payload["api_call_count"] == 1
+            assert payload["attempt"] == 1
+            assert payload["max_attempts"] == 3
+            assert payload["focus_topic_present"] is True
+            assert "messages" not in payload
+            assert "summary" not in payload
+            assert "private focus text" not in repr(payload)
+            assert "secret transcript" not in repr(payload)
+
+    def test_conversation_compaction_terminal_failed_event_is_content_free(self, monkeypatch):
+        from hermes_state import SessionDB
+        import hermes_cli.plugins as plugins_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_120101_failed"
+            _seed(db, sid, "failed")
+            agent = _make_agent(db, sid, in_place=True)
+            calls = []
+            mgr = plugins_mod.PluginManager()
+            mgr._hooks.setdefault("conversation_compaction", []).append(lambda **kw: calls.append(kw))
+            monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+            agent._emit_conversation_compaction_event(
+                status="exhausted",
+                reason="max_attempts",
+                trigger="provider_context_overflow",
+                message_count_before=4,
+                message_count_after=4,
+                approx_tokens=100_000,
+                task_id="task-exhausted",
+                attempt=4,
+                max_attempts=3,
+                api_request_id="api-exhausted",
+                api_call_count=5,
+            )
+
+            assert len(calls) == 1
+            payload = calls[0]
+            assert payload["status"] == "exhausted"
+            assert payload["reason"] == "max_attempts"
+            assert payload["mode"] == "none"
+            assert payload["message_count_before"] == 4
+            assert payload["message_count_after"] == 4
+            assert payload["message_count_archived"] == 0
+            assert payload["task_id"] == "task-exhausted"
+            assert payload["api_request_id"] == "api-exhausted"
+            assert "messages" not in payload
+            assert "summary" not in payload
+
     def test_in_place_alternation_preserved(self):
         """The compacted list must not introduce consecutive same-role messages."""
         from hermes_state import SessionDB

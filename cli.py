@@ -8631,6 +8631,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                     force=True,
+                    trigger="manual",
                 )
                 # Re-append the verbatim tail after the compressed head.
                 # The split guarantees `tail` begins on a user turn, so the

@@ -139,6 +139,9 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    # Observer-only conversation compaction lifecycle hook. Payload must carry
+    # counts/state only — never raw transcript content or summaries.
+    "conversation_compaction",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",

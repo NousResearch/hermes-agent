@@ -787,10 +787,14 @@ def run_doctor(args):
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
 
+            provider_is_known = bool(provider_ids_to_accept & valid_provider_ids)
             if provider and provider != "auto":
-                if catalog_provider is None or (
-                    known_providers
-                    and not (provider_ids_to_accept & valid_provider_ids)
+                # Local runtime aliases such as ollama/vllm/llamacpp resolve
+                # through hermes_cli.auth to "custom" without a catalog
+                # ProviderDef. Treat that runtime match as valid so doctor
+                # stays consistent with actual agent routing.
+                if (known_providers and not provider_is_known) or (
+                    not known_providers and catalog_provider is None
                 ):
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     _fail_and_issue(

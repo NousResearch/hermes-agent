@@ -227,6 +227,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
         "config": cfg,
         "rounds_used": rounds_used,
         "candidates_considered": len(scored_all),
+        "all_scored": scored_all,  # every scored candidate (pre-gate/threshold) — for analysis/trace
         "bucket": bucket,
         "discarded_count": len(discarded),
         "min_met": len(bucket) >= cfg["min_bucket_size"],

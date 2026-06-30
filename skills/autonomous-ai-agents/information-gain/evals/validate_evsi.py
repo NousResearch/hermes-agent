@@ -29,19 +29,18 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
+sys.path.insert(0, _HERE)
 
 import infogain  # noqa: E402
 import pipeline  # noqa: E402
 import voi  # noqa: E402
 
-# Exclude usaw-calendar (benchmark showed it's a niche-domain/model failure, not a
-# rating problem) so it doesn't poison the calibration signal.
-PROMPTS = [
-    {"id": "buy-rent", "problem": "Should I buy or rent a home?"},
-    {"id": "gtm-plan", "problem": "Write a go-to-market plan for a new B2B SaaS product."},
-    {"id": "remote-hybrid",
-     "problem": "Summarize the main trade-offs of remote vs hybrid work for a 200-person company."},
-]
+# Prompts come from the shared categorized bank (evals/testbank.py): LIFE (generic control)
+# + BANK (agentic/tool-access/coding — the real target domain). usaw-calendar is intentionally
+# not in the bank (benchmark showed a niche-domain/model failure, not a rating problem).
+import testbank  # noqa: E402
+
+PROMPTS = testbank.ALL
 
 
 def change_judge(prompt, baseline, new, model, timeout):
@@ -55,12 +54,15 @@ def change_judge(prompt, baseline, new, model, timeout):
     return voi.clamp01(obj.get("change", 0.0)) if isinstance(obj, dict) else None
 
 
-def run_prompt(pr, cfg, judge_model, max_answers, timeout):
+def run_prompt(pr, cfg, judge_model, max_answers, timeout, source="bucket"):
     result = infogain.run(pr["problem"], cfg)
     plan_model = pipeline.resolve_alias(cfg["plan_model"])
     baseline = (result.get("framing") or {}).get("baseline_plan", "")
     rows = []
-    for q in result["bucket"]:
+    # source="all_scored" tests realized_change across the WHOLE value spectrum (incl. questions
+    # below the discard threshold) — needed in the agentic domain where most fall below the
+    # life-tuned cutoff, and it yields the improvement-vs-value (diminishing_floor) curve.
+    for q in result.get(source, []):
         answers = sorted((q.get("answers") or []),
                          key=lambda a: -voi.clamp01(a.get("prob", 0)))[:max_answers]
         for a in answers:
@@ -90,6 +92,8 @@ def main(argv=None):
     p.add_argument("--gen-model", default="fast", help="all info-gain stages (cheap, deterministic).")
     p.add_argument("--judge-model", default="deepseek", help="change judge (strong).")
     p.add_argument("--max-answers", type=int, default=3, help="top-N answers per question to test.")
+    p.add_argument("--source", choices=["bucket", "all_scored"], default="bucket",
+                   help="bucket = survivors only; all_scored = every scored candidate (full spectrum).")
     p.add_argument("--timeout", type=int, default=180)
     args = p.parse_args(argv)
 
@@ -107,7 +111,7 @@ def main(argv=None):
     for pr in prompts:
         print(f"… {pr['id']}: info-gain + realized-change per (question, answer)", file=sys.stderr, flush=True)
         try:
-            prows, _ = run_prompt(pr, cfg, judge_model, args.max_answers, args.timeout)
+            prows, _ = run_prompt(pr, cfg, judge_model, args.max_answers, args.timeout, args.source)
         except Exception as e:
             prows = [{"prompt": pr["id"], "error": str(e)}]
         rows.extend(prows)

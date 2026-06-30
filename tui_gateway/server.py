@@ -213,7 +213,6 @@ _LONG_HANDLERS = frozenset(
         "projects.project_sessions",
         "session.branch",
         "session.compress",
-        "session.info",
         "session.list",
         "session.resume",
         "shell.exec",

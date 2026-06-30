@@ -7,6 +7,9 @@ so users who turned thinking off (desktop toggle, ``/reasoning none``,
 ``reasoning_effort: none``/``false`` in config.yaml) kept burning thinking
 tokens on every turn.
 
+GLM-5.2+ additionally supports an ``effort`` field (``high`` / ``max``) inside
+the thinking object.
+
 :meth:`ZaiProfile.build_api_kwargs_extras` translates the Hermes reasoning
 config into the wire shape Z.AI's OpenAI-compat endpoint expects:
 
@@ -29,9 +32,16 @@ from providers.base import ProviderProfile
 _GLM_VERSION_RE = re.compile(r"^glm-(\d+)(?:\.(\d+))?")
 
 
+def _strip_vendor_prefix(m: str) -> str:
+    for prefix in ("zai/", "z-ai/", "zhipu/"):
+        if m.startswith(prefix):
+            return m[len(prefix):]
+    return m
+
+
 def _model_supports_thinking(model: str | None) -> bool:
     """GLM thinking-capable model families: glm-4.5 and later (4.5, 4.6, 5…)."""
-    m = (model or "").strip().lower()
+    m = _strip_vendor_prefix((model or "").strip().lower())
     match = _GLM_VERSION_RE.match(m)
     if not match:
         return False
@@ -40,8 +50,19 @@ def _model_supports_thinking(model: str | None) -> bool:
     return (major, minor) >= (4, 5)
 
 
+def _model_supports_effort(model: str | None) -> bool:
+    """Return True for GLM models that accept the ``effort`` field.
+
+    GLM-5.2 is currently the only model that supports effort. Match
+    ``glm-5.2`` exactly or as a hyphen/suffix boundary (e.g.
+    ``glm-5.2-preview``) but not ``glm-5.20``.
+    """
+    m = _strip_vendor_prefix((model or "").lower().strip())
+    return m == "glm-5.2" or m.startswith("glm-5.2-")
+
+
 class ZaiProfile(ProviderProfile):
-    """Z.AI / GLM — extra_body.thinking enabled/disabled."""
+    """Z.AI / GLM — extra_body.thinking enabled/disabled + effort for GLM-5.2."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -56,7 +77,21 @@ class ZaiProfile(ProviderProfile):
         # keeps the server default (enabled) exactly as before.
         if isinstance(reasoning_config, dict):
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+            thinking: dict[str, Any] = {"type": "enabled" if enabled else "disabled"}
+
+            # Effort is GLM-5.2+ only. Older models (5.1, 5, 4.x) ignore the
+            # field, so don't send it — keeps the wire format clean.
+            if enabled and _model_supports_effort(model):
+                effort = (reasoning_config.get("effort") or "").strip().lower()
+                # Map Hermes effort levels to GLM's high/max.
+                # Hermes valid efforts: none, minimal, low, medium, high, xhigh.
+                if effort in {"xhigh", "max"}:
+                    thinking["effort"] = "max"
+                elif effort == "high":
+                    thinking["effort"] = "high"
+                # Lower efforts (none/minimal/low/medium) → omit, GLM uses server default.
+
+            extra_body["thinking"] = thinking
 
         return extra_body, top_level
 

@@ -579,6 +579,21 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+### Typing indicators
+
+While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `gateway-config.yaml`, which defaults to `true`:
+
+```yaml
+gateway:
+  platforms:
+    slack:
+      typing_indicator: false   # don't show "is thinking…" on Slack
+    telegram:
+      # typing_indicator omitted → defaults to true
+```
+
+Set `typing_indicator: false` on any platform where the indicator is unwanted. Some users find Slack's "is thinking…" status noisy (it also briefly disables the compose box while shown, since it uses Slack's Assistant API). Disabling it only suppresses the indicator — message delivery and everything else is unchanged. The flag is generic, so the same key works for every platform.
+
 ### Session resume across gateway restarts
 
 When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.

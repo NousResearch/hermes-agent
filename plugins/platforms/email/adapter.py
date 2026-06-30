@@ -172,12 +172,28 @@ def check_email_requirements() -> bool:
 
 
 def _decode_header_value(raw: str) -> str:
-    """Decode an RFC 2047 encoded email header into a plain string."""
-    parts = decode_header(raw)
+    """Decode an RFC 2047 encoded email header into a plain string.
+
+    Email headers are attacker-controlled. A malformed encoded-word — e.g. a
+    one-character base64 group (``=?utf-8?B?a?=``) or an unknown charset label —
+    makes ``decode_header`` / ``bytes.decode`` raise, which would otherwise
+    abort the whole inbound IMAP fetch (and silently drop the message, which was
+    already marked ``\\Seen``). Fall back to the raw header on a decode failure
+    so one crafted message can't wedge the batch.
+    """
+    try:
+        parts = decode_header(raw)
+    except Exception:
+        return raw
     decoded = []
     for part, charset in parts:
         if isinstance(part, bytes):
-            decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            try:
+                decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            except LookupError:
+                # Unknown/invalid charset label — decode as utf-8 with
+                # replacement rather than raise.
+                decoded.append(part.decode("utf-8", errors="replace"))
         else:
             decoded.append(part)
     return " ".join(decoded)

@@ -368,6 +368,18 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     host code) can feed in already-broken histories.
 
     Repairs applied:
+      0. Consecutive ``assistant`` messages with no intervening
+         ``tool``/``user`` turn — merged into a single assistant turn
+         (union of ``tool_calls``, concatenated ``content``). Strict
+         OpenAI-compatible providers (DeepSeek v4, Moonshot/Kimi) reject
+         a history where an ``assistant`` message carrying ``tool_calls``
+         is immediately followed by another ``assistant`` message instead
+         of its ``tool`` results — HTTP 400 "An assistant message with
+         'tool_calls' must be followed by tool messages…". The split
+         shape is produced by recovery/continuation paths that append an
+         interim assistant turn (thinking-prefill, codex
+         incomplete-continuation) or by host-fed / legacy-persisted /
+         resumed histories. Refs #29148, #49147.
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
          any preceding assistant tool_call — dropped.
       2. Consecutive ``user`` messages — merged with newline separator
@@ -387,12 +399,74 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
 
     repairs = 0
 
+    # Pass 0: merge consecutive assistant messages. Runs BEFORE Pass 1 so
+    # the merged turn's union of tool_call ids is known when Pass 1
+    # validates which tool-result messages are orphans. Two assistant
+    # messages are only adjacent here when nothing (no tool result, no
+    # user turn) separates them — an intervening ``tool`` message means
+    # two distinct, valid tool-call rounds that must NOT be merged.
+    #
+    # Codex Responses interim turns are exempt: the codex_responses
+    # api_mode legitimately keeps multiple consecutive incomplete
+    # assistant turns in history, each carrying its own encrypted
+    # continuation state (codex_reasoning_items / codex_message_items)
+    # that must be replayed verbatim. Collapsing them corrupts the
+    # Responses replay chain (the duplicate-detection logic at
+    # conversation_loop.py already de-dups identical codex interims).
+    def _is_codex_interim(m: Dict) -> bool:
+        return bool(
+            m.get("codex_reasoning_items")
+            or m.get("codex_message_items")
+            or m.get("finish_reason") == "incomplete"
+        )
+
+    collapsed: List[Dict] = []
+    for msg in messages:
+        if (
+            collapsed
+            and isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(collapsed[-1], dict)
+            and collapsed[-1].get("role") == "assistant"
+            and not _is_codex_interim(msg)
+            and not _is_codex_interim(collapsed[-1])
+        ):
+            prev = collapsed[-1]
+            # Union tool_calls (preserve order, both may carry them).
+            prev_calls = list(prev.get("tool_calls") or [])
+            new_calls = list(msg.get("tool_calls") or [])
+            if new_calls:
+                prev["tool_calls"] = prev_calls + new_calls
+            elif prev_calls:
+                prev["tool_calls"] = prev_calls
+            # Concatenate plain-text content; leave multimodal (list)
+            # content on either side alone to avoid mangling attachment
+            # blocks — fall back to keeping the existing content.
+            prev_content = prev.get("content")
+            new_content = msg.get("content")
+            if isinstance(prev_content, str) and isinstance(new_content, str):
+                joined = "\n".join(
+                    p for p in (prev_content.strip(), new_content.strip()) if p
+                )
+                prev["content"] = joined
+            elif not prev_content and new_content is not None:
+                prev["content"] = new_content
+            # Carry reasoning_content from the later turn only if the
+            # earlier turn lacks it (strict thinking providers require a
+            # reasoning_content on the merged tool-call turn; the first
+            # non-empty one suffices).
+            if not prev.get("reasoning_content") and msg.get("reasoning_content"):
+                prev["reasoning_content"] = msg["reasoning_content"]
+            repairs += 1
+            continue
+        collapsed.append(msg)
+
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
     known_tool_ids: set = set()
     filtered: List[Dict] = []
-    for msg in messages:
+    for msg in collapsed:
         if not isinstance(msg, dict):
             filtered.append(msg)
             continue

@@ -110,20 +110,18 @@ export function SessionsSettings() {
         meta={sessions.length ? String(sessions.length) : undefined}
         title={s.archivedTitle}
       />
-      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {s.archivedIntro}
-      </p>
+      <p className="p5-section-intro">{s.archivedIntro}</p>
 
       {sessions.length === 0 ? (
         <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
       ) : (
-        <div className="grid gap-1">
+        <div className="p5-card p5-rows mt-3.5">
           {sessions.map(session => {
             const label = workspaceLabel(session.cwd)
             const busy = busyId === session.id
 
             return (
-              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+              <div className="scroll-mt-6" id={`archived-session-${session.id}`} key={session.id}>
                 <ListRow
                   action={
                     <div className="flex items-center gap-1.5">
@@ -253,14 +251,13 @@ function DefaultProjectDirSetting() {
   }, [s])
 
   return (
-    <div className="mb-6">
+    <div className="mb-8">
       <SectionHeading icon={FolderOpen} title={s.defaultDirTitle} />
-      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {s.defaultDirDesc}
-      </p>
-      <ListRow
-        action={
-          <div className="flex items-center gap-3">
+      <p className="p5-section-intro">{s.defaultDirDesc}</p>
+      <div className="p5-card p5-rows mt-3.5">
+        <ListRow
+          action={
+            <div className="flex items-center gap-3">
             <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="textStrong">
               <FolderOpen className="size-3.5" />
               <span>{dir ? s.change : s.choose}</span>
@@ -272,9 +269,10 @@ function DefaultProjectDirSetting() {
             )}
           </div>
         }
-        description={dir || s.defaultsTo(fallback || '~')}
-        title={dir ? dir : s.notSet}
-      />
+          description={dir || s.defaultsTo(fallback || '~')}
+          title={dir ? dir : s.notSet}
+        />
+      </div>
     </div>
   )
 }

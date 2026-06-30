@@ -10,9 +10,9 @@ import { PAGE_INSET_X } from '../layout-constants'
 
 export function SettingsContent({ children }: { children: ReactNode }) {
   return (
-    <section className="min-h-0 overflow-hidden">
-      <div className={cn('h-full min-h-0 overflow-y-auto pb-20', PAGE_INSET_X)}>
-        <div className="mx-auto w-full max-w-4xl">{children}</div>
+    <section className="p5-settings min-h-0 overflow-hidden">
+      <div className={cn('h-full min-h-0 overflow-y-auto pb-24', PAGE_INSET_X)}>
+        <div className="p5-page">{children}</div>
       </div>
     </section>
   )
@@ -24,8 +24,8 @@ export function Pill({ tone = 'muted', children }: { tone?: 'muted' | 'primary';
 
 export function SectionHeading({ icon: Icon, title, meta }: { icon: IconComponent; title: string; meta?: string }) {
   return (
-    <div className="mb-2.5 flex items-center gap-2 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
-      <Icon className="size-4 text-muted-foreground" />
+    <div className="p5-section-heading">
+      <Icon className="size-[1.0625rem]" />
       <span>{title}</span>
       {meta && <Pill>{meta}</Pill>}
     </div>
@@ -78,23 +78,14 @@ export function ListRow({
   wide?: boolean
 }) {
   return (
-    <div
-      className={cn(
-        'grid gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center',
-        wide && 'sm:grid-cols-1 sm:items-start'
-      )}
-    >
+    <div className="p5-row" data-wide={wide || undefined}>
       <div className="min-w-0">
-        <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
-        {description && (
-          <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {description}
-          </div>
-        )}
-        {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
+        <div className="p5-row-title">{title}</div>
+        {description && <div className="p5-row-desc">{description}</div>}
+        {hint && <div className="p5-row-hint">{hint}</div>}
         {below}
       </div>
-      {action && <div className={cn('min-w-0', !wide && 'sm:justify-self-end')}>{action}</div>}
+      {action && <div className="p5-row-control min-w-0">{action}</div>}
     </div>
   )
 }
@@ -105,10 +96,12 @@ export function LoadingState({ label }: { label: string }) {
 
 export function EmptyState({ title, description }: { title: string; description: string }) {
   return (
-    <div className="grid min-h-48 place-items-center text-center">
-      <div>
-        <div className="text-sm font-medium">{title}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{description}</div>
+    <div className="grid min-h-52 place-items-center text-center">
+      <div className="max-w-sm">
+        <div className="text-[0.9375rem] font-medium text-foreground">{title}</div>
+        <div className="mt-1.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {description}
+        </div>
       </div>
     </div>
   )

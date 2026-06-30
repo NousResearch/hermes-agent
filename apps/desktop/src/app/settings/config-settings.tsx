@@ -354,9 +354,9 @@ export function ConfigSettings({
       {fields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
-        <div className="grid gap-1">
+        <div className="p5-card p5-rows">
           {fields.map(([key, field]) => (
-            <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
+            <div className="scroll-mt-6" id={`setting-field-${key}`} key={key}>
               <ConfigField
                 enumOptions={
                   key === 'tts.elevenlabs.voice_id'

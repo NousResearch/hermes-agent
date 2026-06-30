@@ -112,15 +112,14 @@ function EngineUpdateSection() {
 
       <div
         className={cn(
-          'rounded-xl border px-4 py-3 text-sm',
-          statusTone === 'available' && 'border-primary/30 bg-primary/5 text-foreground',
-          statusTone === 'error' && 'border-destructive/35 bg-destructive/5 text-destructive',
-          statusTone === 'idle' && 'border-border/70 bg-muted/20 text-foreground'
+          'p5-panel px-4 py-3.5 text-sm',
+          statusTone === 'error' ? 'text-destructive' : 'text-foreground'
         )}
+        data-tone={statusTone}
       >
         <div className="flex items-start gap-2">
           {statusTone === 'available' ? (
-            <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
+            <Sparkles className="mt-0.5 size-4 shrink-0 text-[var(--ui-blue)]" />
           ) : statusTone === 'error' ? (
             <AlertTriangle className="mt-0.5 size-4 shrink-0" />
           ) : (
@@ -223,11 +222,11 @@ export function AboutSettings() {
 
   return (
     <SettingsContent>
-      <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
+      <div className="flex flex-col items-center gap-3.5 pt-8 pb-3 text-center">
         <BrandMark className="size-16" />
         <div>
-          <h2 className="text-lg font-semibold tracking-tight">{a.heading}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <h2 className="text-[1.375rem] font-semibold tracking-tight text-foreground">{a.heading}</h2>
+          <p className="mt-1.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             {version?.appVersion ? a.version(version.appVersion) : a.versionUnavailable}
           </p>
         </div>
@@ -238,15 +237,14 @@ export function AboutSettings() {
 
         <div
           className={cn(
-            'rounded-xl border px-4 py-3 text-sm',
-            statusTone === 'available' && 'border-primary/30 bg-primary/5 text-foreground',
-            statusTone === 'error' && 'border-destructive/35 bg-destructive/5 text-destructive',
-            statusTone === 'idle' && 'border-border/70 bg-muted/20 text-foreground'
+            'p5-panel px-4 py-3.5 text-sm',
+            statusTone === 'error' ? 'text-destructive' : 'text-foreground'
           )}
+          data-tone={statusTone}
         >
           <div className="flex items-start gap-2">
             {statusTone === 'available' ? (
-              <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
+              <Sparkles className="mt-0.5 size-4 shrink-0 text-[var(--ui-blue)]" />
             ) : statusTone === 'error' ? null : (
               <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
             )}

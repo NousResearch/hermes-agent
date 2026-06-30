@@ -481,9 +481,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   return (
     <div className="grid gap-6">
       <section>
-        <p className="mb-3 text-xs text-muted-foreground">
-          {m.appliesDesc}
-        </p>
+        <p className="p5-section-intro mb-3.5">{m.appliesDesc}</p>
         <div className="flex flex-wrap items-center gap-2">
           <Select onValueChange={setSelectedProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
@@ -616,9 +614,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             {m.resetAllToMain}
           </Button>
         </div>
-        <p className="mb-2 text-xs text-muted-foreground">
-          {m.auxiliaryDesc}
-        </p>
+        <p className="p5-section-intro mb-3">{m.auxiliaryDesc}</p>
         {switchStaleAux.length === 0 && persistentStaleAux.length > 0 && (
           <div className="mb-2.5">
             <StaleAuxWarning
@@ -629,7 +625,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             />
           </div>
         )}
-        <div className="grid gap-1">
+        <div className="p5-card p5-rows">
           {AUX_TASKS.map(meta => {
             const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
@@ -733,7 +729,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               {applying ? m.applying : t.common.save}
             </Button>
           </div>
-          <p className="mb-2 text-xs text-muted-foreground">
+          <p className="p5-section-intro mb-3">
             Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.
           </p>
           <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -789,7 +785,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
             </Button>
           </div>
           <div className="mb-2 text-xs text-muted-foreground">Default: <span className="font-mono">{moa.default_preset}</span></div>
-          <div className="grid gap-1">
+          <div className="p5-card p5-rows">
             {currentMoaPreset.reference_models.map((slot, index) => (
               <ListRow
                 below={
@@ -812,7 +808,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 title={`Reference ${index + 1}`}
               />
             ))}
-            <Button disabled={applying} onClick={() => updateMoaPreset(prev => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))} size="sm" variant="textStrong">
+            <Button className="my-2 self-start" disabled={applying} onClick={() => updateMoaPreset(prev => ({ ...prev, reference_models: [...prev.reference_models, prev.aggregator] }))} size="sm" variant="textStrong">
               Add reference model
             </Button>
             <ListRow

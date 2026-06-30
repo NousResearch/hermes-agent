@@ -159,11 +159,9 @@ export function AppearanceSettings() {
     <SettingsContent>
       <div>
         <SectionHeading icon={Palette} title={a.title} />
-        <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {a.intro}
-        </p>
+        <p className="p5-section-intro">{a.intro}</p>
 
-        <div className="mt-2 divide-y divide-(--ui-stroke-tertiary)">
+        <div className="p5-card p5-rows mt-3.5">
           <ListRow
             action={<LanguageSwitcher />}
             description={isSavingLocale ? t.language.saving : t.language.description}

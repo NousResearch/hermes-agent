@@ -229,8 +229,8 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
         </div>
 
         <div className="grid content-start gap-3">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Wrench className="size-4 text-muted-foreground" />
+          <div className="p5-section-heading mb-0">
+            <Wrench className="size-[1.0625rem]" />
             {selected ? m.editServer : m.newServer}
           </div>
           <label className="grid gap-1.5">

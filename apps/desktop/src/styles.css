@@ -1368,3 +1368,166 @@ canvas {
     animation: none;
   }
 }
+
+/* ===== P5 Settings =====
+   Claude-style macOS-native restyle for the settings subpages. Scoped under
+   `.p5-settings` (applied by SettingsContent), so nothing here leaks onto chat
+   chrome or the rest of the app. Pure visual layer — every rule is appearance
+   only; the settings forms/logic/IPC are untouched. Tokens reuse the P1 grey-
+   white palette (--ui-* / --dt-*); the ApexNodes violet stays a whisper
+   (selected/accent), status blue (--ui-blue) is the only saturated cue.
+
+   Spec anchors (claude-ui-replication §12-14): content column ≤ ~52rem with a
+   generous top gap; page/section titles heavier with more air; setting rows
+   are taller (≈64-78px) with 1px hairline dividers; controls read as light
+   grey pills; cards are near-white with a #E8E8E8 hairline and 10-12px radius.
+
+   Authored inside @layer components so co-located Tailwind utilities (in the
+   higher-priority utilities layer) still override a P5 base property when a
+   call site needs it (e.g. `mb-0` on a heading, `mt-3.5` on a card). */
+@layer components {
+  /* Content column tokens + breathing room. The overlay already pads the top
+     for the floating titlebar; .p5-page adds the extra settle-below-the-bar
+     gap the reference shows. */
+  .p5-settings {
+  --p5-card-radius: 0.75rem;
+  /* Near-white card on a hairline — a hair more contrast than the translucent
+     overlay card so a settings card reads as a discrete white surface. */
+  --p5-card-bg: color-mix(in srgb, var(--dt-card) 88%, var(--ui-bg-chrome));
+  --p5-card-border: color-mix(in srgb, var(--ui-base) 9%, transparent);
+  --p5-divider: color-mix(in srgb, var(--ui-base) 7%, transparent);
+}
+
+.p5-settings .p5-page {
+  margin-inline: auto;
+  width: 100%;
+  max-width: 52rem;
+  /* Extra top air so the first heading sits clearly below the titlebar pad. */
+  padding-top: 1.25rem;
+}
+
+/* Section heading — the "16px / 600, generous spacing" tier. Sits above its
+   group with more space than a plain row so sections read as distinct. */
+.p5-settings .p5-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.875rem;
+  padding-top: 0.5rem;
+  color: var(--ui-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.p5-settings .p5-section-heading svg {
+  color: var(--ui-text-tertiary);
+}
+
+/* Page-level intro paragraph under a heading — muted, comfortable measure. */
+.p5-settings .p5-section-intro {
+  max-width: 38rem;
+  margin-top: -0.25rem;
+  margin-bottom: 0.25rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--conversation-caption-font-size);
+  line-height: var(--conversation-caption-line-height);
+}
+
+/* A grouped white card list — the form-card container from §12. Children
+   (rows) carry their own hairline dividers; the card owns the outer stroke. */
+.p5-settings .p5-card {
+  border: 0.0625rem solid var(--p5-card-border);
+  border-radius: var(--p5-card-radius);
+  background: var(--p5-card-bg);
+  box-shadow: var(--shadow-xs);
+}
+
+/* Row stack inside a card: rows divide with a 1px hairline, never a heavy
+   line; the card's own padding insets them from the rounded corners. */
+.p5-settings .p5-card .p5-rows {
+  padding-inline: 1rem;
+}
+
+.p5-settings .p5-rows > * + * {
+  border-top: 0.0625rem solid var(--p5-divider);
+}
+
+/* Setting row — taller, calmer rhythm than the chat-dense default so the
+   page breathes (§14: "保持大量垂直间距"). Title 14-15px, description 13px
+   grey, control parked to the right on wide layouts. */
+.p5-settings .p5-row {
+  display: grid;
+  gap: 0.75rem;
+  padding-block: 0.875rem;
+}
+
+/* A plain (non-wide) row gets the comfortable min height so single-line rows
+   don't feel cramped; wide rows size to their (often tall) content instead. */
+.p5-settings .p5-row:not([data-wide='true']) {
+  min-height: 3.75rem;
+  align-content: center;
+}
+
+@media (min-width: 40rem) {
+  .p5-settings .p5-row {
+    grid-template-columns: minmax(0, 1fr) minmax(13.5rem, 20rem);
+    align-items: center;
+  }
+
+  .p5-settings .p5-row[data-wide='true'] {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .p5-settings .p5-row-control {
+    justify-self: end;
+  }
+
+  .p5-settings .p5-row[data-wide='true'] .p5-row-control {
+    justify-self: stretch;
+  }
+}
+
+.p5-settings .p5-row-title {
+  color: var(--ui-text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.p5-settings .p5-row-desc {
+  margin-top: 0.1875rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--conversation-caption-font-size);
+  line-height: var(--conversation-caption-line-height);
+}
+
+.p5-settings .p5-row-hint {
+  margin-top: 0.25rem;
+  font-family: var(--dt-font-mono);
+  font-size: 0.68rem;
+  color: var(--ui-text-quaternary);
+}
+
+/* Status/info panel (About → updates/engine). Same white-card-on-hairline
+   language; the tone variants only tint the border + a whisper of fill so the
+   panel still reads as a quiet settings card, not a loud alert banner. */
+.p5-settings .p5-panel {
+  border: 0.0625rem solid var(--p5-card-border);
+  border-radius: var(--p5-card-radius);
+  background: var(--p5-card-bg);
+  box-shadow: var(--shadow-xs);
+}
+
+.p5-settings .p5-panel[data-tone='available'] {
+  border-color: color-mix(in srgb, var(--ui-blue) 32%, transparent);
+  background: color-mix(in srgb, var(--ui-blue) 5%, var(--p5-card-bg));
+}
+
+.p5-settings .p5-panel[data-tone='error'] {
+  border-color: color-mix(in srgb, var(--dt-destructive) 32%, transparent);
+  background: color-mix(in srgb, var(--dt-destructive) 5%, var(--p5-card-bg));
+}
+}
+/* ===== end P5 Settings ===== */

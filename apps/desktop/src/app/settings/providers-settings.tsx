@@ -166,9 +166,7 @@ function OAuthPicker({
           {p.haveApiKey}
         </Button>
       </div>
-      <p className="-mt-2 mb-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {p.intro}
-      </p>
+      <p className="p5-section-intro -mt-1">{p.intro}</p>
       {featured && <FeaturedProviderRow onSelect={select} provider={featured} />}
       {connected.length > 0 && (
         <>

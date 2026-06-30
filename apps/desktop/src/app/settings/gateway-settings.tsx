@@ -433,14 +433,12 @@ export function GatewaySettings() {
   return (
     <SettingsContent>
       <div className="mb-5">
-        <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
-          <Globe className="size-4 text-muted-foreground" />
+        <div className="p5-section-heading">
+          <Globe className="size-[1.0625rem]" />
           {g.title}
           {state.envOverride ? <Pill tone="primary">{g.envOverride}</Pill> : null}
         </div>
-        <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          {g.intro}
-        </p>
+        <p className="p5-section-intro">{g.intro}</p>
       </div>
 
       {namedProfiles.length > 0 ? (

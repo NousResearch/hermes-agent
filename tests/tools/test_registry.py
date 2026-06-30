@@ -674,6 +674,28 @@ class TestDeregisterAuthorization:
             reg.deregister("sub_tool")
         assert reg._tools.get("sub_tool") is None
 
+    def test_opted_in_plugin_submodule_can_deregister(self):
+        """An opted-in plugin calling deregister() from a submodule must succeed.
+
+        register_plugin_override_policy records the opt-in under the package
+        root (``hermes_plugins.allowed``).  If the caller is a submodule
+        (``hermes_plugins.allowed.cleanup``), the old code looked up
+        ``_plugin_override_policy.get("hermes_plugins.allowed.cleanup")`` →
+        False and wrongly raised PermissionError.  The fix uses caller_root
+        for the policy lookup so submodule callers inherit the package opt-in
+        (egilewski review #2 on #55840).
+        """
+        reg = ToolRegistry()
+        reg.register(
+            name="protected", toolset="terminal",
+            schema={"name": "protected", "description": "", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *a, **k: "built-in",
+        )
+        reg.register_plugin_override_policy("hermes_plugins.allowed", True)
+        with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.allowed.cleanup"):
+            reg.deregister("protected")
+        assert reg._tools.get("protected") is None
+
     def test_mcp_toolset_always_deregisterable(self):
         """MCP-prefixed toolsets bypass the auth gate (dynamic refresh)."""
         reg = ToolRegistry()

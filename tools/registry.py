@@ -483,7 +483,7 @@ class ToolRegistry:
                 if (
                     caller_mod.startswith("hermes_plugins.")
                     and not same_plugin
-                    and not self._plugin_override_policy.get(caller_mod, False)
+                    and not self._plugin_override_policy.get(caller_root, False)
                 ):
                     logger.error(
                         "Tool deregistration REJECTED: plugin %r attempted to "

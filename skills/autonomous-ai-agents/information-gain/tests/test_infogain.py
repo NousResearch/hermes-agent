@@ -148,6 +148,38 @@ class TestSimilarityAndSelection(unittest.TestCase):
         self.assertEqual(voi.best_value([]), 0.0)
         self.assertEqual(voi.best_value([{"value": 0.2}, {"value": 0.7}]), 0.7)
 
+    def test_hierarchical_similarity_tiers(self):
+        # same target -> 1.0 (regardless of family)
+        self.assertEqual(voi.hierarchical_similarity(
+            {"target": "x", "family": "A"}, {"target": "x", "family": "B"}), 1.0)
+        # same family, different target -> family_sim
+        self.assertEqual(voi.hierarchical_similarity(
+            {"target": "x", "family": "A", "question": "aa"},
+            {"target": "y", "family": "A", "question": "bb"}, family_sim=0.5), 0.5)
+        # different family + target + text -> token jaccard (0 here)
+        self.assertEqual(voi.hierarchical_similarity(
+            {"target": "x", "family": "A", "question": "aa"},
+            {"target": "y", "family": "B", "question": "bb"}), 0.0)
+        # no family -> reduces to question_similarity (same target still 1.0)
+        self.assertEqual(voi.hierarchical_similarity({"target": "x"}, {"target": "x"}), 1.0)
+
+    def test_rank_spreads_across_families_with_sim_fn(self):
+        # family A has the two highest-value reps; B has lower. hard_cap=2.
+        recs = [self._fam("a1", "t1", "A", 0.9), self._fam("a2", "t2", "A", 0.85),
+                self._fam("b1", "t3", "B", 0.8), self._fam("b2", "t4", "B", 0.75)]
+        simf = lambda a, b: voi.hierarchical_similarity(a, b, 0.5)
+        buck, _ = voi.rank_and_select([dict(r) for r in recs], discard_threshold=0.4,
+                                      pre_answer_threshold=0.6, hard_cap=2, sim_fn=simf)
+        self.assertEqual(sorted(r["family"] for r in buck), ["A", "B"])  # spread, not both A
+        # default sim_fn (no family tier) picks the two highest-value -> both A
+        buck0, _ = voi.rank_and_select([dict(r) for r in recs], discard_threshold=0.4,
+                                       pre_answer_threshold=0.6, hard_cap=2)
+        self.assertEqual([r["family"] for r in buck0], ["A", "A"])
+
+    def _fam(self, q, t, fam, val):
+        return {"question": q, "target": t, "family": fam, "value": val, "u": 0.8,
+                "evsi": val, "gated_out": False, "answers": [], "modal_answer": None}
+
 
 # ── pipeline (mocked Ollama) — requires model_utils (ask skill) importable ────
 
@@ -413,6 +445,43 @@ class TestModeConfig(unittest.TestCase):
     def test_cli_flag_overrides_mode(self):
         cfg = self._cfg(["--mode", "breadth", "--questions-per-round", "3", "a problem"])
         self.assertEqual(cfg["questions_per_round"], 3)
+
+    def test_families_default_on(self):
+        self.assertTrue(self._cfg(["a problem"])["families"]["enabled"])
+
+    def test_no_families_flag(self):
+        self.assertFalse(self._cfg(["--no-families", "a problem"])["families"]["enabled"])
+
+    def test_families_env_toggle(self):
+        old = os.environ.get("INFOGAIN_FAMILIES")
+        try:
+            os.environ["INFOGAIN_FAMILIES"] = "off"
+            self.assertFalse(self._cfg(["a problem"])["families"]["enabled"])
+            os.environ["INFOGAIN_FAMILIES"] = "on"
+            self.assertTrue(self._cfg(["a problem"])["families"]["enabled"])
+            # explicit CLI beats env
+            self.assertFalse(self._cfg(["--no-families", "a problem"])["families"]["enabled"])
+        finally:
+            os.environ.pop("INFOGAIN_FAMILIES", None) if old is None else os.environ.update(
+                {"INFOGAIN_FAMILIES": old})
+
+    def test_ranked_list_groups_by_family(self):
+        bucket = [{"question": "q-contra", "value": 0.6, "family": "Approach", "lens": "contrarian",
+                   "recommendation": "PRE_ANSWER", "target": "t1", "evsi": 0.5, "modal_answer": None},
+                  {"question": "q-scoped", "value": 0.5, "family": "Data", "lens": "scoped",
+                   "recommendation": "ASSUME_DEFAULT", "target": "t2", "evsi": 0.4, "modal_answer": None}]
+        md = infogain._ranked_list(bucket)
+        self.assertIn("### Approach", md)
+        self.assertIn("contrarian lens", md)
+        self.assertIn("### Data", md)
+        self.assertLess(md.index("### Approach"), md.index("### Data"))  # higher-value family first
+
+    def test_ranked_list_flat_when_no_family(self):
+        bucket = [{"question": "q1", "value": 0.6, "recommendation": "PRE_ANSWER", "target": "t",
+                   "evsi": 0.5, "modal_answer": None}]
+        md = infogain._ranked_list(bucket)
+        self.assertNotIn("###", md)
+        self.assertIn("[weight 0.60]", md)
 
 
 @unittest.skipUnless(_PIPELINE_OK, "ask skill / model_utils not importable")

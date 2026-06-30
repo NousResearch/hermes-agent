@@ -129,6 +129,23 @@ bar, it says so — the prompt is already specified well enough for a good respo
 
 Full rationale + citations: `references/methodology.md`. Prompt contracts: `references/prompts.md`.
 
+## Families (default ON — `--families`/`--no-families`)
+
+Before generating individual questions, it first generates **families of questions** for *coverage*:
+several **scoped** families (distinct regions of the unknowns) plus two lenses you'd otherwise miss —
+a **contrarian** family (challenges the baseline approach itself: *"should we even build this?"*) and a
+**vantage** family (questions whose answer is *access-relative* — differs by environment / server /
+identity / credential / token; auto-enabled only for systems/access tasks). It then generates questions
+within each family (tagged with `family`/`lens`).
+
+Families are **domain exposure only** — there is **no family-level negation**. Every question is still
+scored on its own merit (the same EVSI pipeline), so a low-average family can still surface the single
+highest-value question (this is common for the contrarian/vantage lenses); irrelevant families
+self-prune because their questions score low individually. The `family` tag adds a tier to the MMR
+diversity kernel (`family > target > question`) so selection **spreads across families**, and the
+report is **grouped by family** (contrarian/vantage labelled). Turn off with `--no-families` (or
+`INFOGAIN_FAMILIES=off`) for the flat generator. Cost ≈ `questions_per_family × n_families` candidates.
+
 ## Automating the loop — the `investigator` skill
 
 This skill is **report-only** — it ranks what to clarify and stops. To *automate* the evidence loop

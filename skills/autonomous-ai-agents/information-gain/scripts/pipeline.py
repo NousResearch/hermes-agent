@@ -210,13 +210,30 @@ def frame_prompt(problem, evidence=None):
     )
 
 
-def questions_prompt(problem, framing, n, avoid=None, evidence=None):
+_LENS_DIRECTIVE = {
+    "contrarian": ("These MUST CHALLENGE the baseline approach itself — question whether the framing, "
+                   "tool, or strategy is even right (not just refine it)."),
+    "vantage": ("These MUST be questions whose answer would DIFFER depending on which environment / "
+                "server / identity / credential / token you investigate from — name the vantage axis "
+                "in each (e.g. 'from prod vs staging', 'as which DB user')."),
+}
+
+
+def questions_prompt(problem, framing, n, avoid=None, evidence=None, family=None):
     avoid_block = ""
     if avoid:
         bullets = "\n".join(f"- {q}" for q in avoid)
         avoid_block = (
             "\nDo NOT repeat or paraphrase these already-considered questions:\n"
             f"{bullets}\n"
+        )
+    family_block = ""
+    if family:
+        directive = _LENS_DIRECTIVE.get(family.get("lens", "scoped"), "")
+        family_block = (
+            f"\nGenerate questions ONLY within this FAMILY of unknowns:\n"
+            f"  FAMILY: {family.get('name', '')} — {family.get('scope', '')}\n"
+            f"  {directive}\n"
         )
     return (
         "You are finding the key questions whose answers would most improve a RESPONSE to "
@@ -225,7 +242,7 @@ def questions_prompt(problem, framing, n, avoid=None, evidence=None):
         f"{_evidence_block(evidence, 'resolved — do NOT ask about these again')}"
         f"\nGOAL: {framing.get('goal', '')}\n"
         f"RESPONSE TYPE: {framing.get('decision', '')}\n"
-        f"{avoid_block}\n"
+        f"{avoid_block}{family_block}\n"
         f"Propose {n} DISTINCT key questions whose answers are currently unknown and "
         "would change or improve the response to this prompt. Cover DIFFERENT hidden "
         "assumptions; avoid near-duplicates.\n\n"
@@ -315,7 +332,9 @@ def _parse_question_items(obj):
         out.append({"question": text,
                     "type": (q.get("type") or "other").strip(),
                     "why": (q.get("why") or "").strip(),
-                    "target": (q.get("target") or "").strip()})
+                    "target": (q.get("target") or "").strip(),
+                    "family": (q.get("family") or "").strip(),   # families layer (else "")
+                    "lens": (q.get("lens") or "").strip()})
     return out
 
 
@@ -397,6 +416,87 @@ def consolidate_questions(problem, candidates, model, timeout=150, sink=None):
             if isinstance(r, dict) and r.get("merged_count") is not None:
                 o["merged_count"] = r.get("merged_count")
     return out
+
+
+# ── families layer (a tier above questions) ──────────────────────────────────
+
+_VANTAGE_HINT = ("system", "server", "api", "database", "db ", "deploy", "auth", "token", "credential",
+                 "environment", "config", "network", "integration", "service", "infrastructure",
+                 "pipeline", "access", "permission", "endpoint", "cloud", "container", "repo", "code")
+
+
+def _vantage_relevant(framing):
+    """Cheap gate: does the task involve systems/access/environments (so vantage matters)?"""
+    blob = f"{framing.get('goal', '')} {framing.get('decision', '')}".lower()
+    return any(h in blob for h in _VANTAGE_HINT)
+
+
+def families_prompt(problem, framing, n_scoped, contrarian, vantage):
+    lenses = [f"- {n_scoped} SCOPED families: each a DISTINCT region/dimension of the unknowns "
+              "(lens \"scoped\")."]
+    if contrarian:
+        lenses.append("- 1 CONTRARIAN family (lens \"contrarian\"): unknowns that challenge the baseline "
+                      "approach itself — what if the framing/tool/strategy is wrong?")
+    if vantage:
+        lenses.append("- 1 VANTAGE family (lens \"vantage\"): unknowns whose answer would DIFFER by which "
+                      "environment / server / identity / credential / token you investigate from.")
+    return (
+        "You are organizing the key unknowns about a prompt into FAMILIES before drilling into "
+        "individual questions.\n\n"
+        f"PROMPT:\n{problem}\n\nGOAL: {framing.get('goal', '')}\n"
+        f"RESPONSE TYPE: {framing.get('decision', '')}\n\n"
+        "Propose these families (each a distinct grouping of related unknowns):\n"
+        + "\n".join(lenses) + "\n\n"
+        "Return ONLY a JSON object:\n"
+        '{"families": [{"name": str, "scope": str, "lens": "scoped"|"contrarian"|"vantage"}, ...]}\n'
+        "- name: 2-5 word family label. scope: one sentence on what unknowns it covers.\n"
+        "Respond ONLY with the JSON object."
+    )
+
+
+def generate_families(problem, framing, model, n_scoped=3, contrarian=True, vantage="auto",
+                      timeout=180, sink=None):
+    """Stage 1a. Returns (families, error). Each family: {name, scope, lens}. `vantage`:
+    "on" | "off" | "auto" (include only when the task involves systems/access)."""
+    want_vantage = (vantage == "on") or (vantage == "auto" and _vantage_relevant(framing))
+    obj, err = _call_json(model, families_prompt(problem, framing, n_scoped, contrarian, want_vantage),
+                          timeout, num_predict=600, sink=sink)
+    fams = []
+    items = obj.get("families") if isinstance(obj, dict) else None
+    for f in (items or []):
+        if isinstance(f, dict) and (f.get("name") or "").strip():
+            fams.append({"name": (f.get("name") or "").strip(),
+                         "scope": (f.get("scope") or "").strip(),
+                         "lens": (f.get("lens") or "scoped").strip()})
+    return fams, (None if fams else (err or "no families generated"))
+
+
+def generate_family_questions(problem, framing, families, model, n_per=3, timeout=180,
+                              evidence=None, sink=None):
+    """Stage 1b. For each family, generate n_per questions scoped to it (parallel), tagged with
+    family + lens. Returns the families list, each carrying a 'questions' list of records."""
+    if not families:
+        return []
+
+    def _one(fam):
+        obj, err = _call_json(model, questions_prompt(problem, framing, n_per, evidence=evidence,
+                                                      family=fam), timeout, num_predict=900)
+        recs = _parse_question_items(obj)
+        for r in recs:
+            r["family"] = fam["name"]
+            r["lens"] = fam.get("lens", "scoped")
+        out = dict(fam)
+        out["questions"] = recs
+        return out
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(families), MAX_WORKERS)) as ex:
+        return list(ex.map(_one, families))
+
+# NOTE: there is deliberately NO family-level "narrow/negate" stage. Families are domain EXPOSURE
+# (coverage) only — every question is scored on its own merit by the per-question VOI pipeline, and
+# selection (discard threshold + MMR with the family-diversity tier) does the filtering. A low-average
+# family can still hold the single highest-value question (esp. contrarian/vantage), so we never drop a
+# whole family; irrelevant families self-prune because their questions score low individually.
 
 
 def project_answers(problem, framing, rec, model, m, timeout=120, capture=False, evidence=None):

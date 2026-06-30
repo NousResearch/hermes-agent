@@ -229,6 +229,25 @@ def question_similarity(a, b):
     return text_jaccard(a.get("question", ""), b.get("question", ""))
 
 
+def hierarchical_similarity(a, b, family_sim=0.5):
+    """Three-tier redundancy kernel: `family > target > question`.
+
+    same `target` → 1.0 (fully redundant — collapse) · else same `family` → `family_sim`
+    (partial — keep both, but MMR spreads selection across families) · else token overlap.
+    Generalizes `question_similarity`; with no `family` on the records it reduces to it.
+    Use as the `sim_fn` for MMR when the families layer is on.
+    """
+    ta = (a.get("target") or "").strip().lower()
+    tb = (b.get("target") or "").strip().lower()
+    if ta and tb and ta == tb:
+        return 1.0
+    fa = (a.get("family") or "").strip().lower()
+    fb = (b.get("family") or "").strip().lower()
+    if fa and fb and fa == fb:
+        return clamp01(family_sim)
+    return text_jaccard(a.get("question", ""), b.get("question", ""))
+
+
 def is_duplicate(candidate, seen, threshold=0.8):
     """True if `candidate` is ~the same as any record in `seen`."""
     return any(question_similarity(candidate, s) >= threshold for s in seen)
@@ -273,7 +292,8 @@ def mmr_select(candidates, k, lam=0.4, sim_fn=question_similarity):
 
 
 def rank_and_select(records, *, discard_threshold, pre_answer_threshold,
-                    hard_cap, mmr_lambda=0.4, redundancy_threshold=0.8):
+                    hard_cap, mmr_lambda=0.4, redundancy_threshold=0.8,
+                    sim_fn=question_similarity):
     """Gate → keep (value ≥ discard) → collapse redundant clusters → MMR-diversify
     to hard_cap → classify.
 
@@ -304,7 +324,7 @@ def rank_and_select(records, *, discard_threshold, pre_answer_threshold,
             r["recommendation"] = "REDUNDANT"
             discarded.append(r)
 
-    bucket = mmr_select(representatives, hard_cap, lam=mmr_lambda)
+    bucket = mmr_select(representatives, hard_cap, lam=mmr_lambda, sim_fn=sim_fn)
     bucket.sort(key=lambda r: r.get("value", 0.0), reverse=True)
     bucket_ids = {id(r) for r in bucket}
     for r in representatives:

@@ -83,6 +83,38 @@ MODES = {
     },
 }
 
+# Families layer (a MODES-style block, NOT a DEFAULTS key — it's a dict and would crash the
+# scalar _cast/auto-flag loop). DEFAULT ON. Families are domain EXPOSURE only (coverage +
+# diversity + report grouping); there is no family-level negation — every question is scored on
+# its own merit. Toggle `enabled` via --families/--no-families or INFOGAIN_FAMILIES; the rest are
+# constants here. Cost is bounded by questions_per_family × (n_scoped + contrarian + vantage).
+FAMILIES = {
+    "enabled": True,
+    "n_scoped": 3,
+    "contrarian": True,
+    "vantage": "auto",          # "auto" (gate on systems/access prompts) | "on" | "off"
+    "questions_per_family": 3,
+    "family_sim": 0.5,          # MMR cross-family diversity penalty (vs 1.0 same-target collapse)
+    "families_model": "glm",    # generation model for families + per-family questions
+}
+
+
+def _truthy(s):
+    return str(s).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_families(args):
+    """families config with `enabled` resolved: CLI --families/--no-families > INFOGAIN_FAMILIES env
+    > FAMILIES['enabled']. (Kept out of the scalar DEFAULTS auto-loop on purpose.)"""
+    fam = dict(FAMILIES)
+    cli = getattr(args, "families", None)
+    env = os.environ.get("INFOGAIN_FAMILIES")
+    if cli is not None:
+        fam["enabled"] = bool(cli)
+    elif env is not None:
+        fam["enabled"] = _truthy(env)
+    return fam
+
 
 def _cast(key, val):
     if key in _INT:
@@ -123,6 +155,17 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
     judge_model = resolve_alias(cfg["value_judge_model"])
     cons_model = resolve_alias(cfg["consolidate_model"])
 
+    # Families layer (domain exposure): when on, round 1 generates scoped + contrarian + vantage
+    # families and questions within each; selection still scores each question on its own merit, with
+    # MMR using the family-diversity tier (hierarchical_similarity) to spread picks across families.
+    fam_cfg = cfg.get("families") or {}
+    families_on = bool(fam_cfg.get("enabled"))
+    fam_model = resolve_alias(fam_cfg.get("families_model", cfg["question_gen_model"]))
+    fam_sim = float(fam_cfg.get("family_sim", 0.5))
+    sim_fn = ((lambda a, b: voi.hierarchical_similarity(a, b, fam_sim)) if families_on
+              else voi.question_similarity)
+    families_meta = []
+
     log(f"framing problem + baseline plan via {plan_model} ...")
     framing_sink = [] if trace else None
     framing, ferr = pipeline.frame_and_plan(problem, plan_model, cfg["plan_timeout"],
@@ -139,20 +182,36 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
     for _ in range(cfg["max_rounds"]):
         rounds_used += 1
         avoid = [r["question"] for r in seen]
-        log(f"round {rounds_used}: generating {cfg['questions_per_round']} "
-            f"questions via {qg_model} ...")
-        gen_sink = [] if trace else None
-        new_qs, _ = pipeline.generate_questions(
-            problem, framing, qg_model, cfg["questions_per_round"], avoid,
-            cfg["gen_timeout"], sink=gen_sink,
-            samples=cfg["gen_samples"], temperature=cfg["gen_temperature"], evidence=evidence)
-        cons_sink = None
-        if cfg["gen_samples"] > 1 and len(new_qs) > 1:
-            log(f"round {rounds_used}: consolidating {len(new_qs)} sampled candidates "
-                f"via {cons_model} ...")
-            cons_sink = [] if trace else None
-            new_qs = pipeline.consolidate_questions(
-                problem, new_qs, cons_model, cfg["gen_timeout"], sink=cons_sink)
+        gen_sink, cons_sink = None, None
+        if families_on and rounds_used == 1:
+            # Round 1 with families: generate families (once), then questions within each.
+            log(f"round 1: generating families + per-family questions via {fam_model} ...")
+            fams, _fe = pipeline.generate_families(
+                problem, framing, fam_model, n_scoped=fam_cfg.get("n_scoped", 3),
+                contrarian=fam_cfg.get("contrarian", True), vantage=fam_cfg.get("vantage", "auto"),
+                timeout=cfg["gen_timeout"])
+            fams_q = pipeline.generate_family_questions(
+                problem, framing, fams, fam_model, n_per=fam_cfg.get("questions_per_family", 3),
+                timeout=cfg["gen_timeout"], evidence=evidence)
+            families_meta = [{"name": f["name"], "scope": f.get("scope", ""),
+                              "lens": f.get("lens", "scoped")} for f in fams_q]
+            new_qs = voi.dedupe([q for f in fams_q for q in f.get("questions", [])])
+            log(f"round 1: {len(families_meta)} families -> {len(new_qs)} questions")
+        else:
+            # Flat generation (families off, or refill rounds 2+).
+            log(f"round {rounds_used}: generating {cfg['questions_per_round']} "
+                f"questions via {qg_model} ...")
+            gen_sink = [] if trace else None
+            new_qs, _ = pipeline.generate_questions(
+                problem, framing, qg_model, cfg["questions_per_round"], avoid,
+                cfg["gen_timeout"], sink=gen_sink,
+                samples=cfg["gen_samples"], temperature=cfg["gen_temperature"], evidence=evidence)
+            if cfg["gen_samples"] > 1 and len(new_qs) > 1:
+                log(f"round {rounds_used}: consolidating {len(new_qs)} sampled candidates "
+                    f"via {cons_model} ...")
+                cons_sink = [] if trace else None
+                new_qs = pipeline.consolidate_questions(
+                    problem, new_qs, cons_model, cfg["gen_timeout"], sink=cons_sink)
         dropped = [q["question"] for q in new_qs if voi.is_duplicate(q, seen)]
         fresh = [q for q in new_qs if not voi.is_duplicate(q, seen)]
         seen.extend(fresh)
@@ -182,7 +241,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
         bucket, _ = voi.rank_and_select(
             scored_all, discard_threshold=cfg["discard_threshold"],
             pre_answer_threshold=cfg["pre_answer_threshold"],
-            hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"])
+            hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"], sim_fn=sim_fn)
         best_fresh = voi.best_value(fresh)
         log(f"round {rounds_used}: bucket={len(bucket)} "
             f"(target {cfg['target_bucket_size']}), best fresh value={best_fresh:.2f}")
@@ -214,7 +273,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
     bucket, discarded = voi.rank_and_select(
         scored_all, discard_threshold=cfg["discard_threshold"],
         pre_answer_threshold=cfg["pre_answer_threshold"],
-        hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"])
+        hard_cap=cfg["hard_cap"], mmr_lambda=cfg["mmr_lambda"], sim_fn=sim_fn)
 
     usage = pipeline.get_usage()
     usage["wall_seconds"] = round(time.time() - _t0, 1)
@@ -226,6 +285,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
         "framing_error": ferr,
         "config": cfg,
         "rounds_used": rounds_used,
+        "families": families_meta,  # [] when families off; else [{name, scope, lens}]
         "candidates_considered": len(scored_all),
         "all_scored": scored_all,  # every scored candidate (pre-gate/threshold) — for analysis/trace
         "bucket": bucket,
@@ -319,19 +379,36 @@ def _weight_clarification(rec):
             f"(~{(1.0 - p) * 100:.0f}% chance that's off in a way that matters).")
 
 
-def _ranked_list(bucket):
-    """The headline output: key questions ranked by weight, each with a clarification
-    of what its weight means."""
-    if not bucket:
-        return ("_No questions worth answering — the prompt is already specified well enough "
-                "for a good response._")
-    out = []
-    for i, r in enumerate(bucket):
-        out.append(
-            f"{i + 1}. **[weight {r['value']:.2f}]** {r['question']}  "
+def _ranked_item(n, r):
+    return (f"{n}. **[weight {r['value']:.2f}]** {r['question']}  "
             f"_({r.get('recommendation', '')})_\n"
             f"   - *what the weight means:* {_weight_clarification(r)}\n"
             f"   - *resolves:* {r.get('target', '') or '—'}")
+
+
+def _ranked_list(bucket):
+    """The headline output: key questions ranked by weight, each with a clarification
+    of what its weight means. When questions carry a `family` (families layer on), group by
+    family (families ordered by their strongest question; contrarian/vantage lenses labelled)."""
+    if not bucket:
+        return ("_No questions worth answering — the prompt is already specified well enough "
+                "for a good response._")
+    if not any((r.get("family") or "").strip() for r in bucket):
+        return "\n".join(_ranked_item(i + 1, r) for i, r in enumerate(bucket))
+
+    groups = {}
+    for r in bucket:
+        groups.setdefault((r.get("family") or "(ungrouped)").strip() or "(ungrouped)", []).append(r)
+    fam_order = sorted(groups, key=lambda f: -max(x.get("value", 0.0) for x in groups[f]))
+    out, n = [], 0
+    for fam in fam_order:
+        items = sorted(groups[fam], key=lambda x: -x.get("value", 0.0))
+        lens = (items[0].get("lens") or "").strip()
+        tag = f"  _· {lens} lens_" if lens and lens != "scoped" else ""
+        out.append(f"\n### {fam}{tag}")
+        for r in items:
+            n += 1
+            out.append(_ranked_item(n, r))
     return "\n".join(out)
 
 
@@ -498,19 +575,27 @@ def _dry_run(problem, cfg, evidence=None):
     q_stub = {"question": "<a candidate question>"}
     a_stub = [{"answer": "<answer 1>"}, {"answer": "<answer 2>"}]
     sep = "\n" + "=" * 72 + "\n"
-    print(sep.join([
-        "DRY RUN — prompts only, no model calls.",
-        "STAGE 0 — frame_and_plan:\n\n" + pipeline.frame_prompt(problem, evidence),
-        "STAGE 1 — generate_questions:\n\n" + pipeline.questions_prompt(
+    fam = cfg.get("families") or {}
+    stages = ["DRY RUN — prompts only, no model calls.",
+              "STAGE 0 — frame_and_plan:\n\n" + pipeline.frame_prompt(problem, evidence)]
+    if fam.get("enabled"):
+        stages.append("STAGE 1a — generate_families:\n\n" + pipeline.families_prompt(
+            problem, framing_stub, fam.get("n_scoped", 3), fam.get("contrarian", True), True))
+        stages.append("STAGE 1b — per-family questions (example: vantage lens):\n\n"
+                      + pipeline.questions_prompt(
+                          problem, framing_stub, fam.get("questions_per_family", 3), evidence=evidence,
+                          family={"name": "<family>", "scope": "<scope>", "lens": "vantage"}))
+    else:
+        stages.append("STAGE 1 — generate_questions:\n\n" + pipeline.questions_prompt(
             problem, framing_stub, cfg["questions_per_round"],
-            avoid=["<already-considered question>"], evidence=evidence),
-        "STAGE 2 — project_answers (per question, parallel):\n\n"
-        + pipeline.answers_prompt(problem, framing_stub, q_stub["question"],
-                                  cfg["answers_per_question"], evidence),
-        "STAGE 3 — judge_plan_change (per question, parallel):\n\n"
-        + pipeline.judge_prompt(problem, framing_stub, "<baseline plan from stage 0>",
-                                q_stub["question"], a_stub),
-    ]))
+            avoid=["<already-considered question>"], evidence=evidence))
+    stages.append("STAGE 2 — project_answers (per question, parallel):\n\n"
+                  + pipeline.answers_prompt(problem, framing_stub, q_stub["question"],
+                                            cfg["answers_per_question"], evidence))
+    stages.append("STAGE 3 — judge_plan_change (per question, parallel):\n\n"
+                  + pipeline.judge_prompt(problem, framing_stub, "<baseline plan from stage 0>",
+                                          q_stub["question"], a_stub))
+    print(sep.join(stages))
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -536,6 +621,10 @@ def build_parser():
                    help="Preset over the breadth knobs: 'focus' (default — prioritized top few) "
                         "or 'breadth' (wider coverage: more questions/rounds, bigger bucket). "
                         "Individual flags and INFOGAIN_* env vars override the preset.")
+    p.add_argument("--families", action=argparse.BooleanOptionalAction, default=None,
+                   help="Generate FAMILIES of questions first (scoped + contrarian + vantage) for "
+                        "coverage, then score each question on its merit. Default ON; pass "
+                        "--no-families for the flat generator. (Special-cased outside the auto-flags.)")
     # tunable overrides
     for key in DEFAULTS:
         flag = "--" + key.replace("_", "-")
@@ -563,6 +652,7 @@ def resolve_config(args):
             cfg[key] = overrides[key]
         else:
             cfg[key] = DEFAULTS[key]
+    cfg["families"] = _resolve_families(args)  # dict block (kept out of the scalar loop)
     return cfg
 
 

@@ -547,3 +547,82 @@ class TestMem0WriteMetadata:
         adds = [c for c in provider._backend.captured if c[0] == "add"]
         assert adds, "expected an add call from sync_turn"
         assert adds[-1][2]["metadata"] == {"channel": "discord"}
+
+
+class _SentinelBackend:
+    def __init__(self, *args):
+        self.args = args
+
+
+class TestCreateBackendRouting:
+    """_create_backend() must pick the backend matching the configured mode/host."""
+
+    def _provider(self, monkeypatch, *, mode="platform", api_key="k", host=""):
+        # Neutralize lazy-install so the routing decision is all we exercise.
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None, raising=False)
+        provider = Mem0MemoryProvider()
+        provider._mode = mode
+        provider._api_key = api_key
+        provider._host = host
+        provider._config = {"oss": {"vector_store": {"provider": "qdrant"}}}
+        return provider
+
+    def test_routes_to_selfhosted_when_host_set(self, monkeypatch):
+        captured = {}
+
+        class SH(_SentinelBackend):
+            def __init__(self, api_key, host):
+                captured["args"] = (api_key, host)
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.SelfHostedBackend", SH)
+        provider = self._provider(monkeypatch, host="http://sh:8888", api_key="adminkey")
+        backend = provider._create_backend()
+        assert isinstance(backend, SH)
+        assert captured["args"] == ("adminkey", "http://sh:8888")
+
+    def test_routes_to_platform_when_no_host(self, monkeypatch):
+        class PB(_SentinelBackend):
+            def __init__(self, api_key):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.PlatformBackend", PB)
+        provider = self._provider(monkeypatch, host="")
+        assert isinstance(provider._create_backend(), PB)
+
+    def test_routes_to_oss_when_mode_oss(self, monkeypatch):
+        class OB(_SentinelBackend):
+            def __init__(self, cfg):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.OSSBackend", OB)
+        provider = self._provider(monkeypatch, mode="oss")
+        assert isinstance(provider._create_backend(), OB)
+
+    def test_oss_mode_takes_precedence_over_host(self, monkeypatch):
+        class OB(_SentinelBackend):
+            def __init__(self, cfg):
+                pass
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.OSSBackend", OB)
+        provider = self._provider(monkeypatch, mode="oss", host="http://sh:8888")
+        assert isinstance(provider._create_backend(), OB)
+
+
+class TestSelfHostedConfig:
+    """Config plumbing for self-hosted (MEM0_HOST env + is_available)."""
+
+    def test_load_config_reads_mem0_host_env(self, monkeypatch):
+        monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
+        assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
+
+    def test_is_available_true_with_host_only(self, monkeypatch):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.setenv("MEM0_MODE", "platform")
+        monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
+        assert Mem0MemoryProvider().is_available() is True
+
+    def test_is_available_false_without_key_or_host(self, monkeypatch):
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        monkeypatch.setenv("MEM0_MODE", "platform")
+        assert Mem0MemoryProvider().is_available() is False

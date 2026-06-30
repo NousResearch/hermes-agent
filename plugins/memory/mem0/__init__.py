@@ -9,10 +9,15 @@ Configuration
 -------------
 Secret (lives in $HERMES_HOME/.env or the environment):
   MEM0_API_KEY       — Mem0 Platform API key (required for platform mode)
+  MEM0_HOST          — Base URL of a self-hosted Mem0 server. When set, the
+                       plugin talks to that server directly over HTTP
+                       (X-API-Key auth) instead of the cloud API.
 
 Behavioral settings (live in $HERMES_HOME/mem0.json, set via `hermes memory
 setup`):
   mode               — Backend mode: "platform" (default) or "oss"
+  host               — Self-hosted Mem0 server URL (alt: MEM0_HOST env var).
+                       When set, routes to the self-hosted HTTP backend.
   user_id            — Canonical user identifier. When set, it is applied
                        uniformly across every gateway (CLI, Telegram, Slack,
                        Discord, …) so the same human gets one merged memory
@@ -81,6 +86,7 @@ def _load_config() -> dict:
     config = {
         "mode": os.environ.get("MEM0_MODE", "platform"),
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "oss": {},
     }
@@ -214,6 +220,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._backend = None
         self._mode = "platform"
         self._api_key = ""
+        self._host = ""
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
@@ -239,7 +246,9 @@ class Mem0MemoryProvider(MemoryProvider):
         mode = cfg.get("mode", "platform")
         if mode == "oss":
             return bool(cfg.get("oss", {}).get("vector_store"))
-        return bool(cfg.get("api_key"))
+        # Platform needs an api_key; self-hosted needs a host (api_key optional
+        # when the server runs with AUTH_DISABLED).
+        return bool(cfg.get("api_key") or cfg.get("host"))
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -262,6 +271,7 @@ class Mem0MemoryProvider(MemoryProvider):
         api_key_required = mode != "oss"
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -288,6 +298,9 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._mode == "oss":
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))
+            if self._host:
+                from ._backend import SelfHostedBackend
+                return SelfHostedBackend(self._api_key, self._host)
             from ._backend import PlatformBackend
             return PlatformBackend(self._api_key)
         except Exception as e:
@@ -342,6 +355,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = _load_config()
         self._mode = self._config.get("mode", "platform")
         self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
         # Resolution order for user_id:
         #   1. Operator-configured MEM0_USER_ID (env or $HERMES_HOME/mem0.json) —
         #      the canonical principal, applied across every gateway so the same
@@ -378,8 +392,14 @@ class Mem0MemoryProvider(MemoryProvider):
         return {"channel": self._channel} if self._channel else {}
 
     def system_prompt_block(self) -> str:
-        mode_label = "platform (cloud API)" if self._mode == "platform" else "OSS (self-hosted)"
-        rerank_note = " Rerank is available on search." if self._mode == "platform" else ""
+        if self._host:
+            mode_label = "self-hosted (HTTP API)"
+        elif self._mode == "platform":
+            mode_label = "platform (cloud API)"
+        else:
+            mode_label = "OSS (self-hosted)"
+        # Rerank is a Mem0 Platform feature only.
+        rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
         return (
             "# Mem0 Memory\n"
             f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
@@ -576,7 +596,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 )
                 self._record_success()
                 event_id = result.get("event_id") if isinstance(result, dict) else None
-                msg = "Fact stored." if self._mode == "oss" else "Fact queued for storage."
+                # Cloud add is async (server-side extraction); OSS and self-hosted store synchronously.
+                msg = "Fact stored." if (self._mode == "oss" or self._host) else "Fact queued for storage."
                 return json.dumps({"result": msg, "event_id": event_id})
             except Exception as e:
                 self._record_failure()

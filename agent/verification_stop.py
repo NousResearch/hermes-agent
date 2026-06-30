@@ -137,12 +137,12 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
 
     Precedence: an explicit ``HERMES_VERIFY_ON_STOP`` env var wins, then an
     explicit ``agent.verify_on_stop`` config value. The config default is
-    ``False`` (see ``DEFAULT_CONFIG``) — verify-on-stop is OFF unless the user
-    opts in. The legacy ``"auto"`` sentinel is still honored for anyone who
-    sets it explicitly: it resolves to ON for interactive coding surfaces
-    (CLI, TUI, desktop) and programmatic callers, and OFF for conversational
-    messaging surfaces (Telegram, Discord, etc.). A missing/unknown value
-    falls back to OFF.
+    ``"auto"`` (see ``DEFAULT_CONFIG``) — surface-aware: ON for interactive
+    coding surfaces (CLI, TUI, desktop) and programmatic callers, OFF for
+    conversational messaging surfaces (Telegram, Discord, etc.) where the
+    verification narrative would reach a human as chat noise. An explicit
+    bool forces the behavior in either direction. A missing or unrecognized
+    value falls back to the surface-aware ``"auto"`` default.
     """
     env = os.environ.get("HERMES_VERIFY_ON_STOP")
     if env is not None:
@@ -165,10 +165,9 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
         if token in {"0", "false", "no", "off"}:
             return False
         if token == "auto":
-            # Explicit opt-in to the legacy surface-aware behavior.
             return not _session_is_messaging_surface()
-    # Missing or unknown value -> OFF (the new default).
-    return False
+    # Missing or unrecognized value -> surface-aware "auto" default.
+    return not _session_is_messaging_surface()
 
 
 def _candidate_cwds(paths: Iterable[str]) -> list[Path]:

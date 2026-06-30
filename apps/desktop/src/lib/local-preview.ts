@@ -83,6 +83,10 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   if (/^file:\/\//i.test(raw)) {
     try {
       path = decodeURIComponent(new URL(raw).pathname)
+      // The WHATWG URL parser prefixes a "/" before a Windows drive letter
+      // (file:///C:/… → "/C:/…"), which the desktop file read can't locate.
+      // Strip it only when it precedes a drive letter; POSIX paths are kept.
+      path = path.replace(/^\/([A-Za-z]:)/, '$1')
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }

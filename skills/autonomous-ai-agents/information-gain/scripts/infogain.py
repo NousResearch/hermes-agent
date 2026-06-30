@@ -40,11 +40,13 @@ DEFAULTS = {
     "min_bucket_size": 3,
     "target_bucket_size": 5,
     "hard_cap": 7,
-    "discard_threshold": 0.40,
+    "discard_threshold": 0.30,   # calibrated: realized-improvement knee is at value~0.30 (below it
+                                 # realized change ~0.15, above ~0.70). Was 0.40 (guessed, too high).
     "pre_answer_threshold": 0.60,
-    "refill_floor": 0.30,
-    "rel_keep_frac": 0.0,   # relative-knee selection: 0 = absolute discard_threshold (current);
-                            # >0 = keep value >= max(abs_floor, rel_keep_frac * top_value). Set from 1b.
+    "refill_floor": 0.30,        # matches the knee — stop refilling when best fresh < 0.30
+    "rel_keep_frac": 0.0,   # relative-knee selection (available, off by default): >0 => keep value >=
+                            # max(abs_floor, rel_keep_frac*top). Evidence favors the calibrated absolute,
+                            # so this stays off; flip on for a domain whose top runs below the floor.
     "questions_per_round": 6,
     "gen_samples": 1,
     "gen_temperature": 0.0,

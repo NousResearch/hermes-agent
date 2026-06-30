@@ -71,8 +71,12 @@ exploration value = √(uncertainty × value-of-answering)
 > (`evsi-validation-findings.md` §Domain sensitivity) shows the "U inert" result was a **life-domain
 > artifact**: on agentic/tool/coding tasks U's spread is **0.26 (vs 0.07)** and it is the
 > **ask-the-user vs go-find-out discriminator** (via `derivable_prob` — high derivable → U→0 → route to
-> research, the Phase-2 trigger). So **`U` stays.** The domain also breaks the absolute thresholds
-> (61% of agentic candidates fall below the life-tuned 0.40) → rank-relative selection is now required.
+> research, the Phase-2 trigger). So **`U` stays.** The domain looked like it broke the absolute thresholds
+> (61% of agentic candidates fall below the life-tuned 0.40) — but the later realized-improvement scan
+> (`evsi-validation-findings.md` §Stop + breadth calibration) showed most of those 61% are *genuinely*
+> low-value (realized improvement ~0.15 below value ~0.30), so the fix was **calibrating the absolute
+> floor (0.40 → 0.30)**, not going relative. The rank-relative mechanism (`rel_keep_frac`) is built but
+> stays **off**.
 > **Decision (2026-06): the formula is FROZEN** — no changes on n=17. A de-confounded, **agentic**,
 > per-regime re-run (#21) that measures realized *stakes* and registers max-Δ as a competitor decides
 > every formula question; the wrapper build is gated on it.

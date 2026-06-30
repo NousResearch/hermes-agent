@@ -257,6 +257,43 @@ correct; de-confounded it holds its own). The strategic open question is emphasi
 loop (redundant with capable agents on investigable tasks) vs **surfacing the ranked user-only
 clarifications** (the report-only strength — the non-redundant value). Left for the user to steer.
 
+## Stop + breadth calibration (saturation + realized-improvement scans)
+
+Two cheap scans to set the "how wide to start" (breadth) and "when to stop evaluating" (floor) numbers
+from evidence instead of guesses (`evals/saturation_scan.py`; binning of the realized-change data).
+
+**Breadth — coverage does NOT saturate.** `saturation_scan.py` (distinct-target count vs `gen_samples`
+1→6, 5 prompts across domains) climbs monotonically — ~6→11→18→22→28→34 distinct targets, **~5–6 new
+distinct targets per *added* sample even at 5→6**, no knee in any domain. The model has an effectively
+unbounded supply of distinct questions, so **"generate until coverage saturates" is the wrong breadth
+rule** — more breadth just adds a low-value tail. ⇒ breadth must be bounded by **value, not coverage**;
+keep the initial breadth **modest**, and let the **families layer** do structured coverage (it targets
+high-value *regions* — scoped/contrarian/vantage — rather than sampling the tail). Don't raise sample counts.
+
+**Floor — realized-improvement knee at value ≈ 0.30.** Binning the n=105 realized pairs (agentic + life)
+by projected `q_value`:
+
+| q_value bin | mean realized_change |
+|---|---|
+| [0.00, 0.15) | 0.20 |
+| [0.15, 0.30) | 0.13 |
+| **[0.30, 0.45)** | **0.67** |
+| [0.45, 0.60) | 0.73 |
+| [0.60, 1.0] | 0.75 |
+
+Clean knee at ~0.30: below it questions barely move the response (~0.15), above it they substantially
+do (~0.70). The relative version agrees (below 0.33·top → 0.20; above → 0.56–0.75). **Course-correction:
+the absolute floor isn't *wrong* — the domain-scan's "61% below 0.40" are mostly genuinely-low-value
+go-find-out/just-do-it questions that *should* be dropped; 0.40 was simply mis-calibrated.** ⇒
+**`discard_threshold` 0.40 → 0.30** (recovers the 0.30–0.40 band, realized 0.67, that 0.40 wrongly
+dropped). The relative-knee mechanism (`rel_keep_frac`, §voi) is built and available but stays **off** —
+the calibrated absolute is better-supported and simpler; flip it on only for a domain whose top value
+runs below the floor.
+
+*Caveats:* n=105, mixed-domain, `realized_change` saturates at 0/1 (coarse); the de-confounded #21
+(pairwise stakes) gives the clean number. Breadth scan is generation-only (distinct targets, not value)
+— the value-saturation curve (scored) is the stronger but costlier confirmation, deferred.
+
 ## Caveats
 
 - 3 independent prompt clusters; n=51/n=17 overstate power. The +0.394 leans on gtm-plan (dropping it

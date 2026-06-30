@@ -37,7 +37,7 @@ metadata:
       prompt: Minimum bucket size for ranked questions?
     - key: information-gain.discard_threshold
       description: Value (0-1) below which a question is dropped as not valuable
-      default: 0.40
+      default: 0.30
       prompt: Discard threshold for low-value questions?
     - key: information-gain.max_rounds
       description: Max generation rounds while trying to fill the bucket
@@ -111,7 +111,7 @@ Given a prompt, a list of the **key questions ranked by weight** = exploration v
 response to the prompt*. Each ranked question carries a **plain-language clarification of what its
 weight means** (how much it would improve the response, and the assumption you'd otherwise make and
 its chance of being wrong), plus the recommendation (**PRE_ANSWER** ≥ 0.60 /
-**ASSUME_DEFAULT** ≥ 0.40). A detailed numeric table is included below the list. If nothing clears the
+**ASSUME_DEFAULT** ≥ 0.30). A detailed numeric table is included below the list. If nothing clears the
 bar, it says so — the prompt is already specified well enough for a good response. See
 `references/design-decisions.md` for the model.
 

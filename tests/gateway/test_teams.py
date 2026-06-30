@@ -4,7 +4,7 @@ import json
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -618,9 +618,11 @@ class TestTeamsMessageHandling:
         tenant_id="tenant-789",
         activity_id="activity-001",
         attachments=None,
+        value=None,
     ):
         activity = MagicMock()
         activity.text = text
+        activity.value = value
         activity.id = activity_id
         activity.from_ = MagicMock()
         activity.from_.id = from_id
@@ -731,6 +733,86 @@ class TestTeamsMessageHandling:
 
         event = adapter.handle_message.call_args[0][0]
         assert event.text == "what is the weather?"
+
+    @pytest.mark.anyio
+    async def test_card_submit_value_used_when_message_text_empty(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="",
+            value={
+                "action": {
+                    "type": "Action.Submit",
+                    "data": {"choice": "approve", "label": "Approve once"},
+                },
+            },
+            from_id="user-id",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == '{"choice":"approve","label":"Approve once"}'
+
+    @pytest.mark.anyio
+    async def test_message_text_wins_over_card_submit_value(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="typed answer",
+            value={"action": {"type": "Action.Submit", "data": {"choice": "hidden"}}},
+            from_id="user-id",
+        )
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.text == "typed answer"
+
+    @pytest.mark.anyio
+    async def test_approval_card_submit_value_resolves_without_agent_dispatch(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "aad-456")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            text="",
+            value={
+                "action": {
+                    "type": "Action.Submit",
+                    "data": {
+                        "hermes_action": "approve_once",
+                        "session_key": "teams:session",
+                        "cmd": "rm -rf /tmp/example",
+                        "desc": "dangerous test command",
+                    },
+                },
+            },
+            from_id="user-id",
+            from_aad_id="aad-456",
+        )
+
+        with (
+            patch("tools.approval.has_blocking_approval", return_value=True) as has_blocking,
+            patch("tools.approval.resolve_gateway_approval") as resolve,
+        ):
+            await adapter._on_message(self._make_ctx(activity))
+
+        adapter.handle_message.assert_not_awaited()
+        has_blocking.assert_called_once_with("teams:session")
+        resolve.assert_called_once_with("teams:session", "once")
 
     @pytest.mark.anyio
     async def test_deduplication(self):

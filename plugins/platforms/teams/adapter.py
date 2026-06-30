@@ -124,6 +124,82 @@ def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
         return default
 
 
+def _mock_like(value: Any) -> bool:
+    return value.__class__.__module__.startswith("unittest.mock")
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if value is None or _mock_like(value):
+        return default
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _has_field(value: Any, name: str) -> bool:
+    if value is None or _mock_like(value):
+        return False
+    if isinstance(value, dict):
+        return name in value
+    return hasattr(value, name)
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if hasattr(value, "__dict__") and not _mock_like(value):
+        return {
+            str(k): _jsonable(v)
+            for k, v in vars(value).items()
+            if not k.startswith("_")
+        }
+    return value
+
+
+def _adaptive_card_submitted_value(value: Any) -> Any:
+    if value is None or _mock_like(value):
+        return None
+
+    action = _field(value, "action")
+    action_type = str(_field(action, "type", "") or "").strip().lower()
+    if action is not None and action_type == "action.submit" and _has_field(action, "data"):
+        return _field(action, "data")
+    return value
+
+
+def _serialize_adaptive_card_submit_value(value: Any) -> Optional[str]:
+    """Return text for Teams message activities that carry Adaptive Card data."""
+    submitted = _adaptive_card_submitted_value(value)
+    if submitted is None or _mock_like(submitted):
+        return None
+
+    if isinstance(submitted, str):
+        trimmed = submitted.strip()
+        return trimmed or None
+
+    msteams = _field(submitted, "msteams")
+    msteams_type = str(_field(msteams, "type", "") or "").strip().lower()
+    if msteams is not None and msteams_type == "imback":
+        imback_value = _field(msteams, "value")
+        if isinstance(imback_value, str):
+            trimmed = imback_value.strip()
+            if trimmed:
+                return trimmed
+
+    try:
+        return json.dumps(
+            _jsonable(submitted),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 class _StaticAccessTokenProvider:
     """Minimal token-provider shim so outbound Graph delivery can reuse the shared client."""
 
@@ -825,6 +901,50 @@ class TeamsAdapter(BasePlatformAdapter):
             response.raise_for_status()
             return response.content
 
+    def _handle_card_action_message_fallback(self, value: Any, activity: Any) -> bool:
+        """Handle approval submit data when Teams sends it as a message activity."""
+        data = _adaptive_card_submitted_value(value)
+        if not isinstance(data, dict):
+            return False
+
+        hermes_action = str(data.get("hermes_action", "") or "")
+        session_key = str(data.get("session_key", "") or "")
+        if not hermes_action or not session_key:
+            return False
+
+        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
+        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}
+
+        if not allow_all:
+            if not allowed_csv:
+                logger.warning(
+                    "[teams] message action rejected: TEAMS_ALLOWED_USERS not configured "
+                    "and TEAMS_ALLOW_ALL_USERS not set - default deny"
+                )
+                return True
+            from_account = getattr(activity, "from_", None)
+            clicker_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and clicker_id not in allowed_ids:
+                logger.warning("[teams] Unauthorized message card action by %s - ignoring", clicker_id)
+                return True
+
+        choice_map = {
+            "approve_once": "once",
+            "approve_session": "session",
+            "approve_always": "always",
+            "deny": "deny",
+        }
+        choice = choice_map.get(hermes_action)
+        if not choice:
+            return True
+
+        from tools.approval import has_blocking_approval, resolve_gateway_approval
+
+        if has_blocking_approval(session_key):
+            resolve_gateway_approval(session_key, choice)
+        return True
+
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
         activity = ctx.activity
@@ -848,6 +968,11 @@ class TeamsAdapter(BasePlatformAdapter):
         text = ""
         if hasattr(activity, "text") and activity.text:
             text = activity.text
+        if not str(text or "").strip():
+            value = getattr(activity, "value", None)
+            if self._handle_card_action_message_fallback(value, activity):
+                return
+            text = _serialize_adaptive_card_submit_value(value) or ""
         # Strip <at>BotName</at> HTML tags that Teams prepends for @mentions
         if "<at>" in text:
             import re

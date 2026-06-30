@@ -376,6 +376,18 @@ class TestUpdateJob:
         assert get_job(job["id"]) is not None
         assert get_job("../escape") is None
 
+    def test_responsibility_id_round_trips(self, tmp_cron_dir):
+        """responsibility_id is stored, read-shaped (default None), and clearable."""
+        job = create_job(prompt="Email sweep", schedule="every 1h")
+        # Always present on read, None when unset (the coverage join relies on this).
+        assert get_job(job["id"])["responsibility_id"] is None
+        # Assign, then read back through both get_job and list_jobs.
+        assert update_job(job["id"], {"responsibility_id": "manage-pms"})["responsibility_id"] == "manage-pms"
+        assert get_job(job["id"])["responsibility_id"] == "manage-pms"
+        assert [j for j in list_jobs() if j["id"] == job["id"]][0]["responsibility_id"] == "manage-pms"
+        # Null clears it back to untriaged.
+        assert update_job(job["id"], {"responsibility_id": None})["responsibility_id"] is None
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):

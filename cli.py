@@ -15191,6 +15191,75 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def _maybe_replay_action_card(task_id: str, *, quiet: bool) -> bool:
+    """Deterministically replay a deferred tool-approval execution card.
+
+    Kanban workers spawn as ``hermes -p <profile> chat -q "work kanban task
+    <id>"``. When that task is a tool-gate *execution* card (its body carries
+    the ``hermes-action-replay`` marker, minted by
+    ``tools.tool_gate.approve_action``), the staged tool call is replayed here
+    directly — no LLM turn — and the card is completed/blocked. The process
+    exits on handling so the worker never enters the chat loop.
+
+    Returns ``False`` (and does nothing) for ordinary tasks. Built-in /
+    registry tools dispatch fine via ``handle_function_call``; MCP-backed
+    gated tools require the worker's MCP layer to have initialised (the
+    standard agent startup does this — see ``model_tools`` registry refresh).
+    """
+    try:
+        from hermes_cli import kanban_db as _kb
+        from tools import tool_gate as _tg
+    except Exception:
+        return False
+
+    try:
+        _conn = _kb.connect()
+        try:
+            task = _kb.get_task(_conn, task_id)
+        finally:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.debug("action-replay: could not load task %s: %s", task_id, exc)
+        return False
+
+    pending_id = _tg.parse_replay_marker(getattr(task, "body", "") or "") if task else None
+    if not pending_id:
+        return False
+
+    run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    try:
+        expected_run = int(run_id_raw) if run_id_raw else None
+    except (TypeError, ValueError):
+        expected_run = None
+
+    logger.info("action-replay: executing approved action %s (task %s)", pending_id, task_id)
+    out = _tg.replay_pending_action(pending_id)
+    msg = out.get("message", "")
+
+    try:
+        _conn2 = _kb.connect()
+        try:
+            if out.get("ok"):
+                _kb.complete_task(_conn2, task_id, result=msg, summary=msg,
+                                  expected_run_id=expected_run)
+            else:
+                _kb.block_task(_conn2, task_id, reason=msg, expected_run_id=expected_run)
+        finally:
+            try:
+                _conn2.close()
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.error("action-replay: failed to close task %s: %s", task_id, exc)
+
+    if not quiet:
+        print(msg)
+    sys.exit(0)
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -15478,6 +15547,12 @@ def main(
             # model's vision input.
             single_query_image_urls: list[str] = []
             _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+            if _kanban_task_id and _maybe_replay_action_card(_kanban_task_id, quiet=bool(quiet)):
+                # The card was a deferred tool-approval execution card; the
+                # staged action was replayed deterministically (no LLM turn)
+                # and the card closed. _maybe_replay_action_card exits the
+                # process, so this return is just defensive.
+                return
             if _kanban_task_id:
                 try:
                     from hermes_cli import kanban_db as _kb

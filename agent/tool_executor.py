@@ -947,7 +947,32 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        # Generic tool-approval gate (config-driven; default OFF). Single
+        # choke point for the sequential dispatch path — mirrors the
+        # concurrent path in agent_runtime_helpers.invoke_tool. A staged
+        # result is a non-error defer; a blocked result is a hard error.
+        _tool_gate_json: Optional[str] = None
+        _tool_gate_status: str = ""
+        if _block_msg is None and _guardrail_block_decision is None:
+            try:
+                from tools.approval import check_tool_approval
+                _gate = check_tool_approval(function_name, function_args)
+            except Exception as _gate_err:
+                logger.debug("tool approval gate error: %s", _gate_err)
+                _gate = {"approved": True}
+            if _gate.get("approved") is False:
+                _tool_gate_status = _gate.get("status", "blocked")
+                _gate_key = "error" if _tool_gate_status == "blocked" else "message"
+                _tool_gate_json = json.dumps(
+                    {"status": _tool_gate_status, _gate_key: _gate.get("message")},
+                    ensure_ascii=False,
+                )
+
+        _execution_blocked = (
+            _block_msg is not None
+            or _guardrail_block_decision is not None
+            or _tool_gate_json is not None
+        )
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -1055,6 +1080,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type="guardrail_block",
                 error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
+                middleware_trace=list(middleware_trace),
+            )
+        elif _tool_gate_json is not None:
+            # Tool held by the approval gate — return the staged/blocked
+            # result without executing. "staged" is a non-error defer; the
+            # agent should continue without retrying.
+            function_result = _tool_gate_json
+            tool_duration = 0.0
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status=_tool_gate_status or "blocked",
+                error_type="tool_approval_gate",
+                error_message=None,
                 middleware_trace=list(middleware_trace),
             )
         elif function_name == "todo":

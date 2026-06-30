@@ -165,10 +165,10 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "tools": ["skills_list", "skill_view", "skill_manage", "skill_discover", "skill_acquire"],
         "includes": []
     },
-    
+
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [

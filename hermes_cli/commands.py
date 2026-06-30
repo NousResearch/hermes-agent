@@ -247,6 +247,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
+
+    # Tools & Skills — Ingestion Gatekeeper
+    CommandDef("ingest", "Submit a task for ingestion into the Obsidian vault (routes to daily note, future note, or inbox)",
+               "Tools & Skills", args_hint="<task text>"),
 ]
 
 

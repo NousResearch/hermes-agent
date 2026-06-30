@@ -104,6 +104,32 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
+        # Interactive approval-button state (see approval.py). Buttons POST to
+        # an HTTP integration URL the *Mattermost server* can reach — set
+        # MATTERMOST_APPROVAL_CALLBACK_URL to enable them; otherwise the
+        # gateway falls back to typed `/approve` automatically.
+        self._approval_callback_url: str = (
+            config.extra.get("approval_callback_url", "")
+            or os.getenv("MATTERMOST_APPROVAL_CALLBACK_URL", "")
+        ).strip()
+        self._approval_host: str = (
+            os.getenv("MATTERMOST_APPROVAL_CALLBACK_HOST", "0.0.0.0")
+        )
+        try:
+            self._approval_port: int = int(
+                os.getenv("MATTERMOST_APPROVAL_CALLBACK_PORT", "8066"))
+        except (TypeError, ValueError):
+            self._approval_port = 8066
+        self._allowed_users: set = {
+            u.strip() for u in os.getenv("MATTERMOST_ALLOWED_USERS", "").split(",")
+            if u.strip()
+        }
+        self._approval_resolved: Dict[str, bool] = {}
+        self._approval_secrets: Dict[str, str] = {}
+        self._approval_posts: Dict[str, Dict[str, Any]] = {}
+        self._approval_runner: Any = None
+        self._approval_site: Any = None
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -297,6 +323,19 @@ class MattermostAdapter(BasePlatformAdapter):
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
+
+        # Start the approval callback site at boot when configured. Deferred
+        # action buttons are posted by an unattended *worker* process (the cron
+        # sweep) but the click callback must be received by this always-on
+        # gateway — so the site can't start lazily on a first local post. Gated
+        # on MATTERMOST_APPROVAL_CALLBACK_URL so only the profile that opts in
+        # (property-ops) binds the port; other gateways (Ezra) skip it.
+        if self._approval_callback_url:
+            try:
+                await self._ensure_approval_site()
+            except Exception as exc:
+                logger.warning("Mattermost: approval callback site not started: %s", exc)
+
         return True
 
     async def disconnect(self) -> None:
@@ -319,6 +358,15 @@ class MattermostAdapter(BasePlatformAdapter):
 
         if self._session and not self._session.closed:
             await self._session.close()
+
+        if self._approval_site is not None or self._approval_runner is not None:
+            try:
+                if self._approval_runner is not None:
+                    await self._approval_runner.cleanup()
+            except Exception:
+                pass
+            self._approval_site = None
+            self._approval_runner = None
 
         logger.info("Mattermost: disconnected")
 
@@ -370,6 +418,243 @@ class MattermostAdapter(BasePlatformAdapter):
             last_id = data["id"]
 
         return SendResult(success=True, message_id=last_id)
+
+    # ------------------------------------------------------------------
+    # Interactive approval buttons (inline threads + deferred cards)
+    # ------------------------------------------------------------------
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post an approve/deny button prompt for an inline (parked) approval.
+
+        Matches Discord's signature so ``_approval_notify_sync`` calls it
+        transparently. Returns ``success=False`` when buttons are not
+        configured (no callback URL) or the post fails, so the gateway falls
+        back to the typed `/approve` prompt automatically.
+        """
+        if not self._approval_callback_url:
+            return SendResult(success=False, error="approval callback URL not configured")
+        if not await self._ensure_approval_site():
+            return SendResult(success=False, error="approval callback site unavailable")
+
+        import secrets
+        from plugins.platforms.mattermost import approval as _approval
+
+        post_ref = secrets.token_hex(8)
+        token = secrets.token_hex(16)
+        is_tool = str(description or "").startswith("tool:")
+        header = "⚠️ **Approval required to run a tool:**" if is_tool else \
+                 "⚠️ **Dangerous command requires approval:**"
+        cmd_preview = command if len(command) <= 1500 else command[:1497] + "..."
+        text = f"{header}\n```\n{cmd_preview}\n```\nReason: {description}"
+
+        attachment = _approval.build_approval_attachment(
+            text=text,
+            callback_url=self._approval_callback_url,
+            kind="thread",
+            token=token,
+            post_ref=post_ref,
+            session_key=session_key,
+        )
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "message": "",
+            "props": {"attachments": [attachment]},
+        }
+        resolved_root = await self._thread_root_for_send(None, metadata)
+        if resolved_root:
+            payload["root_id"] = resolved_root
+
+        self._approval_secrets[post_ref] = token
+        self._approval_resolved[post_ref] = False
+        data = await self._api_post("posts", payload)
+        if not data or "id" not in data:
+            self._approval_secrets.pop(post_ref, None)
+            self._approval_resolved.pop(post_ref, None)
+            return SendResult(success=False, error="Failed to post approval prompt")
+        self._approval_posts[post_ref] = {
+            "post_id": data["id"], "channel_id": chat_id, "text": text}
+        return SendResult(success=True, message_id=data["id"])
+
+    async def send_action_card_approval(
+        self,
+        chat_id: str,
+        pending_id: str,
+        summary: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post approve/deny buttons that resolve a *deferred* action card.
+
+        Unlike :meth:`send_exec_approval`, the callback approves the staged
+        Kanban card (``tool_gate.approve_action``) rather than unblocking a
+        parked thread. Same auth/secret/double-click handling.
+        """
+        if not self._approval_callback_url:
+            return SendResult(success=False, error="approval callback URL not configured")
+        if not await self._ensure_approval_site():
+            return SendResult(success=False, error="approval callback site unavailable")
+
+        import secrets
+        from plugins.platforms.mattermost import approval as _approval
+
+        post_ref = secrets.token_hex(8)
+        token = secrets.token_hex(16)
+        text = f"🛂 **Action awaiting approval:**\n```\n{summary[:1500]}\n```\n(id `{pending_id}`)"
+        attachment = _approval.build_approval_attachment(
+            text=text,
+            callback_url=self._approval_callback_url,
+            kind="card",
+            token=token,
+            post_ref=post_ref,
+            pending_id=pending_id,
+        )
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "message": "",
+            "props": {"attachments": [attachment]},
+        }
+        self._approval_secrets[post_ref] = token
+        self._approval_resolved[post_ref] = False
+        data = await self._api_post("posts", payload)
+        if not data or "id" not in data:
+            self._approval_secrets.pop(post_ref, None)
+            self._approval_resolved.pop(post_ref, None)
+            return SendResult(success=False, error="Failed to post card approval prompt")
+        self._approval_posts[post_ref] = {
+            "post_id": data["id"], "channel_id": chat_id, "text": text}
+        return SendResult(success=True, message_id=data["id"])
+
+    async def _ensure_approval_site(self) -> bool:
+        """Lazily start the aiohttp callback site that buttons POST to."""
+        if self._approval_site is not None:
+            return True
+        try:
+            from aiohttp import web
+        except Exception:
+            logger.warning("Mattermost approval site: aiohttp unavailable")
+            return False
+        try:
+            app = web.Application()
+            app.router.add_post("/mattermost/approval", self._handle_approval_http)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, self._approval_host, self._approval_port)
+            await site.start()
+            self._approval_runner = runner
+            self._approval_site = site
+            logger.info("Mattermost approval callback listening on %s:%s/mattermost/approval",
+                        self._approval_host, self._approval_port)
+            return True
+        except Exception as exc:
+            logger.error("Mattermost approval site failed to start: %s", exc)
+            self._approval_runner = None
+            self._approval_site = None
+            return False
+
+    async def _handle_approval_http(self, request: Any) -> Any:
+        """aiohttp handler for Mattermost button integration POSTs."""
+        from aiohttp import web
+        from plugins.platforms.mattermost import approval as _approval
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"ephemeral_text": "Bad request"}, status=400)
+
+        context = body.get("context") or {}
+        posted_user_id = body.get("user_id") or ""
+        kind = str(context.get("kind") or "thread")
+
+        def _approve(pending_id: str):
+            from tools import tool_gate
+            return tool_gate.approve_action(pending_id)
+
+        def _discard(pending_id: str):
+            # Deny: drop the staged action so it can never replay, and archive
+            # its Kanban approval card (mirrors `hermes action reject`).
+            from tools import write_approval as wa
+            from tools import tool_gate
+            rec = wa.get_pending(tool_gate.SUBSYSTEM, pending_id)
+            wa.discard_pending(tool_gate.SUBSYSTEM, pending_id)
+            card_id = (rec or {}).get("card_id")
+            if card_id:
+                try:
+                    from hermes_cli import kanban_db as kb
+                    with kb.connect_closing() as conn:
+                        kb.archive_task(conn, card_id)
+                except Exception:
+                    pass
+
+        def _resolve(session_key: str, choice: str):
+            from tools.approval import resolve_gateway_approval
+            return resolve_gateway_approval(session_key, choice)
+
+        # Cross-process validation for deferred *card* buttons: the message was
+        # posted by an unattended worker, so the per-action secret + double-click
+        # state live in the pending record on disk (this gateway never saw an
+        # in-memory `post_ref`). Thread (inline) buttons keep the in-memory maps.
+        if kind == "card":
+            from tools import write_approval as wa
+            from tools import tool_gate
+            _pid = str(context.get("pending_id") or "")
+            _rec = wa.get_pending(tool_gate.SUBSYSTEM, _pid)
+
+            def _secret_for(_ref: str):
+                return (_rec or {}).get("mm_secret")
+
+            class _PendingGuard:
+                """Disk-backed double-click guard keyed on the pending record.
+                Returns True (=already-resolved → ignore) when the action is
+                gone or already claimed; claims it (persisted) on first click."""
+                def pop(self, _ref: str, _default: bool = True) -> bool:
+                    if _rec is None or _rec.get("mm_resolved"):
+                        return True
+                    wa.update_pending(tool_gate.SUBSYSTEM, _pid, {"mm_resolved": True})
+                    return False
+
+            expected_secret_for = _secret_for
+            resolved_store = _PendingGuard()
+        else:
+            expected_secret_for = lambda ref: self._approval_secrets.get(ref)
+            resolved_store = self._approval_resolved
+
+        result = _approval.handle_callback(
+            context,
+            posted_user_id,
+            allowed_users=self._allowed_users,
+            expected_secret_for=expected_secret_for,
+            resolved_store=resolved_store,
+            resolve_fn=_resolve,
+            approve_fn=_approve,
+            discard_fn=_discard,
+        )
+
+        status = result.get("status")
+        if not result.get("ok"):
+            code = 403 if status in {"unauthorized", "bad_token"} else 200
+            return web.json_response({"ephemeral_text": f"Not applied ({status})."}, status=code)
+
+        # Success — clean up secret + edit the post to drop the buttons.
+        post_ref = str(context.get("post_ref") or "")
+        self._approval_secrets.pop(post_ref, None)
+        update_text = result.get("update_text") or "Resolved."
+        post_meta = self._approval_posts.pop(post_ref, None)
+        if post_meta and post_meta.get("post_id"):
+            try:
+                await self._api_put(
+                    f"posts/{post_meta['post_id']}/patch",
+                    {"message": f"{post_meta.get('text', '')}\n\n{update_text}",
+                     "props": {"attachments": []}},
+                )
+            except Exception as exc:
+                logger.debug("Mattermost approval post edit failed: %s", exc)
+        return web.json_response({"update": {"message": update_text, "props": {}}})
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return channel name and type."""

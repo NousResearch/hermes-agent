@@ -4497,3 +4497,19 @@ registry.register(
     check_fn=check_browser_requirements,
     emoji="🖥️",
 )
+# NOTE (reverted 2026-06-19): the block below deregistered the high-level
+# browser navigation tools, "moved to browser-agent sub-agent". Per commit
+# 2bd047e23 that change was "accidentally made in the stale clone" and the
+# browser-agent sub-agent does not exist in this fork — so the tools were dead
+# fleet-wide (only browser_console/browser_vision survived). Re-enabled: the
+# agent-browser native backend is installed and check_browser_requirements()
+# gates them, so any profile whose toolset includes `browser` (e.g. the
+# browser-specialist) gets working navigation tools again.
+# registry.deregister("browser_back")
+# registry.deregister("browser_click")
+# registry.deregister("browser_get_images")
+# registry.deregister("browser_navigate")
+# registry.deregister("browser_press")
+# registry.deregister("browser_scroll")
+# registry.deregister("browser_snapshot")
+# registry.deregister("browser_type")

@@ -1895,6 +1895,152 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+# =========================================================================
+# Generic tool-level approval gate (config-driven; default OFF)
+# =========================================================================
+# Sibling to check_all_command_guards: gates *designated tool calls* (by name
+# or glob, from approvals.tool_gate) behind human approval, resolving either
+# inline (block the thread, reuse _await_gateway_decision) or deferred (stage
+# + Kanban card, never block). The deferred mechanics, config reader, replay
+# token, and execution-on-approval live in tools/tool_gate.py.
+
+
+def _tool_key(tool_name: str) -> str:
+    """Allowlist namespace for tool approvals, distinct from command keys."""
+    return f"tool:{tool_name}"
+
+
+def _inline_channel(session_key: str):
+    """Return the live gateway notify callback for ``session_key``, or None."""
+    with _lock:
+        return _gateway_notify_cbs.get(session_key)
+
+
+def _select_tool_mode(tool_name: str, gate_cfg: dict, session_key: str) -> str:
+    """Resolve the approval mode for one call: 'inline' or 'deferred' (§2)."""
+    channel = _inline_channel(session_key) is not None
+
+    try:
+        from tools.write_approval import is_background
+        background = is_background()
+    except Exception:
+        background = False
+
+    # 1. Unattended (cron / background / no live channel) → never block.
+    if env_var_enabled("HERMES_CRON_SESSION") or background or not channel:
+        return "deferred"
+
+    force_deferred = gate_cfg.get("force_deferred") or []
+    allow_inline = gate_cfg.get("allow_inline") or []
+
+    # 2. Explicitly force-deferred tools never block a thread.
+    if tool_name in force_deferred:
+        return "deferred"
+
+    # 3. Inline-eligible tools with a live channel may block.
+    if tool_name in allow_inline:
+        return "inline"
+
+    # 4. Fall back to the configured default (channel is guaranteed present).
+    default_mode = str(gate_cfg.get("default_mode", "deferred")).strip().lower()
+    return "inline" if default_mode == "inline" else "deferred"
+
+
+def check_tool_approval(tool_name: str, args: dict | None = None) -> dict:
+    """Decide whether a designated tool call may execute (§3 of the brief).
+
+    Returns one of:
+      * ``{"approved": True,  "message": None}``                         — allow
+      * ``{"approved": False, "status": "blocked", "message": str}``     — denied/timeout
+      * ``{"approved": False, "status": "staged",  "message": str,
+           "pending_id": str, "card_id": str|None}``                     — deferred
+
+    Default OFF: with no ``approvals.tool_gate`` config every call is allowed,
+    so behaviour is unchanged unless an operator opts in.
+    """
+    from tools import tool_gate
+
+    gate_cfg = tool_gate.get_tool_gate_config()
+
+    # 1. Gate disabled → allow.
+    if not tool_gate.gate_enabled(gate_cfg):
+        return {"approved": True, "message": None}
+
+    # 2. Tool not designated → allow.
+    if not tool_gate.requires_approval(tool_name, gate_cfg):
+        return {"approved": True, "message": None}
+
+    # 3. YOLO / approvals.mode == off → allow (mirror command-guard bypass).
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or _get_approval_mode() == "off":
+        return {"approved": True, "message": None}
+
+    # 4. One-shot replay token for THIS tool (per-pending-id, not a blanket
+    #    allowlist) → allow and consume it.
+    if tool_gate.consume_replay_token(tool_name) is not None:
+        return {"approved": True, "message": None}
+
+    session_key = get_current_session_key()
+
+    # 5. Prior inline session/permanent approval for this tool → allow.
+    if is_approved(session_key, _tool_key(tool_name)):
+        return {"approved": True, "message": None}
+
+    # 6. Select resolution mode.
+    mode = _select_tool_mode(tool_name, gate_cfg, session_key)
+    summary = tool_gate.summarize_tool_call(tool_name, args)
+
+    if mode == "inline":
+        return _tool_approval_inline(tool_name, args, summary, session_key, gate_cfg)
+    return tool_gate.stage_deferred(tool_name, args, summary=summary, config=gate_cfg)
+
+
+def _tool_approval_inline(tool_name: str, args: dict | None, summary: str,
+                          session_key: str, gate_cfg: dict) -> dict:
+    """Inline (blocking) tool approval — reuse the dangerous-command engine."""
+    from tools import tool_gate
+
+    notify_cb = _inline_channel(session_key)
+    if notify_cb is None:
+        # No live channel — fall back to deferred rather than fail closed when
+        # a board exists to review it.
+        return tool_gate.stage_deferred(tool_name, args, summary=summary, config=gate_cfg)
+
+    key = _tool_key(tool_name)
+    approval_data = {
+        "command": summary,
+        "description": f"tool: {tool_name}",
+        "pattern_key": key,
+        "pattern_keys": [key],
+        "kind": "tool",
+        "tool_name": tool_name,
+    }
+    decision = _await_gateway_decision(session_key, notify_cb, approval_data, surface="tool")
+    if decision.get("notify_failed"):
+        # Could not reach the user — stage instead of silently dropping.
+        return tool_gate.stage_deferred(tool_name, args, summary=summary, config=gate_cfg)
+
+    choice = decision.get("choice")
+    if not decision.get("resolved") or choice in (None, "deny"):
+        return {
+            "approved": False,
+            "status": "blocked",
+            "message": (
+                f"BLOCKED: the user did not approve running '{tool_name}'. "
+                f"Do NOT retry, do NOT rephrase, and do NOT attempt the same "
+                f"outcome via another tool. Wait for the user."
+            ),
+        }
+
+    if choice == "session":
+        approve_session(session_key, key)
+    elif choice == "always":
+        approve_session(session_key, key)
+        approve_permanent(key)
+        save_permanent_allowlist(_permanent_approved)
+    # choice == "once": no persistence.
+    return {"approved": True, "message": None}
+
+
 def check_execute_code_guard(code: str, env_type: str,
                              has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.

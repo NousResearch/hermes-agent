@@ -3918,10 +3918,17 @@ class GatewaySlashCommandsMixin:
         )
 
         if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
+            # WhatsApp self-send bridging redirects approval prompts to the
+            # Telegram home channel — resolve against the originating
+            # WhatsApp session's pending queue when /approve is typed there.
+            _redirect_key = getattr(self, "_wa_bridge_approval_redirects", {}).get(session_key)
+            if _redirect_key and has_blocking_approval(_redirect_key):
+                session_key = _redirect_key
+            elif session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
+            else:
+                return t("gateway.approve.no_pending")
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
@@ -3964,10 +3971,17 @@ class GatewaySlashCommandsMixin:
         )
 
         if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
+            # WhatsApp self-send bridging redirects approval prompts to the
+            # Telegram home channel — resolve against the originating
+            # WhatsApp session's pending queue when /deny is typed there.
+            _redirect_key = getattr(self, "_wa_bridge_approval_redirects", {}).get(session_key)
+            if _redirect_key and has_blocking_approval(_redirect_key):
+                session_key = _redirect_key
+            elif session_key in self._pending_approvals:
                 self._pending_approvals.pop(session_key)
                 return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
+            else:
+                return t("gateway.deny.no_pending")
 
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args

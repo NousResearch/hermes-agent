@@ -2806,6 +2806,60 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         return True
 
 
+def update_task_metadata(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    priority: Optional[int] = None,
+) -> bool:
+    """Edit plain presentation fields on a task. Returns True on success.
+
+    Updates only ``title``, ``body``, and/or ``priority`` — none of which
+    touch the dispatcher invariants (claim locks, run/attempt state, the
+    failure counter, or dependency gating). Pass ``None`` to leave a field
+    unchanged; pass an empty string for ``body`` to clear it. Returns
+    ``False`` when the task does not exist.
+
+    This is the write path behind the external kanban API's ``PATCH``; it
+    deliberately does NOT change ``status`` or ``assignee`` — those have
+    their own transition-aware helpers (``assign_task``, ``block_task``,
+    ``promote_task``, ``archive_task``, …) that the API routes to instead.
+    """
+    fields: list[str] = []
+    params: list[Any] = []
+    changed: dict[str, Any] = {}
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise ValueError("title cannot be empty")
+        fields.append("title = ?")
+        params.append(title)
+        changed["title"] = title
+    if body is not None:
+        fields.append("body = ?")
+        params.append(body)
+        changed["body"] = True
+    if priority is not None:
+        priority = int(priority)
+        fields.append("priority = ?")
+        params.append(priority)
+        changed["priority"] = priority
+    if not fields:
+        raise ValueError("no fields to update")
+    with write_txn(conn):
+        params.append(task_id)
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(conn, task_id, "edited", {"fields": sorted(changed.keys())})
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------

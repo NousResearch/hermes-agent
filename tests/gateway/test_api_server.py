@@ -802,6 +802,17 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            # Kanban board API is advertised for headless control-plane clients.
+            assert data["features"]["kanban_api"] is True
+            assert data["features"]["kanban_read"] is True
+            assert data["features"]["kanban_write"] is True
+            assert data["endpoints"]["kanban_tasks"] == {"method": "GET", "path": "/api/kanban/tasks"}
+            assert data["endpoints"]["kanban_task_create"] == {"method": "POST", "path": "/api/kanban/tasks"}
+            assert data["endpoints"]["kanban_task"] == {"method": "GET", "path": "/api/kanban/tasks/{task_id}"}
+            assert data["endpoints"]["kanban_task_patch"] == {"method": "PATCH", "path": "/api/kanban/tasks/{task_id}"}
+            assert data["endpoints"]["kanban_task_assign"] == {"method": "POST", "path": "/api/kanban/tasks/{task_id}/assign"}
+            assert data["endpoints"]["kanban_task_comment"] == {"method": "POST", "path": "/api/kanban/tasks/{task_id}/comment"}
+            assert data["endpoints"]["kanban_assignees"] == {"method": "GET", "path": "/api/kanban/assignees"}
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

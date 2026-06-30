@@ -11920,7 +11920,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "action", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -12242,6 +12242,65 @@ def _try_termux_fast_tui_launch() -> bool:
 
     cmd_chat(args)
     return True
+
+
+def cmd_action(args):
+    """Handle ``hermes action {list,show,approve,reject}``."""
+    from tools import write_approval as wa
+    from tools import tool_gate as tg
+
+    sub = getattr(args, "action_command", None)
+
+    if sub == "list" or sub is None:
+        records = wa.list_pending(tg.SUBSYSTEM)
+        if not records:
+            print("\n  No pending actions.\n")
+            return 0
+        print(f"\n  {len(records)} pending action(s):\n")
+        for rec in records:
+            status = rec.get("status", "pending")
+            print(f"  • {rec.get('id')}  [{status}]  {rec.get('summary', '')}")
+        print("\n  Approve with: hermes action approve <id>\n")
+        return 0
+
+    pending_id = getattr(args, "pending_id", None)
+    if not pending_id:
+        print("  Missing pending action id.")
+        return 1
+
+    if sub == "show":
+        rec = wa.get_pending(tg.SUBSYSTEM, pending_id)
+        if rec is None:
+            print(f"  No pending action {pending_id}.")
+            return 1
+        import json as _json
+        print(_json.dumps(rec, ensure_ascii=False, indent=2))
+        return 0
+
+    if sub == "approve":
+        out = tg.approve_action(pending_id)
+        print(f"  {out.get('message', '')}")
+        return 0 if out.get("ok") else 1
+
+    if sub == "reject":
+        rec = wa.get_pending(tg.SUBSYSTEM, pending_id)
+        if rec is None:
+            print(f"  No pending action {pending_id}.")
+            return 1
+        wa.discard_pending(tg.SUBSYSTEM, pending_id)
+        card_id = rec.get("card_id")
+        if card_id:
+            try:
+                from hermes_cli import kanban_db as kb
+                conn = kb.connect()
+                kb.block_task(conn, card_id, reason=f"Action {pending_id} rejected by operator.")
+            except Exception:
+                pass
+        print(f"  Rejected and discarded action {pending_id}.")
+        return 0
+
+    print(f"  Unknown action subcommand: {sub}")
+    return 1
 
 
 def cmd_memory(args):
@@ -12865,6 +12924,8 @@ def main():
     # memory command  (parser built in hermes_cli/subcommands/memory.py)
     # =========================================================================
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
+    from hermes_cli.subcommands.action import build_action_parser
+    build_action_parser(subparsers, cmd_action=cmd_action)
 
     # =========================================================================
     # tools command  (parser built in hermes_cli/subcommands/tools.py)

@@ -584,6 +584,27 @@ def test_cli_register_includes_node_subcommand():
     assert ns.node_cmd == "list"
 
 
+def test_cli_node_unavailable_fallback_does_not_close_over_except_var(monkeypatch, capsys):
+    import argparse
+    import builtins
+    from plugins.google_meet.cli import register_cli
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "plugins.google_meet.node.cli":
+            raise RuntimeError("node deps missing")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    parser = argparse.ArgumentParser(prog="hermes meet")
+    register_cli(parser)
+    ns = parser.parse_args(["node"])
+
+    assert ns.func(ns) == 1
+    assert "module unavailable (node deps missing)" in capsys.readouterr().out
+
+
 def test_cli_join_accepts_mode_and_node_flags():
     import argparse
     from plugins.google_meet.cli import register_cli

@@ -239,7 +239,7 @@ export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent 
 }
 
 // Progressive disclosure for the status rule's lower-priority tail segments.
-// As the terminal narrows we shed the least important pieces first (cost →
+// As the terminal narrows we shed the least important pieces first (subagents →
 // bg → voice → compressions → duration → context bar), and below the bar
 // breakpoint the context read-out collapses to a bare token count. Status and
 // model are never gated here — they're guaranteed room by `statusRuleWidths`.
@@ -475,7 +475,7 @@ export function StatusRule({
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
   // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // count, bg, subagents. Lower-priority segments drop first and nothing truncates
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)

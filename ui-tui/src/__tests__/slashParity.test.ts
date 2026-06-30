@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { findSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
+import { lookupSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
@@ -43,16 +44,21 @@ const MUTATING_COMMANDS = [
 
 const loadCommandRegistryNames = (): CommandRegistryLoad => {
   const here = dirname(fileURLToPath(import.meta.url))
+  const agentRoot = resolve(here, '../../..')
+  // Prefer the hermes-agent venv (which has PyYAML and the rest of hermes_cli's
+  // deps); honor an explicit $PYTHON override; fall back to bare python3 last.
+  const venvPython = resolve(agentRoot, 'venv/bin/python')
+  const python = process.env.PYTHON ?? (existsSync(venvPython) ? venvPython : 'python3')
 
   try {
     const names = JSON.parse(
       execFileSync(
-        process.env.PYTHON ?? 'python3',
+        python,
         [
           '-c',
           'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
         ],
-        { cwd: resolve(here, '../../..'), encoding: 'utf8' }
+        { cwd: agentRoot, encoding: 'utf8' }
       )
     ) as string[]
 
@@ -116,7 +122,7 @@ describe('slash parity matrix', () => {
     // which collided with the Python-side `/queue` alias. TUI-local commands
     // dispatch before the backend, so `/q` resolved to /quit (session.die)
     // instead of queueing a prompt.
-    const cmd = findSlashCommand('q')
+    const cmd = lookupSlashCommand('q')
     expect(cmd, '/q must resolve to a command').toBeDefined()
     expect(cmd!.name).toBe('queue')
   })

@@ -1162,7 +1162,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - ingest: the Obsidian-vault ingestion gatekeeper (low-frequency); reached
+#     via /hermes ingest on Slack so it doesn't displace a native slot at the cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "ingest"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

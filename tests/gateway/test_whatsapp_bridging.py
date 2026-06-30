@@ -35,7 +35,7 @@ class _AsyncCM:
 
 def _make_wa_adapter():
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
-    from gateway.platforms.whatsapp import WhatsAppAdapter
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP

@@ -23,6 +23,16 @@ import importlib
 import pytest
 
 
+# A user-config model.default value that is deliberately NOT a real model and
+# can never be a built-in default or project-level cli-config.yaml fallback.
+# Using a real model string here made test_user_config_skipped_when_flag_set
+# flaky in CI: when a project fallback (or default) resolved to that same real
+# string, the "must not equal the user's value" assertion fired even though the
+# user's config was correctly ignored. The sentinel makes the test fail only
+# when the *user's* value actually leaks through.
+_SENTINEL_MODEL = "sentinel-only/never-a-real-default"
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Ensure the two env-var gates start AND end each test in a known state.
@@ -66,13 +76,13 @@ class TestIgnoreUserConfigEnvGate:
         return cli.load_cli_config
 
     def test_user_config_loaded_when_flag_unset(self, tmp_path, monkeypatch):
-        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        self._write_user_config(tmp_path, _SENTINEL_MODEL)
         load_cli_config = self._reload_cli(monkeypatch, tmp_path)
 
         cfg = load_cli_config()
 
         # User config value wins
-        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+        assert cfg["model"]["default"] == _SENTINEL_MODEL
         assert cfg["agent"]["system_prompt"] == "from user config"
 
     def test_user_config_skipped_when_flag_set(self, tmp_path, monkeypatch):
@@ -81,7 +91,7 @@ class TestIgnoreUserConfigEnvGate:
         The built-in default ``model.default`` is empty string (no user override),
         and the user's ``agent.system_prompt`` is not seen.
         """
-        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        self._write_user_config(tmp_path, _SENTINEL_MODEL)
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
 
         load_cli_config = self._reload_cli(monkeypatch, tmp_path)
@@ -92,19 +102,22 @@ class TestIgnoreUserConfigEnvGate:
 
         # User-set model.default MUST NOT leak through — either the built-in
         # default ("" or unset) or a project-level fallback, but never the
-        # user's value
-        assert cfg["model"].get("default", "") != "anthropic/claude-sonnet-4.6"
+        # user's value. A sentinel (not any real model) is used deliberately so
+        # this can only fail when the *user's* value leaks — never because a
+        # real default/project-fallback happens to equal a real model string
+        # (which previously made this flaky in CI when the fallback matched).
+        assert cfg["model"].get("default", "") != _SENTINEL_MODEL
 
     def test_flag_ignored_when_set_to_other_value(self, tmp_path, monkeypatch):
         """Only the literal value "1" activates the bypass, matching the yolo pattern."""
-        self._write_user_config(tmp_path, "anthropic/claude-sonnet-4.6")
+        self._write_user_config(tmp_path, _SENTINEL_MODEL)
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "true")  # not "1"
 
         load_cli_config = self._reload_cli(monkeypatch, tmp_path)
         cfg = load_cli_config()
 
         # "true" != "1", so user config IS loaded
-        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+        assert cfg["model"]["default"] == _SENTINEL_MODEL
 
 
 class TestIgnoreRulesEnvGate:

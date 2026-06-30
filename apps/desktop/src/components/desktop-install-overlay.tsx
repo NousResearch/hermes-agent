@@ -11,7 +11,7 @@ import type {
   DesktopBootstrapState
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from '@/lib/icons'
+import { AlertTriangle, Check, ChevronDown, ChevronRight, iconSize, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 /**
@@ -109,16 +109,16 @@ function StageRow({ descriptor, result, isCurrent, now }: StageRowProps) {
   const icon = useMemo(() => {
     switch (state) {
       case 'running':
-        return <Loader2 className="h-4 w-4 animate-spin text-primary" />
+        return <Loader2 className={cn(iconSize.md, 'animate-spin text-primary')} />
 
       case 'succeeded':
-        return <Check className="h-4 w-4 text-emerald-600" />
+        return <Check className={cn(iconSize.md, 'text-emerald-600')} />
 
       case 'skipped':
-        return <Check className="h-4 w-4 text-muted-foreground" />
+        return <Check className={cn(iconSize.md, 'text-muted-foreground')} />
 
       case 'failed':
-        return <AlertTriangle className="h-4 w-4 text-destructive" />
+        return <AlertTriangle className={cn(iconSize.md, 'text-destructive')} />
 
       case 'pending':
 
@@ -455,7 +455,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           {failed && state.error && (
             <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
               <div className="mb-1 flex items-center gap-1.5 font-medium text-destructive">
-                <AlertTriangle className="h-4 w-4" />
+                <AlertTriangle className={iconSize.md} />
                 <span>{copy.error}</span>
               </div>
               <p className="whitespace-pre-wrap break-words text-foreground/90">{state.error}</p>
@@ -484,7 +484,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
               type="button"
               variant="ghost"
             >
-              {logOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              {logOpen ? <ChevronDown className={iconSize.sm} /> : <ChevronRight className={iconSize.sm} />}
               <span>{logOpen ? copy.hideOutput : copy.showOutput}</span>
               <span className="ml-1 tabular-nums">({copy.lines(state.log.length)})</span>
             </Button>
@@ -527,7 +527,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
                 size="sm"
                 variant="ghost"
               >
-                {cancelling ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {cancelling ? <Loader2 className={cn(iconSize.md, 'animate-spin')} /> : null}
                 {cancelling ? copy.cancelling : copy.cancelInstall}
               </Button>
             </div>

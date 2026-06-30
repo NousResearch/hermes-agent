@@ -308,7 +308,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": '💻 Running pwd',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -496,6 +496,27 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
 # ---------------------------------------------------------------------------
 
 
+def _extract_progress_preview(content: str) -> str | None:
+    """Extract the argument-preview portion from a tool-progress message.
+
+    Handles both render styles:
+    - Legacy / custom tools:  ``🔧 tool_name: "<preview>"`` (quoted)
+    - Friendly built-in verb: ``💻 Running <preview>`` (verb prefix, no quotes)
+    """
+    import re
+
+    # Legacy quoted form takes precedence when present.
+    match = re.search(r'"(.+)"', content)
+    if match:
+        return match.group(1)
+    # Friendly form: "<emoji> <verb> <preview>". The terminal verb is "Running".
+    marker = " Running "
+    idx = content.find(marker)
+    if idx != -1:
+        return content[idx + len(marker):].strip()
+    return None
+
+
 def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     """Shared setup for long-preview truncation tests.
 
@@ -552,13 +573,10 @@ def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — total preview <= 40 chars
+    # The long command should be truncated — the preview portion <= 40 chars.
     assert "..." in content
-    # Extract the preview part between quotes
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
     assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
 
 
@@ -568,11 +586,9 @@ def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
+    # With 120-char cap, the command (165 chars) should still be truncated but longer.
+    preview_text = _extract_progress_preview(content)
+    assert preview_text is not None, f"No preview found in: {content}"
     # Should be longer than the 40-char default
     assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
     # But still capped at 120

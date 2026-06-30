@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -162,10 +163,9 @@ export function PanelListRow({
       )}
       data-panel-row={rowKey}
     >
-      <button
+      <RowButton
         className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md pl-2 pr-1 text-left"
         onClick={onSelect}
-        type="button"
       >
         {lead ??
           (dotClassName ? (
@@ -174,7 +174,7 @@ export function PanelListRow({
             <Codicon className="shrink-0 text-muted-foreground/55" name={icon} size="0.85rem" />
           ) : null)}
         <span className="min-w-0 flex-1 truncate font-medium text-foreground/85">{title}</span>
-      </button>
+      </RowButton>
       {meta ? <span className="shrink-0 pr-2 text-[0.62rem] tabular-nums text-muted-foreground/45">{meta}</span> : null}
       {menu ? <div className="shrink-0 pr-1">{menu}</div> : null}
     </div>

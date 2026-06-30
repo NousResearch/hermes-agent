@@ -113,45 +113,63 @@
     inset 0 0.0625rem 0 color-mix(in srgb, #fff 28%, transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
     0 0.75rem 2rem color-mix(in srgb, #000 12%, transparent);
-  --shadow-composer: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
+  /* Soft floating shadow for the white composer card — the Claude home-input
+     lift (≈ 0 8px 24px rgba(0,0,0,0.08)), layered so it pools below the card. */
+  --shadow-composer:
+    0 0.125rem 0.375rem color-mix(in srgb, #000 4%, transparent),
+    0 0.5rem 1.5rem color-mix(in srgb, #000 7%, transparent);
 }
 
 @layer base {
   :root {
     color-scheme: light;
 
-    --theme-foreground: #17171a;
-    --theme-primary: #0053fd;
-    --theme-secondary: color-mix(in srgb, #0053fd 7%, #ffffff);
-    --theme-accent-soft: color-mix(in srgb, #0053fd 10%, #ffffff);
-    --theme-midground: #0053fd;
-    --theme-warm: #cf806d;
-    --theme-background-seed: #f8faff;
-    --theme-sidebar-seed: #f3f7ff;
+    /* ── Claude-style light identity ──────────────────────────────────────
+       Gray-white neutrals are the surface system; the ApexNodes brand violet
+       (#7E6CEF) is the single accent, but every derived token mixes it into
+       neutrals at 3–16%, so it only ever reads as a whisper of purple on
+       selected / hover / the send glow — never a purple flood (per the
+       "灰白为主、紫只做极淡 accent" brand call). Status blue stays #0A84FF and
+       is kept separate as `--ui-blue` below. These seeds are the boot-paint
+       fallback; `applyTheme()` repaints them from the active skin (the default
+       `nous` skin is retuned to match, see presets.ts). */
+    --theme-foreground: #222226;
+    --theme-primary: #7e6cef;
+    --theme-secondary: color-mix(in srgb, #7e6cef 6%, #ffffff);
+    --theme-accent-soft: color-mix(in srgb, #7e6cef 9%, #ffffff);
+    --theme-midground: #7e6cef;
+    --theme-warm: #9a8fd6;
+    --theme-background-seed: #ffffff;
+    --theme-sidebar-seed: #f6f6f6;
     --theme-card-seed: #ffffff;
     --theme-elevated-seed: #ffffff;
-    --theme-bubble-seed: color-mix(in srgb, #0053fd 6%, #ffffff);
-    --theme-neutral-chrome: #f3f3f3;
-    --theme-neutral-sidebar: #f3f3f3;
+    --theme-bubble-seed: color-mix(in srgb, #7e6cef 5%, #ffffff);
+    --theme-neutral-chrome: #ffffff;
+    --theme-neutral-sidebar: #f5f5f5;
     --theme-neutral-card: #fcfcfc;
-    --theme-mix-chrome: 92%;
+    --theme-mix-chrome: 100%;
     --theme-mix-sidebar: 100%;
-    --theme-mix-card: 22%;
-    --theme-mix-elevated: 28%;
+    --theme-mix-card: 18%;
+    --theme-mix-elevated: 24%;
     --theme-mix-bubble: 0%;
-    --theme-fill-primary-accent-mix: 16%;
-    --theme-fill-secondary-accent-mix: 11%;
-    --theme-fill-tertiary-accent-mix: 8%;
-    --theme-fill-quaternary-accent-mix: 5%;
-    --theme-fill-quinary-accent-mix: 3%;
-    --theme-stroke-primary-accent-mix: 24%;
-    --theme-stroke-secondary-accent-mix: 16%;
-    --theme-stroke-tertiary-accent-mix: 10%;
-    --theme-stroke-quaternary-accent-mix: 6%;
-    --theme-row-hover-accent-mix: 4%;
-    --theme-row-active-accent-mix: 8%;
+    /* Accent-into-neutral mixes — deliberately low so violet stays a whisper.
+       Fills/rows/controls lean on the neutral (--ui-base / gray) half; strokes
+       are nearly pure neutral so borders read as ~#E8E8E8 hairlines, not lilac
+       lines. This is what keeps the surfaces Claude-gray with only a faint
+       purple cast on selected / hover. */
+    --theme-fill-primary-accent-mix: 12%;
+    --theme-fill-secondary-accent-mix: 8%;
+    --theme-fill-tertiary-accent-mix: 6%;
+    --theme-fill-quaternary-accent-mix: 4%;
+    --theme-fill-quinary-accent-mix: 2.5%;
+    --theme-stroke-primary-accent-mix: 9%;
+    --theme-stroke-secondary-accent-mix: 6%;
+    --theme-stroke-tertiary-accent-mix: 4%;
+    --theme-stroke-quaternary-accent-mix: 2.5%;
+    --theme-row-hover-accent-mix: 5%;
+    --theme-row-active-accent-mix: 9%;
     --theme-control-hover-accent-mix: 6%;
-    --theme-control-active-accent-mix: 8%;
+    --theme-control-active-accent-mix: 9%;
 
     --ui-base: var(--theme-foreground);
     --ui-accent: var(--theme-midground);
@@ -162,8 +180,10 @@
     --ui-yellow: #c08532;
     --ui-green: #1f8a65;
     --ui-cyan: #4c7f8c;
-    --ui-blue: #0053fd;
-    --ui-purple: #9e94d5;
+    /* Status blue — the ONLY non-neutral allowed on chrome per the brand call:
+       toggles/links/selected-state cues. Kept distinct from the violet accent. */
+    --ui-blue: #0a84ff;
+    --ui-purple: #7e6cef;
     --ui-bg-chrome: color-mix(
       in srgb,
       var(--theme-background-seed) var(--theme-mix-chrome),
@@ -338,8 +358,10 @@
 
     --composer-width: 48.75rem;
     --composer-control-size: 1.75rem;
-    --composer-control-primary-size: 1.875rem;
-    --composer-control-gap: 0.25rem;
+    /* Black circular send / voice CTA. 36px (html base = 16px) so it dominates
+       the toolbar row exactly like the reference composer's send button. */
+    --composer-control-primary-size: 2.25rem;
+    --composer-control-gap: 0.3125rem;
     --composer-row-gap: 0.25rem;
     --composer-ring-strength: 1;
     --composer-surface-pad-x: 0.5rem;

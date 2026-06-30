@@ -33,26 +33,28 @@ function QuickTaskCard({ icon, label, prompt }: { icon: string; label: string; p
   return (
     <button
       className={cn(
-        'pointer-events-auto group flex w-full items-center gap-3 rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-card) px-3.5 py-3 text-left',
+        'pointer-events-auto group flex w-full items-center gap-3 rounded-[0.875rem] border border-(--ui-stroke-tertiary) bg-(--ui-bg-editor) px-3.5 py-2.5 text-left',
         'transition-colors duration-100',
-        'hover:border-[color-mix(in_srgb,var(--ui-accent)_45%,var(--ui-stroke-secondary))] hover:bg-[color-mix(in_srgb,var(--ui-accent)_7%,transparent)]',
-        'focus-visible:border-[color-mix(in_srgb,var(--ui-accent)_55%,var(--ui-stroke-secondary))] focus-visible:outline-none'
+        'hover:border-(--ui-stroke-secondary) hover:bg-(--ui-row-hover-background)',
+        'focus-visible:border-[color-mix(in_srgb,var(--ui-accent)_45%,var(--ui-stroke-secondary))] focus-visible:outline-none'
       )}
       onClick={() => sendQuickTask(prompt)}
       type="button"
     >
+      {/* Neutral by default; the faint violet accent only warms in on hover —
+          keeps the home grid gray-quiet like the reference. */}
       <span
         aria-hidden
-        className="grid size-8 shrink-0 place-items-center rounded-lg bg-[color-mix(in_srgb,var(--ui-accent)_10%,transparent)] text-(--ui-accent)"
+        className="grid size-8 shrink-0 place-items-center rounded-[0.625rem] bg-(--ui-bg-tertiary) text-(--ui-text-tertiary) transition-colors group-hover:bg-[color-mix(in_srgb,var(--ui-accent)_12%,transparent)] group-hover:text-(--ui-accent)"
       >
         <Codicon name={icon} size="1rem" />
       </span>
-      <span className="min-w-0 flex-1 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+      <span className="min-w-0 flex-1 truncate text-[length:var(--conversation-text-font-size)] font-medium text-(--ui-text-secondary) group-hover:text-foreground">
         {label}
       </span>
       <Codicon
         aria-hidden
-        className="shrink-0 text-(--ui-text-tertiary) transition-colors group-hover:text-(--ui-accent)"
+        className="shrink-0 text-(--ui-text-quaternary) transition-colors group-hover:text-(--ui-accent)"
         name="arrow-right"
         size="0.875rem"
       />
@@ -73,28 +75,30 @@ export function Intro(_props: IntroProps) {
         <img
           alt=""
           aria-hidden
-          className="mb-4 size-14 rounded-2xl shadow-[0_6px_20px_-8px_color-mix(in_srgb,var(--ui-accent)_55%,transparent)]"
+          className="mb-3.5 size-11 rounded-[0.875rem]"
           src={assetPath(HOME_BRAND_ICON)}
         />
 
-        <div className="mb-1 flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-[0.04em] text-(--ui-text-tertiary)">
+        <div className="mb-2.5 flex items-center gap-1.5 text-[0.6875rem] font-medium tracking-[0.03em] text-(--ui-text-quaternary)">
           <span>{home.wordmark}</span>
-          <span aria-hidden className="text-(--ui-text-quaternary)">
+          <span aria-hidden className="opacity-60">
             ·
           </span>
           <span>{home.engineBacking}</span>
         </div>
 
-        <h1 className="m-0 text-balance text-[1.625rem] font-bold leading-tight tracking-tight text-foreground">
+        {/* Claude-style hero: a single quiet question, lighter weight + larger
+            than the old bold title, near-black per the reference. */}
+        <h1 className="m-0 text-balance text-[1.875rem] font-medium leading-tight tracking-[-0.01em] text-foreground">
           {home.title}
         </h1>
 
-        <p className="mt-2 mb-6 max-w-[28rem] text-pretty text-[0.875rem] leading-relaxed text-(--ui-text-secondary)">
+        <p className="mt-2.5 mb-7 max-w-[28rem] text-pretty text-[0.875rem] leading-relaxed text-(--ui-text-tertiary)">
           {home.subtitle}
         </p>
 
         <div className="w-full">
-          <p className="mb-2 self-start text-left text-[0.75rem] font-medium text-(--ui-text-tertiary)">
+          <p className="mb-2 self-start text-left text-[0.75rem] font-medium text-(--ui-text-quaternary)">
             {home.quickTasksLabel}
           </p>
           <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">

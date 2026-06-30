@@ -15385,6 +15385,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+        # Apply friendly tool labels config (default on) — per-platform aware
+        try:
+            from agent.display import set_friendly_tool_labels
+            _ftl = resolve_display_setting(user_config, platform_key, "friendly_tool_labels", True)
+            set_friendly_tool_labels(bool(_ftl))
+        except Exception:
+            pass
+
         # Tool progress mode — resolved per-platform with env var fallback
         _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
@@ -15678,12 +15686,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 msg = _code_block_short
                 last_was_terminal_block[0] = True
             elif preview:
-                from agent.display import get_tool_preview_max_len
+                from agent.display import (
+                    get_tool_preview_max_len,
+                    get_tool_verb,
+                    tool_verb_connector,
+                    verb_drops_preview,
+                )
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                # Friendly labels: render a human-phrased line for built-in
+                # tools ("🔍 Searching the web for ...") by prefixing the verb
+                # onto the preview the callback already computed (so the
+                # command/url/query is preserved).  Custom/plugin/MCP tools
+                # have no verb and fall back to the raw "tool_name: ..." form.
+                _verb = get_tool_verb(tool_name)
+                if _verb:
+                    if verb_drops_preview(tool_name):
+                        msg = f"{emoji} {_verb}"
+                    else:
+                        msg = f"{emoji} {_verb}{tool_verb_connector(tool_name)}{preview}"
+                else:
+                    msg = f"{emoji} {tool_name}: \"{preview}\""
                 last_was_terminal_block[0] = False
             else:
                 msg = f"{emoji} {tool_name}..."

@@ -3455,6 +3455,47 @@ class GatewaySlashCommandsMixin:
             lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
         return "\n".join(lines)
 
+    def _context_breakdown_lines(self, agent, source) -> list[str]:
+        """Render the per-category context breakdown for /usage.
+
+        Estimated (chars/4) — same engine the desktop popover uses. Returns an
+        empty list and never raises on failure so /usage stays robust.
+        """
+        try:
+            from agent.context_breakdown import compute_session_context_breakdown
+
+            history: list[dict] = []
+            try:
+                entry = self.session_store.get_or_create_session(source)
+                history = self.session_store.load_transcript(entry.session_id) or []
+            except Exception:
+                history = []
+
+            payload = compute_session_context_breakdown(agent, history)
+            categories = payload.get("categories") or []
+            if not categories:
+                return []
+
+            total = payload.get("estimated_total") or 0
+            out = [t("gateway.usage.breakdown_header")]
+            for cat in categories:
+                tokens = int(cat.get("tokens") or 0)
+                if tokens <= 0:
+                    continue
+                cat_id = str(cat.get("id") or "")
+                label = t(f"gateway.usage.breakdown_cat_{cat_id}")
+                # Missing key → t() echoes the key back; fall back to the
+                # English label the engine already provides.
+                if label.endswith(f"breakdown_cat_{cat_id}"):
+                    label = str(cat.get("label") or cat_id)
+                pct = round(tokens / total * 100) if total else 0
+                out.append(
+                    t("gateway.usage.breakdown_line", label=label, count=f"{tokens:,}", pct=pct)
+                )
+            return out if len(out) > 1 else []
+        except Exception:
+            return []
+
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.
 
@@ -3553,6 +3594,15 @@ class GatewaySlashCommandsMixin:
                 lines.append(t("gateway.usage.label_context", used=f"{ctx.last_prompt_tokens:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+
+            # Per-category context breakdown (estimated — chars/4 heuristic).
+            # Same engine the desktop popover uses (PR #54907). The system
+            # prompt / tools / skills / memory slices read off the live agent;
+            # the conversation slice is estimated from the session transcript.
+            breakdown_lines = self._context_breakdown_lines(agent, source)
+            if breakdown_lines:
+                lines.append("")
+                lines.extend(breakdown_lines)
 
             if account_lines:
                 lines.append("")

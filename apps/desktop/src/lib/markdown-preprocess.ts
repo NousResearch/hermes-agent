@@ -344,10 +344,8 @@ export function preprocessMarkdown(text: string): string {
       const leading = part.match(/^\s*/)?.[0] ?? ''
       const trailing = part.match(/\s*$/)?.[0] ?? ''
 
-      // normalizeMathDelimiters rewrites LaTeX bracket delimiters and
-      // custom math tags to dollar form. escapeCurrencyDollars escapes
-      // `$<digit>` so currency isn't eaten as math. Both run only on
-      // prose segments so code blocks stay untouched.
+      // Run only on prose segments so `$5` literals and `\(` inside code
+      // blocks stay intact.
       const transformed = normalizeVisibleProse(
         stripPreviewTargets(normalizeMathDelimiters(escapeCurrencyDollars(part)))
       )

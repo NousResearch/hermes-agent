@@ -3,6 +3,7 @@
 import mermaid from 'mermaid'
 import { useEffect, useState } from 'react'
 
+import { CopyButton } from '@/components/ui/copy-button'
 import { Zoomable } from '@/components/ui/zoomable'
 import { copySvgAsPng } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
@@ -94,20 +95,30 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
   // overlay keeps the diagram's natural width (capped to the viewport) so it
   // renders before any zoom; the inline version stays capped at 33dvh.
   return (
-    <Zoomable
-      label="Open diagram"
-      onCopy={() => copySvgAsPng(svg)}
-      overlay={
+    <div className="group/mermaid relative">
+      <Zoomable
+        label="Open diagram"
+        onCopy={() => copySvgAsPng(svg)}
+        overlay={
+          <div
+            className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[80vh] [&_svg]:max-w-[85vw]"
+            dangerouslySetInnerHTML={{ __html: svg }}
+          />
+        }
+      >
         <div
-          className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[80vh] [&_svg]:max-w-[85vw]"
+          className="overflow-hidden p-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[33dvh] [&_svg]:max-w-full"
           dangerouslySetInnerHTML={{ __html: svg }}
         />
-      }
-    >
-      <div
-        className="overflow-hidden p-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[33dvh] [&_svg]:max-w-full"
-        dangerouslySetInnerHTML={{ __html: svg }}
+      </Zoomable>
+      <CopyButton
+        appearance="icon"
+        buttonSize="icon-sm"
+        className="absolute left-2 top-2 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/mermaid:opacity-100 focus-visible:opacity-100"
+        label="Copy Mermaid source"
+        stopPropagation
+        text={code}
       />
-    </Zoomable>
+    </div>
   )
 }

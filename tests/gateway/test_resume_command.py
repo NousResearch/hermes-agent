@@ -609,6 +609,37 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_target_allowed_shared_group_no_user_match(self, tmp_path):
+        """egilewski probe: with group_sessions_per_user=False a non-DM group
+        session is shared, so a co-member (different user_id) in the SAME chat
+        may resume it — same-chat/thread proof is sufficient, user equality is
+        not required. Per-user groups (default) still require the same owner."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("shared_group_row", "telegram", user_id="bob",
+                          chat_id="shared-chat", chat_type="group")
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: None  # persisted-only
+        alice = SessionSource(platform=Platform.TELEGRAM, chat_id="shared-chat",
+                              chat_type="group", user_id="alice")
+
+        # Shared group → Alice may resume Bob's row in the same chat.
+        runner.config.group_sessions_per_user = False
+        assert await runner._resume_target_allowed(alice, "shared_group_row",
+                                                   allow_override=False) is True
+        # Per-user group → Alice must NOT resume Bob's row (IDOR preserved).
+        runner.config.group_sessions_per_user = True
+        assert await runner._resume_target_allowed(alice, "shared_group_row",
+                                                   allow_override=False) is False
+        # A different chat is still blocked even when shared.
+        runner.config.group_sessions_per_user = False
+        other_chat = SessionSource(platform=Platform.TELEGRAM, chat_id="other-chat",
+                                   chat_type="group", user_id="alice")
+        assert await runner._resume_target_allowed(other_chat, "shared_group_row",
+                                                   allow_override=False) is False
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_gateway_dispatches_sessions_command(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")

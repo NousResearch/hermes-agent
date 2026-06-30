@@ -824,25 +824,48 @@ class GatewaySlashCommandsMixin:
             # persisted session by id/title. (Legacy NULL-owner/blank-source/
             # NULL-chat rows are intentionally not resumable this way; use a
             # live session or an explicit admin override.)
-            base_ok = (
-                bool(row_uid) and row_uid == caller_uid
-                and bool(row_src) and bool(caller_src)
+            # Common origin proof for any identity-bearing caller: a non-blank
+            # source that matches the caller's platform, and the same thread. A
+            # blank/legacy source can't prove the platform; a different thread is
+            # a different session (build_session_key appends thread_id).
+            origin_ok = (
+                bool(row_src) and bool(caller_src)
                 and str(row_src) == str(caller_src)
                 and row_thread == caller_thread
             )
-            if not base_ok:
+            if not origin_ok:
                 return False
             if caller_is_dm:
-                # DMs are keyed on user_id; chat_id is legitimately absent on
-                # both sides for a no-chat_id DM (already scoped by user_id
-                # above). Still reject a mismatching chat_id when present.
-                return row_chat == caller_chat
+                # DMs are keyed on user_id; require the same owner. chat_id is
+                # legitimately absent on both sides for a no-chat_id DM (scoped
+                # by user_id), but a mismatching chat_id (when present) is still
+                # rejected.
+                return (
+                    bool(row_uid) and row_uid == caller_uid
+                    and row_chat == caller_chat
+                )
             # Non-DM (group/channel/forum/thread): build_session_key includes
             # chat_id, so a row (or caller) with NO chat provenance cannot prove
             # same-chat. Require both sides non-blank and equal — a legacy
             # NULL-chat row (or a caller missing its chat_id) fails closed even
             # when both normalize to "". (CWE-639)
-            return bool(row_chat) and bool(caller_chat) and row_chat == caller_chat
+            if not (bool(row_chat) and bool(caller_chat) and row_chat == caller_chat):
+                return False
+            # Within the same non-DM chat/thread, mirror build_session_key's
+            # participant scoping: a SHARED group/thread session
+            # (group_sessions_per_user=False, or a shared thread) is one session
+            # for every participant, so the same-chat proof above is sufficient —
+            # do NOT also require user-id equality (otherwise a co-member is
+            # wrongly blocked from their own shared session). A per-user session
+            # still requires the same owner.
+            shared = is_shared_multi_user_session(
+                source,
+                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            )
+            if shared:
+                return True
+            return bool(row_uid) and row_uid == caller_uid
         # No caller identity: the persisted row carries only source + user_id
         # (the sessions table has no chat_id), so a same-platform row can belong
         # to a DIFFERENT chat or user. Same-platform alone is therefore NOT

@@ -972,6 +972,39 @@ code_execution:
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
 
 # =============================================================================
+# Approval Prompts
+# =============================================================================
+# Controls how Hermes handles commands classified as dangerous.
+#
+# mode:
+#   manual — always prompt the user (default)
+#   smart  — use an auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+#   off    — skip all approval prompts (equivalent to --yolo)
+#
+# safe_delete_roots allows literal child `rm` targets under disposable roots to
+# skip approval. safe_delete_dir_names allows recursive deletion of literal cache
+# directory basenames from any parent. Deleting roots, traversal, globs, shell
+# expansion, compound commands, and mixed safe/unsafe targets remain gated.
+approvals:
+  mode: "manual"
+  timeout: 60
+  cron_mode: "deny"  # Cron jobs deny dangerous commands by default.
+  safe_delete_roots:
+    - "/tmp"
+    - "/private/tmp"
+  safe_delete_dir_names:
+    - "__pycache__"
+    - ".pytest_cache"
+    - ".mypy_cache"
+    - ".ruff_cache"
+    - ".pyre"
+    - ".pytype"
+    - ".tox"
+    - ".nox"
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.

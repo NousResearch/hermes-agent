@@ -2387,6 +2387,23 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # Absolute roots where literal child rm targets may skip approval.
+        # This is for disposable sandboxes such as /tmp; deleting the root
+        # itself, globs, traversal, and shell-expanded targets stay gated.
+        "safe_delete_roots": ["/tmp", "/private/tmp"],
+        # Literal cache directory basenames where recursive rm may skip
+        # approval from any parent path. Only exact basenames are allowed;
+        # traversal, globs, shell expansion, and mixed unsafe targets stay gated.
+        "safe_delete_dir_names": [
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".pyre",
+            ".pytype",
+            ".tox",
+            ".nox",
+        ],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system

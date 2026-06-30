@@ -76,7 +76,7 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
     def test_rm_recursive_long_flag(self):
-        is_dangerous, key, desc = detect_dangerous_command("rm --recursive /tmp/stuff")
+        is_dangerous, key, desc = detect_dangerous_command("rm --recursive /home/user/stuff")
         assert is_dangerous is True
         assert key is not None
         assert "delete" in desc.lower()
@@ -254,7 +254,7 @@ class TestRmRecursiveFlagVariants:
         assert "recursive" in desc.lower() or "delete" in desc.lower()
 
     def test_rm_rf(self):
-        dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/test")
+        dangerous, key, desc = detect_dangerous_command("rm -rf /home/user/test")
         assert dangerous is True
         assert key is not None
 
@@ -282,6 +282,137 @@ class TestRmRecursiveFlagVariants:
         dangerous, key, desc = detect_dangerous_command("sudo rm -rf /tmp")
         assert dangerous is True
         assert key is not None
+
+
+class TestScopedSafeDeleteRoots:
+    """Scoped sandbox cleanup should avoid prompts without broad rm bypasses."""
+
+    def test_default_tmp_child_rm_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm /tmp/hermes-output.txt")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_default_tmp_recursive_child_rm_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/hermes-run/cache")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_configured_workfolder_child_rm_is_safe(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm /workfolder/output.txt")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_configured_workfolder_recursive_child_rm_is_safe(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /workfolder/run-123/cache")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_safe_root_itself_stays_gated(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /workfolder")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_safe_root_glob_stays_gated(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /workfolder/*")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_safe_root_traversal_stays_gated(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /workfolder/../etc")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_safe_root_sibling_stays_gated(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /workfolder2/run")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_multiple_targets_require_every_target_scoped(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /workfolder/run /workspace/run")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_shell_expansion_target_stays_gated(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_roots": ["/workfolder"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf /workfolder/$RUN_ID")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_compound_safe_then_dangerous_rm_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf /tmp/hermes-run; rm -rf /workspace/run")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+
+class TestSafeDeleteDirNames:
+    """Known cache directories can be removed recursively without prompts."""
+
+    def test_default_pycache_basename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf __pycache__")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_default_nested_pycache_basename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf pkg/__pycache__")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_default_pytest_cache_basename_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf .pytest_cache")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_configured_cache_basename_is_safe(self):
+        with mock_patch("tools.approval._get_approval_config", return_value={"safe_delete_dir_names": [".custom_cache"]}):
+            dangerous, key, desc = detect_dangerous_command("rm -rf build/.custom_cache")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_dynamic_cache_target_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf $CACHE_DIR")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_traversal_to_safe_basename_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf pkg/../__pycache__")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_mixed_safe_dir_name_and_unsafe_target_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf __pycache__ /workspace/run")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_glob_inside_safe_dir_name_stays_gated(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf __pycache__/*")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
 
 
 class TestMultilineBypass:

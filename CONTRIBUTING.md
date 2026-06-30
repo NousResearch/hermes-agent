@@ -204,9 +204,10 @@ ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
 # Preferred — matches CI (hermetic env, 4 xdist workers); see AGENTS.md
 scripts/run_tests.sh
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+# Alternative for IDEs or shells where the wrapper is unavailable. The
+# wrapper is still recommended for parity with GitHub Actions before you
+# open a PR. Use `--extra dev` so a fresh uv-managed checkout has pytest:
+uv run --extra dev python -m pytest tests/ -v
 ```
 
 ---

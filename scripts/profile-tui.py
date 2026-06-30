@@ -572,7 +572,7 @@ def loop_mode(args: argparse.Namespace) -> int:
                     ["npm", "run", "build"],
                     cwd=tui_dir,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                 )
                 if result.returncode != 0:
                     print("✗ build failed:")

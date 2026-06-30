@@ -3608,6 +3608,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.api_mode = "chat_completions"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
+
+        # MoA preset CLI syntax: -m moa:<preset> selects the MoA virtual provider
+        # and the named preset. Resolve it after provider/config defaults are read
+        # so we can override both model and provider in one place.
+        if isinstance(self.model, str) and self.model.lower().startswith("moa:"):
+            from hermes_cli.config import load_config as _load_config_for_moa
+            from hermes_cli.moa_config import normalize_moa_config
+
+            _moa_cfg = normalize_moa_config(_load_config_for_moa().get("moa") or {})
+            _preset_name = self.model[4:].strip()
+            if _preset_name in _moa_cfg.get("presets", {}):
+                self.model = _preset_name
+                self.requested_provider = "moa"
+                self.provider = "moa"
+            else:
+                raise ValueError(
+                    f"Unknown MoA preset: {_preset_name}. "
+                    f"Run `hermes moa list` to see configured presets."
+                )
+
         self.base_url = (
             base_url
             or CLI_CONFIG["model"].get("base_url", "")

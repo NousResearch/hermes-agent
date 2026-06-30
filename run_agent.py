@@ -5422,6 +5422,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        moa_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
@@ -5434,6 +5435,7 @@ class AIAgent:
             stream_callback,
             persist_user_message,
             persist_user_timestamp,
+            moa_config=moa_config,
         )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

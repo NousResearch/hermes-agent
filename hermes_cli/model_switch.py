@@ -814,10 +814,31 @@ def switch_model(
     target_provider = current_provider
     resolved_moa_preset = False
 
+    # Early MoA preset syntax: "moa:<preset>" (e.g. hermes chat -m moa:klo).
+    # This must be resolved before any alias/catalog logic so the virtual
+    # provider is selected instead of treating "moa:klo" as a real model name
+    # on the current provider.
+    if not explicit_provider and new_model.lower().startswith("moa:"):
+        from hermes_cli.config import load_config as _load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        moa_cfg = normalize_moa_config(_load_config().get("moa") or {})
+        preset_name = new_model[4:].strip()
+        if preset_name in moa_cfg.get("presets", {}):
+            target_provider = "moa"
+            new_model = preset_name
+            resolved_moa_preset = True
+        else:
+            return ModelSwitchResult(
+                success=False,
+                is_global=is_global,
+                error_message=f"Unknown MoA preset: {preset_name}. Run `hermes moa list` to see configured presets.",
+            )
+
     # =================================================================
     # PATH A: Explicit --provider given
     # =================================================================
-    if explicit_provider:
+    if explicit_provider and not resolved_moa_preset:
         # Resolve the provider
         pdef = resolve_provider_full(
             explicit_provider,

@@ -1,0 +1,4 @@
+payload ~12809 tokens; model=claude-opus-4-8 (hardcoded)
+precheck: usage order -> ['claude-bpp', 'claude-api-proxy-f1', 'claude-api-proxy', 'claude-api-proxy-f2']
+-> trying claude-bpp ...
+OK via claude-bpp -> /Users/alexgierczyk/.hermes/hermes-agent/docs/sync/review/pass2.md

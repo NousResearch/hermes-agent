@@ -95,6 +95,10 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 @pytest.mark.asyncio
 async def test_gateway_stop_drains_running_agents_before_disconnect():
     runner, adapter = make_restart_runner()
+    # Opt into a grace window (the default is 0 = interrupt immediately).
+    # This exercises the path where an agent finishes within the drain
+    # window and must NOT be interrupted.
+    runner._restart_drain_timeout = 5.0
     disconnect_mock = AsyncMock()
     adapter.disconnect = disconnect_mock
 
@@ -457,3 +461,105 @@ async def test_signal_initiated_restart_still_persists_stopped(tmp_path, monkeyp
     assert _stopped_state_persisted(runner), (
         "a restart must persist gateway_state=stopped via the normal path"
     )
+
+
+# ── #42126: zombie PID must be treated as dead in _pid_exists ────────────────
+# Under systemd Restart=always, the old gateway becomes a zombie (still in the
+# process table, not yet reaped) when the replacement starts. _pid_exists must
+# report it dead so --replace proceeds instead of waiting on it and aborting
+# with exit 1 (a silent crash loop).
+
+
+def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
+    """The live path is psutil. psutil.pid_exists() returns True for a zombie,
+    so _pid_exists must additionally check Process.status() == STATUS_ZOMBIE."""
+    import sys
+    import types
+
+    from gateway import status
+
+    fake_psutil = types.SimpleNamespace()
+    fake_psutil.STATUS_ZOMBIE = "zombie"
+
+    class NoSuchProcess(Exception):
+        pass
+
+    class PsutilError(Exception):
+        pass
+
+    fake_psutil.NoSuchProcess = NoSuchProcess
+    fake_psutil.Error = PsutilError
+
+    class _Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def status(self):
+            return "zombie"
+
+    fake_psutil.Process = _Proc
+    # Without the zombie guard, this True would make the caller treat the
+    # zombie as a live gateway.
+    fake_psutil.pid_exists = lambda pid: True
+
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert status._pid_exists(4242) is False
+
+
+def test_pid_exists_live_via_psutil_returns_true(monkeypatch):
+    """A genuinely running (non-zombie) process is still reported alive."""
+    import sys
+    import types
+
+    from gateway import status
+
+    fake_psutil = types.SimpleNamespace()
+    fake_psutil.STATUS_ZOMBIE = "zombie"
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.Error = type("Error", (Exception,), {})
+
+    class _Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def status(self):
+            return "running"
+
+    fake_psutil.Process = _Proc
+    fake_psutil.pid_exists = lambda pid: True
+
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    assert status._pid_exists(4242) is True
+
+
+def test_pid_exists_zombie_via_proc_fallback_returns_false(monkeypatch):
+    """When psutil is unavailable, the POSIX fallback reads /proc/<pid>/stat
+    and must treat state 'Z' as dead before reaching os.kill."""
+    import builtins
+    import sys
+
+    from gateway import status
+
+    monkeypatch.setitem(sys.modules, "psutil", None)  # force ImportError
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *a, **k):
+        if name == "psutil":
+            raise ImportError("psutil disabled for test")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _no_psutil)
+    monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+    fake_stat = "4242 (defunct) Z 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+    fake_path = MagicMock()
+    fake_path.read_text.return_value = fake_stat
+    monkeypatch.setattr(status, "Path", lambda *_a, **_k: fake_path)
+
+    kill = MagicMock()
+    monkeypatch.setattr(status.os, "kill", kill)
+
+    assert status._pid_exists(4242) is False
+    kill.assert_not_called()

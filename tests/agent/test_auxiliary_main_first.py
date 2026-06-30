@@ -51,6 +51,66 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
 
+    def test_moa_main_resolves_aux_to_aggregator(self, monkeypatch, tmp_path):
+        """MoA main user → aux runs on the aggregator slot, NOT the preset name.
+
+        provider='moa'/model='opus-gpt' would otherwise send the preset name
+        'opus-gpt' as the model id and 400 ("not a valid model ID"). Aux tasks
+        don't need the reference fan-out — they use the aggregator (the preset's
+        acting model). The virtual moa://local base_url + placeholder key must
+        be dropped so the aggregator resolves via its own provider credentials.
+        """
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": "opus-gpt",
+                        "presets": {
+                            "opus-gpt": {
+                                "enabled": True,
+                                "reference_models": [{"provider": "openrouter", "model": "openai/gpt-5.5"}],
+                                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                            }
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+        ):
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "moa",
+                    "model": "opus-gpt",
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                },
+                task="title_generation",
+            )
+
+        assert client is mock_client
+        # Resolved to the aggregator's real provider+model, not the preset name.
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        assert mock_resolve.call_args.args[1] == "anthropic/claude-opus-4.8"
+        # The virtual moa://local endpoint must not be forwarded as the
+        # aggregator's base_url.
+        assert mock_resolve.call_args.kwargs.get("explicit_base_url") in (None, "")
+
     def test_nous_main_uses_main_model_for_aux(self, monkeypatch):
         """Nous Portal main user → aux uses their picked Nous model, not free-tier MiMo."""
         # No OPENROUTER_API_KEY → ensures if main failed we'd fall to chain
@@ -117,6 +177,64 @@ class TestResolveAutoMainFirst:
 
         assert client is chain_client
         assert model == "google/gemini-3-flash-preview"
+
+    def test_main_unavailable_uses_task_fallback_chain_before_builtin_chain(self):
+        """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
+        task_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="nvidia",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),  # main provider has no client
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(task_client, "task-free-model", "fallback_chain[0](openrouter)"),
+        ) as mock_task_chain, patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+        ) as mock_main_chain, patch(
+            "agent.auxiliary_client._try_openrouter",
+        ) as mock_openrouter:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="title_generation")
+
+        assert client is task_client
+        assert model == "task-free-model"
+        mock_task_chain.assert_called_once_with(
+            "title_generation", "nvidia", reason="main provider unavailable")
+        mock_main_chain.assert_not_called()
+        mock_openrouter.assert_not_called()
+
+    def test_main_unavailable_uses_main_fallback_chain_before_builtin_chain(self):
+        """Auto aux resolution honors top-level fallback_providers before built-ins."""
+        main_fallback_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="nvidia",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),  # main provider has no client
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(main_fallback_client, "inclusionai/ring-2.6-1t:free", "openrouter"),
+        ) as mock_main_chain, patch(
+            "agent.auxiliary_client._try_openrouter",
+        ) as mock_openrouter:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="title_generation")
+
+        assert client is main_fallback_client
+        assert model == "inclusionai/ring-2.6-1t:free"
+        mock_main_chain.assert_called_once_with(
+            "title_generation", "nvidia", reason="main provider unavailable")
+        mock_openrouter.assert_not_called()
 
     def test_no_main_config_uses_chain_directly(self):
         """No main provider configured → skip step 1, use chain (no regression)."""
@@ -574,8 +692,11 @@ class TestResolveProviderClientAutoRuntimeModel:
             )
 
         assert client is codex_client
+        # 2026-06-29 upstream merge: _resolve_auto gained a `task` param (threaded
+        # by the call site as task=task); the atomic-pair fix this test guards is
+        # unchanged. Expect the task kwarg in the call.
         mock_resolve_auto.assert_called_once_with(
-            main_runtime={"provider": "openai-codex", "model": "gpt-5.5"}
+            main_runtime={"provider": "openai-codex", "model": "gpt-5.5"}, task=None
         )
         assert model == "gpt-5.5"
         assert model != "claude-opus-4-8"

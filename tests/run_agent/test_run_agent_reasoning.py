@@ -364,6 +364,13 @@ class TestReasoningReplayForStrictProviders:
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
         self._setup_agent(agent)
+        # Echo-back provider (Kimi): copy_reasoning_content_for_api preserves an
+        # explicit reasoning_content verbatim and ignores the normalized
+        # `reasoning` field. On non-echo-back providers (default OpenRouter)
+        # the field is stripped entirely (refs #45655), which is a separate path.
+        agent.base_url = "https://api.kimi.com/coding/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "kimi-coding"
         prior_assistant = {
             "role": "assistant",
             "content": "",

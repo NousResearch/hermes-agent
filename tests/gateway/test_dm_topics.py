@@ -61,13 +61,13 @@ def _ensure_telegram_mock():
     sys.modules["telegram.request"] = telegram_mod.request
 
     # Force reimport so the adapter picks up the mock ChatType.
-    sys.modules.pop("gateway.platforms.telegram", None)
+    sys.modules.pop("plugins.platforms.telegram.adapter", None)
 
 
 _PRIOR_SYS_MODULES: dict = {}
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)

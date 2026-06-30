@@ -545,13 +545,25 @@ class TestAnthropicCredentialRefresh:
 
         response = SimpleNamespace(content=[])
         agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create.return_value = response
 
-        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh:
+        # 2026-06-29 upstream merge: _anthropic_messages_create now routes through
+        # agent.anthropic_adapter.create_anthropic_message (which prefers
+        # messages.stream() with an SSE fallback) instead of calling
+        # client.messages.create() directly. The load-bearing contract this test
+        # guards is unchanged: the credential PREFLIGHT refresh runs before the
+        # API call. Assert the refresh fires, and that the call is dispatched
+        # through the new adapter with the right client + kwargs.
+        with (
+            patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh,
+            patch("agent.anthropic_adapter.create_anthropic_message", return_value=response) as create_msg,
+        ):
             result = agent._anthropic_messages_create({"model": "claude-sonnet-4-20250514"})
 
         refresh.assert_called_once_with()
-        agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
+        create_msg.assert_called_once()
+        _call = create_msg.call_args
+        assert _call.args[0] is agent._anthropic_client
+        assert _call.args[1] == {"model": "claude-sonnet-4-20250514"}
         assert result is response
 
 

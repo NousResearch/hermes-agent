@@ -174,6 +174,13 @@ def test_cli_edit_nonexistent_id_reports_failure(kanban_home):
 def _spawn_argv_for(monkeypatch, task) -> list:
     """Drive _default_spawn with Popen stubbed; return the captured argv."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: False)
+    # Pin the hermes invocation to a single bare token so the dispatch argv is
+    # deterministic across hosts. Without this, a box where `hermes` is not a
+    # console-script on PATH falls back to `python -m hermes_cli.main`, which
+    # injects a spurious first `-m` and defeats the single-`-m` round-trip
+    # assertions (env-dependent test artifact, not a dispatch bug — the model
+    # override is still added exactly once after the entrypoint). (2026-06-29)
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
     class FakeProc:

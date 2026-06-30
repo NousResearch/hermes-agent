@@ -23,3 +23,47 @@ stopwords = [
   "mnop",        # sk-or-...mnop (key-masking fixture)
   "cdef",        # ghp_01...cdef (blackbox redaction-test fixture, test_seam_integration.py)
 ]
+# Path allowlist — TEST FIXTURES and DOC PLACEHOLDERS only.
+# Added 2026-06-29 during the upstream parity sync: the merge pulled in ~1546
+# upstream commits' worth of new test fixtures and doc placeholders. Each path
+# below was triaged: every finding is a mocked/redaction test fixture, a
+# documentation placeholder (DISCORD_ALLOWED_USERS / "Authorization: Bearer
+# <token>" curl examples), or gitleaks matching the redaction module's OWN
+# detection regex. No real secret in any of them. Whole-file allowlisting is
+# safe here because these files are EXPECTED to carry fake credential shapes.
+paths = [
+  # --- redaction module: gitleaks matches the PRIVATE KEY *detection regex* itself ---
+  '''agent/redact\.py''',
+  # --- Tests: mocked clients / redaction & auth fixtures ---
+  '''tests/agent/test_redact\.py''',
+  '''tests/agent/test_copilot_acp_client\.py''',
+  '''tests/cli/test_quick_commands\.py''',
+  '''tests/gateway/relay/test_auth\.py''',
+  '''tests/gateway/test_agent_cache\.py''',
+  '''tests/gateway/test_platform_base\.py''',
+  '''tests/gateway/test_tui_approval_redaction\.py''',
+  '''tests/gateway/test_weak_credential_guard\.py''',
+  '''tests/hermes_cli/test_auth_commands\.py''',
+  '''tests/hermes_cli/test_config\.py''',
+  '''tests/hermes_cli/test_debug\.py''',
+  '''tests/hermes_cli/test_web_oauth_dispatch\.py''',
+  '''tests/tools/test_mcp_tool\.py''',
+  '''tests/tools/test_local_env_blocklist\.py''',  # canonical AWS docs example key (AKIAIOSFODNN7EXAMPLE) — blocklist test fixture
+  # --- Docs: placeholder config examples & curl snippets (incl. zh-Hans i18n) ---
+  '''website/docs/user-guide/.*\.md''',
+  '''website/i18n/.*/user-guide/.*\.md''',
+  # --- optional-skills shop refs: public OAuth client_id in doc examples ---
+  '''optional-skills/productivity/shop/references/.*\.md''',
+]
+# Regex allowlist — SOURCE files keep full scanning EXCEPT public OAuth *client
+# IDs* (client IDs are sent in browser auth flows — public by design, not
+# credentials). Two shapes, both anchored on the client-id keyword so the rest
+# of each file stays fully scanned and a future real secret still trips the gate:
+#   1. UPPER_OAUTH_CLIENT_ID = "..."  (constant style)
+#   2. client_id = "<uuid>" / client_id=<uuid>  (UUID client IDs are public;
+#      a real high-entropy API secret is never UUID-formatted)
+regexTarget = "line"
+regexes = [
+  '''_OAUTH_CLIENT_ID\s*=\s*["'][^"']+["']''',
+  '''client_id\s*=\s*["']?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}["']?''',
+]

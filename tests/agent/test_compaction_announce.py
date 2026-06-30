@@ -611,6 +611,28 @@ class TestDoneSiteWiringBuiltin:
         # make a real summary (not None) so it's a clean compaction
         cc._generate_summary = lambda *a, **k: "Summarized the earlier work."
         cc.protect_last_n = 4
+        # This test asserts the ROTATION announce form (previous:/current: session
+        # pointer). Upstream's in-place compaction (compression.in_place=True, the
+        # config default, absorbed in the 2026-06-29 merge) rewrites the transcript
+        # WITHOUT rotating, so there is no "previous" session to point at. Pin
+        # in-place OFF here so this test exercises the rotation path it was written
+        # for; the in-place announce form is covered separately.
+        agent.compression_in_place = False
+        # The merged compaction path (2026-06-29 upstream merge) runs an aux-client
+        # PREFLIGHT (auxiliary_client.get_text_auxiliary_client) before summarizing;
+        # with no real provider in the bare test env it emits the "no aux provider"
+        # degrade warning and skips the success announce. In production a real aux
+        # client resolves, so the announce fires. Stub the preflight resolver to a
+        # truthy client so this test exercises the announce WIRING it asserts
+        # (companion to the _generate_summary stub above).
+        import agent.conversation_compression as _ccmod
+        _orig_get_aux = None
+        try:
+            import agent.auxiliary_client as _auxmod
+            _orig_get_aux = _auxmod.get_text_auxiliary_client
+            _auxmod.get_text_auxiliary_client = lambda *a, **k: (object(), "test/model")
+        except Exception:
+            pass
 
         messages = _real_transcript()
         from agent.model_metadata import estimate_request_tokens_rough

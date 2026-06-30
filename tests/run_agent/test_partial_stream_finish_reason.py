@@ -362,3 +362,194 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+
+
+class TestContentFilterStallActivatesFallback:
+    """Regression for #32421: a provider output-layer content safety filter
+    (e.g. MiniMax ``output new_sensitive (1027)``) terminates a streaming
+    response mid-delivery.  The raw error is swallowed into a
+    finish_reason=length partial-stream stub, so before the fix the loop
+    burned 3 continuation retries against the SAME primary (re-hitting the
+    content-deterministic filter every time) and gave up with
+    ``"Response remained truncated after 3 continuation attempts"`` — the
+    configured fallback chain was never consulted.
+
+    The fix has three layers:
+      1. error_classifier classifies ``new_sensitive`` as
+         ``content_policy_blocked``.
+      2. interruptible_streaming_api_call runs the swallowed error through
+         that classifier and stamps the stub ``_content_filter_terminated``.
+      3. the conversation loop reads the tag and activates fallback BEFORE
+         burning any continuation retries.
+    """
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streaming_call_tags_content_filter_stub(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Layer 2: the real streaming path stamps _content_filter_terminated
+        when the swallowed error matches a content-filter pattern."""
+
+        def _minimax_stall():
+            yield _make_stream_chunk(content="Writing the file: ")
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_1", name="write_file"),
+            ])
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"path": "/tmp/x", '),
+            ])
+            raise RuntimeError("output new_sensitive (1027) [MiniMax-M2.7]")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _minimax_stall()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        agent._current_streamed_assistant_text = "Writing the file: "
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert getattr(response, "_content_filter_terminated", False) is True, (
+            "MiniMax new_sensitive stream stall must tag the stub so the loop "
+            "can route to fallback (#32421)."
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_plain_network_stall_not_tagged(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """A plain network stall (no content-filter signature) must NOT be
+        tagged — it should still use the normal continuation path, not
+        switch providers."""
+
+        def _network_stall():
+            yield _make_stream_chunk(content="Writing the file: ")
+            raise RuntimeError("connection reset by peer")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _network_stall()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        agent._current_streamed_assistant_text = "Writing the file: "
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert getattr(response, "_content_filter_terminated", False) is False, (
+            "A plain network stall must not be misclassified as a content "
+            "filter — that would needlessly switch providers."
+        )
+
+    def test_tagged_stub_activates_fallback_first_pass(self, loop_agent):
+        """Layer 3: a tagged stub activates fallback on the FIRST pass, with
+        zero continuation retries burned, and the fallback provider then
+        completes the turn."""
+        from tests.run_agent._run_agent_helpers import _mock_assistant_msg, _mock_response
+
+        def _filter_stub():
+            return SimpleNamespace(
+                id=PARTIAL_STREAM_STUB_ID,
+                model="minimax/MiniMax-M2.7",
+                choices=[SimpleNamespace(
+                    index=0,
+                    message=_mock_assistant_msg(content="Writing the file..."),
+                    finish_reason=FINISH_REASON_LENGTH,
+                )],
+                usage=None,
+                _dropped_tool_names=["write_file"],
+                _content_filter_terminated=True,
+            )
+
+        recovery = _mock_response(
+            content="Done on the fallback provider.", finish_reason="stop",
+        )
+        loop_agent.client.chat.completions.create.side_effect = [
+            _filter_stub(), recovery,
+        ]
+        loop_agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
+        ]
+        loop_agent._fallback_index = 0
+        fb_calls = {"n": 0}
+
+        def _fake_activate(reason=None):
+            fb_calls["n"] += 1
+            loop_agent._fallback_index = len(loop_agent._fallback_chain)
+            return True
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch.object(loop_agent, "_try_activate_fallback",
+                         side_effect=_fake_activate),
+        ):
+            result = loop_agent.run_conversation("write me a long file")
+
+        assert fb_calls["n"] == 1, (
+            "Content-filter-tagged stub must activate fallback exactly once, "
+            "on the first pass — not after exhausting continuation retries."
+        )
+        assert result["final_response"] == "Done on the fallback provider."
+        assert result["completed"] is True
+
+    def test_tagged_stub_no_fallback_falls_through(self, loop_agent):
+        """When no fallback chain is configured, a tagged stub falls through
+        to the normal continuation path (best-effort) rather than crashing."""
+        from tests.run_agent._run_agent_helpers import _mock_assistant_msg, _mock_response
+
+        def _filter_stub():
+            return SimpleNamespace(
+                id=PARTIAL_STREAM_STUB_ID,
+                model="minimax/MiniMax-M2.7",
+                choices=[SimpleNamespace(
+                    index=0,
+                    message=_mock_assistant_msg(content="partial "),
+                    finish_reason=FINISH_REASON_LENGTH,
+                )],
+                usage=None,
+                _dropped_tool_names=["write_file"],
+                _content_filter_terminated=True,
+            )
+
+        recovery = _mock_response(content="recovered text", finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [
+            _filter_stub(), recovery,
+        ]
+        # No fallback chain configured.
+        loop_agent._fallback_chain = []
+        loop_agent._fallback_index = 0
+        fb_calls = {"n": 0}
+
+        def _fake_activate(reason=None):
+            fb_calls["n"] += 1
+            return False
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch.object(loop_agent, "_try_activate_fallback",
+                         side_effect=_fake_activate),
+        ):
+            result = loop_agent.run_conversation("write me a long file")
+
+        # Fallback was not attempted (empty chain gates it out); the loop
+        # continued normally and produced a response.
+        assert fb_calls["n"] == 0, (
+            "With an empty fallback chain, the loop must not even call "
+            "_try_activate_fallback — it should fall through to continuation."
+        )
+        assert result["completed"] is True

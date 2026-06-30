@@ -57,6 +57,11 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
+# names a profile this gateway does not serve (→ 404). Distinct from None
+# (no prefix / multiplexing off → handle as the default profile).
+_PROFILE_REJECTED = object()
+
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
     "matrix", "mattermost", "homeassistant", "email", "dingtalk",
@@ -148,7 +153,7 @@ class WebhookAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
 
@@ -189,6 +194,14 @@ class WebhookAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
+        # routes the inbound event to that profile. Same handler; the profile is
+        # captured from the path and stamped onto the SessionSource so the agent
+        # turn resolves that profile's config/skills/credentials. Only honored
+        # when gateway.multiplex_profiles is on (the handler validates).
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", self._handle_webhook
+        )
 
         # Port conflict detection — fail fast if port is already in use
         import socket as _socket
@@ -397,6 +410,35 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
+    def _resolve_request_profile(self, request: "web.Request"):
+        """Resolve + validate the /p/<profile>/ URL prefix on a webhook request.
+
+        Returns:
+          - ``None`` when no profile prefix is present, or multiplexing is off
+            (the prefix is ignored, request handled as the default profile).
+          - the profile name (str) when present, multiplexing is on, and the
+            profile is one this gateway serves.
+          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
+            unknown/unconfigured (handler returns 404).
+        """
+        profile = (request.match_info.get("profile") or "").strip()
+        if not profile:
+            return None
+        runner = self.gateway_runner
+        cfg = getattr(runner, "config", None)
+        if not getattr(cfg, "multiplex_profiles", False):
+            # Prefix supplied but multiplexing is off — ignore it, behave as
+            # the single-profile gateway (don't 404 a would-be valid route).
+            return None
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+        except Exception:
+            return _PROFILE_REJECTED
+        if profile not in served:
+            return _PROFILE_REJECTED
+        return profile
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -404,6 +446,13 @@ class WebhookAdapter(BasePlatformAdapter):
 
         route_name = request.match_info.get("route_name", "")
         route_config = self._routes.get(route_name)
+
+        # Multi-profile: resolve + validate the /p/<profile>/ prefix if present.
+        profile = self._resolve_request_profile(request)
+        if profile is _PROFILE_REJECTED:
+            return web.json_response(
+                {"error": "Unknown or unconfigured profile"}, status=404
+            )
 
         if not route_config:
             return web.json_response(
@@ -641,6 +690,8 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+        if profile and isinstance(profile, str):
+            source.profile = profile
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
@@ -887,13 +938,34 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error="Missing repo or pr_number"
             )
 
+        # --- Input validation (prevent CLI argument injection) ---
+        # pr_number must be a positive integer.
+        try:
+            pr_int = int(pr_number)
+            if pr_int <= 0:
+                raise ValueError("non-positive")
+        except (ValueError, TypeError):
+            logger.error(
+                "[webhook] invalid pr_number: %r", pr_number
+            )
+            return SendResult(
+                success=False, error="Invalid pr_number"
+            )
+
+        # repo must match owner/name (alphanumeric, hyphens, underscores, dots).
+        if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo):
+            logger.error("[webhook] invalid repo format: %r", repo)
+            return SendResult(
+                success=False, error="Invalid repo format"
+            )
+
         try:
             result = subprocess.run(
                 [
                     "gh",
                     "pr",
                     "comment",
-                    str(pr_number),
+                    str(pr_int),
                     "--repo",
                     repo,
                     "--body",

@@ -29,6 +29,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent._cached_system_prompt = None
     agent.session_id = "test-session-id"
     agent.model = "test-model"
+    agent.provider = "openrouter"
     agent.platform = "cli"
     agent._session_db = session_db
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
@@ -66,6 +67,47 @@ class TestStoredPromptReuse:
 
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
         assert agent._cached_system_prompt == stored
+
+    def test_present_row_with_stale_runtime_identity_rebuilds(self, caplog):
+        """Stored prompts are cache gold unless their runtime identity is stale.
+
+        A live /model switch updates the agent and DB model_config immediately.
+        If the old system_prompt snapshot still says the previous model,
+        blindly restoring it makes the next turn call the new model while the
+        model reads old `Model:` metadata ("what model are you?" lies).
+        """
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Conversation started: Tuesday, June 16, 2026\n"
+            "Session ID: test-session-id\n"
+            "Model: anthropic/claude-opus-4.8-fast\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(
+            session_db=db,
+            prebuilt_prompt=(
+                "You are Hermes Agent.\n\n"
+                "Conversation started: Tuesday, June 16, 2026\n"
+                "Session ID: test-session-id\n"
+                "Model: openai/gpt-5.5\n"
+                "Provider: openrouter"
+            ),
+        )
+        agent.model = "openai/gpt-5.5"
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt.endswith(
+            "Model: openai/gpt-5.5\nProvider: openrouter"
+        )
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id, agent._cached_system_prompt
+        )
+        assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

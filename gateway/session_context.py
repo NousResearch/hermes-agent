@@ -49,6 +49,7 @@ _UNSET: Any = object()
 # ---------------------------------------------------------------------------
 
 _SESSION_PLATFORM: ContextVar = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
+_SESSION_SOURCE: ContextVar = ContextVar("HERMES_SESSION_SOURCE", default=_UNSET)
 _SESSION_CHAT_ID: ContextVar = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
 _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
@@ -60,6 +61,27 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+
+# Whether the current session's delivery channel can route an ASYNC completion
+# back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
+#
+# True  — CLI (in-process completion_queue drain) and the real gateway
+#         platforms (Telegram/Discord/Slack/...), which hold a persistent
+#         outbound channel and run the watcher/drain loops.
+# False — stateless request/response adapters (the API server: every route,
+#         spec and proprietary, tears down its channel when the turn ends, so
+#         a background completion that finishes later has nowhere to go).
+#
+# Tools that promise async delivery (terminal notify_on_complete /
+# watch_patterns, delegate_task background=True) read this via
+# ``async_delivery_supported()`` and refuse to hand out a promise the channel
+# can't keep — turning a silent no-op into an explicit contract.
+#
+# Default _UNSET => treated as supported, so CLI (which never sets a platform)
+# and any contextvar-unaware path keep working. Stateless adapters opt OUT by
+# setting ``supports_async_delivery = False`` on the adapter class; the gateway
+# propagates that into this contextvar at session-bind time.
+_SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
@@ -80,6 +102,7 @@ _CRON_SESSION: ContextVar = ContextVar("HERMES_CRON_SESSION", default=_UNSET)
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
+    "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
@@ -123,6 +146,7 @@ def set_current_session_id(session_id: str) -> None:
 
 def set_session_vars(
     platform: str = "",
+    source: str = "",
     chat_id: str = "",
     chat_name: str = "",
     thread_id: str = "",
@@ -132,6 +156,7 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     cwd: str = "",
+    async_delivery: bool = True,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -142,9 +167,15 @@ def set_session_vars(
     only for API compatibility.
 
     ``cwd`` pins the logical working directory for this context.
+
+    ``async_delivery`` declares whether this session's channel can route a
+    background completion back to the agent after the turn ends (see
+    ``_SESSION_ASYNC_DELIVERY`` / ``async_delivery_supported``). Stateless
+    request/response adapters (the API server) pass ``False``.
     """
     tokens = [
         _SESSION_PLATFORM.set(platform),
+        _SESSION_SOURCE.set(source),
         _SESSION_CHAT_ID.set(chat_id),
         _SESSION_CHAT_NAME.set(chat_name),
         _SESSION_THREAD_ID.set(thread_id),
@@ -153,6 +184,7 @@ def set_session_vars(
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
         _SESSION_MESSAGE_ID.set(message_id),
+        _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -176,6 +208,7 @@ def clear_session_vars(tokens: list) -> None:
     """
     for var in (
         _SESSION_PLATFORM,
+        _SESSION_SOURCE,
         _SESSION_CHAT_ID,
         _SESSION_CHAT_NAME,
         _SESSION_THREAD_ID,
@@ -186,6 +219,11 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_MESSAGE_ID,
     ):
         var.set("")
+    # Reset async-delivery capability to the "never set" sentinel rather than a
+    # falsy value: a cleared context should fall back to the default-supported
+    # behavior (CLI / unaware paths), not be mistaken for an opted-out
+    # stateless adapter.
+    _SESSION_ASYNC_DELIVERY.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -333,3 +371,22 @@ def is_cron_session() -> bool:
     from utils import is_truthy_value
 
     return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""), default=False)
+
+
+def async_delivery_supported() -> bool:
+    """Whether the current session can deliver a background completion later.
+
+    Returns ``False`` only when the active session was explicitly bound by a
+    stateless adapter (the API server) that cannot route a notification back to
+    the agent after the turn ends. CLI, cron, and the real gateway platforms —
+    and any path that never bound the contextvar — return ``True``.
+
+    Tools that promise async delivery (``terminal`` notify_on_complete /
+    watch_patterns, ``delegate_task`` background=True) consult this before
+    registering a watcher / dispatching a detached child, so they can refuse a
+    promise the channel can't keep instead of silently no-op'ing.
+    """
+    value = _SESSION_ASYNC_DELIVERY.get()
+    if value is _UNSET:
+        return True
+    return bool(value)

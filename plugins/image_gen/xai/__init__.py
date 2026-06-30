@@ -27,6 +27,7 @@ from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_reference_images,
     resolve_aspect_ratio,
     save_b64_image,
     save_url_image,
@@ -114,6 +115,31 @@ def _resolve_resolution() -> str:
     return DEFAULT_RESOLUTION
 
 
+def _xai_image_field(source: str) -> Dict[str, str]:
+    """Build the xAI ``image`` field for an edit request.
+
+    xAI's ``/v1/images/edits`` accepts ``{"url": <ref>, "type": "image_url"}``
+    where ``<ref>`` is a public URL or a base64 data URI. Public URLs and
+    existing data URIs pass through unchanged; local file paths are read and
+    encoded into a ``data:`` URI.
+    """
+    source = source.strip()
+    lower = source.lower()
+    if lower.startswith(("http://", "https://", "data:")):
+        return {"url": source, "type": "image_url"}
+    # Local file path → base64 data URI.
+    import base64
+    import os as _os
+
+    with open(source, "rb") as fh:
+        raw = fh.read()
+    ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()
+    if ext == "jpg":
+        ext = "jpeg"
+    b64 = base64.b64encode(raw).decode("utf-8")
+    return {"url": f"data:image/{ext};base64,{b64}", "type": "image_url"}
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -153,18 +179,34 @@ class XAIImageGenProvider(ImageGenProvider):
         return {
             "name": "xAI Grok Imagine (image)",
             "badge": "paid",
-            "tag": "grok-imagine-image — text-to-image; uses xAI Grok OAuth or XAI_API_KEY",
+            "tag": "grok-imagine-image — text-to-image & image editing; uses xAI Grok OAuth or XAI_API_KEY",
             "env_vars": [],
             "post_setup": "xai_grok",
         }
+
+    def capabilities(self) -> Dict[str, Any]:
+        # xAI's /v1/images/edits supports image editing via grok-imagine-image
+        # -quality. Single primary source image (multi-image editing exists as
+        # a separate capability but we keep the primary edit surface here).
+        return {"modalities": ["text", "image"], "max_reference_images": 1}
 
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Generate an image using xAI's grok-imagine-image."""
+        """Generate an image (text-to-image) or edit a source image (image-to-image).
+
+        Routing: when ``image_url`` is provided, POST to ``/v1/images/edits``
+        with the source image; otherwise POST to ``/v1/images/generations``.
+        Per xAI docs, editing uses the ``grok-imagine-image-quality`` model and
+        a JSON body (the OpenAI SDK's multipart ``images.edit()`` is NOT
+        supported by xAI).
+        """
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()
         provider_name = str(creds.get("provider") or "xai").strip() or "xai"
@@ -182,12 +224,17 @@ class XAIImageGenProvider(ImageGenProvider):
         resolution = _resolve_resolution()
         xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
-        payload: Dict[str, Any] = {
-            "model": model_id,
-            "prompt": prompt,
-            "aspect_ratio": xai_ar,
-            "resolution": xai_res,
-        }
+        # Pick the primary source image: explicit image_url wins, else the
+        # first reference image.
+        source_image = None
+        if isinstance(image_url, str) and image_url.strip():
+            source_image = image_url.strip()
+        else:
+            refs = normalize_reference_images(reference_image_urls)
+            if refs:
+                source_image = refs[0]
+        is_edit = bool(source_image)
+        modality = "image" if is_edit else "text"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -197,9 +244,41 @@ class XAIImageGenProvider(ImageGenProvider):
 
         base_url = str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
 
+        if is_edit:
+            # Editing requires the quality model per xAI docs. The source
+            # image may be a public URL or a base64 data URI; local file paths
+            # are converted to a data URI here.
+            edit_model = "grok-imagine-image-quality"
+            try:
+                image_field = _xai_image_field(source_image)
+            except Exception as exc:
+                return error_response(
+                    error=f"Could not load source image for editing: {exc}",
+                    error_type="io_error",
+                    provider=provider_name,
+                    model=edit_model,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+            payload: Dict[str, Any] = {
+                "model": edit_model,
+                "prompt": prompt,
+                "image": image_field,
+            }
+            endpoint_url = f"{base_url}/images/edits"
+            model_id = edit_model
+        else:
+            payload = {
+                "model": model_id,
+                "prompt": prompt,
+                "aspect_ratio": xai_ar,
+                "resolution": xai_res,
+            }
+            endpoint_url = f"{base_url}/images/generations"
+
         try:
             response = requests.post(
-                f"{base_url}/images/generations",
+                endpoint_url,
                 headers=headers,
                 json=payload,
                 timeout=120,
@@ -310,9 +389,9 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        extra: Dict[str, Any] = {
-            "resolution": xai_res,
-        }
+        extra: Dict[str, Any] = {}
+        if not is_edit:
+            extra["resolution"] = xai_res
 
         return success_response(
             image=image_ref,
@@ -320,6 +399,7 @@ class XAIImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="xai",
+            modality=modality,
             extra=extra,
         )
 

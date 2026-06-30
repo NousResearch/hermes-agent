@@ -4,6 +4,33 @@ Driven by the benchmark (`benchmark-findings.md`). Sequence is deliberate: **get
 before wrapping a loop around it.** Done first (cleanup): removed `answerability` (inert);
 benchmark + conclusions saved.
 
+## Simplified plan (YAGNI/KISS — CURRENT, 2026-06)
+
+The validation was being gold-plated. The skill is a **report-only ranker**; the only thing that
+matters is whether answering its top-ranked questions yields better outcomes — an **end-to-end** test
+that makes per-factor (stakes) validation unnecessary. Cut back to what changes a decision.
+
+**Cut / defer (YAGNI):**
+- **Pairwise stakes instrument + realized-stakes decomposition** — drop; the end-to-end test covers it.
+- **Formula changes** (drop-U, switch to max-Δ, simplify √) — don't; keep the frozen formula, no churn
+  without a decision-forcing reason (U is needed in-domain — settled).
+- **NOT_FOUND revival + `ctx_version` state machine** — defer; start with answered-facts + a plain gap
+  record, add revival only if a real run shows it's needed.
+- **Rank-relative change in `voi.py` (#23)** — defer; the wrapper takes **top-K by rank** from the
+  ranked list, sidestepping the absolute threshold without touching the skill.
+- **More eval harnesses** — stop; we have enough.
+
+**Keep / do (simple, evidence-backed):**
+1. **Minimal iterate-context wrapper** (`scripts/iterate.py`): rank → top-K by rank → grounded `ask`
+   answers → append tombstone facts → re-rank → stop on a relative floor or `max_rounds` → final
+   response. Configurable `K`/`max_rounds` + `stop_reason`. No revival machinery.
+2. **Validate end-to-end — falls out of (1):** run the wrapper answering **top-K vs bottom-K**,
+   blind-judge the two final responses; top should win (and the curve shows the floor). One artifact.
+3. **Only if (2) says the ranking is the weak link** → revisit elicitation/thresholds. Evidence-gated.
+
+Keeps the original "validate before you wrap" intent — the simplest valid test *is* running the
+minimal wrapper two ways. Sections below are retained as history/rationale.
+
 ## Revised plan (post-domain-learnings, 2026-06)
 
 The domain investigation (`evsi-validation-findings.md` §Domain sensitivity + Agentic realized

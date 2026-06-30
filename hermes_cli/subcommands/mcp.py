@@ -86,6 +86,30 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
+    mcp_refresh_p = mcp_sub.add_parser(
+        "refresh",
+        help="Refresh OAuth tokens using cached refresh tokens only",
+    )
+    mcp_refresh_p.add_argument(
+        "name", nargs="?", help="Server name to refresh (omit with --all)"
+    )
+    mcp_refresh_p.add_argument(
+        "--all",
+        action="store_true",
+        help="Refresh every OAuth server in config",
+    )
+    mcp_refresh_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Refresh even when the access token is still fresh",
+    )
+    mcp_refresh_p.add_argument(
+        "--min-ttl-seconds",
+        type=int,
+        default=900,
+        help="Refresh only when the access token has this many seconds or less remaining",
+    )
+
     mcp_reauth_p = mcp_sub.add_parser(
         "reauth",
         help="Re-authenticate one OAuth MCP server, or all of them (--all)",

@@ -38,6 +38,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -95,6 +96,17 @@ class _ProviderEntry:
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
+
+
+@dataclass
+class MCPOAuthRefreshResult:
+    """Outcome from a non-interactive refresh-token grant."""
+
+    server_name: str
+    refreshed: bool
+    skipped: bool
+    reason: str
+    expires_in: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +397,47 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
+        async def _handle_refresh_response(self, response: Any) -> bool:
+            """Handle refresh responses while preserving omitted refresh tokens.
+
+            Some OAuth providers rotate refresh tokens, others return only a
+            new access token and expect clients to keep the old refresh token.
+            The MCP SDK replaces the token object wholesale, which can drop
+            a still-valid refresh token when the response omits it. Hermes
+            keeps the previous refresh token in that narrow case.
+            """
+            if response.status_code != 200:
+                logger.warning("Token refresh failed: %s", response.status_code)
+                self.context.clear_tokens()
+                return False
+
+            previous_refresh_token = None
+            if self.context.current_tokens is not None:
+                previous_refresh_token = self.context.current_tokens.refresh_token
+
+            try:
+                content = await response.aread()
+                from mcp.shared.auth import OAuthToken
+                from pydantic import ValidationError
+
+                token_response = OAuthToken.model_validate_json(content)
+                if (
+                    token_response.refresh_token is None
+                    and previous_refresh_token
+                ):
+                    token_response = token_response.model_copy(
+                        update={"refresh_token": previous_refresh_token}
+                    )
+
+                self.context.current_tokens = token_response
+                self.context.update_token_expiry(token_response)
+                await self.context.storage.set_tokens(token_response)
+                return True
+            except ValidationError:
+                logger.exception("Invalid refresh response")
+                self.context.clear_tokens()
+                return False
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with
@@ -567,6 +620,160 @@ class MCPOAuthManager:
             "MCP OAuth '%s': evicted from cache and removed from disk",
             server_name,
         )
+
+    @staticmethod
+    def _current_token_ttl_seconds(context: Any) -> Optional[int]:
+        expiry = getattr(context, "token_expiry_time", None)
+        if expiry is None:
+            return None
+        try:
+            return max(0, int(float(expiry) - time.time()))
+        except (TypeError, ValueError):
+            return None
+
+    async def refresh_cached_tokens(
+        self,
+        server_name: str,
+        server_url: str,
+        oauth_config: Optional[dict],
+        *,
+        min_ttl_seconds: int = 900,
+        force: bool = False,
+    ) -> MCPOAuthRefreshResult:
+        """Refresh cached MCP OAuth tokens without opening a browser.
+
+        This is intended for cron/launchd keepalive jobs. It only uses an
+        existing refresh token; if refresh fails, callers should ask the user
+        to run ``hermes mcp login <server>`` interactively.
+        """
+        provider = self.get_or_build_provider(server_name, server_url, oauth_config)
+        if provider is None:
+            return MCPOAuthRefreshResult(
+                server_name=server_name,
+                refreshed=False,
+                skipped=False,
+                reason="oauth_unavailable",
+            )
+
+        entry = self._entries.get(server_name)
+        if entry is None or entry.provider is None:
+            return MCPOAuthRefreshResult(
+                server_name=server_name,
+                refreshed=False,
+                skipped=False,
+                reason="provider_unavailable",
+            )
+
+        async with entry.lock:
+            try:
+                if not getattr(provider, "_initialized", False):
+                    await provider._initialize()  # noqa: SLF001
+            except Exception as exc:
+                logger.warning(
+                    "MCP OAuth '%s': initialization before refresh failed: %s",
+                    server_name, exc,
+                )
+                return MCPOAuthRefreshResult(
+                    server_name=server_name,
+                    refreshed=False,
+                    skipped=False,
+                    reason="initialize_failed",
+                )
+
+            context = provider.context
+            tokens = context.current_tokens
+            expires_in = self._current_token_ttl_seconds(context)
+
+            if tokens is None or not getattr(tokens, "access_token", None):
+                return MCPOAuthRefreshResult(
+                    server_name=server_name,
+                    refreshed=False,
+                    skipped=False,
+                    reason="no_cached_tokens",
+                    expires_in=expires_in,
+                )
+            if not getattr(tokens, "refresh_token", None):
+                return MCPOAuthRefreshResult(
+                    server_name=server_name,
+                    refreshed=False,
+                    skipped=False,
+                    reason="no_refresh_token",
+                    expires_in=expires_in,
+                )
+            if not getattr(context, "client_info", None):
+                return MCPOAuthRefreshResult(
+                    server_name=server_name,
+                    refreshed=False,
+                    skipped=False,
+                    reason="no_client_info",
+                    expires_in=expires_in,
+                )
+
+            threshold = max(0, int(min_ttl_seconds))
+            if not force and expires_in is not None and expires_in > threshold:
+                return MCPOAuthRefreshResult(
+                    server_name=server_name,
+                    refreshed=False,
+                    skipped=True,
+                    reason="token_still_fresh",
+                    expires_in=expires_in,
+                )
+
+            try:
+                import httpx
+
+                refresh_request = await provider._refresh_token()  # noqa: SLF001
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    refresh_response = await client.send(refresh_request)
+
+                maybe_flag = getattr(provider, "_maybe_flag_poisoned_client", None)
+                if callable(maybe_flag):
+                    await maybe_flag(refresh_response)
+
+                ok = await provider._handle_refresh_response(refresh_response)  # noqa: SLF001
+            except Exception as exc:
+                logger.warning(
+                    "MCP OAuth '%s': non-interactive refresh failed: %s",
+                    server_name, exc,
+                )
+                return MCPOAuthRefreshResult(
+                    server_name=server_name,
+                    refreshed=False,
+                    skipped=False,
+                    reason="refresh_exception",
+                    expires_in=expires_in,
+                )
+
+            if not ok:
+                return MCPOAuthRefreshResult(
+                    server_name=server_name,
+                    refreshed=False,
+                    skipped=False,
+                    reason="refresh_rejected",
+                    expires_in=expires_in,
+                )
+
+            persist_metadata = getattr(
+                provider, "_persist_oauth_metadata_if_changed", None
+            )
+            if callable(persist_metadata):
+                persist_metadata()
+
+            storage = getattr(context, "storage", None)
+            try:
+                from tools.mcp_oauth import HermesTokenStorage
+                if isinstance(storage, HermesTokenStorage):
+                    entry.last_mtime_ns = storage._tokens_path().stat().st_mtime_ns
+            except Exception:
+                pass
+
+            return MCPOAuthRefreshResult(
+                server_name=server_name,
+                refreshed=True,
+                skipped=False,
+                reason="refreshed",
+                expires_in=self._current_token_ttl_seconds(context),
+            )
 
     # -- Disk watch ----------------------------------------------------------
 

@@ -1,8 +1,8 @@
 """
 MCP Server Management CLI — ``hermes mcp`` subcommand.
 
-Implements ``hermes mcp add/remove/list/test/configure`` for interactive
-MCP server lifecycle management (issue #690 Phase 2).
+Implements ``hermes mcp add/remove/list/test/configure/refresh`` for interactive
+and non-interactive MCP server lifecycle management (issue #690 Phase 2).
 
 Relies on tools/mcp_tool.py for connection/discovery and keeps
 configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
@@ -761,6 +761,112 @@ def cmd_mcp_login(args):
     _reauth_oauth_server(name, servers[name])
 
 
+def _refresh_oauth_server(
+    name: str,
+    server_config: dict,
+    *,
+    min_ttl_seconds: int = 900,
+    force: bool = False,
+) -> bool:
+    """Refresh an OAuth MCP server using cached refresh tokens only."""
+    url = server_config.get("url")
+    if not url:
+        _error(f"Server '{name}' has no URL — not an OAuth-capable server")
+        return False
+    if server_config.get("auth") != "oauth":
+        _error(f"Server '{name}' is not configured for OAuth (auth={server_config.get('auth')})")
+        return False
+
+    print()
+    _info(f"Refreshing OAuth token for '{name}'...")
+    try:
+        from tools.mcp_oauth import OAuthNonInteractiveError
+        from tools.mcp_oauth_manager import get_manager
+
+        result = asyncio.run(
+            get_manager().refresh_cached_tokens(
+                name,
+                url,
+                server_config.get("oauth"),
+                min_ttl_seconds=min_ttl_seconds,
+                force=force,
+            )
+        )
+    except OAuthNonInteractiveError as exc:
+        _error(str(exc))
+        _info(f"Run `hermes mcp login {name}` interactively first.")
+        return False
+    except Exception as exc:
+        _error(f"Refresh failed: {exc}")
+        return False
+
+    ttl = (
+        f" (access token TTL ~{result.expires_in}s)"
+        if result.expires_in is not None
+        else ""
+    )
+    if result.refreshed:
+        _success(f"Refreshed '{name}'{ttl}")
+        return True
+    if result.skipped:
+        _success(f"Skipped '{name}' — token still fresh{ttl}")
+        return True
+
+    _error(f"Could not refresh '{name}' ({result.reason}){ttl}")
+    _info(f"Run `hermes mcp login {name}` interactively if the refresh token is stale.")
+    return False
+
+
+def cmd_mcp_refresh(args):
+    """Non-interactively refresh OAuth tokens for one server or all servers."""
+    import sys
+
+    servers = _get_mcp_servers()
+    do_all = getattr(args, "all", False)
+    name = getattr(args, "name", None)
+    min_ttl_seconds = getattr(args, "min_ttl_seconds", 900)
+    force = getattr(args, "force", False)
+
+    if do_all:
+        oauth_servers = [
+            (n, c) for n, c in servers.items()
+            if c.get("auth") == "oauth" and c.get("url")
+        ]
+        if not oauth_servers:
+            _info("No OAuth-based MCP servers found in config.")
+            return
+        ok_count = 0
+        for server_name, server_config in oauth_servers:
+            if _refresh_oauth_server(
+                server_name,
+                server_config,
+                min_ttl_seconds=min_ttl_seconds,
+                force=force,
+            ):
+                ok_count += 1
+        _info(f"Refreshed/skipped {ok_count}/{len(oauth_servers)} server(s).")
+        if ok_count != len(oauth_servers):
+            sys.exit(1)
+        return
+
+    if not name:
+        _error("Specify a server name or use --all.")
+        sys.exit(1)
+    if name not in servers:
+        _error(f"Server '{name}' not found in config.")
+        if servers:
+            _info(f"Available servers: {', '.join(servers)}")
+        sys.exit(1)
+
+    if not _refresh_oauth_server(
+        name,
+        servers[name],
+        min_ttl_seconds=min_ttl_seconds,
+        force=force,
+    ):
+        sys.exit(1)
+
+
 def cmd_mcp_reauth(args):
     """Re-authenticate one OAuth MCP server, or all of them sequentially.
 
@@ -949,6 +1055,7 @@ def mcp_command(args):
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
+        "refresh": cmd_mcp_refresh,
         "reauth": cmd_mcp_reauth,
     }
 
@@ -973,5 +1080,6 @@ def mcp_command(args):
         _info("hermes mcp test <name>                        Test connection")
         _info("hermes mcp configure <name>                   Toggle tools")
         _info("hermes mcp login <name>                       Re-authenticate OAuth")
+        _info("hermes mcp refresh <name>                     Refresh OAuth without browser")
         _info("hermes mcp reauth <name> | --all              Re-auth one or all OAuth servers")
         print()

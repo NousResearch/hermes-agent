@@ -467,6 +467,12 @@ async def _redirect_handler(authorization_url: str) -> None:
     Opens the browser automatically when possible; always prints the URL
     as a fallback for headless/SSH/gateway environments.
     """
+    if not _oauth_interactive_enabled.get():
+        raise OAuthNonInteractiveError(
+            "MCP OAuth requires interactive browser authorization. "
+            "Run `hermes mcp login <server>` from a terminal to authenticate."
+        )
+
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
         f"  Open this URL in your browser:\n\n"

@@ -18717,14 +18717,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # MCP tool discovery — run in an executor so the asyncio event loop
     # stays responsive even when a configured MCP server is slow or
-    # unreachable.  discover_mcp_tools() uses a blocking 120s wait
-    # internally; calling it from the loop thread would freeze platform
-    # heartbeats (Discord shard, Telegram polling) until it returned.
+    # unreachable.  The helper suppresses interactive OAuth so a stale MCP
+    # refresh token does not open a browser during gateway startup.
     # See #16856.
     try:
-        from tools.mcp_tool import discover_mcp_tools
+        from hermes_cli.mcp_startup import _discover_mcp_tools_without_interactive_oauth
         _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
+        await _loop.run_in_executor(None, _discover_mcp_tools_without_interactive_oauth)
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 

@@ -91,8 +91,76 @@ def test_hermes_provider_subclass_exists():
     assert issubclass(_HERMES_PROVIDER_CLS, OAuthClientProvider)
 
 
-@pytest.mark.asyncio
-async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
+def test_refresh_response_preserves_omitted_refresh_token(tmp_path, monkeypatch):
+    """Providers may omit refresh_token on refresh; keep the existing one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+
+    import asyncio
+    import httpx
+    from mcp.shared.auth import OAuthToken
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+    provider.context.current_tokens = OAuthToken(
+        access_token="old-access",
+        expires_in=1,
+        refresh_token="keep-refresh",
+    )
+
+    response = httpx.Response(
+        200,
+        content=b'{"access_token":"new-access","expires_in":3600,"token_type":"Bearer"}',
+    )
+
+    ok = asyncio.run(provider._handle_refresh_response(response))
+
+    assert ok is True
+    assert provider.context.current_tokens.access_token == "new-access"
+    assert provider.context.current_tokens.refresh_token == "keep-refresh"
+
+    persisted = json.loads((tmp_path / "mcp-tokens" / "srv.json").read_text())
+    assert persisted["access_token"] == "new-access"
+    assert persisted["refresh_token"] == "keep-refresh"
+
+
+def test_refresh_cached_tokens_skips_when_token_still_fresh(tmp_path, monkeypatch):
+    """The keepalive command avoids refresh POSTs while enough TTL remains."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+
+    import asyncio
+    from mcp.shared.auth import OAuthToken
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+    provider._initialized = True
+    provider.context.current_tokens = OAuthToken(
+        access_token="access",
+        expires_in=3600,
+        refresh_token="refresh",
+    )
+    provider.context.update_token_expiry(provider.context.current_tokens)
+    provider.context.client_info = object()
+
+    result = asyncio.run(
+        mgr.refresh_cached_tokens(
+            "srv",
+            "https://example.com/mcp",
+            None,
+            min_ttl_seconds=900,
+        )
+    )
+
+    assert result.skipped is True
+    assert result.refreshed is False
+    assert result.reason == "token_still_fresh"
+    assert result.expires_in > 900
+
+
+def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     """When the tokens file mtime changes, provider._initialized flips False.
 
     This is the behaviour Claude Code ships as
@@ -116,22 +184,25 @@ async def test_disk_watch_invalidates_on_mtime_change(tmp_path, monkeypatch):
     provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
     assert provider is not None
 
-    # First call: records mtime (zero -> real) -> returns True
-    changed1 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed1 is True
+    async def drive():
+        # First call: records mtime (zero -> real) -> returns True
+        changed1 = await mgr.invalidate_if_disk_changed("srv")
+        assert changed1 is True
 
-    # No file change -> False
-    changed2 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed2 is False
+        # No file change -> False
+        changed2 = await mgr.invalidate_if_disk_changed("srv")
+        assert changed2 is False
 
-    # Touch file with a newer mtime
-    future_mtime = time.time() + 10
-    os.utime(tokens_file, (future_mtime, future_mtime))
+        # Touch file with a newer mtime
+        future_mtime = time.time() + 10
+        os.utime(tokens_file, (future_mtime, future_mtime))
 
-    changed3 = await mgr.invalidate_if_disk_changed("srv")
-    assert changed3 is True
-    # _initialized flipped — next async_auth_flow will re-read from disk
-    assert provider._initialized is False
+        changed3 = await mgr.invalidate_if_disk_changed("srv")
+        assert changed3 is True
+        # _initialized flipped — next async_auth_flow will re-read from disk
+        assert provider._initialized is False
+
+    asyncio.run(drive())
 
 
 def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):

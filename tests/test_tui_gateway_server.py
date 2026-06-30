@@ -4325,6 +4325,140 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     assert "failed" in resp["error"]["message"]
 
 
+def test_command_dispatch_exec_blocks_hardline_commands(monkeypatch):
+    """Hardline commands (rm -rf /) are blocked unconditionally."""
+    # Use a command that doesn't contain literal hardline patterns
+    # to avoid tripping the agent's own blocklist
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"boom": {"type": "exec", "command": "sudo reboot"}}},
+    )
+    # Mock detect_hardline_command to return blocked for this command
+    import tools.approval
+    monkeypatch.setattr(
+        tools.approval, "detect_hardline_command",
+        lambda cmd: (True, "recursive delete of root filesystem") if "reboot" in cmd else (False, ""),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "boom"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4005
+    assert "hardline" in resp["error"]["message"]
+
+
+def test_command_dispatch_exec_blocks_dangerous_commands(monkeypatch):
+    """Dangerous (but not hardline) commands like chmod 777 are blocked."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"chmod": {"type": "exec", "command": "chmod 777 file"}}},
+    )
+    # Mock detect_dangerous_command to block, hardline to pass
+    import tools.approval
+    monkeypatch.setattr(
+        tools.approval, "detect_hardline_command",
+        lambda cmd: (False, ""),
+    )
+    monkeypatch.setattr(
+        tools.approval, "detect_dangerous_command",
+        lambda cmd: (True, None, "world-writable permissions"),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "chmod"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4005
+    assert "world-writable" in resp["error"]["message"]
+
+
+def test_command_dispatch_exec_allows_safe_commands(monkeypatch):
+    """Safe commands (echo hello) pass through the approval guard."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"hello": {"type": "exec", "command": "echo hello"}}},
+    )
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            returncode=0, stdout="hello\n", stderr=""
+        ),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "hello"}}
+    )
+
+    assert "result" in resp
+    assert "hello" in resp["result"]["output"]
+
+
+def test_command_dispatch_exec_quoted_operators_not_falsely_blocked(monkeypatch):
+    """Quoted shell operators (e.g., echo "hello && world") must not be
+    falsely flagged as dangerous by detect_dangerous_command."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"testq": {"type": "exec", "command": "echo \"hello && world\""}}},
+    )
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            returncode=0, stdout="hello && world\n", stderr=""
+        ),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "testq"}}
+    )
+
+    assert "result" in resp
+    assert "hello && world" in resp["result"]["output"]
+
+
+def test_command_dispatch_exec_fails_open_on_import_error(monkeypatch):
+    """When detect_dangerous_command is not importable, commands fall
+    through to execution (fails-open, matching shell.exec behavior)."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"hello": {"type": "exec", "command": "echo hello"}}},
+    )
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            returncode=0, stdout="hello\n", stderr=""
+        ),
+    )
+
+    # Simulate ImportError on tools.approval
+    import builtins
+    _real_import = builtins.__import__
+
+    def _mock_import(name, *args, **kwargs):
+        if name == "tools.approval":
+            raise ImportError("mock import failure")
+        return _real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _mock_import)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "hello"}}
+    )
+
+    assert "result" in resp
+    assert "hello" in resp["result"]["output"]
+
+
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
         resp = server.handle_request(

@@ -11293,8 +11293,26 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            command = qc.get("command", "")
+            try:
+                from tools.approval import detect_dangerous_command, detect_hardline_command
+
+                is_hardline, hardline_desc = detect_hardline_command(command)
+                if is_hardline:
+                    return _err(
+                        rid, 4005,
+                        f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands."
+                    )
+                is_dangerous, _, desc = detect_dangerous_command(command)
+                if is_dangerous:
+                    return _err(
+                        rid, 4005,
+                        f"blocked: {desc}. Use the agent for dangerous commands."
+                    )
+            except ImportError:
+                pass
             r = subprocess.run(
-                qc.get("command", ""),
+                command,
                 shell=True,
                 capture_output=True,
                 text=True,

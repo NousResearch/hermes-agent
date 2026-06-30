@@ -392,6 +392,9 @@ def test_browser_cdp_frame_id_routes_via_supervisor(chrome_cdp, supervisor_regis
     WebSocket. This is the path that makes cross-origin iframe eval work
     on Browserbase.
     """
+    import tools.browser_cdp_tool as _cdp_tool
+    monkeypatch.setattr(_cdp_tool, "_sensitive_cdp_methods_allowed", lambda: True)
+
     cdp_url, _port = chrome_cdp
     sv = supervisor_registry.get_or_start(task_id="frame-id-test", cdp_url=cdp_url)
     assert sv.snapshot().active
@@ -459,8 +462,11 @@ def test_browser_cdp_frame_id_real_oopif_smoke_documented():
     )
 
 
-def test_browser_cdp_frame_id_missing_supervisor():
+def test_browser_cdp_frame_id_missing_supervisor(monkeypatch):
     """browser_cdp(frame_id=...) errors cleanly when no supervisor is attached."""
+    import tools.browser_cdp_tool as _cdp_tool
+    monkeypatch.setattr(_cdp_tool, "_sensitive_cdp_methods_allowed", lambda: True)
+
     from tools.browser_cdp_tool import browser_cdp
     result = browser_cdp(
         method="Runtime.evaluate",
@@ -473,8 +479,11 @@ def test_browser_cdp_frame_id_missing_supervisor():
     assert "supervisor" in (r.get("error") or "").lower()
 
 
-def test_browser_cdp_frame_id_not_in_frame_tree(chrome_cdp, supervisor_registry):
+def test_browser_cdp_frame_id_not_in_frame_tree(chrome_cdp, supervisor_registry, monkeypatch):
     """browser_cdp(frame_id=...) errors when the frame_id isn't known."""
+    import tools.browser_cdp_tool as _cdp_tool
+    monkeypatch.setattr(_cdp_tool, "_sensitive_cdp_methods_allowed", lambda: True)
+
     cdp_url, _port = chrome_cdp
     sv = supervisor_registry.get_or_start(task_id="bad-frame-test", cdp_url=cdp_url)
     assert sv.snapshot().active

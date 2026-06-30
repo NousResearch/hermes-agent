@@ -28,6 +28,29 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
+_SENSITIVE_CDP_METHODS = frozenset(
+    {
+        "Browser.grantPermissions",
+        "Browser.resetPermissions",
+        "Browser.setPermission",
+        "Network.clearBrowserCache",
+        "Network.clearBrowserCookies",
+        "Network.deleteCookies",
+        "Network.getAllCookies",
+        "Network.getCookies",
+        "Network.setCookie",
+        "Network.setCookies",
+        "Page.addScriptToEvaluateOnNewDocument",
+        "Runtime.callFunctionOn",
+        "Runtime.evaluate",
+        "Storage.clearCookies",
+        "Storage.clearDataForOrigin",
+        "Storage.getCookies",
+        "Storage.setCookies",
+    }
+)
+_TRUTHY_CONFIG_VALUES = {"1", "true", "yes", "on", "allow", "allowed"}
+
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
 # supervisor and browser_dialog tool import it during tool discovery. Wrap the
 # import so a clean error surfaces if an environment is stale or incomplete.
@@ -84,6 +107,32 @@ def _resolve_cdp_endpoint() -> str:
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp: failed to resolve CDP endpoint: %s", exc)
         return ""
+
+
+def _sensitive_cdp_methods_allowed() -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        value = load_config().get("browser", {}).get("allow_sensitive_cdp_methods", False)
+    except Exception as exc:  # pragma: no cover - defensive config read
+        logger.debug("browser_cdp: failed to read sensitive CDP config: %s", exc)
+        value = False
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in _TRUTHY_CONFIG_VALUES
+
+
+def _sensitive_method_error(method: str) -> str | None:
+    if method not in _SENSITIVE_CDP_METHODS or _sensitive_cdp_methods_allowed():
+        return None
+    return tool_error(
+        f"CDP method {method!r} is disabled by default because it can expose "
+        "browser secrets, alter permissions, or inject script into pages. "
+        "Set browser.allow_sensitive_cdp_methods=true in config.yaml only for "
+        "trusted local debugging sessions.",
+        method=method,
+        cdp_docs=CDP_DOCS_URL,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +250,10 @@ def _browser_cdp_via_supervisor(
     the supervisor's already-connected WebSocket (using
     ``asyncio.run_coroutine_threadsafe`` onto the supervisor loop).
     """
+    blocked = _sensitive_method_error(method)
+    if blocked:
+        return blocked
+
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover — defensive
@@ -346,6 +399,10 @@ def browser_cdp(
             "'method' is required (e.g. 'Target.getTargets')",
             cdp_docs=CDP_DOCS_URL,
         )
+
+    blocked = _sensitive_method_error(method)
+    if blocked:
+        return blocked
 
     if not _WS_AVAILABLE:
         return tool_error(

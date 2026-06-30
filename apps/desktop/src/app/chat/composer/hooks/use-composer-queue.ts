@@ -1,8 +1,8 @@
-import { useStore } from '@nanostores/react'
-import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { useSessionSlice } from '@/lib/use-session-slice'
 import { clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
@@ -61,12 +61,10 @@ export function useComposerQueue({
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
 
-  const queuedPromptsBySession = useStore($queuedPromptsBySession)
-
-  const queuedPrompts = useMemo(
-    () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
-    [activeQueueSessionKey, queuedPromptsBySession]
-  )
+  // Per-session slice (edge): re-renders only when THIS session's queue changes,
+  // not on cross-session queue churn (the plain atom's map ref changes on every
+  // write; the keyed array does not).
+  const queuedPrompts = useSessionSlice($queuedPromptsBySession, activeQueueSessionKey)
 
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   queueEditRef.current = queueEdit

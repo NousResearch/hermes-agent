@@ -7,7 +7,6 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState
 } from 'react'
@@ -38,8 +37,6 @@ import {
   setComposerPoppedOut
 } from '@/store/composer-popout'
 import { removeQueuedPrompt } from '@/store/composer-queue'
-import { $statusItemsBySession } from '@/store/composer-status'
-import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
@@ -73,6 +70,7 @@ import { useComposerSubmit } from './hooks/use-composer-submit'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
+import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -118,8 +116,6 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const attachments = useStore($composerAttachments)
-  const statusItemsBySession = useStore($statusItemsBySession)
-  const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
@@ -140,6 +136,10 @@ export function ChatBar({
   // session id — gateway events and process.list both speak that id. Only the
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
+
+  // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
+  // every per-item status mutation or other sessions' churn (see the hook).
+  const statusPresent = useSessionStatusPresence(statusSessionId)
 
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
@@ -241,15 +241,7 @@ export function ChatBar({
     sessionId
   })
 
-  const statusStackVisible = useMemo(
-    () =>
-      queuedPrompts.length > 0 ||
-      (statusSessionId
-        ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 ||
-          (previewStatusBySession[statusSessionId]?.length ?? 0) > 0
-        : false),
-    [previewStatusBySession, queuedPrompts.length, statusItemsBySession, statusSessionId]
-  )
+  const statusStackVisible = queuedPrompts.length > 0 || statusPresent
 
   const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0

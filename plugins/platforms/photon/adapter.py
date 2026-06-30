@@ -854,6 +854,15 @@ class PhotonAdapter(BasePlatformAdapter):
         # never runs — can't leave it orphaned on the port.
         env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
 
+        creationflags = 0
+        if sys.platform == "win32":
+            try:
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                creationflags = windows_hide_flags()
+            except Exception:
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
         try:
             patch = subprocess.run(  # noqa: S603
                 [
@@ -865,6 +874,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 text=True,
                 timeout=10,
                 check=False,
+                creationflags=creationflags,
             )
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
@@ -883,6 +893,7 @@ class PhotonAdapter(BasePlatformAdapter):
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=(sys.platform != "win32"),
+            creationflags=creationflags,
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.

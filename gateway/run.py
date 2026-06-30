@@ -16044,10 +16044,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key,
                     user_config=user_config,
                 )
-                logger.warning(
-                    "DBG_RESOLVED model=%s provider=%s session=%s",
-                    model, runtime_kwargs.get("provider"), session_key or "",
-                )
+
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -16285,7 +16282,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                logger.warning("DBG_AGENT_CREATE model=%s sig=%s cached=%s", turn_route["model"], _sig, reused_cached_agent)
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],

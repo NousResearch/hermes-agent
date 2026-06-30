@@ -290,8 +290,6 @@ def init_agent(
     # Defensive: strip accidentally duplicated model-name prefix (see #54511).
     from agent.chat_completion_helpers import _dedupe_model_name
     agent.model = _dedupe_model_name(model)
-    import _sys as _sys_mod
-    print(f"[INIT_TRACE] entry: model={model!r} deduped={agent.model!r} provider={provider!r} base_url={base_url!r}", file=_sys_mod.stderr, flush=True)
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.

@@ -89,12 +89,7 @@ export function OverlayView({
 
         {/* Mobile-only Done pill — bottom-right thumb-reach dismiss back to
             root. Hidden on desktop via CSS. */}
-        <button
-          aria-label={closeLabel}
-          className="mobile-done-pill hidden"
-          onClick={closeOverlay}
-          type="button"
-        >
+        <button aria-label={closeLabel} className="mobile-done-pill hidden" onClick={closeOverlay} type="button">
           Done
         </button>
       </div>

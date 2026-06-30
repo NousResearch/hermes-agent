@@ -67,7 +67,11 @@ export function PageSearchShell({
             )}
           </div>
         )}
-        {filters ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2">{filters}</div> : null}
+        {filters ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 pb-2" data-slot="page-search-filters">
+            {filters}
+          </div>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden bg-(--ui-chat-surface-background)">{children}</div>
     </section>

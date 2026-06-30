@@ -778,6 +778,32 @@ html.hermes-mobile-standalone .mobile-done-pill:active {
   background: var(--chrome-action-hover);
 }
 
+/* Skills view (and any PageSearchShell filter row): horizontal tag cloud
+   becomes a vertical drill-down list on mobile so each category is a
+   thumb-sized row instead of a wrapped chip. */
+html.hermes-mobile-standalone [data-slot='page-search-filters'] {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding-inline: 0.5rem;
+}
+html.hermes-mobile-standalone [data-slot='page-search-filters'] > button {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-height: 2.75rem;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--ui-stroke-tertiary);
+  font-size: 0.9375rem;
+}
+html.hermes-mobile-standalone [data-slot='page-search-filters'] > button > span {
+  text-decoration: none !important;
+}
+html.hermes-mobile-standalone [data-slot='page-search-filters'] > button[data-active='true'] {
+  background: var(--chrome-action-hover);
+}
+
 img,
 picture,
 video,

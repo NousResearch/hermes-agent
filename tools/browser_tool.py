@@ -2996,7 +2996,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
-    # Use fill command (clears then types)
+    # agent-browser fill updates the DOM value via Input.insertText but does
+    # not notify React/Vue/Angular controlled components.  Sync framework state
+    # after a successful fill (see tools/browser_input_sync.py, #55075).
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
     from agent.display import (
@@ -3007,6 +3009,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     display_text = (redact_tool_args_for_display("browser_type", {"text": text}) or {})["text"]
 
     if result.get("success"):
+        from tools.browser_input_sync import sync_controlled_input_value
+
+        sync = sync_controlled_input_value(ref, text, effective_task_id)
         response = {
             "success": True,
             # Run typed text through the secret-pattern redactor so API keys /
@@ -3014,8 +3019,11 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             # text passes through unchanged.  The raw value was already sent
             # to the browser command above.
             "typed": display_text,
-            "element": ref
+            "element": ref,
+            "framework_synced": bool(sync.get("ok")),
         }
+        if not sync.get("ok"):
+            response["framework_sync_warning"] = sync.get("error")
         response = _copy_fallback_warning(response, result)
         response = redact_browser_typed_text_for_display(response, text)
         return json.dumps(response, ensure_ascii=False)

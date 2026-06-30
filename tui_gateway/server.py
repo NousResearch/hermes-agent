@@ -13457,11 +13457,11 @@ def _(rid, params: dict) -> dict:
 
 @method("learning.frames")
 def _(rid, params: dict) -> dict:
-    """Pre-render the Memory Graph play-through for the TUI overlay.
+    """Pre-render the learning timeline for the TUI ``/journey`` overlay.
 
-    Returns ``frames`` (reveal 0→1) plus static legend/summary, so Ink can
-    play/scrub locally without round-tripping the gateway per frame. The radial
-    layout is shared with the desktop panel and the ``hermes memory-graph`` CLI.
+    Returns ``frames`` (reveal 0→1) plus static legend/summary/bucket metadata,
+    so Ink can render and walk the tree locally without round-tripping the
+    gateway. Shares its renderer with the ``hermes journey`` CLI.
     """
     try:
         cols = int(params.get("cols", 80) or 80)
@@ -13469,22 +13469,12 @@ def _(rid, params: dict) -> dict:
         frames = int(params.get("frames", 48) or 48)
     except (TypeError, ValueError):
         cols, rows, frames = 80, 24, 48
-    links = params.get("links", True)
     try:
         from agent.learning_graph import build_learning_graph
         from agent.learning_graph_render import render_frames
 
         payload = build_learning_graph()
-        return _ok(
-            rid,
-            render_frames(
-                payload,
-                cols=max(20, cols),
-                rows=max(10, rows),
-                frames=frames,
-                links=bool(links),
-            ),
-        )
+        return _ok(rid, render_frames(payload, cols=max(20, cols), rows=max(10, rows), frames=frames))
     except Exception as exc:  # noqa: BLE001
         return _err(rid, 5000, f"learning.frames failed: {exc}")
 

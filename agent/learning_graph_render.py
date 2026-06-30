@@ -1,24 +1,16 @@
-"""Terminal renderer for the Star Map (learned skills + memories over time).
+"""Terminal renderer for the learning timeline (learned skills + memories).
 
 The desktop app (``apps/desktop/src/app/starmap``) paints a GPU radial
-constellation. A terminal can't do that — so this is a *rendition* that ports
-the design language from the desktop source and from prior-art terminal star
-maps, rather than guessing:
+constellation; a terminal can't, so this is a *rendition* of the same data as a
+timeline bar chart — date rows, proportional skill/memory bars colored by the
+day's dominant category, and a cumulative trajectory sparkline — plus per-slice
+bucket metadata the TUI walks as a tree. The age gradient and complementary
+memory ink are ported from the desktop source, not guessed.
 
-- **Orbital terminal chart.** A framed "instrument panel" with sparse time
-  shells, a small core, category sectors, and a gentle recency spiral. It keeps
-  the starmap feel without dumping a canvas worth of dots into the terminal.
-- **A few constellation strokes, not a yarn ball.** Related skills can be joined
-  only when the segment is short enough to read as a local asterism.
-- **Time is radial.** Stars sit on older→newer shells (core→rim), and playback
-  reveals outward like the desktop map's radial build-up.
-- **Magnitude + age gradient** (``geometry.ts`` ``nodeRadius`` / ``recencyInk``):
-  used/pinned/recent stars are bigger and brighter; old ones are small + quiet.
-- **Complementary memory ink** (``color.ts`` ``memoryInkFor``): memories render
-  in a muted complement of the theme primary.
-
-Grids are emitted as style runs — ``[text, style, alpha]`` — so each consumer
-maps the semantic style + brightness onto its own palette. Pure, stdlib-only.
+Grids are emitted as style runs — ``[text, style, alpha, hex?]`` — so each
+consumer maps the semantic style + brightness onto its own palette; the
+optional 4th element overrides the base color (category heatmap). Pure,
+stdlib-only.
 """
 
 from __future__ import annotations
@@ -48,18 +40,7 @@ SKILL_GLYPH = "●"
 MEMORY_GLYPH = "◆"
 _LABEL_KEYS = tuple("123456789abc")
 
-# Braille subpixel bit layout (Unicode spec): cell is 2 wide × 4 tall.
-_BRAILLE = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
-
-# Star "magnitude" → subpixel offsets painted around the center.
-_STAR_PATTERNS = {
-    1: ((0, 0),),
-    2: ((0, 0), (1, 0), (0, 1)),
-    3: ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)),
-    4: ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)),
-}
-
-Run = list  # [text, style, alpha]
+Run = list  # [text, style, alpha, hex?]
 Row = list  # list[Run]
 Grid = list  # list[Row]
 
@@ -86,14 +67,6 @@ def recency_ink(rec: float) -> float:
     if t <= AGE_MID:
         return AGE_OLD_INK + (AGE_MID_INK - AGE_OLD_INK) * _smoothstep(t / AGE_MID)
     return AGE_MID_INK + (AGE_NEW_INK - AGE_MID_INK) * _smoothstep((t - AGE_MID) / (1 - AGE_MID))
-
-
-def _hash(s: str) -> int:
-    """FNV-1a (geometry.ts ``hash``) — stable per-id scatter seed."""
-    h = 2166136261
-    for ch in s:
-        h = ((h ^ ord(ch)) * 16777619) & 0xFFFFFFFF
-    return h
 
 
 def format_date(ts: Optional[float]) -> str:
@@ -223,163 +196,6 @@ def derive_palette(primary_hex: str, *, dark: bool = True) -> dict[str, str]:
     }
 
 
-# ── Braille canvas ─────────────────────────────────────────────────────────
-#
-# Kept around as a small primitive in case we want a future --braille mode, but
-# the default UX is now the composed orbital character scene below. The braille
-# web looked technically clever and visually awful for this dataset.
-
-
-class _Braille:
-    """A 2×4-subpixel-per-cell canvas → braille style runs (one color per cell)."""
-
-    def __init__(self, cols: int, rows: int):
-        self.cols = max(1, cols)
-        self.rows = max(1, rows)
-        # (col,row) -> [mask, style, alpha, prio]
-        self.cells: dict[tuple[int, int], list] = {}
-
-    @property
-    def width(self) -> int:
-        return self.cols * 2
-
-    @property
-    def height(self) -> int:
-        return self.rows * 4
-
-    def plot(self, x: int, y: int, style: str, alpha: float, prio: int) -> None:
-        if x < 0 or y < 0:
-            return
-        col, row = x // 2, y // 4
-        if col >= self.cols or row >= self.rows:
-            return
-        bit = _BRAILLE[y % 4][x % 2]
-        cell = self.cells.get((col, row))
-        if cell is None:
-            self.cells[(col, row)] = [bit, style, alpha, prio]
-        else:
-            cell[0] |= bit
-            if prio >= cell[3]:
-                cell[1], cell[2], cell[3] = style, alpha, prio
-
-    def line(self, x0: int, y0: int, x1: int, y1: int, style: str, alpha: float, prio: int) -> None:
-        dx, dy = abs(x1 - x0), -abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx + dy
-        while True:
-            self.plot(x0, y0, style, alpha, prio)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0 += sx
-            if e2 <= dx:
-                err += dx
-                y0 += sy
-
-    def to_grid(self) -> Grid:
-        grid: Grid = []
-        for row in range(self.rows):
-            runs: Row = []
-            last_col = -1
-            for col in range(self.cols):
-                if (col, row) in self.cells:
-                    last_col = col
-            for col in range(last_col + 1):
-                cell = self.cells.get((col, row))
-                if cell:
-                    ch, style, alpha = chr(0x2800 | cell[0]), cell[1], cell[2]
-                else:
-                    ch, style, alpha = " ", STYLE_BG, 1.0
-                if runs and runs[-1][1] == style and abs(runs[-1][2] - alpha) < 1e-6:
-                    runs[-1][0] += ch
-                else:
-                    runs.append([ch, style, alpha])
-            grid.append(runs)
-        return grid
-
-
-def _blit_braille(field: _CharField, sky: _Braille, ox: int = 0, oy: int = 0) -> None:
-    """Copy a braille canvas into the character field."""
-    for (col, row), (mask, style, alpha, _prio) in sky.cells.items():
-        field.put(ox + col, oy + row, chr(0x2800 | mask), style, alpha, 2)
-
-
-class _CharField:
-    """Priority-buffered character scene for the terminal star chart."""
-
-    def __init__(self, cols: int, rows: int):
-        self.cols = max(20, cols)
-        self.rows = max(8, rows)
-        self.ch = [[" "] * self.cols for _ in range(self.rows)]
-        self.style = [[STYLE_BG] * self.cols for _ in range(self.rows)]
-        self.alpha = [[1.0] * self.cols for _ in range(self.rows)]
-        self.prio = [[0] * self.cols for _ in range(self.rows)]
-
-    def put(self, x: int, y: int, ch: str, style: str, alpha: float, prio: int) -> None:
-        if 0 <= x < self.cols and 0 <= y < self.rows and prio >= self.prio[y][x]:
-            self.ch[y][x] = ch
-            self.style[y][x] = style
-            self.alpha[y][x] = alpha
-            self.prio[y][x] = prio
-
-    def text(self, x: int, y: int, text: str, style: str, alpha: float, prio: int) -> None:
-        for i, ch in enumerate(text):
-            self.put(x + i, y, ch, style, alpha, prio)
-
-    def line(self, x0: int, y0: int, x1: int, y1: int, style: str, alpha: float, prio: int) -> None:
-        dx = abs(x1 - x0)
-        dy = -abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx + dy
-        while True:
-            self.put(x0, y0, "·", style, alpha, prio)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0 += sx
-            if e2 <= dx:
-                err += dx
-                y0 += sy
-
-    def to_grid(self) -> Grid:
-        out: Grid = []
-        for y in range(self.rows):
-            row: Row = []
-            last = self.cols - 1
-            while last >= 0 and self.ch[y][last] == " ":
-                last -= 1
-            if last < 0:
-                out.append([])
-                continue
-            for x in range(last + 1):
-                run = [self.ch[y][x], self.style[y][x], self.alpha[y][x]]
-                if row and row[-1][1] == run[1] and abs(row[-1][2] - run[2]) < 1e-6:
-                    row[-1][0] += run[0]
-                else:
-                    row.append(run)
-            out.append(row)
-        return out
-
-
-def _star_glyph(node: dict[str, Any], rec: float, ignited: bool) -> str:
-    if not ignited:
-        return "·" if node.get("kind") != "memory" else "◇"
-    if node.get("kind") == "memory":
-        return "◆" if rec > 0.55 else "◇"
-    use = int(node.get("useCount", 0) or 0)
-    if node.get("pinned") or use >= 8 or rec > 0.86:
-        return "✦"
-    if use >= 3:
-        return "✧"
-    return "·"
-
-
 def _node_score(node: dict[str, Any], rec: float) -> float:
     """Pick which visible objects deserve map markers + label rows."""
     if node.get("kind") == "memory":
@@ -404,27 +220,6 @@ def _node_meta(node: dict[str, Any]) -> str:
     if node.get("pinned"):
         bits.append("pinned")
     return " · ".join(bits)
-
-
-def _ring_recencies(recencies: list[float]) -> list[float]:
-    if not recencies:
-        return []
-    # A few time shells, not one noisy ring per date. The outer rim is always now.
-    count = min(5, max(3, len({round(r, 1) for r in recencies})))
-    return [LEAD_IN + (1 - LEAD_IN) * (i / (count - 1)) for i in range(count)]
-
-
-def _angle_for(node: dict[str, Any], categories: dict[str, int]) -> float:
-    cat = str(node.get("category") or ("memory" if node.get("kind") == "memory" else "skill"))
-    n_cats = max(1, len(categories))
-    rec_hint = _to_ts(node.get("timestamp")) or 0
-    base = (categories.get(cat, 0) / n_cats) * math.tau - math.pi / 2
-    # Stable local fan so a category becomes a sector/cloud, not a vertical hash.
-    jitter = (((_hash(str(node.get("id", ""))) % 1000) / 1000.0) - 0.5) * (math.tau / max(4, n_cats)) * 0.9
-    # Slight deterministic phase shift stops same-category rows from looking
-    # mechanically radial before the real recency spiral is applied.
-    phase = ((_hash(cat + str(int(rec_hint))) % 1000) / 1000.0 - 0.5) * 0.18
-    return base + jitter + phase
 
 
 # ── Timeline chart frame ─────────────────────────────────────────────────────
@@ -631,10 +426,6 @@ def _bucket_category(bucket: _ChartBucket) -> Optional[str]:
     return max(counts, key=lambda k: counts[k]) if counts else None
 
 
-def _dust(label: str, col: int, density: int = 9) -> bool:
-    return (_hash(f"{label}:{col}") % density) == 0
-
-
 def _trajectory_row(buckets: list[_ChartBucket], width: int, reveal: float) -> Row:
     """Cumulative learning curve as a compact star-path sparkline."""
     if not buckets:
@@ -658,30 +449,20 @@ def _trajectory_row(buckets: list[_ChartBucket], width: int, reveal: float) -> R
     return [["trajectory ", STYLE_LABEL, 0.55], ["".join(cells), STYLE_SKILL, 0.48]]
 
 
-def render_graph(
-    payload: dict[str, Any],
-    *,
-    cols: int = 80,
-    rows: int = 16,
-    reveal: float = 1.0,
-    seed: int = 0,
-    links: bool = True,
-) -> dict[str, Any]:
-    """Render one starmap-flavored timeline frame at ``reveal`` (0→1).
+def render_graph(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, reveal: float = 1.0) -> dict[str, Any]:
+    """Render one timeline frame at ``reveal`` (0→1).
 
-    The useful part is the first boring graph: date rows, proportional bars, and
-    counts. The starmap layer is restrained: star/diamond glyphs inside the bars,
-    a sparse constellation strip, and numbered row markers tied to label rows.
+    Date rows with proportional skill/memory bars colored by the day's dominant
+    category, numbered markers tied to label rows, and a cumulative trajectory
+    sparkline underneath.
     """
-    del seed
     reveal = _clamp(reveal, 0.0, 1.0)
     cols = max(44, cols)
     rows = max(14, rows)
     nodes = list(payload.get("nodes", []))
     if not nodes:
-        field = _CharField(cols, rows)
-        field.text(2, rows // 2, "no learning yet — keep using Hermes and it maps out here", STYLE_DIM, 0.7, 2)
-        return {"grid": field.to_grid(), "date": "", "reveal": reveal, "visible": 0}
+        placeholder = [["no learning yet — keep using Hermes and it maps out here", STYLE_DIM, 0.7]]
+        return {"grid": [placeholder], "date": "", "reveal": reveal, "visible": 0}
 
     rec = compute_recency(nodes)
     cmap = category_color_map(payload)
@@ -841,14 +622,7 @@ def _merge_runs(cells: Iterable[Run]) -> Row:
     return out
 
 
-def render_frames(
-    payload: dict[str, Any],
-    *,
-    cols: int = 80,
-    rows: int = 16,
-    frames: int = 48,
-    links: bool = True,
-) -> dict[str, Any]:
+def render_frames(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, frames: int = 48) -> dict[str, Any]:
     """Pre-render a full play-through (reveal 0→1) plus static legend/summary."""
     frames = max(2, min(frames, 240))
     nodes = list(payload.get("nodes", []))
@@ -859,7 +633,7 @@ def render_frames(
     out_frames = []
     for i in range(frames):
         reveal = i / (frames - 1)
-        frame = render_graph(payload, cols=cols, rows=rows, reveal=reveal, links=links)
+        frame = render_graph(payload, cols=cols, rows=rows, reveal=reveal)
         out_frames.append(
             {
                 "reveal": frame["reveal"],

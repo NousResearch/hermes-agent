@@ -79,6 +79,7 @@ async def test_edit_sent_message_posts_guarded_payload(
 
     assert result.success is True
     assert result.message_id == "bot-msg-1"
+    assert result.raw_response == {"ok": True, "messageId": "bot-msg-1"}
     assert calls == [
         (
             "/edit",
@@ -153,6 +154,7 @@ async def test_unsend_sent_message_posts_guarded_payload_and_forgets_id(
 
     assert result.success is True
     assert result.message_id == "bot-msg-1"
+    assert result.raw_response == {"ok": True, "messageId": "bot-msg-1"}
     assert "bot-msg-1" not in adapter._sent_message_ids
     assert calls == [
         (

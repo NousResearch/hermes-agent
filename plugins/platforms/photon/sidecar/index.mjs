@@ -75,8 +75,31 @@ const telemetry = /^(1|true|yes|on)$/i.test(
 // images / transcribe voice). Cap the size we inline — above it we forward
 // metadata only and the adapter surfaces a text marker, so one large clip can't
 // balloon a single NDJSON line. Override via PHOTON_MAX_INLINE_ATTACHMENT_BYTES.
-const MAX_INLINE_ATTACHMENT_BYTES =
-  Number(process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES) || 20 * 1024 * 1024;
+const DEFAULT_INLINE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const HARD_MAX_INLINE_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
+function parseInlineAttachmentCap(raw) {
+  if (raw == null || String(raw).trim() === "") {
+    return DEFAULT_INLINE_ATTACHMENT_BYTES;
+  }
+  const parsed = Number(raw);
+  if (
+    !Number.isFinite(parsed) ||
+    parsed < 0 ||
+    parsed > HARD_MAX_INLINE_ATTACHMENT_BYTES
+  ) {
+    console.error(
+      `photon-sidecar: invalid PHOTON_MAX_INLINE_ATTACHMENT_BYTES=${raw}; ` +
+        `using default ${DEFAULT_INLINE_ATTACHMENT_BYTES}`
+    );
+    return DEFAULT_INLINE_ATTACHMENT_BYTES;
+  }
+  return Math.floor(parsed);
+}
+
+const MAX_INLINE_ATTACHMENT_BYTES = parseInlineAttachmentCap(
+  process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES
+);
 const DM_CHAT_GUID_RE = /^any;-;(.+)$/;
 const E164_RE = /^\+\d{6,15}$/;
 const CHILD_MESSAGE_ID_RE = /^p:(\d+)\/(.+)$/;

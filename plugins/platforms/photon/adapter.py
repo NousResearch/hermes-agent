@@ -1181,6 +1181,15 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        if reply_to and self._native_replies_enabled:
+            result = await self.reply_to_message(chat_id, reply_to, content)
+            if result.success:
+                return result
+            logger.debug(
+                "[photon] native reply failed for %s; falling back to plain send: %s",
+                reply_to,
+                result.error,
+            )
         return await self._sidecar_send(chat_id, self.format_message(content))
 
     async def send_with_effect(
@@ -1217,7 +1226,11 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        return SendResult(
+            success=True,
+            message_id=data.get("messageId"),
+            raw_response=data,
+        )
 
     async def reply_to_message(
         self,
@@ -1249,7 +1262,11 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        return SendResult(
+            success=True,
+            message_id=data.get("messageId"),
+            raw_response=data,
+        )
 
     def _is_sent_by_hermes(self, message_id: Optional[str]) -> bool:
         return bool(message_id and message_id in self._sent_message_ids)
@@ -1288,10 +1305,10 @@ class PhotonAdapter(BasePlatformAdapter):
         # edit content here because Spectrum rejects non-text edits before they
         # reach Photon.
         try:
-            await self._sidecar_call("/edit", body)
+            data = await self._sidecar_call("/edit", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        return SendResult(success=True, message_id=message_id)
+        return SendResult(success=True, message_id=message_id, raw_response=data)
 
     async def unsend_sent_message(
         self,
@@ -1307,14 +1324,14 @@ class PhotonAdapter(BasePlatformAdapter):
                 error="Photon native unsend is limited to tracked Hermes-sent messages",
             )
         try:
-            await self._sidecar_call(
+            data = await self._sidecar_call(
                 "/unsend",
                 {"spaceId": chat_id, "messageId": message_id, "hermesSent": True},
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._sent_message_ids.pop(message_id, None)
-        return SendResult(success=True, message_id=message_id)
+        return SendResult(success=True, message_id=message_id, raw_response=data)
 
     async def send_poll(
         self,
@@ -1322,7 +1339,7 @@ class PhotonAdapter(BasePlatformAdapter):
         question: str,
         options: List[str],
     ) -> SendResult:
-        """Create a native iMessage poll; no vote/mutation endpoints are exposed."""
+        """Create a native iMessage poll. The same flag gates explicit mutations."""
         if not self._native_polls_enabled:
             return SendResult(success=False, error="Photon native polls are disabled")
         clean_question = question.strip()
@@ -1346,7 +1363,11 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        return SendResult(
+            success=True,
+            message_id=data.get("messageId"),
+            raw_response=data,
+        )
 
     async def add_poll_option(
         self,
@@ -1371,7 +1392,11 @@ class PhotonAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        return SendResult(success=True, message_id=data.get("pollMessageId", poll_message_id))
+        return SendResult(
+            success=True,
+            message_id=data.get("pollMessageId", poll_message_id),
+            raw_response=data,
+        )
 
     async def vote_poll(
         self,
@@ -1396,7 +1421,11 @@ class PhotonAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        return SendResult(success=True, message_id=data.get("pollMessageId", poll_message_id))
+        return SendResult(
+            success=True,
+            message_id=data.get("pollMessageId", poll_message_id),
+            raw_response=data,
+        )
 
     async def unvote_poll(
         self,
@@ -1413,7 +1442,11 @@ class PhotonAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
-        return SendResult(success=True, message_id=data.get("pollMessageId", poll_message_id))
+        return SendResult(
+            success=True,
+            message_id=data.get("pollMessageId", poll_message_id),
+            raw_response=data,
+        )
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -1824,7 +1857,11 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        return SendResult(
+            success=True,
+            message_id=data.get("messageId"),
+            raw_response=data,
+        )
 
     async def _sidecar_send_attachment(
         self,
@@ -1873,7 +1910,11 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
-        return SendResult(success=True, message_id=data.get("messageId"))
+        return SendResult(
+            success=True,
+            message_id=data.get("messageId"),
+            raw_response=data,
+        )
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         # Guard: adapter not yet connected (no sidecar address known).

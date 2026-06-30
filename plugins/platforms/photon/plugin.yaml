@@ -107,6 +107,10 @@ optional_env:
     prompt: "Enable native iMessage unsend? (true/false)"
     password: false
   - name: PHOTON_NATIVE_POLLS
-    description: "Enable the narrowly-scoped native iMessage /send-poll endpoint (true/false, default false)"
+    description: "Enable native iMessage poll creation plus explicit poll add-option/vote/unvote endpoints (true/false, default false)"
     prompt: "Enable native iMessage polls? (true/false)"
+    password: false
+  - name: PHOTON_MAX_INLINE_ATTACHMENT_BYTES
+    description: "Maximum inbound attachment bytes to inline from the sidecar before falling back to metadata only (default 20971520, hard max 104857600)"
+    prompt: "Max inline attachment bytes"
     password: false

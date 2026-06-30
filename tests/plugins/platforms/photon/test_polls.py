@@ -88,6 +88,11 @@ async def test_send_poll_posts_trimmed_creation_payload_and_tracks_id(
 
     assert result.success is True
     assert result.message_id == "poll-msg-123"
+    assert result.raw_response == {
+        "ok": True,
+        "messageId": "poll-msg-123",
+        "pollMessageId": "poll-msg-123",
+    }
     assert "poll-msg-123" in adapter._sent_message_ids
     assert calls == [
         (

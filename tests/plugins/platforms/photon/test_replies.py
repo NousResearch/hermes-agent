@@ -62,6 +62,7 @@ async def test_reply_to_message_posts_minimal_reply_payload(
 
     assert result.success is True
     assert result.message_id == "reply-msg-123"
+    assert result.raw_response == {"ok": True, "messageId": "reply-msg-123"}
     assert calls == [
         (
             "/reply",
@@ -96,6 +97,59 @@ async def test_reply_to_message_respects_markdown_kill_switch(
                 "spaceId": "+155****4567",
                 "messageId": "target-msg-1",
                 "text": "native reply",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_uses_native_reply_when_reply_anchor_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_NATIVE_REPLIES", "true")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send(
+        "+155****4567", "normal gateway reply", reply_to="target-msg-1"
+    )
+
+    assert result.success is True
+    assert result.message_id == "reply-msg-123"
+    assert calls == [
+        (
+            "/reply",
+            {
+                "spaceId": "+155****4567",
+                "messageId": "target-msg-1",
+                "text": "normal gateway reply",
+                "format": "markdown",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_reply_anchor_falls_back_when_native_replies_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOTON_NATIVE_REPLIES", raising=False)
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send(
+        "+155****4567", "normal gateway reply", reply_to="target-msg-1"
+    )
+
+    assert result.success is True
+    assert result.message_id == "reply-msg-123"
+    assert calls == [
+        (
+            "/send",
+            {
+                "spaceId": "+155****4567",
+                "text": "normal gateway reply",
+                "format": "markdown",
             },
         )
     ]

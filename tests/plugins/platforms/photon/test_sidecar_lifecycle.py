@@ -8,6 +8,7 @@ spawning Node or binding ports.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import Any, Dict, List, Tuple
 
@@ -169,3 +170,84 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_propagates_native_feature_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Adapter-side flags must reach the Node sidecar environment."""
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    cfg = PlatformConfig(
+        enabled=True,
+        token="",
+        extra={
+            "native_effects": True,
+            "native_replies": True,
+            "native_edits": True,
+            "native_unsend": True,
+            "native_polls": True,
+        },
+    )
+    adapter = PhotonAdapter(cfg)
+
+    async def _no_reap() -> None:
+        pass
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    spawned: Dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999
+        stdout = None
+        stdin = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+        spawned["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "Popen", _fake_popen)
+
+    class _HealthyClient(_ProbeClient):
+        async def post(self, *a: Any, **k: Any) -> Any:
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+
+    await adapter._start_sidecar()
+
+    env = spawned["kwargs"]["env"]
+    assert env["PHOTON_NATIVE_EFFECTS"] == "true"
+    assert env["PHOTON_NATIVE_REPLIES"] == "true"
+    assert env["PHOTON_NATIVE_EDITS"] == "true"
+    assert env["PHOTON_NATIVE_UNSEND"] == "true"
+    assert env["PHOTON_NATIVE_POLLS"] == "true"
+
+
+def test_sidecar_runtime_dependencies_are_exactly_pinned() -> None:
+    package = json.loads((photon_adapter._SIDECAR_DIR / "package.json").read_text())
+    dependencies = package["dependencies"]
+    for name in ("@photon-ai/advanced-imessage", "spectrum-ts"):
+        version = dependencies[name]
+        assert not version.startswith(("^", "~"))
+        assert version not in {"latest", "*"}
+    assert package["engines"]["node"] == "^18.19.0 || >=20.6.0"
+
+
+def test_sidecar_inline_attachment_cap_is_bounded() -> None:
+    index = (photon_adapter._SIDECAR_DIR / "index.mjs").read_text()
+    assert "function parseInlineAttachmentCap" in index
+    assert "Number.isFinite(parsed)" in index
+    assert "HARD_MAX_INLINE_ATTACHMENT_BYTES" in index
+    assert "parsed < 0" in index

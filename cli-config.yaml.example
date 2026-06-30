@@ -906,14 +906,20 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
+# Providers: local (free, faster-whisper) | gemini (Google Gemini plugin; good for short voice clips) |
+# groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe) |
+# xai (Grok STT) | elevenlabs (Scribe)
+# Set the corresponding API key in .env: GEMINI_API_KEY, GROQ_API_KEY,
+# OPENAI_API_KEY, MISTRAL_API_KEY, XAI_API_KEY, or ELEVENLABS_API_KEY.
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+  # gemini:
+  #   model: "gemini-3.1-flash-lite-preview"  # high-rate-limit default; override to gemini-3-flash-preview if desired
+  #   language: ""             # optional language hint; audio is sent to Google Gemini
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # mistral:

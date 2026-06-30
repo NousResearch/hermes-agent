@@ -1,0 +1,7 @@
+name: transcription-gemini
+version: 0.1.0
+description: "Google Gemini speech-to-text provider"
+author: NousResearch
+kind: backend
+provides_transcription_providers:
+  - gemini

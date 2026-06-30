@@ -483,6 +483,27 @@ def compress_context(
         except Exception:
             pass
 
+    # Notify generic plugins before compression discards/summarizes older turns.
+    # Observer-only: return values are ignored. Plugins can persist task-state,
+    # handoff breadcrumbs, or external-memory snapshots without mutating the
+    # live conversation or breaking prompt caching.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "pre_context_compression",
+            session_id=agent.session_id or "",
+            task_id=task_id,
+            conversation_history=list(messages),
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+            model=getattr(agent, "model", ""),
+            platform=getattr(agent, "platform", None) or "cli",
+            conversation_id=getattr(agent, "_gateway_session_key", None),
+        )
+    except Exception as _plugin_err:
+        logger.debug("plugin pre_context_compression failed: %s", _plugin_err)
+
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
@@ -734,6 +755,26 @@ def compress_context(
             )
     except Exception as _ce_err:
         logger.debug("context engine on_session_start (compression): %s", _ce_err)
+
+    # Notify generic plugins of the same compaction boundary.  A plugin can use
+    # this to mark a task-state record replayable for the next turn/session, and
+    # then return that state through the existing pre_llm_call context-injection
+    # contract. Return values are ignored here to keep compression cache-safe.
+    try:
+        if _is_boundary:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_start",
+                session_id=agent.session_id or "",
+                boundary_reason="compression",
+                old_session_id=_boundary_parent,
+                platform=getattr(agent, "platform", None) or "cli",
+                model=getattr(agent, "model", ""),
+                context_length=getattr(agent.context_compressor, "context_length", None),
+                conversation_id=getattr(agent, "_gateway_session_key", None),
+            )
+    except Exception as _plugin_err:
+        logger.debug("plugin on_session_start (compression): %s", _plugin_err)
 
     # Notify memory providers of the compaction boundary so provider-cached
     # per-session state (Hindsight's _document_id, accumulated turn buffers,

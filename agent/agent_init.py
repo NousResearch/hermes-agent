@@ -1747,6 +1747,24 @@ def init_agent(
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
+    # Notify generic plugins of session start too.  Plugins that persist
+    # task-state can pair this with pre_context_compression + pre_llm_call to
+    # implement Marveen-style compact/resume replay without touching the system
+    # prompt or mutating the cached prefix.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_start",
+            session_id=agent.session_id,
+            hermes_home=str(get_hermes_home()),
+            platform=agent.platform or "cli",
+            model=agent.model,
+            context_length=getattr(agent.context_compressor, "context_length", 0),
+            conversation_id=getattr(agent, "_gateway_session_key", None),
+        )
+    except Exception as _plugin_err:
+        _ra().logger.debug("Plugin on_session_start: %s", _plugin_err)
+
     agent._subdirectory_hints = SubdirectoryHintTracker(
         working_dir=os.getenv("TERMINAL_CWD") or None,
     )

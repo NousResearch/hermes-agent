@@ -3264,6 +3264,23 @@ class GatewaySlashCommandsMixin:
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_resume",
+                session_id=target_id,
+                old_session_id=current_entry.session_id or "",
+                title=title or "",
+                message_count=msg_count,
+                total_messages=len(history or []),
+                platform=source.platform.value if source.platform else "unknown",
+                session_key=session_key,
+                chat_id=str(source.chat_id) if source.chat_id is not None else "",
+                thread_id=str(source.thread_id) if source.thread_id is not None else "",
+            )
+        except Exception:
+            logger.debug("on_session_resume hook failed", exc_info=True)
+
         if source.platform == Platform.MATRIX and allow_cross_room:
             return t(
                 "gateway.resume.matrix_cross_room_success",

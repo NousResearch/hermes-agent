@@ -172,6 +172,23 @@ class TestSerializePayload:
         payload = json.loads(raw)
         assert payload["extra"]["obj"] == "<weird>"
 
+    def test_session_resume_payload_shape(self):
+        raw = shell_hooks._serialize_payload(
+            "on_session_resume",
+            {
+                "session_id": "resumed",
+                "old_session_id": "old",
+                "title": "Work",
+                "message_count": 2,
+                "platform": "cli",
+            },
+        )
+        payload = json.loads(raw)
+        assert payload["hook_event_name"] == "on_session_resume"
+        assert payload["session_id"] == "resumed"
+        assert payload["extra"]["old_session_id"] == "old"
+        assert payload["extra"]["message_count"] == 2
+
 
 # ── Matcher behaviour ─────────────────────────────────────────────────────
 

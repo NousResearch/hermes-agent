@@ -63,6 +63,32 @@ class TestCliResumeCommand:
         assert "Resumed session sess_001" in printed
         assert "Research" in printed
 
+    def test_handle_resume_fires_session_resume_hook(self):
+        cli_obj = _make_cli()
+        cli_obj._session_db.get_session.return_value = {"id": "sess_alpha", "title": "Alpha"}
+        cli_obj._session_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "hello"},
+        ]
+        cli_obj._session_db.resolve_resume_session_id.return_value = "sess_alpha"
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="sess_alpha"),
+            patch("cli._cprint"),
+            patch("hermes_cli.plugins.invoke_hook") as invoke_hook,
+        ):
+            cli_obj._handle_resume_command("/resume Alpha")
+
+        resume_calls = [
+            c for c in invoke_hook.call_args_list
+            if c.args and c.args[0] == "on_session_resume"
+        ]
+        assert resume_calls, f"on_session_resume did not fire: {invoke_hook.call_args_list!r}"
+        call = resume_calls[-1]
+        assert call.kwargs["old_session_id"] == "current_session"
+        assert call.kwargs["session_id"] == "sess_alpha"
+        assert call.kwargs["message_count"] == 1
+        assert call.kwargs["platform"] == "cli"
+
     def test_handle_resume_by_index_out_of_range(self):
         cli_obj = _make_cli()
         cli_obj._list_recent_sessions = MagicMock(return_value=[

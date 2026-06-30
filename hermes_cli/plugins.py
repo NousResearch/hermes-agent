@@ -139,7 +139,12 @@ VALID_HOOKS: Set[str] = {
     "pre_api_request",
     "post_api_request",
     "api_request_error",
+    # Fired immediately before context compression drops/summarizes older
+    # turns. Observer-only: return values are ignored. Plugins can persist
+    # task-state or handoff breadcrumbs without mutating the live message list.
+    "pre_context_compression",
     "on_session_start",
+    "on_session_resume",
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",

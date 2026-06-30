@@ -5,7 +5,7 @@ across gateway messenger platforms.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -259,6 +259,44 @@ class TestHandleResumeCommand:
         # Should resolve to #2 (latest in lineage)
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "sess_v2"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_fires_session_resume_hook(self, tmp_path):
+        """Gateway resume emits an observer hook after switching sessions."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("target_session", "telegram")
+        db.set_session_title("target_session", "Target")
+        db.append_message("target_session", "user", "hello")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Target")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "hello"},
+        ]
+
+        from hermes_cli import plugins
+        with patch.object(plugins, "invoke_hook") as invoke_hook:
+            result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        resume_calls = [
+            c for c in invoke_hook.call_args_list
+            if c.args and c.args[0] == "on_session_resume"
+        ]
+        assert resume_calls, f"on_session_resume did not fire: {invoke_hook.call_args_list!r}"
+        call = resume_calls[-1]
+        assert call.kwargs["old_session_id"] == "current_session_001"
+        assert call.kwargs["session_id"] == "target_session"
+        assert call.kwargs["message_count"] == 1
+        assert call.kwargs["platform"] == "telegram"
         db.close()
 
     @pytest.mark.asyncio

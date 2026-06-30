@@ -137,9 +137,24 @@ _DEFAULT_PAYLOADS = {
     "post_llm_call": {
         "session_id": "test-session",
         "model": "gpt-4",
+    },
+    "pre_context_compression": {
+        "session_id": "test-session",
+        "task_id": "default",
+        "conversation_history": [{"role": "user", "content": "hello"}],
+        "approx_tokens": 100000,
+        "model": "gpt-4",
         "platform": "cli",
     },
     "on_session_start": {"session_id": "test-session"},
+    "on_session_resume": {
+        "session_id": "resumed-session",
+        "old_session_id": "previous-session",
+        "title": "Example resumed work",
+        "message_count": 3,
+        "platform": "cli",
+    },
+
     "on_session_end": {"session_id": "test-session"},
     "on_session_finalize": {"session_id": "test-session"},
     "on_session_reset": {"session_id": "test-session"},

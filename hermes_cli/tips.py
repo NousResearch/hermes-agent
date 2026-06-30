@@ -136,6 +136,7 @@ TIPS = [
     "patch supports V4A format for bulk multi-file edits in a single call.",
     "read_file suggests similar filenames when a file isn't found.",
     "read_file auto-deduplicates — re-reading an unchanged file returns a lightweight stub.",
+    "browser_screenshot captures a file-backed page screenshot without AI vision analysis.",
     "browser_vision takes a screenshot and analyzes it with AI — works for CAPTCHAs and visual content.",
     "browser_console can evaluate JavaScript expressions in the page context.",
     "image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.",

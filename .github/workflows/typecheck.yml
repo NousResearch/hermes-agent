@@ -49,3 +49,20 @@ jobs:
         with:
           command: npm ci
       - run: npm run --prefix apps/desktop build
+
+  # Renderer unit tests (vitest + jsdom). typecheck/build don't exercise component
+  # behaviour, so logic regressions (e.g. the browser picker/tree/design panels)
+  # would otherwise slip past CI. --ignore-scripts: the renderer suite needs no
+  # native deps.
+  desktop-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts
+      - run: npm run --prefix apps/desktop test:ui

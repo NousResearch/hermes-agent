@@ -176,7 +176,8 @@ export const zh: Translations = {
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
-    openKeybinds: '键盘快捷键'
+    openKeybinds: '键盘快捷键',
+    openBrowser: '打开浏览器'
   },
 
   keybinds: {
@@ -369,6 +370,8 @@ export const zh: Translations = {
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      showBrowserGlobeTitle: '浏览器工具栏按钮',
+      showBrowserGlobeDesc: '在标题栏显示地球图标以打开浏览器。',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
@@ -2291,6 +2294,7 @@ export const zh: Translations = {
         browser_fill: { done: '已填写表单字段', pending: '正在填写表单字段', pendingAction: '正在填写' },
         browser_navigate: { done: '已打开页面', pending: '正在打开页面', pendingAction: '正在打开' },
         browser_snapshot: { done: '已捕获页面快照', pending: '正在捕获页面快照', pendingAction: '正在捕获' },
+        browser_screenshot: { done: '已捕获浏览器截图', pending: '正在捕获浏览器截图', pendingAction: '正在捕获' },
         browser_take_screenshot: { done: '已捕获截图', pending: '正在捕获截图', pendingAction: '正在捕获' },
         browser_type: { done: '已在页面输入', pending: '正在页面输入', pendingAction: '正在输入' },
         clarify: { done: '已提问', pending: '正在提问', pendingAction: '正在提问' },

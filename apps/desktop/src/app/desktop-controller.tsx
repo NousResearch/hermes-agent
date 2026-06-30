@@ -25,11 +25,13 @@ import {
   normalizeSessionSource
 } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
+import { $browserEnabled, $browserTabs, closeBrowserTab } from '../store/browser'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $fileBrowserOpen,
   $panesFlipped,
   $pinnedSessionIds,
+  $rightRailActiveTabId,
   $sessionsLimit,
   bumpSessionsLimit,
   FILE_BROWSER_DEFAULT_WIDTH,
@@ -53,7 +55,7 @@ import {
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
-import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
+import { $filePreviewTabs, $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
@@ -106,7 +108,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
+import { onComposerAttachImageRequest, requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -116,8 +118,10 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { closeActiveDesktopRailTab, desktopRailHasTabs } from './desktop-rail-state'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { useBrowserCommandBridge } from './hooks/use-browser-command-bridge'
 import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -231,7 +235,11 @@ export function DesktopController() {
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const filePreviewTarget = useStore($filePreviewTarget)
+  const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
+  const browserTabs = useStore($browserTabs)
+  const browserEnabled = useStore($browserEnabled)
+  const rightRailActiveTabId = useStore($rightRailActiveTabId)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const terminalTakeover = useStore($terminalTakeover)
   const reviewOpen = useStore($reviewOpen)
@@ -267,6 +275,13 @@ export function DesktopController() {
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
 
+  const railHasTabs = desktopRailHasTabs({
+    browserEnabled: browserEnabled,
+    browserTabCount: browserTabs.length,
+    filePreviewTabCount: filePreviewTabs.length,
+    previewTarget
+  })
+
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
   const setTitlebarToolGroup = titlebarToolGroups.set
@@ -290,10 +305,11 @@ export function DesktopController() {
   })
 
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
+  useBrowserCommandBridge(!isSecondaryWindow())
 
   useEffect(() => {
-    window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && (filePreviewTarget || previewTarget)))
-  }, [chatOpen, filePreviewTarget, previewTarget])
+    window.hermesDesktop?.setPreviewShortcutActive?.(Boolean(chatOpen && railHasTabs))
+  }, [chatOpen, railHasTabs])
 
   useEffect(() => {
     startUpdatePoller()
@@ -390,6 +406,13 @@ export function DesktopController() {
   }, [])
 
   useEffect(() => {
+    const closeActiveRailTab = () => {
+      closeActiveDesktopRailTab($rightRailActiveTabId.get(), {
+        closeBrowserTab,
+        closePreviewTab: closeActiveRightRailTab
+      })
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.altKey || event.shiftKey || event.key.toLowerCase() !== 'w' || (!event.metaKey && !event.ctrlKey)) {
         return
@@ -408,15 +431,23 @@ export function DesktopController() {
         return
       }
 
-      // Otherwise ⌘/Ctrl+W closes the active preview tab when one is open.
-      if ($filePreviewTarget.get() || $previewTarget.get()) {
+      // Otherwise ⌘/Ctrl+W closes the active rail tab (browser or preview) when one is open.
+      if (
+        $filePreviewTarget.get() ||
+        desktopRailHasTabs({
+          browserEnabled: $browserEnabled.get(),
+          browserTabCount: $browserTabs.get().length,
+          filePreviewTabCount: $filePreviewTabs.get().length,
+          previewTarget: $previewTarget.get()
+        })
+      ) {
         event.preventDefault()
         event.stopPropagation()
-        closeActiveRightRailTab()
+        closeActiveRailTab()
       }
     }
 
-    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(closeActiveRightRailTab)
+    const unsubscribe = window.hermesDesktop?.onClosePreviewRequested?.(closeActiveRailTab)
 
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
@@ -805,6 +836,24 @@ export function DesktopController() {
     currentCwd,
     requestGateway
   })
+
+  // External panels (e.g. the browser screenshot button) attach an image to the
+  // main composer via the focus bus → blob → normal image-attach path.
+  const { attachImageBlob } = composer
+
+  useEffect(() => {
+    return onComposerAttachImageRequest(({ dataUrl }) => {
+      void (async () => {
+        try {
+          const blob = await fetch(dataUrl).then(response => response.blob())
+
+          await attachImageBlob(blob)
+        } catch {
+          // Capture/convert failed — nothing to attach.
+        }
+      })()
+    })
+  }, [attachImageBlob])
 
   const branchInNewChat = useCallback(
     async (messageId?: string) => {
@@ -1246,7 +1295,7 @@ export function DesktopController() {
   // Other sidebars docked as real columns on the terminal's rail. Force-collapsed
   // hover-reveal overlays (narrow window) don't take a column, so they don't count.
   const railColumnOpen =
-    (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
+    (chatOpen && railHasTabs && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
 
@@ -1256,7 +1305,7 @@ export function DesktopController() {
 
   const previewPane = (
     <Pane
-      disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
+      disabled={!chatOpen || !railHasTabs}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
@@ -1361,7 +1410,7 @@ export function DesktopController() {
       mainOverlays={mainOverlays}
       onOpenSettings={openSettings}
       overlays={overlays}
-      previewPaneOpen={chatOpen && Boolean(previewTarget || filePreviewTarget)}
+      previewPaneOpen={chatOpen && railHasTabs}
       statusbarItems={statusbarItems}
       terminalPaneOpen={terminalSidebarOpen}
       titlebarTools={titlebarToolGroups.flat.right}

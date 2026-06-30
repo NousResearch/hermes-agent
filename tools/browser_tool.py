@@ -1297,6 +1297,222 @@ def _last_session_key(task_id: str) -> str:
     return _last_active_session_key.get(task_id, task_id)
 
 
+def _run_visible_desktop_browser_command(
+    session_key: str,
+    command: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    timeout: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Route a browser command to the visible Desktop BrowserPane when present.
+
+    ``None`` means there is no applicable visible Desktop browser for this
+    process/session, so legacy headless/cloud/Camofox providers may run. Any
+    returned dict is authoritative: if it carries ``ok: false`` the caller must
+    surface that visible-browser failure instead of silently creating a second
+    hidden browser reality.
+    """
+    try:
+        from tui_gateway import browser_desktop_bridge
+
+        response = browser_desktop_bridge.run_desktop_browser_command(
+            session_key,
+            command,
+            params or {},
+            timeout=timeout,
+        )
+    except Exception as exc:  # pragma: no cover - defensive import/runtime guard
+        logger.debug("visible desktop browser bridge unavailable: %s", exc)
+        return None
+
+    if response is None or response.get("desktop_unavailable"):
+        return None
+    return response
+
+
+def _visible_desktop_error(response: Dict[str, Any], fallback: str) -> str:
+    return str(response.get("error") or fallback)
+
+
+def _visible_desktop_payload(response: Dict[str, Any]) -> Dict[str, Any]:
+    payload = response.get("result")
+    if isinstance(payload, dict):
+        return payload
+    payload = response.get("data")
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _normalize_visible_desktop_url(url: str) -> str:
+    """Mirror BrowserPane URL-bar normalization for generic browser tools."""
+    raw = str(url or "").strip()
+    if not raw:
+        return "about:blank"
+
+    def _with_browser_href_shape(value: str) -> str:
+        try:
+            from urllib.parse import urlsplit, urlunsplit
+
+            parsed = urlsplit(value)
+            if parsed.scheme.lower() in {"http", "https"} and parsed.netloc and not parsed.path:
+                return urlunsplit((parsed.scheme, parsed.netloc, "/", parsed.query, parsed.fragment))
+        except Exception:
+            pass
+        return value
+
+    if re.match(r"^(localhost|127(?:\.\d{1,3}){3}|\[[^\]]+\]|[\w.-]+):\d+(?:/|$)", raw, re.I):
+        return _with_browser_href_shape(f"http://{raw}")
+    if not re.match(r"^[a-zA-Z][a-zA-Z\d+.-]*:", raw):
+        return _with_browser_href_shape(_normalize_url_for_request(f"https://{raw}"))
+    if raw == "about:blank":
+        return raw
+    try:
+        from urllib.parse import quote
+
+        if raw.lower().startswith(("http://", "https://")):
+            return _with_browser_href_shape(_normalize_url_for_request(raw))
+        return f"https://www.google.com/search?q={quote(raw)}"
+    except Exception:
+        return raw
+
+
+def _format_visible_desktop_snapshot(payload: Dict[str, Any]) -> tuple[str, int]:
+    """Convert BrowserPane's structured snapshot into browser_snapshot text."""
+    title = str(payload.get("title") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    body_text = str(payload.get("text") or "").strip()
+    raw_elements = payload.get("elements")
+    elements = raw_elements if isinstance(raw_elements, list) else []
+
+    lines: List[str] = []
+    if title:
+        lines.append(f"Title: {title}")
+    if url:
+        lines.append(f"URL: {url}")
+    if body_text:
+        if lines:
+            lines.append("")
+        lines.append(body_text)
+
+    if elements:
+        if lines:
+            lines.append("")
+        lines.append("Interactive elements:")
+        for index, raw_element in enumerate(elements):
+            if not isinstance(raw_element, dict):
+                continue
+            ref = str(raw_element.get("ref") or f"@e{index}").strip()
+            if not ref.startswith("@"):
+                ref = f"@{ref}"
+            stable_ref = str(raw_element.get("stableRef") or raw_element.get("stable_ref") or "").strip()
+            if stable_ref and not stable_ref.startswith("@"):
+                stable_ref = f"@{stable_ref}"
+            label = str(
+                raw_element.get("label")
+                or raw_element.get("role")
+                or raw_element.get("tag")
+                or "element"
+            ).strip() or "element"
+            text = str(raw_element.get("text") or raw_element.get("name") or "").strip()
+            href = str(raw_element.get("href") or "").strip()
+            stable_suffix = f" stable={stable_ref}" if stable_ref else ""
+            suffix = f"{stable_suffix} — {href}" if href else stable_suffix
+            if text:
+                lines.append(f"[{ref}] {label}: {text}{suffix}")
+            else:
+                lines.append(f"[{ref}] {label}{suffix}")
+
+    return "\n".join(lines), len(elements)
+
+
+def _visible_desktop_snapshot_tool_response(
+    response: Dict[str, Any],
+    *,
+    full: bool = False,
+    user_task: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = _visible_desktop_payload(response)
+    snapshot_text, element_count = _format_visible_desktop_snapshot(payload)
+    if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
+        snapshot_text = _extract_relevant_content(snapshot_text, user_task)
+    elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        snapshot_text = _truncate_snapshot(snapshot_text)
+    return {
+        "success": True,
+        "snapshot": snapshot_text,
+        "element_count": element_count,
+        "url": payload.get("url", ""),
+        "title": payload.get("title", ""),
+        "full": bool(full),
+    }
+
+
+def _record_visible_desktop_screenshot_history(
+    screenshots_dir: Path,
+    *,
+    screenshot_path: Path,
+    session_key: str,
+    payload: Dict[str, Any],
+) -> None:
+    """Append a screenshot history entry with a small bounded retention window."""
+    try:
+        history_path = screenshots_dir / "browser_screenshot_history.json"
+        entries: List[Dict[str, Any]] = []
+        if history_path.exists():
+            try:
+                loaded = json.loads(history_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    entries = [entry for entry in loaded if isinstance(entry, dict)]
+            except Exception:
+                entries = []
+        entries.append({
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "path": str(screenshot_path),
+            "session_key": session_key,
+            "url": payload.get("url", ""),
+            "title": payload.get("title", ""),
+            "surface": "desktop_visible",
+        })
+        history_path.write_text(json.dumps(entries[-50:], indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Failed to record browser screenshot history: %s", exc)
+
+
+def _save_visible_desktop_screenshot_data_url(
+    response: Dict[str, Any],
+    *,
+    screenshot_path: Path,
+    session_key: str,
+) -> Dict[str, Any]:
+    """Persist BrowserPane's data URL screenshot and return agent-browser-like data."""
+    payload = _visible_desktop_payload(response)
+    data_url = str(payload.get("dataUrl") or payload.get("data_url") or "")
+    match = re.match(r"^data:image/(?:png|jpeg|webp);base64,(.+)$", data_url, re.I | re.S)
+    if not match:
+        raise ValueError("Visible browser screenshot did not include a supported image data URL")
+    import base64 as _base64
+
+    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+    screenshot_path.write_bytes(_base64.b64decode(match.group(1)))
+    _record_visible_desktop_screenshot_history(
+        screenshot_path.parent,
+        screenshot_path=screenshot_path,
+        session_key=session_key,
+        payload=payload,
+    )
+    return {
+        "success": True,
+        "data": {
+            "path": str(screenshot_path),
+            "url": payload.get("url", ""),
+            "title": payload.get("title", ""),
+            "browser_surface": "desktop_visible",
+        },
+        "browser_surface": "desktop_visible",
+    }
+
+
 def _allow_private_urls() -> bool:
     """Return whether the browser is allowed to navigate to private/internal addresses.
 
@@ -1818,6 +2034,39 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_hover",
+        "description": "Hover over an element identified by a snapshot ref. Uses the visible integrated BrowserPane and requires agent control consent.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The element reference from the snapshot, including stable refs like '@sabc123'."}
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_double_click",
+        "description": "Double-click an element identified by a snapshot ref. Uses the visible integrated BrowserPane and requires agent control consent.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The element reference from the snapshot, including stable refs like '@sabc123'."}
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_right_click",
+        "description": "Right-click/context-click an element identified by a snapshot ref. Uses the visible integrated BrowserPane and requires agent control consent.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The element reference from the snapshot, including stable refs like '@sabc123'."}
+            },
+            "required": ["ref"]
+        }
+    },
+    {
         "name": "browser_type",
         "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
@@ -1843,8 +2092,12 @@ BROWSER_TOOL_SCHEMAS = [
             "properties": {
                 "direction": {
                     "type": "string",
-                    "enum": ["up", "down"],
+                    "enum": ["up", "down", "left", "right"],
                     "description": "Direction to scroll"
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Optional pixel amount to scroll (default 500; renderer clamps unsafe values)."
                 }
             },
             "required": ["direction"]
@@ -1883,6 +2136,21 @@ BROWSER_TOOL_SCHEMAS = [
         }
     },
     {
+        "name": "browser_screenshot",
+        "description": "Capture the current page as a file-backed screenshot artifact. Uses the visible integrated BrowserPane when available, writes a retrievable image file, records screenshot history, and returns screenshot_path without running vision analysis.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "annotate": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, ask the browser backend to annotate visible elements when supported."
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "browser_vision",
         "description": "Take a screenshot of the current page so you can inspect it visually. Use this when you need to understand what the page looks like - especially for CAPTCHAs, visual verification challenges, complex layouts, or cases where the text snapshot misses important visual information. When your active model has native vision, the screenshot is attached to your context directly and you inspect it on the next turn; otherwise Hermes falls back to an auxiliary vision model and returns a text analysis. Includes a screenshot_path that you can share with the user by including MEDIA:<screenshot_path> in your response. Requires browser_navigate to be called first.",
         "parameters": {
@@ -1917,6 +2185,63 @@ BROWSER_TOOL_SCHEMAS = [
                     "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'"
                 }
             },
+            "required": []
+        }
+    },
+    {
+        "name": "browser_network",
+        "description": "Read network/navigation events captured from the visible integrated BrowserPane. Use this to inspect failed loads, status codes, and navigation events. Requires browser_navigate to be called first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "clear": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, clear the network event buffer after reading"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "browser_inspect_element",
+        "description": "Inspect a selected BrowserPane element for Hermes-native Design Mode. Returns bounded code, layout, styles, attributes, refs, and accessible metadata for an element ref from browser_snapshot. This is read-only and does not mutate the page.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element ref or stableRef from browser_snapshot, e.g. '@e2' or '@sabc123'."
+                }
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_design_handoff",
+        "description": "Create a safer Hermes-native visual editing handoff from selected BrowserPane element refs. Returns an agent-mediated patch prompt and selected element/style/layout context. Direct DOM/source mutation is intentionally not performed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "The intended visual/design change to make in source code."
+                },
+                "refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "One or more element refs/stableRefs from browser_snapshot."
+                }
+            },
+            "required": ["goal", "refs"]
+        }
+    },
+    {
+        "name": "browser_accessibility_audit",
+        "description": "Run a BrowserPane accessibility audit for common issues such as missing image alt text, unnamed controls/links, unlabeled form fields, and aria-hidden focusable content. Exposes findings to the agent for debugging and UI QA.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
             "required": []
         }
     },
@@ -2701,6 +3026,51 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
 
+    # Prefer the visible integrated Desktop BrowserPane once safety/policy checks
+    # have passed. This must run before _get_session_info(), recording setup, or
+    # any backend-specific provider path; otherwise a handled visible navigation
+    # can still leak a hidden BrowserUse/Browserbase/headless session into
+    # existence before the Desktop bridge answers.
+    visible_url = _normalize_visible_desktop_url(url)
+    desktop_result = _run_visible_desktop_browser_command(
+        nav_session_key,
+        "navigate",
+        {"url": visible_url},
+        timeout=max(_get_command_timeout(), 60),
+    )
+    if desktop_result is not None:
+        # Remember which visible tab served this nav so snapshot/click/fill/...
+        # keep targeting the same Desktop BrowserPane reality.
+        _last_active_session_key[effective_task_id] = nav_session_key
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, "Visible browser navigation failed"),
+            }, ensure_ascii=False)
+
+        data = _visible_desktop_payload(desktop_result)
+        final_url = str(data.get("url") or url)
+        title = str(data.get("title") or "")
+        response = {
+            "success": True,
+            "url": final_url,
+            "title": title,
+            "browser_surface": "desktop_visible",
+        }
+        try:
+            snap_result = _run_visible_desktop_browser_command(
+                nav_session_key,
+                "snapshot",
+                {"full": False},
+            )
+            if snap_result is not None and snap_result.get("ok") is not False:
+                snap_response = _visible_desktop_snapshot_tool_response(snap_result)
+                response["snapshot"] = snap_response.get("snapshot", "")
+                response["element_count"] = snap_response.get("element_count", 0)
+        except Exception as e:
+            logger.debug("Visible auto-snapshot after navigate failed: %s", e)
+        return json.dumps(response, ensure_ascii=False)
+
     # Camofox backend — delegate after safety checks pass
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_navigate
@@ -2859,6 +3229,26 @@ def browser_snapshot(
 
     effective_task_id = _last_session_key(task_id or "default")
 
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "snapshot",
+        {"full": bool(full)},
+    )
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, "Failed to get visible browser snapshot"),
+            }, ensure_ascii=False)
+        return json.dumps(
+            _visible_desktop_snapshot_tool_response(
+                desktop_result,
+                full=full,
+                user_task=user_task,
+            ),
+            ensure_ascii=False,
+        )
+
     # Build command args based on full flag
     args = []
     if not full:
@@ -2958,6 +3348,23 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     if not ref.startswith("@"):
         ref = f"@{ref}"
 
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "clickRef",
+        {"ref": ref},
+    )
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, f"Failed to click {ref}"),
+            }, ensure_ascii=False)
+        return json.dumps({
+            "success": True,
+            "clicked": ref,
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+
     result = _run_browser_command(effective_task_id, "click", [ref])
 
     if result.get("success"):
@@ -2972,6 +3379,73 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
             "error": result.get("error", f"Failed to click {ref}")
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def _visible_ref_interaction(
+    ref: str,
+    *,
+    task_id: Optional[str],
+    command: str,
+    result_key: str,
+    fallback_error: str,
+) -> str:
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+    effective_task_id = _last_session_key(task_id or "default")
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        command,
+        {"ref": ref},
+    )
+    if desktop_result is None:
+        return json.dumps({
+            "success": False,
+            "error": f"{fallback_error}: visible Desktop BrowserPane is required for this interaction",
+        }, ensure_ascii=False)
+    if desktop_result.get("ok") is False:
+        return json.dumps({
+            "success": False,
+            "error": _visible_desktop_error(desktop_result, fallback_error),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+    return json.dumps({
+        "success": True,
+        result_key: ref,
+        "browser_surface": "desktop_visible",
+    }, ensure_ascii=False)
+
+
+def browser_hover(ref: str, task_id: Optional[str] = None) -> str:
+    """Hover over an element in the visible BrowserPane."""
+    return _visible_ref_interaction(
+        ref,
+        task_id=task_id,
+        command="hoverRef",
+        result_key="hovered",
+        fallback_error=f"Failed to hover {ref}",
+    )
+
+
+def browser_double_click(ref: str, task_id: Optional[str] = None) -> str:
+    """Double-click an element in the visible BrowserPane."""
+    return _visible_ref_interaction(
+        ref,
+        task_id=task_id,
+        command="doubleClickRef",
+        result_key="double_clicked",
+        fallback_error=f"Failed to double-click {ref}",
+    )
+
+
+def browser_right_click(ref: str, task_id: Optional[str] = None) -> str:
+    """Right-click/context-click an element in the visible BrowserPane."""
+    return _visible_ref_interaction(
+        ref,
+        task_id=task_id,
+        command="rightClickRef",
+        result_key="right_clicked",
+        fallback_error=f"Failed to right-click {ref}",
+    )
 
 
 def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
@@ -2995,6 +3469,24 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     # Ensure ref starts with @
     if not ref.startswith("@"):
         ref = f"@{ref}"
+
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "fillRef",
+        {"ref": ref, "text": text},
+    )
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, f"Failed to type into {ref}"),
+            }, ensure_ascii=False)
+        return json.dumps({
+            "success": True,
+            "typed": text,
+            "element": ref,
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
 
     # Use fill command (clears then types)
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
@@ -3029,28 +3521,29 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return json.dumps(response, ensure_ascii=False)
 
 
-def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
+def browser_scroll(direction: str, amount: Optional[int] = None, task_id: Optional[str] = None) -> str:
     """
     Scroll the page.
 
     Args:
-        direction: "up" or "down"
+        direction: "up", "down", "left", or "right"
+        amount: Optional pixel amount (clamped by the renderer/backend)
         task_id: Task identifier for session isolation
 
     Returns:
         JSON string with scroll result
     """
     # Validate direction
-    if direction not in {"up", "down"}:
+    if direction not in {"up", "down", "left", "right"}:
         return json.dumps({
             "success": False,
-            "error": f"Invalid direction '{direction}'. Use 'up' or 'down'."
+            "error": f"Invalid direction '{direction}'. Use 'up', 'down', 'left', or 'right'."
         }, ensure_ascii=False)
 
     # Single scroll with pixel amount instead of 5x subprocess calls.
     # agent-browser supports: agent-browser scroll down 500
     # ~500px is roughly half a viewport of travel.
-    _SCROLL_PIXELS = 500
+    _SCROLL_PIXELS = int(amount) if isinstance(amount, int) and amount > 0 else 500
 
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_scroll
@@ -3062,6 +3555,23 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
         return result
 
     effective_task_id = _last_session_key(task_id or "default")
+
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "scroll",
+        {"direction": direction, "amount": _SCROLL_PIXELS},
+    )
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, f"Failed to scroll {direction}"),
+            }, ensure_ascii=False)
+        return json.dumps({
+            "success": True,
+            "scrolled": direction,
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
 
     result = _run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
     if not result.get("success"):
@@ -3093,6 +3603,21 @@ def browser_back(task_id: Optional[str] = None) -> str:
         return camofox_back(task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    desktop_result = _run_visible_desktop_browser_command(effective_task_id, "goBack", {})
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, "Failed to go back"),
+            }, ensure_ascii=False)
+        data = _visible_desktop_payload(desktop_result)
+        return json.dumps({
+            "success": True,
+            "navigated_back": True,
+            "url": data.get("url", ""),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+
     result = _run_browser_command(effective_task_id, "back", [])
 
     if result.get("success"):
@@ -3126,6 +3651,23 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return camofox_press(key, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "press",
+        {"key": key},
+    )
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, f"Failed to press {key}"),
+            }, ensure_ascii=False)
+        return json.dumps({
+            "success": True,
+            "pressed": key,
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
@@ -3171,6 +3713,53 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
 
     effective_task_id = _last_session_key(task_id or "default")
 
+    desktop_result = _run_visible_desktop_browser_command(effective_task_id, "getConsole", {})
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, "Failed to read visible browser console"),
+                "browser_surface": "desktop_visible",
+            }, ensure_ascii=False)
+        payload = _visible_desktop_payload(desktop_result)
+        raw_messages = payload.get("messages") if isinstance(payload, dict) else []
+        if not isinstance(raw_messages, list):
+            raw_messages = []
+        messages = []
+        errors = []
+        for raw in raw_messages:
+            if not isinstance(raw, dict):
+                continue
+            level = str(raw.get("level") or raw.get("type") or "log")
+            text = str(raw.get("message") or raw.get("text") or "")
+            source = str(raw.get("source") or "console")
+            entry = {
+                "type": level,
+                "text": text,
+                "source": source,
+                "url": raw.get("url"),
+                "line": raw.get("line"),
+            }
+            if source == "exception":
+                errors.append({
+                    "message": text,
+                    "source": source,
+                    "url": raw.get("url"),
+                    "line": raw.get("line"),
+                })
+            else:
+                messages.append(entry)
+        if clear:
+            _run_visible_desktop_browser_command(effective_task_id, "clearConsole", {})
+        return json.dumps({
+            "success": True,
+            "console_messages": messages,
+            "js_errors": errors,
+            "total_messages": len(messages),
+            "total_errors": len(errors),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+
     console_args = ["--clear"] if clear else []
     error_args = ["--clear"] if clear else []
 
@@ -3207,6 +3796,129 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     return json.dumps(response, ensure_ascii=False)
 
 
+def browser_network(clear: bool = False, task_id: Optional[str] = None) -> str:
+    """Read network events captured from the visible BrowserPane."""
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_network is only available for the visible Desktop BrowserPane backend.",
+        }, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    desktop_result = _run_visible_desktop_browser_command(effective_task_id, "getNetwork", {})
+    if desktop_result is None:
+        return json.dumps({
+            "success": False,
+            "error": "No visible Desktop BrowserPane is available for browser_network.",
+        }, ensure_ascii=False)
+    if desktop_result.get("ok") is False:
+        return json.dumps({
+            "success": False,
+            "error": _visible_desktop_error(desktop_result, "Failed to read visible browser network events"),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+    payload = _visible_desktop_payload(desktop_result)
+    events = payload.get("events") if isinstance(payload, dict) else []
+    if not isinstance(events, list):
+        events = []
+    if clear:
+        _run_visible_desktop_browser_command(effective_task_id, "clearNetwork", {})
+    return json.dumps({
+        "success": True,
+        "events": events,
+        "total_events": len(events),
+        "browser_surface": "desktop_visible",
+    }, ensure_ascii=False)
+
+
+def browser_inspect_element(ref: str, task_id: Optional[str] = None) -> str:
+    """Inspect a BrowserPane element for safe Hermes-native Design Mode."""
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+    effective_task_id = _last_session_key(task_id or "default")
+    desktop_result = _run_visible_desktop_browser_command(effective_task_id, "inspectElement", {"ref": ref})
+    if desktop_result is None:
+        return json.dumps({
+            "success": False,
+            "error": "No visible Desktop BrowserPane is available for browser_inspect_element.",
+        }, ensure_ascii=False)
+    if desktop_result.get("ok") is False:
+        return json.dumps({
+            "success": False,
+            "error": _visible_desktop_error(desktop_result, f"Failed to inspect {ref}"),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+    payload = _visible_desktop_payload(desktop_result)
+    return json.dumps({
+        "success": True,
+        "element": payload.get("element") if isinstance(payload, dict) else payload,
+        "browser_surface": "desktop_visible",
+    }, ensure_ascii=False, default=str)
+
+
+def browser_design_handoff(goal: str, refs: Optional[List[str]] = None, task_id: Optional[str] = None) -> str:
+    """Create an agent-mediated visual editing handoff from selected BrowserPane element refs."""
+    safe_refs = []
+    for ref in refs or []:
+        if not isinstance(ref, str) or not ref.strip():
+            continue
+        safe_refs.append(ref if ref.startswith("@") else f"@{ref}")
+    effective_task_id = _last_session_key(task_id or "default")
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "designHandoff",
+        {"goal": goal, "refs": safe_refs},
+    )
+    if desktop_result is None:
+        return json.dumps({
+            "success": False,
+            "error": "No visible Desktop BrowserPane is available for browser_design_handoff.",
+        }, ensure_ascii=False)
+    if desktop_result.get("ok") is False:
+        return json.dumps({
+            "success": False,
+            "error": _visible_desktop_error(desktop_result, "Failed to create BrowserPane design handoff"),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+    payload = _visible_desktop_payload(desktop_result)
+    if not isinstance(payload, dict):
+        payload = {"prompt": payload}
+    response = {
+        "success": True,
+        "browser_surface": "desktop_visible",
+        **payload,
+    }
+    response.setdefault("mode", "agent-mediated")
+    response.setdefault("unsafeDirectDomMutation", False)
+    return json.dumps(response, ensure_ascii=False, default=str)
+
+
+def browser_accessibility_audit(task_id: Optional[str] = None) -> str:
+    """Run a visible BrowserPane accessibility audit and return findings to the agent."""
+    effective_task_id = _last_session_key(task_id or "default")
+    desktop_result = _run_visible_desktop_browser_command(effective_task_id, "accessibilityAudit", {})
+    if desktop_result is None:
+        return json.dumps({
+            "success": False,
+            "error": "No visible Desktop BrowserPane is available for browser_accessibility_audit.",
+        }, ensure_ascii=False)
+    if desktop_result.get("ok") is False:
+        return json.dumps({
+            "success": False,
+            "error": _visible_desktop_error(desktop_result, "Failed to run visible browser accessibility audit"),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+    payload = _visible_desktop_payload(desktop_result)
+    if not isinstance(payload, dict):
+        payload = {"findings": []}
+    return json.dumps({
+        "success": True,
+        "browser_surface": "desktop_visible",
+        "findings": payload.get("findings", []),
+        "summary": payload.get("summary", {}),
+        "title": payload.get("title"),
+        "url": payload.get("url"),
+    }, ensure_ascii=False, default=str)
 def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
     """Return True when eval-driven private-network access must be guarded.
 
@@ -3282,6 +3994,32 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
 
     effective_task_id = _last_session_key(task_id or "default")
 
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "evaluate",
+        {"expression": expression},
+    )
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, "Visible browser evaluation failed"),
+                "browser_surface": "desktop_visible",
+            }, ensure_ascii=False)
+        raw_result = desktop_result.get("result")
+        parsed = raw_result
+        if isinstance(raw_result, str):
+            try:
+                parsed = json.loads(raw_result)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return json.dumps({
+            "success": True,
+            "result": parsed,
+            "result_type": type(parsed).__name__,
+            "method": "desktop_visible",
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False, default=str)
     # ── Private-network guard (eval return-value path) ──────────────────────
     # browser_snapshot / browser_vision re-check the page URL before returning
     # content, but eval returns arbitrary JS results directly — an attacker can
@@ -3528,6 +4266,24 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
 
     effective_task_id = _last_session_key(task_id or "default")
 
+    desktop_result = _run_visible_desktop_browser_command(effective_task_id, "getImages", {})
+    if desktop_result is not None:
+        if desktop_result.get("ok") is False:
+            return json.dumps({
+                "success": False,
+                "error": _visible_desktop_error(desktop_result, "Failed to get visible browser images"),
+                "browser_surface": "desktop_visible",
+            }, ensure_ascii=False)
+        images = desktop_result.get("result")
+        if not isinstance(images, list):
+            images = []
+        return json.dumps({
+            "success": True,
+            "images": images,
+            "count": len(images),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+
     # Use eval to run JavaScript that extracts images
     js_code = """JSON.stringify(
         [...document.images].map(img => ({
@@ -3586,6 +4342,58 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def browser_screenshot(annotate: bool = False, task_id: Optional[str] = None) -> str:
+    """Capture a file-backed screenshot artifact without running vision analysis."""
+    import uuid as uuid_mod
+    from hermes_constants import get_hermes_dir
+
+    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
+    screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
+    effective_task_id = _last_session_key(task_id or "default")
+
+    desktop_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "screenshot",
+        {"annotate": bool(annotate), "full": True},
+        timeout=max(_get_command_timeout(), 60),
+    )
+    if desktop_result is None:
+        return json.dumps({
+            "success": False,
+            "error": "No visible Desktop BrowserPane is available for browser_screenshot.",
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+
+    if desktop_result.get("ok") is False:
+        return json.dumps({
+            "success": False,
+            "error": _visible_desktop_error(desktop_result, "Failed to capture visible browser screenshot"),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+    try:
+        result = _save_visible_desktop_screenshot_data_url(
+            desktop_result,
+            screenshot_path=screenshot_path,
+            session_key=effective_task_id,
+        )
+    except Exception as exc:
+        return json.dumps({
+            "success": False,
+            "error": str(exc),
+            "browser_surface": "desktop_visible",
+        }, ensure_ascii=False)
+    data = result.get("data", {})
+    return json.dumps({
+        "success": True,
+        "screenshot_path": data.get("path"),
+        "url": data.get("url", ""),
+        "title": data.get("title", ""),
+        "browser_surface": "desktop_visible",
+    }, ensure_ascii=False)
+
+
 def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
     Take a screenshot of the current page for visual inspection.
@@ -3619,6 +4427,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     effective_task_id = _last_session_key(task_id or "default")
+    desktop_screenshot_result = _run_visible_desktop_browser_command(
+        effective_task_id,
+        "screenshot",
+        {"annotate": bool(annotate), "full": True},
+        timeout=max(_get_command_timeout(), 60),
+    )
 
     # ── Private-network guard: block vision from eval-navigated private pages ──
     # After any eval (browser_console) that may have changed location.href to a
@@ -3659,7 +4473,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     engine = _get_browser_engine()
     _lp_prerouted = False
     _lp_fallback_warning = None
-    if engine == "lightpanda" and _should_inject_engine(engine):
+    if desktop_screenshot_result is None and engine == "lightpanda" and _should_inject_engine(engine):
         logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
         screenshot_args = []
         if annotate:
@@ -3693,7 +4507,23 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Prune old screenshots (older than 24 hours) to prevent unbounded disk growth
         _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
 
-        if _lp_prerouted and screenshot_path.exists():
+        if desktop_screenshot_result is not None:
+            if desktop_screenshot_result.get("ok") is False:
+                error_response = {
+                    "success": False,
+                    "error": _visible_desktop_error(
+                        desktop_screenshot_result,
+                        "Failed to take visible browser screenshot",
+                    ),
+                    "browser_surface": "desktop_visible",
+                }
+                return json.dumps(error_response, ensure_ascii=False)
+            result = _save_visible_desktop_screenshot_data_url(
+                desktop_screenshot_result,
+                screenshot_path=screenshot_path,
+                session_key=effective_task_id,
+            )
+        elif _lp_prerouted and screenshot_path.exists():
             result = {
                 "success": True,
                 "data": {
@@ -3781,6 +4611,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             )
             meta = native_result.setdefault("meta", {})
             meta["screenshot_path"] = str(screenshot_path)
+            if result.get("browser_surface"):
+                meta["browser_surface"] = result.get("browser_surface")
             if _lp_fallback_warning:
                 meta["fallback_warning"] = _lp_fallback_warning
             if annotate and result.get("data", {}).get("annotations"):
@@ -3871,6 +4703,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             "analysis": analysis or "Vision analysis returned no content.",
             "screenshot_path": str(screenshot_path),
         }
+        if result.get("browser_surface"):
+            response_data["browser_surface"] = result.get("browser_surface")
         _copy_fallback_warning(response_data, result)
         # Include annotation data if annotated screenshot was taken
         if annotate and result.get("data", {}).get("annotations"):
@@ -4441,6 +5275,30 @@ registry.register(
     emoji="👆",
 )
 registry.register(
+    name="browser_hover",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_hover"],
+    handler=lambda args, **kw: browser_hover(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🖱️",
+)
+registry.register(
+    name="browser_double_click",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_double_click"],
+    handler=lambda args, **kw: browser_double_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🖱️",
+)
+registry.register(
+    name="browser_right_click",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_right_click"],
+    handler=lambda args, **kw: browser_right_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🖱️",
+)
+registry.register(
     name="browser_type",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
@@ -4452,7 +5310,7 @@ registry.register(
     name="browser_scroll",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_scroll"],
-    handler=lambda args, **kw: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_scroll(direction=args.get("direction", "down"), amount=args.get("amount"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="📜",
 )
@@ -4482,6 +5340,14 @@ registry.register(
     emoji="🖼️",
 )
 registry.register(
+    name="browser_screenshot",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_screenshot"],
+    handler=lambda args, **kw: browser_screenshot(annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📷",
+)
+registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
@@ -4496,4 +5362,36 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_network",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_network"],
+    handler=lambda args, **kw: browser_network(clear=args.get("clear", False), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🌐",
+)
+registry.register(
+    name="browser_inspect_element",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_inspect_element"],
+    handler=lambda args, **kw: browser_inspect_element(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🎯",
+)
+registry.register(
+    name="browser_design_handoff",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_design_handoff"],
+    handler=lambda args, **kw: browser_design_handoff(goal=args.get("goal", ""), refs=args.get("refs") or [], task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🎨",
+)
+registry.register(
+    name="browser_accessibility_audit",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_accessibility_audit"],
+    handler=lambda args, **kw: browser_accessibility_audit(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="♿",
 )

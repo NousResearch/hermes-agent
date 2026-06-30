@@ -181,7 +181,8 @@ export const en: Translations = {
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',
-    openKeybinds: 'Keyboard shortcuts'
+    openKeybinds: 'Keyboard shortcuts',
+    openBrowser: 'Open browser'
   },
 
   keybinds: {
@@ -239,6 +240,7 @@ export const en: Translations = {
       'view.nextTerminal': 'Next terminal',
       'view.prevTerminal': 'Previous terminal',
       'view.closeTerminal': 'Close terminal',
+      'view.openBrowser': 'Open browser',
       'view.terminalSelection': 'Send terminal selection to composer',
       'view.closePreviewTab': 'Close preview tab',
       'view.flipPanes': 'Swap sidebar sides',
@@ -380,6 +382,8 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      showBrowserGlobeTitle: 'Browser toolbar button',
+      showBrowserGlobeDesc: 'Show the globe icon in the titlebar to open the browser.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
@@ -2127,6 +2131,11 @@ export const en: Translations = {
         browser_snapshot: {
           done: 'Captured page snapshot',
           pending: 'Capturing page snapshot',
+          pendingAction: 'Capturing'
+        },
+        browser_screenshot: {
+          done: 'Captured browser screenshot',
+          pending: 'Capturing browser screenshot',
           pendingAction: 'Capturing'
         },
         browser_take_screenshot: {

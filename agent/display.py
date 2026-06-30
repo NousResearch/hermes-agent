@@ -1336,6 +1336,8 @@ def get_cute_tool_message(
         return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
     if tool_name == "browser_get_images":
         return _wrap(f"┊ 🖼️  images    extracting  {dur}")
+    if tool_name == "browser_screenshot":
+        return _wrap(f"┊ 📷 shot      capturing page  {dur}")
     if tool_name == "browser_vision":
         return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
     if tool_name == "todo":

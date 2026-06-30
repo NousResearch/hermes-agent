@@ -39,13 +39,21 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     # Browser
     "browser_navigate": "fetch",
     "browser_click": "execute",
+    "browser_hover": "execute",
+    "browser_double_click": "execute",
+    "browser_right_click": "execute",
     "browser_type": "execute",
     "browser_snapshot": "read",
+    "browser_screenshot": "read",
     "browser_vision": "read",
     "browser_scroll": "execute",
     "browser_press": "execute",
     "browser_back": "execute",
     "browser_get_images": "read",
+    "browser_network": "read",
+    "browser_inspect_element": "read",
+    "browser_design_handoff": "read",
+    "browser_accessibility_audit": "read",
     # Agent internals
     "delegate_task": "execute",
     "vision_analyze": "read",
@@ -63,8 +71,9 @@ _POLISHED_TOOLS = {
     "read_file", "write_file", "patch", "search_files", "terminal", "process", "execute_code",
     # Skills / web / browser / media
     "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
-    "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
-    "browser_back", "browser_snapshot", "browser_console", "browser_get_images", "browser_vision",
+    "browser_navigate", "browser_click", "browser_hover", "browser_double_click", "browser_right_click",
+    "browser_type", "browser_press", "browser_scroll",
+    "browser_back", "browser_snapshot", "browser_console", "browser_network", "browser_inspect_element", "browser_design_handoff", "browser_accessibility_audit", "browser_get_images", "browser_screenshot", "browser_vision",
     "vision_analyze", "image_generate", "text_to_speech",
     # Schedulers / platform integrations
     "cronjob", "send_message", "clarify", "discord", "discord_admin",
@@ -164,6 +173,8 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         return f"navigate: {args.get('url', '?')}"
     if tool_name == "browser_snapshot":
         return "browser snapshot"
+    if tool_name == "browser_screenshot":
+        return "browser screenshot"
     if tool_name == "browser_vision":
         return f"browser vision: {str(args.get('question', '?'))[:50]}"
     if tool_name == "browser_get_images":
@@ -703,6 +714,18 @@ def _format_browser_result(tool_name: str, result: Optional[str], args: Optional
                     url = str(img.get("url") or img.get("src") or "").strip()
                     lines.append(f"- {alt or 'image'}" + (f" — {url}" if url else ""))
             return _truncate_text("\n".join(lines), limit=5000)
+    if tool_name == "browser_screenshot":
+        path = str(data.get("screenshot_path") or data.get("path") or "").strip()
+        lines = ["✅ browser_screenshot captured"]
+        if path:
+            lines.append(f"- **screenshot_path:** {path}")
+        if data.get("title"):
+            lines.append(f"- **title:** {data.get('title')}")
+        if data.get("url"):
+            lines.append(f"- **url:** {data.get('url')}")
+        if data.get("browser_surface"):
+            lines.append(f"- **browser_surface:** {data.get('browser_surface')}")
+        return _truncate_text("\n".join(lines), limit=3000)
     title = str(data.get("title") or data.get("url") or data.get("status") or tool_name)
     text = str(data.get("text") or data.get("content") or data.get("snapshot") or data.get("analysis") or data.get("message") or "").strip()
     lines = [title]
@@ -890,6 +913,7 @@ def _build_polished_completion_content(
         "web_extract": lambda: _format_web_extract_result(result),
         "browser_navigate": lambda: _format_browser_result(tool_name, result, function_args),
         "browser_snapshot": lambda: _format_browser_result(tool_name, result, function_args),
+        "browser_screenshot": lambda: _format_browser_result(tool_name, result, function_args),
         "browser_vision": lambda: _format_browser_result(tool_name, result, function_args),
         "browser_get_images": lambda: _format_browser_result(tool_name, result, function_args),
         "vision_analyze": lambda: _format_media_or_cron_result(tool_name, result),

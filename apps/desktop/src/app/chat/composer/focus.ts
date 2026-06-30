@@ -36,6 +36,7 @@ const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
+const ATTACH_IMAGE_EVENT = 'hermes:composer-attach-image'
 
 interface SubmitDetail {
   target: ComposerTarget
@@ -128,6 +129,26 @@ export const requestComposerSubmit = (
 
 export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>
   subscribe<SubmitDetail>(SUBMIT_EVENT, handler)
+
+interface AttachImageDetail {
+  dataUrl: string
+  target: ComposerTarget
+}
+
+/** Attach an image (as a `data:` URL) into a composer — used by external panels
+ * such as the browser screenshot button. The subscriber converts it to a blob and
+ * runs it through the normal image-attach path. */
+export const requestComposerAttachImage = (
+  dataUrl: string,
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  if (dataUrl) {
+    dispatch<AttachImageDetail>(ATTACH_IMAGE_EVENT, { dataUrl, target: resolve(target) })
+  }
+}
+
+export const onComposerAttachImageRequest = (handler: (detail: AttachImageDetail) => void) =>
+  subscribe<AttachImageDetail>(ATTACH_IMAGE_EVENT, handler)
 
 /** Toggle the active composer's voice conversation — the `composer.voice`
  *  hotkey (Ctrl+B) reaching into the composer that owns the voice state. */

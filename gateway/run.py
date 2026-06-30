@@ -2777,8 +2777,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Initialize session database for session_search tool support
         self._session_db = None
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            from hermes_state import AsyncSessionDB, SessionDB
+            self._session_db = AsyncSessionDB(SessionDB())
         except Exception as e:
             # WARNING (not DEBUG) so the failure appears in errors.log — matches
             # cli.py's handling of the same init path.  Users hitting NFS-mounted
@@ -2799,7 +2799,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from hermes_cli.config import load_config as _load_full_config
                 _sess_cfg = (_load_full_config().get("sessions") or {})
                 if _sess_cfg.get("auto_prune", False):
-                    self._session_db.maybe_auto_prune_and_vacuum(
+                    # Construction-time, before the loop serves traffic; sync DB is fine.
+                    self._session_db._db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                         vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
@@ -3254,6 +3255,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return False
+        # Runs off-loop (always via asyncio.to_thread); use the sync handle.
+        session_db = getattr(session_db, "_db", session_db)
         try:
             raw = session_db.is_telegram_topic_mode_enabled(
                 chat_id=str(source.chat_id),
@@ -3351,6 +3354,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_db = getattr(self, "_session_db", None)
         if session_db is None or not source.chat_id or not source.thread_id:
             return
+        # Runs off-loop (always via asyncio.to_thread); use the sync handle.
+        session_db = getattr(session_db, "_db", session_db)
         session_db.bind_telegram_topic(
             chat_id=str(source.chat_id),
             thread_id=str(source.thread_id),
@@ -3419,6 +3424,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return None
+        # Runs off-loop (always via asyncio.to_thread); use the sync handle.
+        session_db = getattr(session_db, "_db", session_db)
         try:
             bindings = session_db.list_telegram_topic_bindings_for_chat(
                 chat_id=str(source.chat_id),
@@ -5106,6 +5113,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
 
+        # Suppress ONLY the home-channel broadcast when the drain that is ending
+        # in this shutdown asked us to be quiet (e.g. a NAS auto-update image
+        # migration — drain-gated, then the machine is recreated). On the
+        # always-on Hermes Cloud fleet that broadcast would otherwise fire on
+        # every routine auto-update, spamming home channels with operator-
+        # flavoured "gateway shutting down" pings the user doesn't care about.
+        # The per-active-session interrupt pings above are deliberately NOT
+        # gated: on a drained shutdown they're empty by construction, and in the
+        # force-interrupt (deadline-exceeded) case they carry the genuinely
+        # useful "your task was cut off, message me to resume" hint. The flag is
+        # only honoured for a CURRENT-epoch marker (drain_notification_suppressed
+        # reuses the NS-570 staleness check), so an orphaned marker can never
+        # silence a fresh gateway's legitimate broadcast.
+        try:
+            from gateway.drain_control import drain_notification_suppressed
+            if drain_notification_suppressed():
+                logger.info(
+                    "Home-channel shutdown broadcast suppressed by drain marker "
+                    "(suppress_notification=true)"
+                )
+                return
+        except Exception as e:
+            # Never let the suppression check block the shutdown broadcast —
+            # fail toward the louder, more-visible behaviour.
+            logger.debug("drain_notification_suppressed check failed: %s", e)
+
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal
         # elsewhere), which would otherwise trigger
@@ -5259,6 +5292,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if agent is None:
             return
+        if context.startswith("shutdown"):
+            try:
+                agent._end_session_on_close = False
+            except Exception:
+                pass
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(
@@ -5501,6 +5539,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # run as a self-restart loop guard and the gateway stays stopped.
             watcher_env.pop("_HERMES_GATEWAY", None)
             project_root = Path(__file__).resolve().parent.parent
+            watcher_python = sys.executable
+            try:
+                # Prefer a real GUI-subsystem interpreter for the watcher
+                # itself.  With uv venvs, ``python.exe`` can re-exec the base
+                # console interpreter and flash even when the Popen carries
+                # CREATE_NO_WINDOW; pythonw.exe avoids console allocation.
+                from hermes_cli.gateway_windows import _resolve_detached_python
+
+                watcher_python, _watcher_venv_dir, _watcher_site_packages = (
+                    _resolve_detached_python(sys.executable)
+                )
+            except Exception:
+                watcher_python = sys.executable
             venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
             site_packages = venv_dir / "Lib" / "site-packages"
             if site_packages.exists():
@@ -5510,7 +5561,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pythonpath.append(watcher_env["PYTHONPATH"])
                 watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
             subprocess.Popen(
-                [sys.executable, "-c", watcher, str(current_pid), str(restart_after_s), *cmd_argv],
+                [watcher_python, "-c", watcher, str(current_pid), str(restart_after_s), *cmd_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 env=watcher_env,
@@ -6534,23 +6585,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if self._session_db is None:
                     await asyncio.sleep(interval)
                     continue
-                pending = await asyncio.to_thread(self._session_db.list_pending_handoffs)
+                pending = await self._session_db.list_pending_handoffs()
                 for row in pending:
                     session_id = row.get("id")
                     if not session_id:
                         continue
-                    if not await asyncio.to_thread(self._session_db.claim_handoff, session_id):
+                    if not await self._session_db.claim_handoff(session_id):
                         # Another tick or another gateway already claimed it.
                         continue
                     try:
                         await self._process_handoff(row)
-                        await asyncio.to_thread(self._session_db.complete_handoff, session_id)
+                        await self._session_db.complete_handoff(session_id)
                     except Exception as exc:
                         logger.warning(
                             "Handoff for session %s failed: %s",
                             session_id, exc, exc_info=True,
                         )
-                        await asyncio.to_thread(self._session_db.fail_handoff, session_id, str(exc))
+                        await self._session_db.fail_handoff(session_id, str(exc))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -7399,8 +7450,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # old gateway's connection holding the WAL lock until Python
             # actually exits — causing 'database is locked' errors when
             # the new gateway tries to open the same file.
-            for _db_holder in (self, getattr(self, "session_store", None)):
-                _db = getattr(_db_holder, "_db", None) if _db_holder else None
+            # ``self`` holds the DB at ``_session_db`` (an AsyncSessionDB facade);
+            # unwrap to the sync handle. ``session_store`` holds it at ``_db``.
+            _self_db = getattr(self, "_session_db", None)
+            _self_db = getattr(_self_db, "_db", _self_db)
+            for _db in (_self_db, getattr(getattr(self, "session_store", None), "_db", None)):
                 if _db is None or not hasattr(_db, "close"):
                     continue
                 try:
@@ -8638,7 +8692,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
 
         if canonical == "new":
-            if self._is_telegram_topic_root_lobby(source):
+            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
                 return self._telegram_topic_root_new_message()
             async def _do_reset():
                 return await self._handle_reset_command(event)
@@ -9099,7 +9153,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
-        if self._is_telegram_topic_root_lobby(source):
+        if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             # Debounce the lobby reminder so a user who forgets about
             # topic mode and fires ten prompts doesn't get ten copies.
             if self._should_send_telegram_lobby_reminder(source):
@@ -9580,7 +9634,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
         # last-active topic so a cross-topic Reply or stripped plain reply
         # doesn't fragment the conversation across sessions.
-        recovered = self._recover_telegram_topic_thread_id(source)
+        recovered = await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
@@ -9595,12 +9649,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
-        if self._is_telegram_topic_lane(source):
+        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
-                binding = self._session_db.get_telegram_topic_binding(
+                binding = (await self._session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
-                ) if self._session_db else None
+                )) if self._session_db else None
             except Exception:
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
@@ -9614,7 +9668,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # a compression parent, so this is cheap and safe.
                 if bound_session_id and self._session_db is not None:
                     try:
-                        canonical_session_id = self._session_db.get_compression_tip(
+                        canonical_session_id = await self._session_db.get_compression_tip(
                             bound_session_id,
                         )
                     except Exception:
@@ -9643,12 +9697,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     bound_session_id
                     and bound_session_id != str(binding.get("session_id") or "")
                 ):
-                    self._sync_telegram_topic_binding(
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding,
                         source, session_entry, reason="compression-tip-walk",
                     )
             else:
                 try:
-                    self._record_telegram_topic_binding(source, session_entry)
+                    await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
         # Capture and immediately consume was_auto_reset so it does not
@@ -9664,6 +9719,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+            # Evict the cached agent so the fresh session does not inherit the
+            # previous conversation's context_compressor._previous_summary —
+            # the cache is keyed on the stable session_key, so an auto-reset
+            # otherwise reuses the old agent and leaks prior history into new
+            # compaction summaries. Mirrors /reset and the compression-exhausted
+            # path (#9893). Covers daily/idle/suspended auto-reset.
+            self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
         
         # Emit session:start for new or auto-reset sessions
@@ -10012,7 +10074,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
-                                    session_db=self._session_db,
+                                    session_db=getattr(self._session_db, "_db", self._session_db),
                                 )
                                 try:
                                     # The hygiene agent rotates the session
@@ -10045,7 +10107,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     if _hyg_rotated:
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
-                                        self._sync_telegram_topic_binding(
+                                        await asyncio.to_thread(
+                                            self._sync_telegram_topic_binding,
                                             source, session_entry,
                                             reason="hygiene-compression",
                                         )
@@ -10399,7 +10462,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # prompt caching.  Refreshing here makes the guard fire only on a
             # DIFFERENT process's writes.  Uses the (possibly compaction-
             # updated) live session_id.  Fail-safe inside the helper.
-            self._refresh_agent_cache_message_count(
+            await self._refresh_agent_cache_message_count(
                 session_key, session_entry.session_id
             )
 
@@ -10436,7 +10499,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
                 self.session_store._save()
-                self._sync_telegram_topic_binding(
+                await asyncio.to_thread(
+                    self._sync_telegram_topic_binding,
                     source, session_entry, reason="agent-result-compression",
                 )
 
@@ -10639,7 +10703,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # forever (#35809 — regression of the #9893/#10063 auto-reset).
                     # No-op on non-topic lanes.
                     session_entry = new_entry
-                    self._sync_telegram_topic_binding(
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding,
                         source, session_entry, reason="compression-exhausted-reset",
                     )
                 response = (response or "") + (
@@ -10892,8 +10957,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
             except Exception:
                 logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
-            error_type = type(e).__name__
-            error_detail = str(e)[:300] if str(e) else "no details available"
+            # Log full details server-side only; never expose raw exception
+            # types or messages to end users (info-leakage risk).
             status_hint = ""
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
@@ -10937,9 +11002,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
             return (
-                f"Sorry, I encountered an error ({error_type}).\n"
-                f"{error_detail}\n"
-                f"{status_hint}"
+                f"Sorry, I encountered an unexpected error.{status_hint}\n"
                 "Try again or use /reset to start a fresh session."
             )
         finally:
@@ -12032,7 +12095,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
-                    session_db=self._session_db,
+                    session_db=getattr(self._session_db, "_db", self._session_db),
                     fallback_model=self._fallback_model,
                 )
                 try:
@@ -12251,7 +12314,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
     ) -> None:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
-        if not self._is_telegram_topic_lane(source) or not source.chat_id or not source.thread_id:
+        if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
             return
 
         # Operator can fully disable per-topic auto-rename via
@@ -12285,7 +12348,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_db = getattr(self, "_session_db", None)
         if session_db is not None:
             try:
-                binding = session_db.get_telegram_topic_binding(
+                binding = await session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                 )
@@ -12432,7 +12495,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "5. /topic <id> inside a topic restores an old session into it."
         )
 
-    def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
+    async def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -12442,7 +12505,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "Could not determine chat ID."
         # No-op if never enabled.
         try:
-            currently_enabled = self._session_db.is_telegram_topic_mode_enabled(
+            currently_enabled = await self._session_db.is_telegram_topic_mode_enabled(
                 chat_id=chat_id,
                 user_id=str(source.user_id or ""),
             )
@@ -12451,7 +12514,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not currently_enabled:
             return "Multi-session topic mode is not currently enabled for this chat."
         try:
-            self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
+            await self._session_db.disable_telegram_topic_mode(chat_id=chat_id)
         except Exception as exc:
             logger.exception("Failed to disable Telegram topic mode")
             return f"Failed to disable topic mode: {exc}"
@@ -12469,7 +12532,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
 
-    def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
+    async def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
         lines = [
             "Telegram multi-session topics are enabled.",
             "",
@@ -12479,7 +12542,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "",
         ]
         try:
-            sessions = self._session_db.list_unlinked_telegram_sessions_for_user(
+            sessions = await self._session_db.list_unlinked_telegram_sessions_for_user(
                 chat_id=str(source.chat_id),
                 user_id=str(source.user_id),
                 limit=10,
@@ -12518,11 +12581,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
-        session_id = self._session_db.resolve_session_id(raw_session_id.strip())
+        session_id = await self._session_db.resolve_session_id(raw_session_id.strip())
         if not session_id:
             return f"Session not found: {raw_session_id.strip()}"
 
-        session = self._session_db.get_session(session_id)
+        session = await self._session_db.get_session(session_id)
         if not session:
             return f"Session not found: {raw_session_id.strip()}"
         if str(session.get("source") or "") != "telegram":
@@ -12530,8 +12593,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if str(session.get("user_id") or "") != str(source.user_id):
             return "That session does not belong to this Telegram user."
 
-        linked = self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
-        current_binding = self._session_db.get_telegram_topic_binding(
+        linked = await self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
+        current_binding = await self._session_db.get_telegram_topic_binding(
             chat_id=str(source.chat_id),
             thread_id=str(source.thread_id),
         )
@@ -12541,7 +12604,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_key = self._session_key_for_source(source)
         try:
-            self._session_db.bind_telegram_topic(
+            await self._session_db.bind_telegram_topic(
                 chat_id=str(source.chat_id),
                 thread_id=str(source.thread_id),
                 user_id=str(source.user_id),
@@ -12554,10 +12617,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "That session is already linked to another Telegram topic."
             raise
 
-        title = self._session_db.get_session_title(session_id) or session_id
+        title = await self._session_db.get_session_title(session_id) or session_id
         last_assistant = None
         try:
-            for message in reversed(self._session_db.get_messages(session_id)):
+            for message in reversed(await self._session_db.get_messages(session_id)):
                 if message.get("role") == "assistant" and message.get("content"):
                     last_assistant = str(message.get("content"))
                     break
@@ -14582,7 +14645,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if release_running_state:
             self._release_running_agent_state(session_key)
 
-    def _refresh_agent_cache_message_count(
+    async def _refresh_agent_cache_message_count(
         self, session_key: str, session_id: Optional[str]
     ) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn.
@@ -14614,7 +14677,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not _cache_lock or _cache is None:
             return
         try:
-            _sess_row = self._session_db.get_session(session_id)
+            _sess_row = await self._session_db.get_session(session_id)
             _live = _sess_row.get("message_count", 0) if _sess_row else None
         except Exception:
             return
@@ -16297,7 +16360,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _current_msg_count = None
             if self._session_db is not None and session_id:
                 try:
-                    _sess_row = self._session_db.get_session(session_id)
+                    # run_sync is off-loop (executor); sync DB is fine.
+                    _sess_row = self._session_db._db.get_session(session_id)
                     if _sess_row:
                         _current_msg_count = _sess_row.get("message_count", 0)
                 except Exception:
@@ -16408,7 +16472,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
-                    session_db=self._session_db,
+                    session_db=getattr(self._session_db, "_db", self._session_db),
                     fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:
@@ -16995,7 +17059,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and self._session_db is not None
                 ):
                     try:
-                        _binding = self._session_db.get_telegram_topic_binding_by_session(
+                        # run_sync is off-loop (executor); sync DB is fine.
+                        _binding = self._session_db._db.get_telegram_topic_binding_by_session(
                             session_id=agent_session_id,
                         )
                         if _binding and _binding.get("thread_id"):
@@ -17120,7 +17185,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             title,
                         )
                     maybe_auto_title(
-                        self._session_db,
+                        getattr(self._session_db, "_db", self._session_db),
                         effective_session_id,
                         message,
                         final_response,
@@ -17402,6 +17467,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Long-running notification error: %s", _ne)
 
         _notify_task = asyncio.create_task(_notify_long_running())
+
+        def _stream_confirmed_final_delivery(
+            consumer,
+            final_text: str,
+            *,
+            previewed: bool = False,
+        ) -> bool:
+            """Return True only when the actual final reply reached the user."""
+            if consumer is None:
+                return False
+            if getattr(consumer, "final_response_sent", False):
+                return True
+            if previewed:
+                has_delivered_text = getattr(consumer, "has_delivered_text", None)
+                if callable(has_delivered_text):
+                    try:
+                        return bool(has_delivered_text(final_text))
+                    except Exception:
+                        return False
+            return False
 
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
@@ -17754,12 +17839,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _previewed = bool(result.get("response_previewed"))
-                    _already_streamed = bool(
-                        (_sc and getattr(_sc, "final_response_sent", False))
-                        or _previewed
-                        or (_sc and getattr(_sc, "final_content_delivered", False))
-                    )
                     first_response = result.get("final_response", "")
+                    _already_streamed = _stream_confirmed_final_delivery(
+                        _sc,
+                        first_response,
+                        previewed=_previewed,
+                    )
                     if first_response and not _already_streamed:
                         try:
                             logger.info(
@@ -17930,11 +18015,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
             _is_empty_sentinel = not _final or _final == "(empty)"
-            _streamed = bool(
-                _sc and getattr(_sc, "final_response_sent", False)
-            )
             # response_previewed means the interim_assistant_callback already
-            # sent the final text via the adapter (non-streaming path).
+            # saw the final text, but only suppress the normal send if that
+            # exact final text was delivered. Unrelated commentary/progress
+            # must not be mistaken for the final response (#14238).
             _previewed = bool(response.get("response_previewed"))
             _content_delivered = bool(
                 _sc and getattr(_sc, "final_content_delivered", False)
@@ -17943,7 +18027,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # after streaming finished — when the response was transformed, always
             # send the final version so the appended content reaches the client.
             _transformed = bool(response.get("response_transformed"))
-            if not _is_empty_sentinel and not _transformed and (_streamed or _previewed or _content_delivered):
+            # Only suppress the normal send when the actual final reply reached
+            # the user: the stream consumer streamed it (final_response_sent /
+            # final_content_delivered), or the interim preview delivered that
+            # *exact* final text. Unrelated commentary/progress shown during a
+            # compression/session split must not be mistaken for the final
+            # response (#14238).
+            _streamed = _stream_confirmed_final_delivery(
+                _sc,
+                _final,
+                previewed=_previewed,
+            )
+            if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",

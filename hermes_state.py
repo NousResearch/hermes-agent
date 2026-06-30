@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -121,7 +122,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -640,6 +641,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    session_key TEXT,
+    chat_id TEXT,
+    chat_type TEXT,
+    thread_id TEXT,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -724,6 +729,10 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_session_key
+    ON sessions(session_key, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
+    ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
 """
 
 FTS_SQL = """
@@ -1471,19 +1480,50 @@ class SessionDB:
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
         user_id: str = None,
+        session_key: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
     ) -> None:
-        """Shared INSERT OR IGNORE for session rows."""
+        """Insert a session row, enriching NULL metadata on conflict.
+
+        The gateway's ``get_or_create_session`` creates a bare row (source +
+        user_id) *before* the agent exists; the agent's later
+        ``create_session`` then carries the real ``model`` / ``model_config`` /
+        ``system_prompt``. A plain ``INSERT OR IGNORE`` silently dropped that
+        enrichment, leaving gateway sessions with NULL model/billing metadata.
+        The ``ON CONFLICT`` upsert backfills those fields via ``COALESCE`` —
+        only filling columns that are still NULL, never overwriting values an
+        earlier writer already set (so a later bare call with source="unknown"
+        can't clobber a real source/model).
+        """
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO sessions (
+                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       model = COALESCE(sessions.model, excluded.model),
+                       model_config = COALESCE(sessions.model_config, excluded.model_config),
+                       system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                       session_key = COALESCE(sessions.session_key, excluded.session_key),
+                       chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                       chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                       thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                       parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
+                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
                 (
                     session_id,
                     source,
                     user_id,
+                    session_key,
+                    chat_id,
+                    chat_type,
+                    thread_id,
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
@@ -1498,6 +1538,105 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         self._insert_session_row(session_id, source, **kwargs)
         return session_id
+
+    def record_gateway_session_peer(
+        self,
+        session_id: str,
+        *,
+        source: str,
+        user_id: str = None,
+        session_key: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
+    ) -> None:
+        """Persist the gateway routing peer for an existing session row."""
+        if not session_id or not session_key:
+            return
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions
+                   SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
+                       chat_type = ?, thread_id = ?
+                   WHERE id = ?""",
+                (
+                    session_key,
+                    source,
+                    user_id,
+                    chat_id,
+                    chat_type,
+                    thread_id,
+                    session_id,
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def find_latest_gateway_session_for_peer(
+        self,
+        *,
+        source: str,
+        user_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Find the latest recoverable gateway session for a routing peer.
+
+        ``sessions.json`` is the fast routing index, but it can be missing or
+        pruned after process-level restart bugs.  New gateway sessions persist
+        the deterministic ``session_key`` on the durable session row so the
+        mapping can be rebuilt exactly.  Rows ended only by older gateway
+        cleanup's ``agent_close`` bug are treated as recoverable; explicit
+        conversation boundaries such as /new, /resume switches, and compression
+        splits are not.
+        """
+        if not session_key:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE session_key = ?
+                  AND source = ?
+                  AND (ended_at IS NULL OR end_reason = 'agent_close')
+                  AND (COALESCE(message_count, 0) > 0 OR EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
+                  ))
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_key, source),
+            ).fetchone()
+            if row is not None:
+                return dict(row)
+
+            # Conservative fallback for rows created by current code but with a
+            # temporarily-missing exact key: still require the complete peer
+            # tuple so we never cross chats/threads/users.
+            if chat_id is None or chat_type is None:
+                return None
+            row = self._conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE source = ?
+                  AND COALESCE(user_id, '') = COALESCE(?, '')
+                  AND COALESCE(chat_id, '') = COALESCE(?, '')
+                  AND COALESCE(chat_type, '') = COALESCE(?, '')
+                  AND COALESCE(thread_id, '') = COALESCE(?, '')
+                  AND (ended_at IS NULL OR end_reason = 'agent_close')
+                  AND (COALESCE(message_count, 0) > 0 OR EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
+                  ))
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (source, user_id, chat_id, chat_type, thread_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -5429,3 +5568,20 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+
+class AsyncSessionDB:
+    """Async door onto SessionDB: offloads each call via asyncio.to_thread so a blocking SQLite call never freezes the event loop. Generic forwarder — the audit confirms no method returns a live cursor/generator."""
+
+    def __init__(self, db: "SessionDB") -> None:
+        self._db = db
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._db, name)
+        if not callable(attr):
+            return attr
+
+        async def _offloaded(*args, **kwargs):
+            return await asyncio.to_thread(attr, *args, **kwargs)
+
+        return _offloaded

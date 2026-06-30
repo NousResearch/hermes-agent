@@ -10,6 +10,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { isFocusWithin } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -124,9 +125,12 @@ import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { PetGenerateOverlay } from './pet-generate/pet-generate-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { FileActionDialogs } from './right-sidebar/file-actions'
+import { RemoteFolderPicker } from './right-sidebar/files/remote-picker'
 import { ReviewPane } from './right-sidebar/review'
 import { $terminalTakeover } from './right-sidebar/store'
-import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
+import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
+import { PersistentTerminal } from './right-sidebar/terminal/persistent'
+import { closeActiveTerminal } from './right-sidebar/terminal/terminals'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
@@ -387,11 +391,25 @@ export function DesktopController() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!$filePreviewTarget.get() && !$previewTarget.get()) {
+      if (event.altKey || event.shiftKey || event.key.toLowerCase() !== 'w' || (!event.metaKey && !event.ctrlKey)) {
         return
       }
 
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
+      // Terminal focused: ⌘W closes the active terminal. Ctrl+W is left untouched
+      // for the shell's werase, and nothing else may steal ⌘/Ctrl+W from a
+      // focused terminal (so it never closes a preview tab out from under it).
+      if (isFocusWithin('[data-terminal]')) {
+        if (event.metaKey && !event.ctrlKey) {
+          event.preventDefault()
+          event.stopPropagation()
+          closeActiveTerminal()
+        }
+
+        return
+      }
+
+      // Otherwise ⌘/Ctrl+W closes the active preview tab when one is open.
+      if ($filePreviewTarget.get() || $previewTarget.get()) {
         event.preventDefault()
         event.stopPropagation()
         closeActiveRightRailTab()
@@ -580,7 +598,7 @@ export function DesktopController() {
     }
   }, [])
 
-  const { gatewayLogLines, inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestGateway)
+  const { inferenceStatus, statusSnapshot } = useStatusSnapshot(gatewayState, requestGateway)
 
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {
@@ -1060,7 +1078,6 @@ export function DesktopController() {
     commandCenterOpen,
     extraLeftItems: statusbarItemGroups.flat.left,
     extraRightItems: statusbarItemGroups.flat.right,
-    gatewayLogLines,
     gatewayState,
     inferenceStatus,
     openAgents,
@@ -1095,11 +1112,13 @@ export function DesktopController() {
     />
   )
 
-  // One PTY-backed terminal mounted forever; <TerminalSlot /> placeholders decide
-  // where it shows. Lives in main's stacking context (not the root overlay layer)
-  // so pane resize handles still paint above it. Toggling never rebuilds the shell.
+  // The persistent xterm layer (one host per terminal tab), CSS-overlaid onto the
+  // pane's <TerminalSlot />. Lives in main's stacking context (not the root overlay
+  // layer) so pane resize handles still paint above it. Terminals own their state
+  // (incl. a snapshotted cwd) independent of the session, so switching sessions
+  // never rebuilds or closes them; toggling the pane never rebuilds the shells.
   const mainOverlays = (
-    <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+    <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
   )
 
   const overlays = (
@@ -1127,6 +1146,7 @@ export function DesktopController() {
       <PetGenerateOverlay />
       <SessionSwitcher />
       <FileActionDialogs />
+      <RemoteFolderPicker />
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -1329,7 +1349,7 @@ export function DesktopController() {
           terminalAsRow ? 'border-l border-(--ui-stroke-secondary) pt-0' : 'pt-(--titlebar-height)'
         )}
       >
-        <TerminalSlot />
+        <TerminalPaneChrome />
       </div>
     </Pane>
   )

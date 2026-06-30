@@ -149,6 +149,8 @@ def load_env() -> Dict[str, str]:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
+                if line.startswith("export "):
+                    line = line[7:]
                 key, _, value = line.partition("=")
                 env_vars[key.strip()] = value.strip().strip("\"'")
     return env_vars

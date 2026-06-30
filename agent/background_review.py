@@ -740,6 +740,13 @@ def _run_review_in_thread(
                 ),
             )
             try:
+                from tools.skill_manager_tool import _reset_background_review_read_marks
+
+                _reset_background_review_read_marks()
+            except Exception:
+                pass
+
+            try:
                 # Routed to a different model -> replay a digest (cache is cold
                 # on that model anyway, so minimise cold-written tokens). Same
                 # model -> replay the full snapshot (warm cache reads).

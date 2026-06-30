@@ -7424,6 +7424,9 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            heal_missing_pid_seconds=heal_missing_pid_seconds,
+            heal_escalate_after_seconds=heal_escalate_after_seconds,
+            heal_auto_kill=heal_auto_kill,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7440,6 +7443,9 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            heal_missing_pid_seconds=heal_missing_pid_seconds,
+            heal_escalate_after_seconds=heal_escalate_after_seconds,
+            heal_auto_kill=heal_auto_kill,
         )
 
 
@@ -7456,6 +7462,9 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    heal_missing_pid_seconds: int = 0,
+    heal_escalate_after_seconds: int = 0,
+    heal_auto_kill: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 

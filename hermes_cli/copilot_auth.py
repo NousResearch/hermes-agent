@@ -312,8 +312,10 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
 
     The returned token is a semicolon-separated string (not a standard JWT)
     used as ``Authorization: Bearer <token>`` for Copilot API requests.
-    If the token contains a ``proxy-ep`` field (enterprise accounts), the
-    derived API base URL is returned; otherwise ``base_url`` is None.
+    ``base_url`` is the account-specific API host: the authoritative
+    ``endpoints.api`` advertised by the exchange (enterprise/proxied
+    accounts), falling back to a host derived from the token's ``proxy-ep``
+    field. Individual accounts have neither, so ``base_url`` is None.
 
     Results are cached in-process and reused until close to expiry.
     Raises ``ValueError`` on failure.
@@ -354,10 +356,20 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     # Convert expires_at to float if needed
     expires_at = float(expires_at) if expires_at else time.time() + 1800
 
-    # Derive enterprise base URL from proxy-ep in the token.
-    # The token is semicolon-separated: "tid=xxx;exp=xxx;proxy-ep=proxy.enterprise.githubcopilot.com;..."
-    # Replace leading "proxy." with "api." to get the API base URL.
-    base_url = _derive_base_url_from_proxy_ep(api_token)
+    # Resolve the account-specific API base URL. GitHub advertises the
+    # authoritative endpoint under ``endpoints.api`` in the exchange response
+    # (it differs for Copilot Enterprise / proxied accounts). When the
+    # response omits it, fall back to deriving the host from the ``proxy-ep``
+    # field embedded in the exchanged token. Individual accounts have neither,
+    # so ``base_url`` stays None and callers use the registry default.
+    base_url: Optional[str] = None
+    endpoints = data.get("endpoints")
+    if isinstance(endpoints, dict):
+        api_endpoint = str(endpoints.get("api") or "").strip().rstrip("/")
+        if api_endpoint:
+            base_url = api_endpoint
+    if not base_url:
+        base_url = _derive_base_url_from_proxy_ep(api_token)
 
     _jwt_cache[fp] = (api_token, expires_at, base_url)
     logger.debug(
@@ -408,8 +420,9 @@ def get_copilot_api_token(raw_token: str) -> tuple[str, Optional[str]]:
     account type). This preserves existing behaviour for accounts that don't
     need exchange while enabling access to internal-only models for those that do.
 
-    ``base_url`` is the enterprise API endpoint derived from the token's
-    ``proxy-ep`` field, or None for individual accounts.
+    ``base_url`` is the account-specific API endpoint advertised by the
+    exchange (``endpoints.api``, with a ``proxy-ep`` fallback), or None for
+    individual accounts.
     """
     if not raw_token:
         return raw_token, None

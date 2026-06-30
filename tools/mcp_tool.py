@@ -3726,6 +3726,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
       nullable branches in tool input schemas, so nullable unions are collapsed
       to the non-null branch and optionality remains represented solely by the
       parent object's ``required`` list.
+    * Array nodes with no ``items`` or ``prefixItems`` schema are given a
+      permissive empty schema; OpenAI rejects function schemas with ``array
+      schema missing items``.
 
     All repairs are provider-agnostic and ideally produce a schema valid on
     OpenAI, Anthropic, Gemini, and Moonshot in one pass.
@@ -3795,6 +3798,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
                         repaired["required"] = valid
                     else:
                         repaired.pop("required", None)
+
+        if repaired.get("type") == "array" and "items" not in repaired and "prefixItems" not in repaired:
+            repaired["items"] = {}
 
         return repaired
 

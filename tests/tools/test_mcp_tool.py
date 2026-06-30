@@ -315,6 +315,45 @@ class TestSchemaConversion:
 
         assert schema["properties"]["items"]["items"]["properties"] == {}
 
+    def test_array_schema_without_items_gets_empty_items_schema(self):
+        """OpenAI rejects array-typed function parameters that omit items."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "description": "Replacement tags (max 50)",
+                },
+            },
+        })
+
+        assert schema["properties"]["tags"] == {
+            "type": "array",
+            "description": "Replacement tags (max 50)",
+            "items": {},
+        }
+
+    def test_array_schema_with_prefix_items_does_not_get_extra_items_schema(self):
+        """Tuple-style arrays are already constrained by prefixItems."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "pair": {
+                    "type": "array",
+                    "prefixItems": [{"type": "string"}, {"type": "integer"}],
+                },
+            },
+        })
+
+        assert schema["properties"]["pair"] == {
+            "type": "array",
+            "prefixItems": [{"type": "string"}, {"type": "integer"}],
+        }
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool import _normalize_mcp_input_schema

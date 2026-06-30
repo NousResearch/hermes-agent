@@ -42,6 +42,27 @@ def test_nested_object_without_properties_gets_empty_properties():
     assert args["description"] == "free-form"
 
 
+def test_array_without_items_gets_empty_items_schema():
+    tools = [_tool("mcp_canva_canva_update_assets", {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "description": "Replacement tags (max 50)",
+            },
+        },
+    })]
+
+    out = sanitize_tool_schemas(tools)
+
+    tags = out[0]["function"]["parameters"]["properties"]["tags"]
+    assert tags == {
+        "type": "array",
+        "description": "Replacement tags (max 50)",
+        "items": {},
+    }
+
+
 def test_bare_string_object_value_replaced_with_schema_dict():
     # Malformed: a property's schema value is the bare string "object".
     # This is the exact shape llama.cpp reports as `Unrecognized schema: "object"`.
@@ -65,6 +86,18 @@ def test_bare_string_primitive_value_replaced_with_schema_dict():
     })]
     out = sanitize_tool_schemas(tools)
     assert out[0]["function"]["parameters"]["properties"]["name"] == {"type": "string"}
+
+
+def test_bare_string_array_value_gets_items_schema():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"tags": "array"},
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["properties"]["tags"] == {
+        "type": "array",
+        "items": {},
+    }
 
 
 def test_nullable_type_array_collapsed_to_single_string():

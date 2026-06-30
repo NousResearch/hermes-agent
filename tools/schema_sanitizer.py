@@ -20,6 +20,9 @@ The failure modes we've seen in the wild:
 * ``anyOf`` / ``oneOf`` unions whose only purpose is to permit ``null`` for
   optional fields (common Pydantic/MCP shape). Anthropic rejects these at
   the top of ``input_schema``; collapse them to the non-null branch.
+* ``{"type": "array"}`` or bare ``"array"`` with no ``items`` /
+  ``prefixItems`` — OpenAI rejects function parameter schemas with ``array
+  schema missing items``.
 * Unconstrained ``additionalProperties`` on objects with empty properties.
 * ``default`` (and other annotation keywords) alongside ``$ref`` — strict
   backends (Fireworks-hosted Kimi, JSON Schema draft-07 validators) reject
@@ -247,10 +250,17 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 "with {'type': %r}",
                 path, node, node,
             )
-            return {"type": node} if node != "object" else {
-                "type": "object",
-                "properties": {},
-            }
+            if node == "object":
+                return {
+                    "type": "object",
+                    "properties": {},
+                }
+            if node == "array":
+                return {
+                    "type": "array",
+                    "items": {},
+                }
+            return {"type": node}
         # Any other stray string is not a schema — drop it by replacing with
         # a permissive object schema rather than propagate something the
         # backend will reject.
@@ -321,6 +331,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+
+    # Array nodes must declare an ``items`` or ``prefixItems`` schema for
+    # OpenAI-compatible function calling. Some MCP servers omit both for
+    # loosely typed lists (for example Canva asset ``tags``). Use the
+    # permissive empty schema so we repair the invalid shape without inventing
+    # a stricter element type.
+    if out.get("type") == "array" and "items" not in out and "prefixItems" not in out:
+        out["items"] = {}
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

@@ -58,5 +58,5 @@ export const MODE_DEFAULTS: Record<'dark' | 'light', GraphParams> = {
 
 export const RING_PARAMS: Record<'dark' | 'light', RingParams> = {
   dark: { bandAlpha: 0.01, lightSize: 0.64, ringAlpha: 0.03, sheen: 0.12 },
-  light: { bandAlpha: 0.03, lightSize: 0.27, ringAlpha: 0.04, sheen: 0.1 }
+  light: { bandAlpha: 0.03, lightSize: 0.27, ringAlpha: 0.028, sheen: 0.1 }
 }

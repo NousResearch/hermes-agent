@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { useTheme } from '@/themes/context'
 
 import type { TimeAxis } from './time-axis'
 
@@ -112,6 +113,10 @@ export const Timeline = memo(function Timeline({
   const trackRef = useRef<HTMLDivElement | null>(null)
   const draggingRef = useRef(false)
   const markerRefs = useRef<HTMLDivElement[]>([])
+  // Star glow halos read as depth on a dark track but smear on a light one, so
+  // the bloom is dark-mode only.
+  const { resolvedMode } = useTheme()
+  const glow = resolvedMode === 'dark'
 
   const stars = useMemo(() => buildStars(axis), [axis])
 
@@ -249,7 +254,7 @@ export const Timeline = memo(function Timeline({
                     '--o': star.opacity,
                     animation: `starmap-twinkle ${star.duration}s ease-in-out ${star.delay}s infinite`,
                     backgroundColor: color,
-                    boxShadow: `0 0 ${star.size + 1}px ${color}`,
+                    boxShadow: glow ? `0 0 ${star.size + 1}px ${color}` : 'none',
                     height: star.size,
                     left: `${star.leftPct}%`,
                     opacity: star.opacity,
@@ -266,7 +271,7 @@ export const Timeline = memo(function Timeline({
         {ringStops.map((stop, i) => (
           <div
             aria-hidden
-            className={`pointer-events-none absolute top-1/2 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--theme-primary)] shadow-[0_0_4px_var(--theme-primary)] ${INACTIVE_MARKER_CLASS}`}
+            className={`pointer-events-none absolute top-1/2 size-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--theme-primary)] ${glow ? 'shadow-[0_0_4px_var(--theme-primary)]' : ''} ${INACTIVE_MARKER_CLASS}`}
             key={i}
             ref={el => {
               if (el) {

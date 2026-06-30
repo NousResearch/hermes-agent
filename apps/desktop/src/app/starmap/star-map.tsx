@@ -2,6 +2,7 @@ import { type Simulation } from 'd3-force'
 import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useThemeEpoch } from '@/hooks/use-theme-epoch'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
 import type { StarmapGraph } from '@/types/hermes'
 
@@ -153,8 +154,9 @@ export function StarMap({
 
   const [selectedId, setSelectedId] = useState<null | string>(null)
   const [size, setSize] = useState({ h: 0, w: 0 })
-  // Bumped on theme change so the legend's memory swatch recomputes its color.
-  const [themeVersion, setThemeVersion] = useState(0)
+  // Increments on every theme repaint (shared hook) so the legend swatch and the
+  // canvas palette re-resolve against the freshly-painted CSS custom properties.
+  const themeEpoch = useThemeEpoch()
   // Memory's swatch color — the same complementary-of-primary the canvas uses,
   // so the legend matches the rendered diamonds exactly.
   const [memoryColor, setMemoryColor] = useState('var(--theme-secondary)')
@@ -474,23 +476,14 @@ export function StarMap({
       const bgVal = style.getPropertyValue('--background').trim() || style.getPropertyValue('--dt-background').trim() || '#000'
       setMemoryColor(rgba(memoryInkFor(resolveRgb(val), resolveRgb(bgVal)), 0.9))
     }
-  }, [size, themeVersion])
+  }, [size, themeEpoch])
 
-  // Repaint + repalette when the theme/mode changes (class + inline vars on <html>).
+  // Repaint + repalette when the theme/mode repaints (the shared observer fires
+  // after applyTheme rewrites the class + inline vars on <html>).
   useEffect(() => {
-    const mo = new MutationObserver(() => {
-      themeDirtyRef.current = true
-      setThemeVersion(v => v + 1)
-      invalidate()
-    })
-
-    mo.observe(document.documentElement, {
-      attributeFilter: ['class', 'style', 'data-hermes-mode', 'data-hermes-theme'],
-      attributes: true
-    })
-
-    return () => mo.disconnect()
-  }, [invalidate])
+    themeDirtyRef.current = true
+    invalidate()
+  }, [invalidate, themeEpoch])
 
   // Render loop. The core scramble animates continuously, so the loop runs while
   // the window is focused — but each frame is cheap (live scramble + a blit of the

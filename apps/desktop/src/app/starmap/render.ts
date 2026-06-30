@@ -335,9 +335,22 @@ export function drawScene(scene: Scene): DrawResult {
         ctx.fillStyle = rgba(bandInk, LIT_BAND_ALPHA)
       } else {
         const grad = ctx.createRadialGradient(0, 0, inner, 0, 0, outer)
-        grad.addColorStop(0, rgba(bandInk, 0))
-        grad.addColorStop(clamp(1 - lightSize, 0.01, 0.99), rgba(bandInk, 0))
-        grad.addColorStop(1, rgba(bandInk, bandAlpha))
+
+        if (darkTheme) {
+          // Dark: a light wash on each band's OUTER rim — reads as light catching
+          // a raised edge → depth.
+          grad.addColorStop(0, rgba(bandInk, 0))
+          grad.addColorStop(clamp(1 - lightSize, 0.01, 0.99), rgba(bandInk, 0))
+          grad.addColorStop(1, rgba(bandInk, bandAlpha))
+        } else {
+          // Light: flip it — the (darker) wash sits on the INNER edge and fades
+          // outward, so each shell reads as recessed toward the core (depth),
+          // not a raised mound.
+          grad.addColorStop(0, rgba(bandInk, bandAlpha))
+          grad.addColorStop(clamp(lightSize, 0.01, 0.99), rgba(bandInk, 0))
+          grad.addColorStop(1, rgba(bandInk, 0))
+        }
+
         ctx.fillStyle = grad
       }
 
@@ -358,7 +371,10 @@ export function drawScene(scene: Scene): DrawResult {
     // out as gracefully as it grew in; the alpha bucket only carries the snappy
     // selection emphasis.
     const emphasisAlpha = emphasized ? clamp(LIT_BAND_ALPHA * 2, 0, 1) : ringAlpha
-    const ringAlphaNow = fadeAlpha(fades.rings, String(i), emphasisAlpha, emphasized) * (ringVis[i] ?? 1)
+    // The core ring (i 0) fades in from reveal 0 so the scramble orb starts
+    // un-enclosed (no outline boxing it in) and the shell appears as it plays.
+    const coreFade = i === 0 ? clamp(reveal / 0.08, 0, 1) : 1
+    const ringAlphaNow = fadeAlpha(fades.rings, String(i), emphasisAlpha, emphasized) * (ringVis[i] ?? 1) * coreFade
 
     if (ringAlphaNow < 0.004) {
       return
@@ -769,6 +785,7 @@ export function drawScramble({
   const coreRy = coreRx * TILT
   const half = Math.max(3, Math.round(coreRx / cell))
   const now = performance.now()
+  const t = now / 1000 // seconds, for the travelling-glow highlight
 
   ctx.save()
   ctx.font = `${cell}px "JetBrains Mono", "Hiragino Sans", "Noto Sans JP", ui-monospace, monospace`
@@ -805,11 +822,14 @@ export function drawScramble({
       // Mostly flat brightness, fading only near the rim (reduced gradient).
       const edge = clamp((1 - Math.sqrt(d2)) / 0.4, 0, 1)
       const flick = 0.7 + 0.3 * (((seed >>> 5) % 100) / 100)
-      // Fake depth: a stable per-slot value pops a subset of glyphs forward, so
-      // some characters read as nearer/brighter and drift across in front.
-      const depth = ((seed >>> 11) % 100) / 100
-      const pop = depth > 0.92 ? 2.6 : depth > 0.78 ? 1.6 : 1
-      const a = clamp((darkTheme ? 0.25 : 0.33) * edge * flick * rowDim * pop, 0, 0.85)
+      // Travelling glow: two crossing sine waves (drifting in time) light a
+      // lattice of bright spots that ripple ACROSS the orb — so the highlight
+      // moves and twinkles instead of being a fixed random set. A per-glyph
+      // phase keeps neighbours from pulsing in lockstep.
+      const phase = (seed & 7) * 0.35
+      const glow = Math.sin(nx * 4.5 + t * 1.3 + phase) * Math.sin(ny * 4.5 - t * 0.9 + phase)
+      const pop = 1 + clamp((glow - 0.25) / 0.75, 0, 1) * 2.6
+      const a = clamp((darkTheme ? 0.22 : 0.3) * edge * flick * rowDim * pop, 0, 0.9)
 
       if (a < 0.02) {
         continue

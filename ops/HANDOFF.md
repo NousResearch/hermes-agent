@@ -28,6 +28,7 @@ Spacebot is better-designed (Rust, co-equal multi-agent, in-box SurrealDB vector
 
 ## Dev setup (for the SurrealDB provider)
 - Hermes **forked → this fork**; cloned locally (path in `ops/INFRA.local.md`). **MemoryProvider ABC:** `agent/memory_provider.py` (+ `hermes_cli/memory_providers.py`).
+- **Spacebot work archived** — designs, deep research, plans, and the production SurrealDB impl to port — at **`ops/archive.local/`** (gitignored, local-only). See its `README.local.md` for the relevance map (`surreal_store.rs`, `design.md`, `research-llm-memory-feasibility.md`, the Rust spike). Preserved before Spacebot is deleted.
 
 ## NEXT — SurrealDB memory provider
 - **Out-of-tree plugin** — Hermes `AGENTS.md` has a "no new in-tree memory providers" policy. Ship as a standalone repo installed into `~/.hermes/plugins/` OR a pip package exposing the `hermes_agent.plugins` entry-point. **Not a fork edit.**

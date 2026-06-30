@@ -66,6 +66,12 @@ same precedence convention as the ``nous`` plugin)::
     HERMES_DASHBOARD_OIDC_CLIENT_SECRET # optional; set for a confidential client
                                         # (the .env file is the canonical home —
                                         # it's a secret, not a behavioural setting)
+    HERMES_DASHBOARD_OIDC_CLIENT_SECRET_FILE
+                        # alternative: path to a file containing the secret.
+                        # Useful for systemd credentials, NixOS agenix/sops-nix,
+                        # Kubernetes projected secrets, and Docker secrets.
+                        # Takes precedence over config.yaml but not the direct
+                        # env var.
 
 Skip reasons: when the plugin loads but can't register (missing issuer /
 client_id), it writes a human-readable reason to the module-level
@@ -81,6 +87,7 @@ import logging
 import os
 import secrets
 import threading
+from pathlib import Path
 import time
 import urllib.parse
 from typing import Any, Dict, Optional
@@ -784,6 +791,48 @@ def _resolve_setting(env_var: str, cfg_value: Any) -> str:
     return str(cfg_value or "").strip()
 
 
+def _resolve_secret(env_var: str, cfg_value: Any, cfg_file_key: str = "") -> str:
+    """Like :func:`_resolve_setting` but also honours a ``*_FILE`` variant.
+
+    Precedence (highest wins):
+
+    1. ``env_var`` (non-empty after strip).
+    2. ``<env_var>_FILE`` — reads and strips the file contents.  This is the
+       standard surface for systemd credentials, NixOS agenix/sops-nix,
+       Kubernetes projected secrets, and Docker secrets.
+    3. ``cfg_file_key`` in config.yaml (path to a secret file).
+    4. ``cfg_value`` from config.yaml (inline value).
+    5. Empty string.
+    """
+    # 1. Direct env var
+    env = os.environ.get(env_var, "").strip()
+    if env:
+        return env
+    # 2. File-based env var  (HERMES_DASHBOARD_OIDC_CLIENT_SECRET_FILE)
+    file_env = os.environ.get(f"{env_var}_FILE", "").strip()
+    if file_env:
+        try:
+            return Path(file_env).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            logger.warning(
+                "dashboard-auth-self-hosted: cannot read %s_FILE=%s: %s",
+                env_var, file_env, exc,
+            )
+    # 3. File path from config.yaml
+    if cfg_file_key:
+        file_cfg = str(cfg_file_key).strip()
+        if file_cfg:
+            try:
+                return Path(file_cfg).read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                logger.warning(
+                    "dashboard-auth-self-hosted: cannot read secret file %r: %s",
+                    file_cfg, exc,
+                )
+    # 4. Inline config value
+    return str(cfg_value or "").strip()
+
+
 def register(ctx) -> None:
     """Plugin entry — called by the plugin loader at startup.
 
@@ -815,8 +864,14 @@ def register(ctx) -> None:
     # Optional — set only for a confidential client. A credential, so the
     # canonical home is the env var / ~/.hermes/.env; config.yaml is supported
     # for precedence symmetry. Empty ⇒ public client (unchanged behaviour).
-    client_secret = _resolve_setting(
-        "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", oidc_cfg.get("client_secret")
+    # Also honours HERMES_DASHBOARD_OIDC_CLIENT_SECRET_FILE and
+    # dashboard.oauth.self_hosted.client_secret_file for secret managers that
+    # expose credentials as files (systemd credentials, NixOS agenix/sops-nix,
+    # Kubernetes projected secrets, Docker secrets).
+    client_secret = _resolve_secret(
+        "HERMES_DASHBOARD_OIDC_CLIENT_SECRET",
+        oidc_cfg.get("client_secret"),
+        cfg_file_key=oidc_cfg.get("client_secret_file", ""),
     )
 
     if not issuer or not client_id:

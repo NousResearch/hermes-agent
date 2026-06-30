@@ -1262,3 +1262,100 @@ class TestPluginRegister:
         # The success log reports confidentiality as a boolean, never the value.
         assert "logme-secret" not in caplog.text
         assert "confidential=True" in caplog.text
+
+    # -- client_secret file-based resolution -------------------------------
+
+    def test_secret_from_file_env(self, patch_config, monkeypatch, tmp_path):
+        secret_file = tmp_path / "oidc_secret"
+        secret_file.write_text("file-secret\n")
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ISSUER", _ISSUER)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_ID", _CLIENT_ID)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_OIDC_CLIENT_SECRET_FILE", str(secret_file)
+        )
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "file-secret"
+
+    def test_secret_from_config_file(self, patch_config, tmp_path):
+        secret_file = tmp_path / "oidc_secret"
+        secret_file.write_text("cfg-file-secret\n")
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "client_secret_file": str(secret_file),
+                }
+            }
+        )
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "cfg-file-secret"
+
+    def test_direct_env_overrides_file_env(
+        self, patch_config, monkeypatch, tmp_path
+    ):
+        secret_file = tmp_path / "oidc_secret"
+        secret_file.write_text("file-secret")
+        patch_config(None)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_ISSUER", _ISSUER)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_ID", _CLIENT_ID)
+        monkeypatch.setenv("HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "env-secret")
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_OIDC_CLIENT_SECRET_FILE", str(secret_file)
+        )
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "env-secret"
+
+    def test_file_env_overrides_config_inline(
+        self, patch_config, monkeypatch, tmp_path
+    ):
+        secret_file = tmp_path / "oidc_secret"
+        secret_file.write_text("file-secret")
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "client_secret": "cfg-inline",
+                }
+            }
+        )
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_OIDC_CLIENT_SECRET_FILE", str(secret_file)
+        )
+        ctx = MagicMock()
+        oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "file-secret"
+
+    def test_missing_file_env_warns_and_falls_back(
+        self, patch_config, monkeypatch, caplog
+    ):
+        import logging
+
+        patch_config(
+            {
+                "self_hosted": {
+                    "issuer": _ISSUER,
+                    "client_id": _CLIENT_ID,
+                    "client_secret": "fallback-secret",
+                }
+            }
+        )
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_OIDC_CLIENT_SECRET_FILE",
+            "/nonexistent/path/secret",
+        )
+        ctx = MagicMock()
+        with caplog.at_level(logging.WARNING):
+            oidc_plugin.register(ctx)
+        registered = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert registered._client_secret == "fallback-secret"
+        assert "cannot read" in caplog.text

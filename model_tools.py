@@ -810,6 +810,12 @@ def _coerce_json(value: str, expected_python_type: type):
 
 def _coerce_number(value: str, integer_only: bool = False):
     """Try to parse *value* as a number.  Returns original string on failure."""
+    # Fast path: try int() first to avoid float precision loss for large
+    # integers beyond 2**53 (e.g. Discord/Telegram snowflake IDs).
+    try:
+        return int(value)
+    except (ValueError, OverflowError):
+        pass
     try:
         f = float(value)
     except (ValueError, OverflowError):
@@ -817,14 +823,10 @@ def _coerce_number(value: str, integer_only: bool = False):
     # Guard against inf/nan — not JSON-serializable, keep original string
     if f != f or f == float("inf") or f == float("-inf"):
         return value
-    # If it looks like an integer (no fractional part), return int
-    if f == int(f):
-        return int(f)
     if integer_only:
         # Schema wants an integer but value has decimals — keep as string
         return value
     return f
-
 
 def _coerce_boolean(value: str):
     """Try to parse *value* as a boolean.  Returns original string on failure."""

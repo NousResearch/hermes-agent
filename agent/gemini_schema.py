@@ -83,7 +83,11 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     # model enough guidance; the tool handler still validates the value.
     enum_val = cleaned.get("enum")
     type_val = cleaned.get("type")
-    if isinstance(enum_val, list) and type_val in {"integer", "number", "boolean"}:
+    if (
+        isinstance(enum_val, list)
+        and isinstance(type_val, str)
+        and type_val in {"integer", "number", "boolean"}
+    ):
         if any(not isinstance(item, str) for item in enum_val):
             cleaned.pop("enum", None)
 

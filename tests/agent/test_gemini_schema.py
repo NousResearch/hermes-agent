@@ -68,6 +68,13 @@ class TestSanitizeGeminiSchema:
         cleaned = sanitize_gemini_schema(schema)
         assert cleaned["enum"] == ["60", "1440", "4320", "10080"]
 
+    def test_preserves_enum_when_type_is_json_schema_array(self):
+        """JSON Schema permits array-valued ``type``; it must not crash sanitizing."""
+        schema = {"type": ["string", "null"], "enum": ["ready", None]}
+        cleaned = sanitize_gemini_schema(schema)
+        assert cleaned["type"] == ["string", "null"]
+        assert cleaned["enum"] == ["ready", None]
+
     def test_drops_nested_integer_enum_inside_properties(self):
         """The fix must apply recursively — the Discord case is nested."""
         schema = {

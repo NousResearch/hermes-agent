@@ -1075,6 +1075,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         "maximum context length" in error_lower
         and "requested" in error_lower
         and "output tokens" in error_lower
+    ) or (
+        # DashScope/Alibaba (Qwen): "Range of max_tokens should be [1, 65536]"
+        "range of max_tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -1121,6 +1124,11 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = _ctx - _est_input
         if _available >= 1:
             return _available
+
+    # DashScope/Alibaba format: "Range of max_tokens should be [1, 65536]"
+    _m_range = re.search(r'range of max_tokens should be \[\s*1\s*,\s*(\d+)\s*\]', error_lower)
+    if _m_range:
+        return int(_m_range.group(1))
 
     return None
 

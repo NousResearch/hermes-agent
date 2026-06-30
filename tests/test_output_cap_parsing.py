@@ -62,3 +62,20 @@ class TestParseCharBasedOutputCap:
         msg = ("maximum context length is 1000 tokens. However, you requested "
                "1000 output tokens and your prompt contains 9000 characters.")
         assert parse_available_output_tokens_from_error(msg) is None
+
+
+class TestParseDashScopeOutputCap:
+    """DashScope/Alibaba (Qwen) reports max_tokens range as [1, N]."""
+
+    def test_dashscope_range_format(self):
+        msg = "InternalError.Algo.InvalidParameter: Range of max_tokens should be [1, 65536]"
+        assert parse_available_output_tokens_from_error(msg) == 65536
+
+    def test_dashscope_different_cap(self):
+        msg = "Range of max_tokens should be [1, 8192]"
+        assert parse_available_output_tokens_from_error(msg) == 8192
+
+    def test_dashscope_with_surrounding_text(self):
+        msg = ("HTTP 400: InternalError.Algo.InvalidParameter: "
+               "Range of max_tokens should be [1, 65536]. Please check and retry.")
+        assert parse_available_output_tokens_from_error(msg) == 65536

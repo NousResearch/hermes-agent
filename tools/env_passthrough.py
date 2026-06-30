@@ -65,6 +65,16 @@ def _is_hermes_provider_credential(name: str) -> bool:
     provider credential and refuse passthrough, rather than fall open and
     let a skill tunnel a Hermes credential into the execute_code child.
     """
+    # Dynamically-generated auxiliary task secrets (AUXILIARY_*_API_KEY,
+    # AUXILIARY_*_BASE_URL) are Hermes-managed provider credentials even though
+    # they're not in the static blocklist — they're created at gateway startup
+    # per task (vision, compression, approval, plugin-registered tasks) and must
+    # never reach execute_code or terminal child processes.
+    upper = name.upper()
+    if upper.startswith("AUXILIARY_") and (
+        upper.endswith("_API_KEY") or upper.endswith("_BASE_URL")
+    ):
+        return True
     try:
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
     except Exception as e:

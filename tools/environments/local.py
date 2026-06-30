@@ -252,6 +252,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_auxiliary_secret(real_key):
+                continue
             sanitized[real_key] = value
         elif _is_auxiliary_secret(key) and not _is_passthrough(key):
             continue
@@ -637,6 +639,8 @@ def _make_run_env(env: dict) -> dict:
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+            if _is_auxiliary_secret(real_key):
+                continue
             run_env[real_key] = v
         elif _is_auxiliary_secret(k) and not _is_passthrough(k):
             continue

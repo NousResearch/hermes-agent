@@ -713,3 +713,52 @@ class TestAuxiliaryEnvBlocklist:
         with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
             result = _make_run_env({"AUXILIARY_CUSTOM_TASK_API_KEY": "sk-leaked"})
         assert "AUXILIARY_CUSTOM_TASK_API_KEY" not in result
+
+    def test_passthrough_registration_rejected_for_auxiliary_secrets(self):
+        """Passthrough bypass: register_env_passthrough must reject AUXILIARY_*_API_KEY
+        and AUXILIARY_*_BASE_URL even though they're not in the static blocklist.
+
+        Without this guard a skill could call
+        register_env_passthrough(["AUXILIARY_VISION_API_KEY"]) and the secret
+        would survive _sanitize_subprocess_env / _make_run_env because the
+        _is_auxiliary_secret() filter is guarded by `not _is_passthrough(key)`.
+        """
+        from tools.env_passthrough import (
+            clear_env_passthrough,
+            is_env_passthrough,
+            register_env_passthrough,
+        )
+        clear_env_passthrough()
+        register_env_passthrough(["AUXILIARY_VISION_API_KEY", "AUXILIARY_VISION_BASE_URL"])
+        assert not is_env_passthrough("AUXILIARY_VISION_API_KEY"), (
+            "auxiliary API key must not be registerable as passthrough"
+        )
+        assert not is_env_passthrough("AUXILIARY_VISION_BASE_URL"), (
+            "auxiliary base URL must not be registerable as passthrough"
+        )
+        clear_env_passthrough()
+
+    def test_force_prefix_cannot_inject_auxiliary_secret_via_extra_env(self):
+        """Force-prefix bypass: _HERMES_FORCE_AUXILIARY_*_API_KEY in extra_env
+        must not materialize as AUXILIARY_*_API_KEY in the sanitized dict.
+
+        Without this guard the materialization `real_key = key[len(prefix):]`
+        happened unconditionally, bypassing _is_auxiliary_secret() for the
+        force-prefix path.
+        """
+        from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_FORCE_PREFIX
+        base = {"PATH": "/usr/bin"}
+        extra = {f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}AUXILIARY_VISION_API_KEY": "sk-forced-secret"}
+        result = _sanitize_subprocess_env(base, extra)
+        assert "AUXILIARY_VISION_API_KEY" not in result
+
+    def test_force_prefix_cannot_inject_auxiliary_secret_via_make_run_env(self):
+        """Force-prefix bypass: _HERMES_FORCE_AUXILIARY_*_API_KEY in the merged
+        env must not reach the run environment via _make_run_env.
+        """
+        from tools.environments.local import _make_run_env, _HERMES_PROVIDER_ENV_FORCE_PREFIX
+        forced_key = f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}AUXILIARY_VISION_API_KEY"
+        env_override = {"PATH": "/usr/bin", forced_key: "sk-forced-secret"}
+        with patch.dict(os.environ, env_override, clear=True):
+            result = _make_run_env({})
+        assert "AUXILIARY_VISION_API_KEY" not in result

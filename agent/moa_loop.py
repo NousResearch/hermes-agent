@@ -354,8 +354,14 @@ def _extract_text(response: Any) -> str:
     except Exception:
         pass
     try:
-        content = response.choices[0].message.content
-        return (content or "").strip()
+        message = response.choices[0].message
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", message)
+        if not isinstance(content, str):
+            content = str(content) if content else ""
+        return content.strip()
     except Exception:
         return ""
 

@@ -725,6 +725,24 @@ def resolve_provider_full(
         if user_pdef is not None:
             return user_pdef
 
+    # 0.5 Exact Hermes provider IDs must win over alias collapsing.
+    # Example: kimi-coding-cn should stay distinct from kimi-coding instead of
+    # normalizing through the shared models.dev alias "kimi-for-coding".
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+        _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
+        if _pcfg is not None:
+            return ProviderDef(
+                id=_pcfg.id,
+                name=_pcfg.name,
+                transport="openai_chat",
+                api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()),
+                base_url=_pcfg.inference_base_url or "",
+                source="hermes-auth-registry",
+            )
+    except Exception:
+        pass
+
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)
     if pdef is not None:

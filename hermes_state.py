@@ -865,6 +865,7 @@ class SessionDB:
         self._init_schema()
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
+        # Connection timeout is handled in _connect_and_init (timeout up to 30s)
         self.db_path = db_path or DEFAULT_DB_PATH
         self.read_only = read_only
 

@@ -173,7 +173,16 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype == "image":
-                url = part.get("url", part.get("source", {}).get("url", ""))
+                # ``source`` may be a dict (Anthropic-style block) or a bare
+                # string (e.g. a data: URI). Guard the ``.get`` so a non-dict
+                # source doesn't raise AttributeError — mirrors the
+                # ``image_url`` branch above. Note the previous default-arg
+                # form evaluated ``part.get("source", {}).get(...)``
+                # unconditionally, so a string source crashed even when a
+                # top-level ``url`` was present.
+                source = part.get("source")
+                source_url = source.get("url", "") if isinstance(source, dict) else ""
+                url = part.get("url") or source_url
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype not in {"text",}:

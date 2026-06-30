@@ -357,6 +357,36 @@ class TestAttachmentExtraction:
         att = _extract_attachments(msg)
         assert att[0]["type"] == "image"
 
+    def test_image_block_dict_source_url(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": [
+            {"type": "image", "source": {"url": "http://x.com/s.png"}},
+        ]}
+        att = _extract_attachments(msg)
+        assert att == [{"type": "image", "url": "http://x.com/s.png"}]
+
+    def test_image_block_string_source_does_not_crash(self):
+        """A non-dict ``source`` (e.g. a bare data: URI) must not raise.
+
+        Regression: ``source`` was read as ``part.get("source", {}).get("url")``,
+        an always-evaluated default arg that raised AttributeError when
+        ``source`` was a string instead of a dict.
+        """
+        from mcp_serve import _extract_attachments
+        msg = {"content": [
+            {"type": "image", "source": "data:image/png;base64,iVBORw0KGgo="},
+        ]}
+        att = _extract_attachments(msg)
+        assert att == []  # no usable url, but no crash
+
+    def test_image_block_url_wins_over_string_source(self):
+        from mcp_serve import _extract_attachments
+        msg = {"content": [
+            {"type": "image", "url": "http://x.com/top.png", "source": "data:xxx"},
+        ]}
+        att = _extract_attachments(msg)
+        assert att == [{"type": "image", "url": "http://x.com/top.png"}]
+
 
 # ---------------------------------------------------------------------------
 # 2. EVENT BRIDGE TESTS — queue, cursors, waiters, concurrency

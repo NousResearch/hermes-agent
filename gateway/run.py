@@ -423,7 +423,17 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    # Lone surrogate code points (e.g. a truncated emoji half some local-model
+    # backends emit) are invalid in UTF-8/UTF-16 and crash the chat formatters
+    # that run after this. Telegram's per-reply length check ``utf16_len`` does
+    # ``s.encode("utf-16-le")`` and raises UnicodeEncodeError, aborting delivery
+    # so the reply never reaches the user. The stored history copy is already
+    # surrogate-sanitized in ``build_assistant_message``; do the same for the
+    # delivered copy here so chat surfaces get encodable text.
+    from agent.message_sanitization import _sanitize_surrogates
+    text = _sanitize_surrogates(str(text))
+
+    redacted = _redact_gateway_user_facing_secrets(text)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
@@ -145,7 +146,32 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const sync = () => setCols(stdout.columns ?? 80)
+    // A drag-resize emits a burst of 'resize' events; syncing `cols` on every
+    // one remounts the visible transcript rows each tick (they're keyed on
+    // cols so yoga re-measures), turning a smooth drag into a flickering
+    // remount storm. Throttle with a leading+trailing edge: the first event
+    // reflows immediately (the drag stays responsive), the rest collapse to at
+    // most one reflow per RESIZE_COALESCE_MS, and the trailing edge always
+    // applies the final width so the settled layout is exact.
+    let lastReflow = 0
+    let trailing: ReturnType<typeof setTimeout> | undefined
+
+    const apply = () => {
+      lastReflow = Date.now()
+      setCols(stdout.columns ?? 80)
+    }
+
+    const sync = () => {
+      const elapsed = Date.now() - lastReflow
+
+      clearTimeout(trailing)
+
+      if (elapsed >= RESIZE_COALESCE_MS) {
+        apply()
+      } else {
+        trailing = setTimeout(apply, RESIZE_COALESCE_MS - elapsed)
+      }
+    }
 
     stdout.on('resize', sync)
 
@@ -154,6 +180,7 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     return () => {
+      clearTimeout(trailing)
       stdout.off('resize', sync)
 
       if (stdout.isTTY) {

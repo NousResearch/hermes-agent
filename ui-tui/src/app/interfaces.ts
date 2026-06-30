@@ -26,6 +26,8 @@ export interface StateSetter<T> {
   (value: SetStateAction<T>): void
 }
 
+export type ComposerMode = 'ask' | 'code' | 'plan'
+
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
@@ -284,6 +286,8 @@ export interface InputHandlerContext {
     setVoiceEnabled: StateSetter<boolean>
     setVoiceTts: StateSetter<boolean>
   }
+  composerMode: ComposerMode
+  setComposerMode: (mode: ComposerMode) => void
   wheelStep: number
 }
 
@@ -393,6 +397,7 @@ export interface AppLayoutComposerProps {
   cols: number
   compIdx: number
   completions: CompletionItem[]
+  composerMode: ComposerMode
   empty: boolean
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string

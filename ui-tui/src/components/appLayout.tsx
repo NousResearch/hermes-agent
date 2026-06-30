@@ -289,6 +289,15 @@ const ComposerPane = memo(function ComposerPane({
 
       <StatusRulePane at="top" composer={composer} status={status} />
 
+      {composer.composerMode !== 'code' && (
+        <Box marginBottom={1} marginLeft={promptWidth + 1}>
+          <Text bold color={composer.composerMode === 'plan' ? '#d29922' : '#3fb950'}>
+            {composer.composerMode === 'plan' ? '● Plan' : '○ Ask'}
+          </Text>
+          <Text color={ui.theme.color.muted}>  Tab to toggle</Text>
+        </Box>
+      )}
+
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
           cols={composer.cols}

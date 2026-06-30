@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "spectrum": {
+      "source": "photon-hq/skills",
+      "sourceType": "github",
+      "skillPath": "skills/spectrum/SKILL.md",
+      "computedHash": "1aea89f15a5bdf127691c679303a6edd7ec147ba7b366ca8ebdcc1705a3dd01d"
+    }
+  }
+}

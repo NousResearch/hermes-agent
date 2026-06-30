@@ -1,0 +1,18 @@
+{
+  "name": "hermes-agent",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "spectrum-ts": "^5.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@types/node": "^22",
+    "tsx": "^4"
+  }
+}

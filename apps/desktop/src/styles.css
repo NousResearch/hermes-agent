@@ -164,6 +164,14 @@
     --ui-cyan: #4c7f8c;
     --ui-blue: #0053fd;
     --ui-purple: #9e94d5;
+    --context-usage-system: color-mix(in srgb, var(--ui-base) 55%, transparent);
+    --context-usage-tools: var(--ui-purple);
+    --context-usage-rules: var(--ui-green);
+    --context-usage-skills: var(--ui-yellow);
+    --context-usage-mcp: color-mix(in srgb, var(--ui-red) 72%, var(--ui-purple));
+    --context-usage-subagents: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-cyan));
+    --context-usage-memory: color-mix(in srgb, var(--ui-orange) 80%, var(--ui-yellow));
+    --context-usage-conversation: var(--ui-cyan);
     --ui-bg-chrome: color-mix(
       in srgb,
       var(--theme-background-seed) var(--theme-mix-chrome),
@@ -264,7 +272,6 @@
     );
     --ui-chat-bubble-opaque-background: var(--ui-bg-editor);
     --ui-inline-code-background: color-mix(in srgb, #141414 5%, transparent);
-    --ui-inline-code-border: color-mix(in srgb, #141414 8%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #141414 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 55%, transparent);
 
@@ -284,6 +291,16 @@
     --dt-accent-foreground: var(--ui-text-primary);
     --dt-border: var(--ui-stroke-secondary);
     --dt-input: var(--ui-stroke-primary);
+    /* THE single knob for input-field borders: the resting alpha (% of the ring
+       color). Hover doubles it; focus/open go full. 0% = invisible at rest. */
+    --dt-input-border: 7%;
+    /* Knob for input-field background fill: alpha (% of --dt-card) across all
+       states. 100% = fully opaque, lower = translucent over the blurred chrome. */
+    --dt-input-bg: 0%;
+    /* Classic recessed "inset" — a crisp 1px inner shadow at the TOP edge.
+       :root.dark bumps the alpha since a dark card swallows shadow. Removed on
+       focus (the focus border carries the state). */
+    --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 10%, transparent);
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
     --dt-composer-ring: var(--ui-base);
@@ -299,8 +316,11 @@
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    /* JetBrains Mono first — the face we bundle (@font-face above) and the
+       terminal's primary — so code/diff match the terminal on every platform
+       instead of drifting to a system Cascadia Code where it's installed. */
     --dt-font-mono:
-      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
+      'JetBrains Mono', 'Cascadia Code', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
       'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
@@ -332,13 +352,13 @@
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
-    --paragraph-gap: 0.45rem;
+    --paragraph-gap: 0.7rem;
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
     --composer-width: 48.75rem;
-    --composer-control-size: 1.75rem;
-    --composer-control-primary-size: 1.875rem;
+    --composer-control-size: 1.5rem;
+    --composer-control-primary-size: 1.625rem;
     --composer-control-gap: 0.25rem;
     --composer-row-gap: 0.25rem;
     --composer-ring-strength: 1;
@@ -403,9 +423,12 @@
     --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
+    /* Dark mode: a dark card needs a stronger black inset to show the recess. */
+    --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 38%, transparent);
+    /* Dark needs a lighter resting border than light mode. */
+    --dt-input-border: 4%;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
-    --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
   }
@@ -419,6 +442,10 @@
   body,
   #root {
     height: 100%;
+    /* App shell, not a document: the window itself never scrolls on either axis
+       (panes own their own scroll). Belt to the auto-scroll axis-lock in the
+       sidebar reorder DnD — nothing can drag the whole shell sideways. */
+    overflow: hidden;
   }
 
   html {
@@ -433,7 +460,6 @@
     font-size: 0.8125rem;
     line-height: var(--dt-line-height, 1.55);
     letter-spacing: var(--dt-letter-spacing, 0);
-    overflow: hidden;
     -webkit-user-select: none;
     user-select: none;
     -webkit-font-smoothing: antialiased;
@@ -465,6 +491,31 @@
 
 .dither {
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
+}
+
+/* Hover-reveal suppression — the shared, declarative escape hatch.
+   A collapsed pane slides in when the pointer dwells on its thin edge trigger.
+   Controls that sit over that edge gutter would drag the panel in by accident.
+   Mark any such region and, while it's hovered, the matching edge trigger(s) go
+   pointer-transparent. Auto-resets on mouse-out, no JS.
+
+   - data-suppress-pane-reveal       → kills BOTH edges (use for small regions
+                                         like the thread timeline).
+   - data-suppress-pane-reveal-side  → kills only the hovered region's OWN side
+                                         (side read from its [data-pane-side]
+                                         pane ancestor), so the opposite sidebar
+                                         stays summonable while you work a pane. */
+[data-pane-shell]:has([data-suppress-pane-reveal]:hover) [data-pane-reveal-trigger] {
+  pointer-events: none;
+}
+
+[data-pane-shell]:has([data-pane-side='left'] [data-suppress-pane-reveal-side]:hover)
+  [data-pane-side='left']
+  [data-pane-reveal-trigger],
+[data-pane-shell]:has([data-pane-side='right'] [data-suppress-pane-reveal-side]:hover)
+  [data-pane-side='right']
+  [data-pane-reveal-trigger] {
+  pointer-events: none;
 }
 
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {
@@ -657,7 +708,8 @@ button {
 
 [data-slot='dropdown-menu-content'],
 [data-slot='select-content'],
-[data-slot='dialog-content'] {
+[data-slot='dialog-content'],
+[data-slot='thread-timeline-popover'] {
   border-color: var(--ui-stroke-secondary);
   background: color-mix(in srgb, var(--ui-bg-elevated) 96%, transparent);
   box-shadow: var(--shadow-md);
@@ -677,6 +729,7 @@ textarea,
 [contenteditable]:not([contenteditable='false']),
 [data-slot='aui_user-message-root'],
 [data-slot='aui_assistant-message-content'],
+[data-slot='aui_system-message-root'],
 [data-selectable-text='true'],
 [data-selectable-text='true'] * {
   -webkit-user-select: text;
@@ -704,31 +757,49 @@ canvas {
   -webkit-user-drag: none;
 }
 
+/* Tabs render 2-wide on every HTML code surface — the source preview, inline
+   diffs, markdown code blocks, tool output — so indentation matches the editor
+   and the terminal instead of the browser default (8). */
+pre,
+code {
+  tab-size: 2;
+  -moz-tab-size: 2;
+}
+
+/* Arc-style multicolor action surface (static, not animated). Reusable on any
+   Button via className. Unlayered so it beats Tailwind's bg-*/
+text-* variant utilities. */ .btn-arc {
+  background-image: linear-gradient(110deg, #5b6cff 0%, #8b5cf6 28%, #d946ef 58%, #fb7185 82%, #fb923c 100%);
+  color: #fff;
+  border-color: transparent;
+}
+
+.btn-arc:hover:not(:disabled) {
+  filter: brightness(1.08) saturate(1.06);
+}
+
 /* Shared input chrome — mirrors composer hover/focus FX. Unlayered to beat Tailwind utilities. */
+/* Border strength is driven by the single --dt-input-border alpha knob (× the
+   theme's tuned ring color); hover doubles it and focus triples it. Only the
+   border-color animates — animating the translucent background over the window's
+   backdrop-blur flickers (badly on textareas), so the bg fill snaps instead.
+   (:focus is declared after :hover so a focused+hovered field shows focus.) */
 .desktop-input-chrome {
-  --ring-pct: 18%;
-  --ring-fall: var(--dt-input);
-  background: color-mix(in srgb, var(--dt-card) 68%, transparent);
-  border-color: color-mix(
-    in srgb,
-    var(--dt-composer-ring) calc(var(--ring-pct) * var(--composer-ring-strength)),
-    var(--ring-fall)
-  );
-  box-shadow: none;
-  transition:
-    background-color 200ms ease-out,
-    border-color 200ms ease-out;
+  background: color-mix(in srgb, var(--dt-card) var(--dt-input-bg), transparent);
+  border-color: color-mix(in srgb, var(--dt-composer-ring) var(--dt-input-border), transparent);
+  box-shadow: var(--dt-input-inset);
+  transition: border-color 200ms ease-out;
 }
 
 .desktop-input-chrome:hover {
-  --ring-pct: 30%;
-  background: color-mix(in srgb, var(--dt-card) 86%, transparent);
+  border-color: color-mix(in srgb, var(--dt-composer-ring) calc(var(--dt-input-border) * 2), transparent);
 }
 
-.desktop-input-chrome:focus {
-  --ring-pct: 45%;
-  --ring-fall: transparent;
-  background: var(--dt-card);
+/* `[data-state='open']` keeps the trigger looking focused while its dropdown is
+   open — Radix moves focus into the list, so the trigger itself loses :focus. */
+.desktop-input-chrome:focus,
+.desktop-input-chrome[data-state='open'] {
+  border-color: var(--dt-composer-ring);
   box-shadow: none;
   outline: none;
 }
@@ -838,6 +909,14 @@ canvas {
   margin-block: var(--paragraph-gap) 0;
 }
 
+/* Headings are section breaks, so they own a larger top gap than prose — a
+   leading `# title` (common in re-entered/delegated turns) no longer butts
+   against the block above. Top-owned + bottom snug; the first-child reset
+   below still flushes a leading heading. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2, h3, h4) {
+  margin-block: 1rem 0.25rem;
+}
+
 /* First rendered element of a prose block is flush — the block-level gap above
    (tool / paragraph) already provides the separation. Reach one level deep too:
    Streamdown wraps blocks in a `div.space-y-*`, so the real first line is the
@@ -888,18 +967,25 @@ canvas {
 
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
+  --human-msg-line-height: 1.3;
   font-size: var(--conversation-text-font-size);
 }
 
+[data-slot='aui_user-inline-text'] {
+  line-height: var(--human-msg-line-height);
+}
+
+[data-slot='aui_edit-composer-root'] [data-slot='composer-rich-input'] {
+  line-height: var(--human-msg-line-height);
+}
+
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
-   prompt doesn't dominate the viewport. The clamp lifts on focus only (clicking
-   opens the edit composer, which shows the full text) — not on hover, so the
-   bubble doesn't jump as the pointer passes over it. No transition: the lift
-   happens in the same click that swaps in the edit composer, so animating it
-   just flashes a half-expanded bubble on the way in. */
+   prompt doesn't dominate the viewport. The clamp lifts only in the edit
+   composer; expanding on read-only :focus-within ran on mousedown (before the
+   swap) and fought stick-to-bottom when parked at the bottom. */
 .sticky-human-clamp {
   cursor: pointer;
-  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  max-height: calc(4 * var(--human-msg-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
 }
 
@@ -908,23 +994,16 @@ canvas {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
-.composer-human-message:focus-within .sticky-human-clamp {
-  max-height: min(var(--human-msg-full, 24rem), 24rem);
-  overflow-y: auto;
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-/* The thread renders items in natural document flow (padding spacers, not
-   transforms) and @tanstack/react-virtual already adjusts scrollTop itself
-   when an off-screen turn is measured and its real height differs from the
-   220px estimate. The browser's native scroll anchoring (overflow-anchor:
-   auto) would adjust scrollTop for that SAME size delta, so the two
-   double-correct and the view lurches — most visibly on Windows mouse wheels,
-   whose coarse notches mount/measure several under-estimated turns per tick.
-   Opt out of native anchoring so only the virtualizer compensates. */
+/* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
+   is safe and keeps sticky human edits from shoving the viewport; data-editing
+   enables that path before React swaps in the inline editor. */
 [data-slot='aui_thread-viewport'] {
   overflow-anchor: none;
+}
+
+[data-slot='aui_thread-viewport'][data-following='false'],
+[data-slot='aui_thread-viewport'][data-editing='true'] {
+  overflow-anchor: auto;
 }
 
 [data-slot='aui_thread-content'] {
@@ -998,8 +1077,53 @@ canvas {
 }
 
 [data-slot='composer-root'] {
-  width: min(var(--composer-width), calc(100% - 2rem));
+  /* +10px width compensates the 5px side padding so the visible surface keeps
+     its exact width/position — the inline padding is just transparent grab space
+     for the peel-out drag, matching the floating composer's 5px platform. */
+  width: calc(min(var(--composer-width), calc(100% - 2rem)) + 10px);
+  padding-inline: 5px;
   padding-bottom: var(--composer-shell-pad-block-end);
+}
+
+/* Popped-out (floating) composer: compact width + an even 5px transparent grab
+   platform. The higher-specificity selector resets the base rule's padding-bottom
+   so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */
+[data-slot='composer-root'][data-popped-out] {
+  width: var(--composer-popout-width, 24rem);
+  max-width: calc(100vw - 1.5rem);
+  padding: 5px;
+}
+
+/* Dock glow intensity scale — dimmer in light mode (the primary glow reads
+   much stronger over a light backdrop), full strength in dark mode. */
+:root {
+  --dock-glow-scale: 0.55;
+}
+
+.dark {
+  --dock-glow-scale: 1;
+}
+
+/* Drag-region hatch — a diagonal ///// pattern (Photoshop-style) that fades into
+   the transparent grab margin on hover (and stays while dragging) to signal the
+   composer is draggable. Inherits the root radius so it clips to the corners. */
+[data-slot='composer-drag-region'] {
+  /* Hatch frame radius (tuned by hand). */
+  border-radius: 0.4rem;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--ui-text-tertiary) 38%, transparent) 0,
+    color-mix(in srgb, var(--ui-text-tertiary) 38%, transparent) 1px,
+    transparent 1px,
+    transparent 3.5px
+  );
+}
+
+[data-slot='composer-drag-region']:hover,
+[data-slot='composer-drag-region'][data-dragging] {
+  opacity: 0.33;
 }
 
 [data-slot='composer-root'] > .pointer-events-none {
@@ -1045,14 +1169,6 @@ canvas {
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
-}
-
-[data-slot='composer-root']:has([data-slot='composer-surface']:focus-within) {
-  --composer-fill: var(--ui-chat-bubble-background);
-}
-
-[data-slot='composer-root']:has([data-slot='composer-completion-drawer']) {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -1130,7 +1246,6 @@ canvas {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
-  border: 0.0625rem solid var(--ui-inline-code-border);
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }
@@ -1154,6 +1269,10 @@ canvas {
   margin-block-end: 0 !important;
 }
 
+[data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
+  border-bottom-color: var(--dt-border) !important;
+}
+
 /* Tool / thinking blocks are scaffolding around the model's reply, so we
    keep them transparent and fade them slightly. The reading column (prose)
    stays at full strength; scaffolding lifts back to full opacity on
@@ -1163,13 +1282,83 @@ canvas {
   background: transparent !important;
 }
 
-[data-slot='aui_assistant-message-content'] > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+/* Fade scaffolding so the prose reading column stays primary. Two targets:
+   a thinking disclosure fades as one block, and each *individual* tool row
+   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
+   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
+   context, so a child row can never be more opaque than the group — that made
+   it impossible to keep one row lit (an open diff) while its siblings faded.
+   With the fade per-row, each row hovers/focuses independently. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
 
-[data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']):is(:hover, :focus-within) {
+/* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
+   focus a mouse click leaves on the disclosure toggle, which kept a row lit
+   after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
+  opacity: 1;
+}
+
+/* Shiki surfaces in the inline file diff + source preview: strip the theme's
+   own background/margins, and lay each `.line` on its own grid row so the
+   inter-line `\n` text nodes can't double-space full-width rows. Empty lines
+   carry a non-breaking space so blank rows keep their height. */
+[data-slot='file-diff-panel'] .shiki,
+[data-slot='file-diff-panel'] .shiki code,
+.preview-source-code .shiki,
+.preview-source-code .shiki code {
+  margin: 0;
+  background: transparent !important;
+}
+
+[data-slot='file-diff-panel'] .shiki code,
+.preview-source-code .shiki code {
+  display: grid;
+}
+
+[data-slot='file-diff-panel'] .shiki code .line:empty::before,
+.preview-source-code .shiki code .line:empty::before {
+  content: '\00a0';
+}
+
+/* Inline diff rows keep their utility-class padding; just floor the height. */
+[data-slot='file-diff-panel'] .shiki code .line {
+  min-height: 1.25rem;
+  white-space: pre;
+}
+
+/* Source rows are a fixed editor-height box so source⇄diff toggling never
+   shifts and the gutter stays aligned. */
+.preview-source-code .shiki code {
+  min-width: max-content;
+}
+
+.preview-source-code .shiki code .line {
+  display: block;
+  height: 1.25rem;
+  padding: 0 0.625rem;
+  line-height: 1.25rem;
+  white-space: pre;
+}
+
+/* The github-dark token palette reads candy-bright at our small code size.
+   `github-dark-dimmed` only dims the *background* (which we strip), so soften
+   the token *foregrounds* directly — a small saturation + brightness pullback,
+   hues preserved — for both code blocks and inline diffs. Dark mode only. */
+.dark .shiki {
+  filter: saturate(0.82) brightness(0.92);
+}
+
+/* File edits (write_file / edit_file / patch) are the deliverable, not
+   scaffolding — the diff is what the user reviews, like a PR. An *expanded*
+   edit stays at full strength; collapsed it fades like any other row. The
+   `data-file-edit` marker sits on the same row element and is only present
+   while the row is open. */
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row][data-file-edit] {
   opacity: 1;
 }
 
@@ -1255,6 +1444,62 @@ canvas {
   }
 }
 
+/* Floating "jump to bottom" control (see scroll-to-bottom-button.tsx).
+   Directional scale: it contracts toward 1 as it arrives (from 1.1) and keeps
+   contracting to 0.9 as it leaves — always shrinking in the direction of
+   travel, so the motion reads as a soft settle / recede rather than a pop. The
+   X half-offset stays baked into every transform so `left-1/2` centering holds
+   through the animation. */
+.thread-jump-button {
+  opacity: 0;
+  transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+}
+
+.thread-jump-button[data-state='in'] {
+  animation: thread-jump-in 200ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.thread-jump-button[data-state='out'] {
+  animation: thread-jump-out 180ms ease-in forwards;
+}
+
+@keyframes thread-jump-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(1.1);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes thread-jump-out {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.3rem) scale(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-jump-button[data-state='in'],
+  .thread-jump-button[data-state='out'] {
+    animation: none;
+    transition: opacity 120ms linear;
+  }
+
+  .thread-jump-button[data-state='in'] {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
 @keyframes code-card-stream-glow {
   from {
     border-color: color-mix(in srgb, var(--dt-ring) 18%, var(--ui-stroke-tertiary));
@@ -1277,3 +1522,261 @@ canvas {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Pet egg hatch (Cmd-K → Pets → Generate)                                    */
+/* The incubation wobble + reveal flash/pop give the draft→pet step a         */
+/* Pokémon-style "egg is hatching" beat instead of a bare spinner.            */
+/* -------------------------------------------------------------------------- */
+
+.pet-egg {
+  position: relative;
+  width: 5.5rem;
+  height: 7rem;
+  border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+  background: radial-gradient(
+    120% 90% at 32% 26%,
+    color-mix(in srgb, var(--ui-accent) 14%, #fff) 0%,
+    #f4ecd8 46%,
+    #e4d3ad 100%
+  );
+  box-shadow:
+    inset -0.45rem -0.6rem 1.1rem color-mix(in srgb, #000 16%, transparent),
+    inset 0.35rem 0.4rem 0.7rem color-mix(in srgb, #fff 70%, transparent),
+    0 0.4rem 0.9rem color-mix(in srgb, #000 22%, transparent);
+  transform-origin: 50% 88%;
+  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+}
+
+/* Compact egg (empty-state hero). Children are %-based so they track the size;
+   only the rem box-shadow needs scaling down to stay crisp. */
+.pet-egg--sm {
+  width: 3.25rem;
+  height: 4.1rem;
+  box-shadow:
+    inset -0.28rem -0.38rem 0.7rem color-mix(in srgb, #000 16%, transparent),
+    inset 0.22rem 0.26rem 0.45rem color-mix(in srgb, #fff 70%, transparent),
+    0 0.25rem 0.55rem color-mix(in srgb, #000 22%, transparent);
+}
+
+.pet-egg__shine {
+  position: absolute;
+  top: 14%;
+  left: 22%;
+  width: 28%;
+  height: 22%;
+  border-radius: 50%;
+  background: color-mix(in srgb, #fff 85%, transparent);
+  filter: blur(2px);
+  opacity: 0.85;
+}
+
+.pet-egg__spot {
+  position: absolute;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ui-accent) 70%, #b89b63);
+  opacity: 0.55;
+}
+
+.pet-egg__glow {
+  position: absolute;
+  inset: -35%;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--ui-accent) 55%, transparent) 0%, transparent 62%);
+  animation: pet-egg-glow 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.pet-egg-shadow {
+  width: 4.5rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  /* Lighter on light backgrounds (~20% less ink); dark mode keeps it grounded. */
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, #000 var(--pet-egg-shadow-ink, 26%), transparent) 0%,
+    transparent 72%
+  );
+  animation: pet-egg-shadow 2.4s ease-in-out infinite;
+}
+
+.dark .pet-egg-shadow {
+  --pet-egg-shadow-ink: 32%;
+}
+
+/* Contact shadow sized for the compact incubator egg (roughly its footprint). */
+.pet-egg-shadow--sm {
+  width: 3rem;
+  height: 0.6rem;
+}
+
+/* Contact shadow under the revealed pet — mirrors the floating mascot's in-app
+   shadow: an ellipse at the feet, ~55% of the sprite width, sitting behind it. */
+.pet-contact-shadow {
+  position: absolute;
+  bottom: -0.15rem;
+  left: 50%;
+  width: 55%;
+  aspect-ratio: 100 / 28;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, color-mix(in srgb, #000 42%, transparent) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Hatch wiggle for the pixel egg (rocks around its base). */
+.pet-wobble {
+  transform-origin: 50% 85%;
+  animation: pet-egg-wobble 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-wobble {
+    animation: none;
+  }
+}
+
+@keyframes pet-egg-wobble {
+  0%,
+  62%,
+  100% {
+    transform: rotate(0deg);
+  }
+  8% {
+    transform: rotate(-7deg);
+  }
+  16% {
+    transform: rotate(6deg);
+  }
+  24% {
+    transform: rotate(-5deg);
+  }
+  32% {
+    transform: rotate(4deg);
+  }
+  40% {
+    transform: rotate(0deg);
+  }
+  /* the "almost out" burst */
+  70% {
+    transform: rotate(-12deg);
+  }
+  76% {
+    transform: rotate(12deg);
+  }
+  82% {
+    transform: rotate(-9deg);
+  }
+  88% {
+    transform: rotate(7deg);
+  }
+  94% {
+    transform: rotate(-3deg);
+  }
+}
+
+@keyframes pet-egg-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  70% {
+    opacity: 0.4;
+  }
+  84% {
+    opacity: 0.85;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes pet-egg-shadow {
+  0%,
+  62%,
+  100% {
+    transform: scaleX(1);
+    opacity: 0.6;
+  }
+  76% {
+    transform: scaleX(0.8);
+    opacity: 0.45;
+  }
+}
+
+.pet-reveal {
+  animation: pet-reveal-pop 620ms cubic-bezier(0.22, 1.4, 0.4, 1) both;
+}
+
+@keyframes pet-reveal-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.35) translateY(0.4rem);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12) translateY(0);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-egg,
+  .pet-egg__glow,
+  .pet-egg-shadow,
+  .pet-reveal {
+    animation: none;
+  }
+  .pet-reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Pet generation progress bar — determinate (hatch rows: done/total) or         */
+/* indeterminate (drafts, which return together so a % would just snap).         */
+.pet-progress {
+  position: relative;
+  height: 0.25rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--ui-accent) 15%, transparent);
+}
+
+.pet-progress__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--ui-accent);
+  transition: width 320ms ease;
+}
+
+.pet-progress__indeterminate {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 9999px;
+  background: var(--ui-accent);
+  animation: pet-progress-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes pet-progress-slide {
+  0% {
+    left: -42%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-progress__indeterminate {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.4;
+  }
+}

@@ -178,7 +178,10 @@ class TestProfileScopedHubActions:
         )
         assert resp.status_code == 200
         assert calls == [
-            (["-p", "worker_alpha", "skills", "install", "official/demo"], "skills-install")
+            (
+                ["-p", "worker_alpha", "skills", "install", "official/demo", "--yes"],
+                "skills-install",
+            )
         ]
 
     def test_hub_install_without_profile_keeps_legacy_argv(
@@ -200,7 +203,7 @@ class TestProfileScopedHubActions:
             "/api/skills/hub/install", json={"identifier": "official/demo"}
         )
         assert resp.status_code == 200
-        assert calls == [["skills", "install", "official/demo"]]
+        assert calls == [["skills", "install", "official/demo", "--yes"]]
 
     def test_hub_install_unknown_profile_404(self, client, isolated_profiles):
         resp = client.post(

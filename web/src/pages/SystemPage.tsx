@@ -24,6 +24,7 @@ import {
   Stethoscope,
   Terminal,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -31,6 +32,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -72,6 +74,20 @@ function formatDuration(seconds: number): string {
   return `${m}m`;
 }
 
+type BackupImportTarget =
+  | { kind: "upload"; file: File }
+  | { kind: "path"; path: string };
+
+function backupImportLabel(target: BackupImportTarget | null): string {
+  if (!target) return "the archive";
+  return target.kind === "upload" ? target.file.name : target.path;
+}
+
+function backupFileName(path: string | null): string {
+  if (!path) return "No backup created yet";
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 /**
  * Live action-log viewer for the spawn-based admin actions (doctor, audit,
  * backup, import, skills update, checkpoints prune, gateway start/stop).
@@ -80,17 +96,21 @@ function formatDuration(seconds: number): string {
 function ActionLogViewer({
   action,
   onClose,
+  onComplete,
 }: {
   action: string;
   onClose: () => void;
+  onComplete?: (action: string, exitCode: number | null) => void;
 }) {
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const completeRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    completeRef.current = false;
     const poll = async () => {
       try {
         const st = await api.getActionStatus(action, 400);
@@ -98,6 +118,10 @@ function ActionLogViewer({
         setLines(st.lines);
         setRunning(st.running);
         setExitCode(st.exit_code);
+        if (!st.running && !completeRef.current) {
+          completeRef.current = true;
+          onComplete?.(action, st.exit_code);
+        }
         if (st.running) timer.current = setTimeout(poll, 1200);
       } catch {
         if (!cancelled) setRunning(false);
@@ -108,7 +132,7 @@ function ActionLogViewer({
       cancelled = true;
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [action]);
+  }, [action, onComplete]);
 
   return (
     <Card>
@@ -169,12 +193,23 @@ export default function SystemPage() {
   const [credLabel, setCredLabel] = useState("");
   const [addingCred, setAddingCred] = useState(false);
 
+  const [pendingBackupArchive, setPendingBackupArchive] = useState<string | null>(
+    null,
+  );
+  const [downloadableBackupArchive, setDownloadableBackupArchive] = useState<
+    string | null
+  >(null);
+  const [downloadingBackup, setDownloadingBackup] = useState(false);
+  const importUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
   const [importPath, setImportPath] = useState("");
   // Restore-from-backup is destructive (overwrites the live config) and the
   // spawned `hermes import` runs non-interactively (stdin is /dev/null), so
   // its CLI "Continue? [y/N]" prompt would auto-abort. The dashboard owns the
   // consent: confirm here, then call the endpoint with force=true.
-  const [importConfirmOpen, setImportConfirmOpen] = useState(false);
+  const [importingBackup, setImportingBackup] = useState(false);
+  const [importConfirmTarget, setImportConfirmTarget] =
+    useState<BackupImportTarget | null>(null);
 
   // Create-hook modal.
   const [hookModalOpen, setHookModalOpen] = useState(false);
@@ -335,6 +370,77 @@ export default function SystemPage() {
     }
   };
 
+  const runDashboardBackup = async () => {
+    try {
+      const res = await api.runBackup();
+      setActiveAction(res.name);
+      setPendingBackupArchive(res.archive ?? null);
+      setDownloadableBackupArchive(null);
+      showToast("Backup started", "success");
+    } catch (e) {
+      showToast(`Backup failed: ${e}`, "error");
+    }
+  };
+
+  const handleActionComplete = useCallback(
+    (action: string, exitCode: number | null) => {
+      if (action === "backup" && pendingBackupArchive) {
+        if (exitCode === 0) {
+          setDownloadableBackupArchive(pendingBackupArchive);
+          showToast("Backup ready to download", "success");
+        } else {
+          setPendingBackupArchive(null);
+        }
+      }
+    },
+    [pendingBackupArchive, showToast],
+  );
+
+  const downloadBackup = async () => {
+    const archive = downloadableBackupArchive;
+    if (!archive) return;
+    setDownloadingBackup(true);
+    try {
+      const res = await api.downloadBackup(archive);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = backupFileName(archive);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast(`Download failed: ${e}`, "error");
+    } finally {
+      setDownloadingBackup(false);
+    }
+  };
+
+  const clearImportFile = () => {
+    setImportFile(null);
+    if (importUploadInputRef.current) importUploadInputRef.current.value = "";
+  };
+
+  const runBackupImport = async (target: BackupImportTarget) => {
+    setImportingBackup(true);
+    try {
+      const res =
+        target.kind === "upload"
+          ? await api.runImportUpload(target.file, true)
+          : await api.runImport(target.path, true);
+      setActiveAction(res.name);
+      showToast("Import started", "success");
+      if (target.kind === "upload") clearImportFile();
+    } catch (e) {
+      showToast(`Import failed: ${e}`, "error");
+    } finally {
+      setImportingBackup(false);
+    }
+  };
+
   // ── Debug share ────────────────────────────────────────────────────
   // Unlike the fire-and-forget ops above, `debug share` produces shareable
   // paste URLs that are the whole point — so we surface them as real,
@@ -386,6 +492,7 @@ export default function SystemPage() {
   // ── Update check / apply ───────────────────────────────────────────
   const checkForUpdate = useCallback(
     async (force = false) => {
+      if (status?.can_update_hermes === false) return;
       setCheckingUpdate(true);
       try {
         const info = await api.checkHermesUpdate(force);
@@ -410,20 +517,27 @@ export default function SystemPage() {
         setCheckingUpdate(false);
       }
     },
-    [showToast],
+    [showToast, status?.can_update_hermes],
   );
 
   // Auto-check (cached) runs inside loadAll on mount; this is the
   // user-triggered forced re-check from the "Check for updates" button.
   const applyUpdate = async () => {
     setUpdateConfirmOpen(false);
+    if (status?.can_update_hermes === false) {
+      showToast(
+        "Hermes updates are managed outside this dashboard.",
+        "success",
+      );
+      return;
+    }
     try {
       const resp = await api.updateHermes();
-      if (!resp.ok && resp.error === "docker_update_unsupported") {
+      if (!resp.ok) {
         showToast(
           resp.message ??
-            "Updates don't apply inside Docker — re-pull the image instead.",
-          "error",
+            "Updates don't apply from this dashboard.",
+          "success",
         );
         return;
       }
@@ -503,6 +617,7 @@ export default function SystemPage() {
   }
 
   const gatewayRunning = status?.gateway_running;
+  const canUpdateHermes = status?.can_update_hermes !== false;
   const validEvents = hooks?.valid_events?.length
     ? hooks.valid_events
     : HOOK_EVENTS_FALLBACK;
@@ -510,9 +625,18 @@ export default function SystemPage() {
   return (
     <div className="flex flex-col gap-8">
       <Toast toast={toast} />
+      <input
+        ref={importUploadInputRef}
+        type="file"
+        accept=".zip,application/zip,application/x-zip-compressed"
+        className="hidden"
+        onChange={(event) => {
+          setImportFile(event.currentTarget.files?.[0] ?? null);
+        }}
+      />
 
       <ConfirmDialog
-        open={updateConfirmOpen}
+        open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
         title="Update Hermes?"
@@ -561,7 +685,7 @@ export default function SystemPage() {
       {hookModalOpen && (
         <div
           ref={hookModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) => e.target === e.currentTarget && setHookModalOpen(false)}
           role="dialog"
           aria-modal="true"
@@ -626,15 +750,21 @@ export default function SystemPage() {
                   />
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                <input
-                  type="checkbox"
+              <div className="flex items-center gap-2.5">
+                <Checkbox
                   checked={hookApprove}
-                  onChange={(e) => setHookApprove(e.target.checked)}
+                  id="hook-approve"
+                  onCheckedChange={(checked) => setHookApprove(checked === true)}
                 />
-                Approve now (grant consent so it fires; otherwise it stays
-                configured but inactive)
-              </label>
+
+                <Label
+                  className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
+                  htmlFor="hook-approve"
+                >
+                  Approve now (grant consent so it fires; otherwise it stays
+                  configured but inactive)
+                </Label>
+              </div>
               <p className="text-xs text-warning">
                 Shell hooks run arbitrary commands on this host. Only add scripts
                 you trust. Takes effect on the next gateway/session restart.
@@ -659,6 +789,7 @@ export default function SystemPage() {
       {activeAction && (
         <ActionLogViewer
           action={activeAction}
+          onComplete={handleActionComplete}
           onClose={() => setActiveAction(null)}
         />
       )}
@@ -691,7 +822,8 @@ export default function SystemPage() {
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">Hermes</div>
                 <div className="flex items-center gap-2">
                   <span>v{stats?.hermes_version}</span>
-                  {updateInfo &&
+                  {canUpdateHermes &&
+                    updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
                         {updateInfo.behind && updateInfo.behind > 0
@@ -751,45 +883,47 @@ export default function SystemPage() {
                 CPU / memory / disk metrics.
               </p>
             )}
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-              <Button
-                size="sm"
-                ghost
-                disabled={checkingUpdate}
-                prefix={
-                  checkingUpdate ? (
-                    <Spinner className="h-3.5 w-3.5" />
-                  ) : (
-                    <RotateCw className="h-3.5 w-3.5" />
-                  )
-                }
-                onClick={() => void checkForUpdate(true)}
-              >
-                Check for updates
-              </Button>
-              {updateInfo?.update_available && updateInfo.can_apply && (
+            {canUpdateHermes && (
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
                 <Button
                   size="sm"
-                  prefix={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => setUpdateConfirmOpen(true)}
+                  ghost
+                  disabled={checkingUpdate}
+                  prefix={
+                    checkingUpdate ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : (
+                      <RotateCw className="h-3.5 w-3.5" />
+                    )
+                  }
+                  onClick={() => void checkForUpdate(true)}
                 >
-                  Update now
+                  Check for updates
                 </Button>
-              )}
-              {updateInfo &&
-                !updateInfo.can_apply &&
-                updateInfo.update_available && (
+                {updateInfo?.update_available && updateInfo.can_apply && (
+                  <Button
+                    size="sm"
+                    prefix={<Download className="h-3.5 w-3.5" />}
+                    onClick={() => setUpdateConfirmOpen(true)}
+                  >
+                    Update now
+                  </Button>
+                )}
+                {updateInfo &&
+                  !updateInfo.can_apply &&
+                  updateInfo.update_available && (
+                    <span className="text-xs text-muted-foreground">
+                      Update with{" "}
+                      <span className="font-mono">{updateInfo.update_command}</span>
+                    </span>
+                  )}
+                {updateInfo?.message && !updateInfo.update_available && (
                   <span className="text-xs text-muted-foreground">
-                    Update with{" "}
-                    <span className="font-mono">{updateInfo.update_command}</span>
+                    {updateInfo.message}
                   </span>
                 )}
-              {updateInfo?.message && !updateInfo.update_available && (
-                <span className="text-xs text-muted-foreground">
-                  {updateInfo.message}
-                </span>
-              )}
-            </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </section>
@@ -1034,9 +1168,6 @@ export default function SystemPage() {
             <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, "Security audit")}>
               Security audit
             </Button>
-            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(() => api.runBackup(), "Backup")}>
-              Create backup
-            </Button>
             <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, "Skills update")}>
               Update skills
             </Button>
@@ -1049,6 +1180,122 @@ export default function SystemPage() {
             <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, "Config migrate")}>
               Migrate config
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="flex flex-col gap-4 py-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+              <div className="grid min-w-0 flex-1 gap-2">
+                <Label>Full backup</Label>
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<Database className="h-3.5 w-3.5" />}
+                    onClick={() => void runDashboardBackup()}
+                  >
+                    Create backup
+                  </Button>
+                  <Button
+                    size="sm"
+                    ghost
+                    disabled={!downloadableBackupArchive || downloadingBackup}
+                    prefix={
+                      downloadingBackup ? (
+                        <Spinner className="h-3.5 w-3.5" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5" />
+                      )
+                    }
+                    onClick={() => void downloadBackup()}
+                  >
+                    Download backup
+                  </Button>
+                  <span
+                    className="min-w-0 truncate text-xs text-muted-foreground"
+                    title={pendingBackupArchive ?? "No backup created yet"}
+                  >
+                    {backupFileName(pendingBackupArchive)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
+              <div className="grid min-w-0 flex-1 gap-2">
+                <Label>Restore from backup upload</Label>
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                  <Button
+                    type="button"
+                    size="sm"
+                    ghost
+                    disabled={importingBackup}
+                    prefix={<Upload className="h-3.5 w-3.5" />}
+                    onClick={() => importUploadInputRef.current?.click()}
+                  >
+                    Choose restore zip
+                  </Button>
+                  <span
+                    className="min-w-0 truncate text-xs text-muted-foreground"
+                    title={importFile?.name ?? "No backup archive selected"}
+                  >
+                    {importFile?.name ?? "No backup archive selected"}
+                  </span>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                ghost
+                disabled={!importFile || importingBackup}
+                prefix={importingBackup ? <Spinner /> : undefined}
+                onClick={() => {
+                  if (!importFile) return;
+                  setImportConfirmTarget({ kind: "upload", file: importFile });
+                }}
+              >
+                Restore upload
+              </Button>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
+              <div className="grid min-w-0 flex-1 gap-2">
+                <Label htmlFor="import-path">Restore from backups path</Label>
+                <Input
+                  id="import-path"
+                  value={importPath}
+                  onChange={(e) => setImportPath(e.target.value)}
+                  placeholder="$HERMES_HOME/backups/hermes-backup.zip"
+                />
+              </div>
+              <Button
+                size="sm"
+                ghost
+                disabled={!importPath.trim() || importingBackup}
+                prefix={importingBackup ? <Spinner /> : undefined}
+                onClick={() => {
+                  const path = importPath.trim();
+                  if (!path) return;
+                  setImportConfirmTarget({ kind: "path", path });
+                }}
+              >
+                Restore path
+              </Button>
+            </div>
+            <ConfirmDialog
+              open={!!importConfirmTarget}
+              title="Restore full Hermes backup?"
+              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${backupImportLabel(importConfirmTarget)}. This cannot be undone.`}
+              destructive
+              confirmLabel="Restore"
+              cancelLabel="Cancel"
+              onCancel={() => setImportConfirmTarget(null)}
+              onConfirm={() => {
+                const target = importConfirmTarget;
+                setImportConfirmTarget(null);
+                if (target) void runBackupImport(target);
+              }}
+            />
           </CardContent>
         </Card>
 
@@ -1085,16 +1332,21 @@ export default function SystemPage() {
               </Button>
             </div>
 
-            <label className="flex items-center gap-2 text-xs text-muted-foreground select-none">
-              <input
-                type="checkbox"
-                className="accent-current"
+            <div className="flex items-center gap-2.5">
+              <Checkbox
                 checked={shareRedact}
                 disabled={sharing}
-                onChange={(e) => setShareRedact(e.target.checked)}
+                id="share-redact"
+                onCheckedChange={(checked) => setShareRedact(checked === true)}
               />
-              Redact credential-shaped tokens before upload (recommended)
-            </label>
+
+              <Label
+                className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
+                htmlFor="share-redact"
+              >
+                Redact credential-shaped tokens before upload (recommended)
+              </Label>
+            </div>
 
             {shareResult && (
               <div className="flex flex-col gap-2 border-t border-border pt-3">
@@ -1172,38 +1424,6 @@ export default function SystemPage() {
                 )}
               </div>
             )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-end">
-            <div className="grid gap-2 flex-1">
-              <Label htmlFor="import-path">Restore from backup archive</Label>
-              <Input id="import-path" value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/path/to/hermes-backup.zip" />
-            </div>
-            <Button
-              size="sm"
-              ghost
-              disabled={!importPath.trim()}
-              onClick={() => {
-                if (!importPath.trim()) return;
-                setImportConfirmOpen(true);
-              }}
-            >
-              Import
-            </Button>
-            <ConfirmDialog
-              open={importConfirmOpen}
-              title="Restore from backup?"
-              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${importPath.trim() || "the archive"}. This cannot be undone.`}
-              destructive
-              confirmLabel="Restore"
-              cancelLabel="Cancel"
-              onCancel={() => setImportConfirmOpen(false)}
-              onConfirm={() => {
-                setImportConfirmOpen(false);
-                runOp(() => api.runImport(importPath.trim(), true), "Import");
-              }}
-            />
           </CardContent>
         </Card>
       </section>

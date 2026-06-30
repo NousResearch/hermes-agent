@@ -3,23 +3,23 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
-import { $gatewayState, setGatewayState } from '@/store/session'
+import { setGatewayState } from '@/store/session'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
 import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 
 // Repro for the "remote gateway → stuck on CONNECTING, no way to settings"
-// report. The connecting overlay (z-1200, full-screen, pointer-events on) is
-// shown whenever `gatewayState !== 'open' && !boot.error`. The ONLY escape
+// report. The connecting overlay (z-1200, full-screen, pointer-events on) used
+// to be shown whenever `gatewayState !== 'open' && !boot.error`. The ONLY escape
 // hatch — BootFailureOverlay, which has "Use local gateway" / "Sign in" /
 // "Retry" — only renders when `boot.error` is set.
 //
 // useGatewayBoot only calls failDesktopBoot() (which sets boot.error) when the
 // INITIAL boot() throws. After the first successful connect (bootCompleted),
 // any later socket drop goes through scheduleReconnect(), which loops FOREVER
-// against the dead remote and never sets boot.error. So gatewayState sits at
-// 'closed'/'error' with boot.error null → CONNECTING forever, recovery overlay
-// never appears, settings unreachable.
+// against the dead remote. So gatewayState sits at 'closed'/'error' with
+// boot.error null. The fix keeps the initial-boot overlay out of post-boot
+// reconnects, leaving chat/settings usable while the reconnect loop runs.
 
 function resetStores() {
   setGatewayState('idle')
@@ -54,13 +54,19 @@ afterEach(cleanup)
 // "Lost connection…" copy doesn't read as a false positive.
 const isConnectingShown = () =>
   screen.queryAllByText((_, el) => /^CONN[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
+
 const isRecoveryShown = () =>
   Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
 
 describe('connecting overlay vs recovery surface', () => {
   it('hard initial-boot failure surfaces the recovery overlay (the working path)', () => {
     // failDesktopBoot() ran: error set, gateway never opened.
-    $desktopBoot.set({ ...$desktopBoot.get(), error: 'Hermes backend did not become ready', running: false, visible: true })
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: 'Hermes backend did not become ready',
+      running: false,
+      visible: true
+    })
     setGatewayState('error')
 
     render(
@@ -75,15 +81,17 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isConnectingShown()).toBe(false)
   })
 
-  it('REPRO: remote socket drops AFTER a successful boot → stuck on CONNECTING, no recovery, no settings', () => {
+  it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', () => {
     // 1. Initial boot succeeded: gateway opened, boot completed (no error).
     setGatewayState('open')
+
     const { rerender } = render(
       <>
         <GatewayConnectingOverlay />
         <BootFailureOverlay />
       </>
     )
+
     expect(isConnectingShown()).toBe(false)
 
     // 2. The remote VPS socket drops (sleep/wake, remote restart, network).
@@ -97,14 +105,14 @@ describe('connecting overlay vs recovery surface', () => {
       </>
     )
 
-    // The connecting overlay reappears and latches...
-    expect(isConnectingShown()).toBe(true)
-    // ...with NO recovery surface, because boot.error was never set.
+    // The initial-boot connecting overlay stays out of the way, so settings and
+    // the composer remain reachable during the reconnect loop.
+    expect(isConnectingShown()).toBe(false)
     expect(isRecoveryShown()).toBe(false)
 
-    // 3. Reconnect loops forever against the dead remote: gatewayState bounces
-    //    closed → error → closed, boot.error never gets set. The user is
-    //    pinned on CONNECTING with no path to Settings indefinitely.
+    // 3. Reconnect loops against the dead remote: gatewayState bounces closed
+    //    → error → closed. Until the escalation path sets boot.error, the app
+    //    remains usable instead of modal-blocked.
     setGatewayState('error')
     rerender(
       <>
@@ -113,7 +121,7 @@ describe('connecting overlay vs recovery surface', () => {
       </>
     )
     expect($desktopBoot.get().error).toBeNull()
-    expect(isConnectingShown()).toBe(true)
+    expect(isConnectingShown()).toBe(false)
     expect(isRecoveryShown()).toBe(false)
   })
 

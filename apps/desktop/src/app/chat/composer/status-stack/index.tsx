@@ -19,14 +19,29 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
+import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
+import { PreviewStatusRow } from './preview-row'
 import { StatusItemRow } from './status-row'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
 // emit no event when they die). Only armed while a running row is on screen.
 const BACKGROUND_POLL_MS = 5_000
+
+// A localhost/loopback preview is only meaningful while its dev server is up, so
+// we tie it to a live background process rather than persisting dismissals or
+// letting dead URLs pile up. File previews (a real on-disk artifact) stand alone.
+const isLocalhostPreview = (target: string): boolean => /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b/i.test(target)
+
+// Real codicons per group (no sparkles): a checklist for todos, a bot for
+// subagents, a background process glyph for background tasks.
+const GROUP_ICON: Record<StatusGroup['type'], string> = {
+  todo: 'checklist',
+  subagent: 'hubot',
+  background: 'server-process'
+}
 
 const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
   if (group.type === 'todo') {
@@ -52,12 +67,15 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   const { t } = useI18n()
   const navigate = useNavigate()
   const itemsBySession = useStore($statusItemsBySession)
+  const previewsBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
 
   const groups = useMemo(
     () => groupStatusItems(sessionId ? (itemsBySession[sessionId] ?? []) : []),
     [itemsBySession, sessionId]
   )
+
+  const previews = sessionId ? (previewsBySession[sessionId] ?? []) : []
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream.
@@ -68,6 +86,10 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   }, [sessionId])
 
   const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
+
+  // Drop localhost previews once no dev server is left running — that's what made
+  // dead `localhost:5174` chips stick around. On-disk file previews are kept.
+  const visiblePreviews = previews.filter(item => hasRunningBackground || !isLocalhostPreview(item.target))
 
   useEffect(() => {
     if (!sessionId || !hasRunningBackground) {
@@ -83,6 +105,18 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   const openSubagent = (item: ComposerStatusItem) =>
     item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
+
+  // Preview links live as child rows of the background group — a localhost dev
+  // server and its preview are the same thing — so they no longer float as an
+  // odd, differently-indented standalone block under the stack.
+  const previewRows =
+    visiblePreviews.length > 0 && sessionId
+      ? visiblePreviews.map(item => (
+          <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
+        ))
+      : []
+
+  const hasBackgroundGroup = groups.some(g => g.type === 'background')
 
   const sections: { key: string; node: ReactNode }[] = groups.map(group => ({
     key: group.type,
@@ -102,11 +136,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
           ) : undefined
         }
         defaultCollapsed={group.type !== 'todo'}
-        icon={
-          group.type === 'todo' ? (
-            <Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />
-          ) : undefined
-        }
+        icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
         label={groupLabel(group, t.statusStack)}
       >
         {group.items.map(item => (
@@ -115,12 +145,22 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
             key={item.id}
             onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
             onOpen={() => openSubagent(item)}
-            onStop={sessionId ? id => stopBackgroundProcess(sessionId, id) : undefined}
+            onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
           />
         ))}
+        {group.type === 'background' && previewRows}
       </StatusSection>
     )
   }))
+
+  // No background group to host them (e.g. a standalone on-disk file preview):
+  // keep the previews as their own row block so they don't disappear.
+  if (previewRows.length > 0 && !hasBackgroundGroup) {
+    sections.push({
+      key: 'preview',
+      node: <div className="px-1 py-0.5">{previewRows}</div>
+    })
+  }
 
   if (queue) {
     sections.push({ key: 'queue', node: queue })
@@ -170,24 +210,32 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   return (
     <div
-      className="absolute inset-x-0 bottom-full z-6 -mb-[9px] max-h-[40vh] overflow-y-auto"
+      // Sits in the overlay lane above the composer. The composer root has pt-2
+      // before the actual surface; translate by that amount so the stack returns
+      // to its original attachment point without intruding into the repo strip.
+      className="absolute inset-x-0 bottom-full z-3 max-h-[40vh] translate-y-2 overflow-y-auto"
       onPointerDownCapture={() => blurComposerInput()}
       ref={stackRef}
     >
       {/* The card paints the shared --composer-fill (rest / scrolled / focused
           all match the composer surface by construction); on scroll we only
-          ghost the CONTENT — element opacity on the card would kill the blur. */}
-      <div className={cn(composerDockCard('top'), 'mx-1 pt-0.5 pb-1')}>
-        <div
-          className={cn(
-            'transition-opacity duration-200 ease-out',
-            scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
-          )}
-        >
-          {sections.map(section => (
-            <div key={section.key}>{section.node}</div>
-          ))}
-        </div>
+          ghost the CONTENT — element opacity on the card would kill the blur.
+          Rounded top, square bottom; the bottom border is TRANSPARENT — the
+          composer surface's visible top border (which sits at a higher z) is the
+          single shared seam, so the two read as one fused capsule. */}
+      <div
+        className={cn(
+          composerDockCard('top'),
+          // Inset (mx-2) so the stack reads slightly narrower than the composer
+          // surface below it — the original look.
+          'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
+          'transition-opacity duration-200 ease-out',
+          scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+        )}
+      >
+        {sections.map(section => (
+          <div key={section.key}>{section.node}</div>
+        ))}
       </div>
     </div>
   )

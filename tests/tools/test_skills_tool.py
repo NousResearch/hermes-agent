@@ -373,6 +373,50 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_view_ignores_singular_reference_support_file_name_collision(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            umbrella = _make_skill(tmp_path, "umbrella")
+            support_dir = umbrella / "reference"
+            support_dir.mkdir()
+            (support_dir / "codex.md").write_text("# Archived support doc\n")
+            _make_skill(tmp_path, "codex", body="Load the real Codex skill.")
+            raw = skill_view("codex")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "codex"
+        assert "Load the real Codex skill." in result["content"]
+
+    def test_view_ignores_directory_name_collision_when_frontmatter_name_is_unique(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "codex", body="Load the canonical Codex skill.")
+            gstack_dir = tmp_path / "gstack" / "codex"
+            gstack_dir.mkdir(parents=True)
+            (gstack_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: gstack-codex\n"
+                "description: GStack-specific Codex wrapper.\n"
+                "---\n\n"
+                "# GStack Codex\n\n"
+                "Load the GStack Codex wrapper only by canonical or categorized name.\n"
+            )
+
+            bare_raw = skill_view("codex")
+            gstack_raw = skill_view("gstack/codex")
+            canonical_raw = skill_view("gstack-codex")
+
+        bare = json.loads(bare_raw)
+        gstack = json.loads(gstack_raw)
+        canonical = json.loads(canonical_raw)
+
+        assert bare["success"] is True
+        assert bare["name"] == "codex"
+        assert "Load the canonical Codex skill." in bare["content"]
+        assert gstack["success"] is True
+        assert "Load the GStack Codex wrapper" in gstack["content"]
+        assert canonical["success"] is True
+        assert "Load the GStack Codex wrapper" in canonical["content"]
+
     def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
         # The on-disk directory ("alias-dir") differs from the skill's
         # frontmatter name ("real-skill-name"). skills_list() exposes the

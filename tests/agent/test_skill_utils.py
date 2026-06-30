@@ -218,6 +218,43 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 
+def test_iter_skill_index_files_prunes_singular_reference_support_dir(tmp_path):
+    """Singular reference/ dirs are support docs too, not skill discovery roots."""
+    real = tmp_path / "umbrella"
+    real.mkdir()
+    (real / "SKILL.md").write_text("---\nname: umbrella\n---\n", encoding="utf-8")
+
+    package = real / "reference" / "old-skill-package"
+    package.mkdir(parents=True)
+    (package / "SKILL.md").write_text("---\nname: old-skill\n---\n", encoding="utf-8")
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [real / "SKILL.md"]
+    assert is_skill_support_path(package / "SKILL.md") is True
+    assert is_excluded_skill_path(package / "SKILL.md") is True
+
+
+def test_iter_skill_index_files_prunes_common_doc_support_dirs(tmp_path):
+    """Example/report/test archives under a skill are support docs, not active skills."""
+    real = tmp_path / "umbrella"
+    real.mkdir()
+    (real / "SKILL.md").write_text("---\nname: umbrella\n---\n", encoding="utf-8")
+
+    for support_dir in ("examples", "reports", "tests"):
+        package = real / support_dir / "archived-skill"
+        package.mkdir(parents=True)
+        (package / "SKILL.md").write_text(
+            f"---\nname: archived-{support_dir}\n---\n", encoding="utf-8"
+        )
+        assert is_skill_support_path(package / "SKILL.md") is True
+        assert is_excluded_skill_path(package / "SKILL.md") is True
+
+    found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+
+    assert found == [real / "SKILL.md"]
+
+
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     """A category named scripts/templates/assets/references is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"

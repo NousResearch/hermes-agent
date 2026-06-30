@@ -338,7 +338,9 @@ export default function App() {
           setDiagnostic(JSON.stringify(event.nativeEvent).slice(0, 1600));
         }}
       />
-      {diagnostic ? (
+      {/* Diagnostic overlay is dev-only — Release builds hide it so the user
+          doesn't see raw JSON over the chat / Skills view. */}
+      {__DEV__ && diagnostic ? (
         <View pointerEvents="none" style={styles.debugOverlay}>
           <Text style={styles.debugText}>{diagnostic}</Text>
         </View>

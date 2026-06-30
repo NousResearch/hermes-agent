@@ -19,6 +19,7 @@ export function PageLoader({
       {...props}
       aria-label={ariaLabel ?? label}
       className={cn('grid h-full place-items-center', className)}
+      data-slot="page-loader"
       role={role}
     >
       <Loader

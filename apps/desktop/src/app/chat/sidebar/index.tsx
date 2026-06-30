@@ -32,7 +32,8 @@ import {
   SidebarGroupContent,
   SidebarMenu,
   SidebarMenuButton,
-  SidebarMenuItem
+  SidebarMenuItem,
+  useSidebar
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGitWorktree } from '@/global'
@@ -378,6 +379,21 @@ export function ChatSidebar({
   // Collapsed-but-overlay-mounted → render the full sidebar, not just the nav rail.
   const overlayMounted = useStore($sidebarOverlayMounted)
   const contentVisible = sidebarOpen || overlayMounted
+  // Mobile-only: close the Sheet drawer after the user picks a nav item or
+  // taps a session row. Desktop ignores setOpenMobile, so this is a no-op
+  // there. Without this, the drawer stayed open over the new view and the
+  // user had to swipe to dismiss it manually.
+  const { isMobile, setOpenMobile } = useSidebar()
+  const closeMobileDrawer = () => {
+    if (isMobile) setOpenMobile(false)
+  }
+  // Resuming a session is also a navigation — close the drawer too. Wrap
+  // the prop once so every nested list (recents, pinned, branched, etc.)
+  // inherits the close behavior without each call site needing to know.
+  const resumeAndCloseDrawer = (sessionId: string) => {
+    onResumeSession(sessionId)
+    closeMobileDrawer()
+  }
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
@@ -1233,6 +1249,7 @@ export function ChatSidebar({
                         }
 
                         onNavigate(item)
+                        closeMobileDrawer()
                       }}
                       tooltip={s.nav[item.id] ?? item.label}
                       type="button"
@@ -1290,7 +1307,7 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
-                onResumeSession={onResumeSession}
+                onResumeSession={resumeAndCloseDrawer}
                 onToggle={() => undefined}
                 onTogglePin={pinSession}
                 open
@@ -1312,7 +1329,7 @@ export function ChatSidebar({
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
                 onReorderSessions={reorderPinned}
-                onResumeSession={onResumeSession}
+                onResumeSession={resumeAndCloseDrawer}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}
                 onTogglePin={unpinSession}
                 open={pinsOpen}
@@ -1455,7 +1472,7 @@ export function ChatSidebar({
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
                 onReorderProjects={showAllProfiles ? undefined : reorderProjects}
                 onReorderSessions={showAllProfiles ? undefined : reorderSessions}
-                onResumeSession={onResumeSession}
+                onResumeSession={resumeAndCloseDrawer}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
                 onTogglePin={pinSession}
                 open={agentsOpen}
@@ -1514,7 +1531,7 @@ export function ChatSidebar({
                     labelMeta={countLabel(group.sessions.length, group.total)}
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
-                    onResumeSession={onResumeSession}
+                    onResumeSession={resumeAndCloseDrawer}
                     onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
                     onTogglePin={pinSession}
                     open={messagingOpenIds.includes(group.sourceId)}
@@ -1531,7 +1548,7 @@ export function ChatSidebar({
                 jobs={cronJobs}
                 label={s.cronJobs}
                 onManageJob={onManageCronJob}
-                onOpenRun={onResumeSession}
+                onOpenRun={resumeAndCloseDrawer}
                 onToggle={() => setSidebarCronOpen(!cronOpen)}
                 onTriggerJob={onTriggerCronJob}
                 open={cronOpen}
@@ -1871,7 +1888,7 @@ function SidebarSessionsSection({
         onArchiveSession={onArchiveSession}
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
-        onResumeSession={onResumeSession}
+        onResumeSession={resumeAndCloseDrawer}
         onTogglePin={onTogglePin}
         pinned={pinned}
         sortable={sessionsDraggable}

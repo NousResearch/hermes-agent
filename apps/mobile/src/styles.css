@@ -974,6 +974,16 @@ html.hermes-mobile-standalone [data-slot='overlay-nav-item'] {
 html.hermes-mobile-standalone [data-mobile-overlay] {
   position: relative;
 }
+
+/* PageLoader inside a mobile overlay was anchored to the post-header content
+   box (h-full of the children area), which sat well below screen center
+   because the header pad takes ~75px of vertical space. Promote it to fill
+   the whole overlay so the symbol lands at true screen-vertical center. */
+html.hermes-mobile-standalone [data-mobile-overlay] [data-slot='page-loader'] {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+}
 html.hermes-mobile-standalone:has([data-mobile-overlay]) [data-tool-id='sidebar'],
 html.hermes-mobile-standalone:has([data-mobile-overlay]) [data-slot='sidebar-trigger'] {
   display: none !important;
@@ -1954,22 +1964,31 @@ html.hermes-mobile-standalone [data-slot='aui_thread-content'] {
   padding-inline: 1rem;
 }
 
+/* Intro (HERMES AGENT wordmark + tagline) needs to stay visible and
+   visually centered in the space ABOVE the composer at all times. Two
+   bugs to avoid:
+   (1) Sitting under the Dynamic Island — padding-top floors at the real
+       safe-area inset.
+   (2) Sliding out of view when the keyboard opens — previously the rule
+       faded the intro out, but the user wants it to recenter between the
+       top safe area and the keyboard top, not disappear.
+   Position absolute inside the thread viewport, then flex-center; bottom
+   tracks --keyboard-inset + composer height so the intro always re-anchors
+   to the visible mid-point of the available space. */
 html.hermes-mobile-standalone [data-slot='aui_intro'] {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(env(safe-area-inset-top) + 1rem);
+  bottom: calc(var(--composer-measured-height, 6rem) + var(--keyboard-inset, 0px) + 1rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   padding-inline: 1.1rem;
   padding-block: 0;
-  transition:
-    opacity 140ms ease-out,
-    transform 140ms ease-out;
-}
-
-/* When the composer is focused (keyboard up), fade the intro out and lift
-   it above the viewport so it doesn't compete with the keyboard sheet. The
-   composer itself is already translated by --keyboard-inset; this just
-   gets the empty-state out of the way. */
-html.hermes-mobile-standalone:has([data-slot='composer-root'] textarea:focus) [data-slot='aui_intro'] {
-  opacity: 0;
-  transform: translateY(-2rem);
-  pointer-events: none;
+  transition: bottom 140ms ease-out;
+  pointer-events: auto;
 }
 
 

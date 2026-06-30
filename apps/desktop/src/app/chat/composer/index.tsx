@@ -20,37 +20,28 @@ import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments, clearComposerAttachments } from '@/store/composer'
+import { $composerAttachments } from '@/store/composer'
 import {
   browseBackward,
   browseForward,
   deriveUserHistory,
-  isBrowsingHistory,
-  resetBrowseState
+  isBrowsingHistory
 } from '@/store/composer-input-history'
 import {
-  $composerPopoutPosition,
-  $composerPoppedOut,
-  POPOUT_WIDTH_REM,
-  readPopoutBounds,
-  setComposerPopoutPosition,
-  setComposerPoppedOut
+  POPOUT_WIDTH_REM
 } from '@/store/composer-popout'
 import { removeQueuedPrompt } from '@/store/composer-queue'
-import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
-import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
 import {
   COMPLETION_ACTIONS,
   COMPOSER_FADE_BACKGROUND,
-  pickPlaceholder,
   type QueueEditState,
   slashArgStage,
   slashChipKindForItem,
@@ -62,13 +53,17 @@ import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-aff
 import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
+import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
+import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
+import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
+import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
-import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { QueuePanel } from './queue-panel'
@@ -123,13 +118,6 @@ export function ChatBar({
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore($activeSessionAwaitingInput)
-  // Pop-out is a shared, persisted state — but secondary windows (the Ctrl+Shift+N
-  // tiny window, subagent watch windows) always start docked and can't pop out:
-  // a floating composer makes no sense in a single-session side window, and it
-  // would otherwise write the shared atom and yank the main window's composer out.
-  const popoutAllowed = !isSecondaryWindow()
-  const poppedOut = useStore($composerPoppedOut) && popoutAllowed
-  const popoutPosition = useStore($composerPopoutPosition)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
@@ -144,38 +132,18 @@ export function ChatBar({
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
 
-  const handleComposerPopOut = useCallback(() => {
-    triggerHaptic('open')
-    setComposerPoppedOut(true)
-  }, [])
-
-  const handleComposerDock = useCallback(() => {
-    triggerHaptic('success')
-    setComposerPoppedOut(false)
-  }, [])
-
-  // Double-click the grab area toggles dock/float. Undocking restores the last
-  // position (the persisted atom is never cleared on dock).
-  const handleComposerToggle = useCallback(() => {
-    poppedOut ? handleComposerDock() : handleComposerPopOut()
-  }, [handleComposerDock, handleComposerPopOut, poppedOut])
-
+  // Pop-out engine: docked↔floating state, dock/float/toggle, drag gestures, and
+  // the on-screen re-clamp. Secondary windows can't pop out.
   const {
     dockProximity,
     dragging,
-    onPointerDown: onComposerGesturePointerDown
-  } = useComposerPopoutGestures({
-    composerRef,
-    onDock: handleComposerDock,
-    onPopOut: handleComposerPopOut,
-    poppedOut,
-    position: popoutPosition
-  })
+    handleComposerToggle,
+    onComposerGesturePointerDown,
+    popoutAllowed,
+    popoutPosition,
+    poppedOut
+  } = useComposerPopout({ composerRef })
 
-  const urlInputRef = useRef<HTMLInputElement | null>(null)
-
-  const [urlOpen, setUrlOpen] = useState(false)
-  const [urlValue, setUrlValue] = useState('')
   // Coordinator-owned: the draft engine reads the live queue-edit snapshot off
   // this ref (to suppress its stash while editing a queued prompt) and the queue
   // engine writes it — an explicit shared handle, not a back-reference.
@@ -188,8 +156,6 @@ export function ChatBar({
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
-  const newSessionPlaceholders = t.composer.newSessionPlaceholders
-  const followUpPlaceholders = t.composer.followUpPlaceholders
   const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
   const inputDisabled = disabled && !reconnecting
 
@@ -213,6 +179,13 @@ export function ChatBar({
     setComposerText,
     stashAt
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+
+  // "Add URL" dialog — open/value state, autofocus, and submit (host onAddUrl or
+  // an @url: directive into the draft).
+  const { openUrlDialog, setUrlOpen, setUrlValue, submitUrl, urlInputRef, urlOpen, urlValue } = useComposerUrlDialog({
+    insertText,
+    onAddUrl
+  })
 
   // The queue engine — queued turns, in-place editing, the shared drain lock,
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
@@ -282,79 +255,9 @@ export function ChatBar({
     stashAt
   })
 
-  // Resting placeholder: a starter for brand-new sessions, a continuation for
-  // existing ones. Picked once and only re-rolled when we genuinely move to a
-  // *different* conversation. Critically, the first id assignment of a freshly
-  // started session (null → id, on the first send) is treated as the same
-  // conversation so the placeholder doesn't visibly flip mid-stream.
-  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
-  )
-
-  const prevSessionIdRef = useRef(sessionId)
-
-  useEffect(() => {
-    const prev = prevSessionIdRef.current
-    prevSessionIdRef.current = sessionId
-
-    if (prev === sessionId) {
-      return
-    }
-
-    // null → id: the new session we're already in just got persisted. Keep the
-    // starter we showed instead of swapping to a follow-up under the user.
-    if (prev == null && sessionId) {
-      return
-    }
-
-    resetBrowseState(prev)
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
-
-  // When the transport is disabled it's because the gateway isn't open.
-  // Distinguish a cold start ("Starting Hermes...") from a dropped connection
-  // we're trying to restore. During reconnect, keep the textbox editable so a
-  // flaky network doesn't block drafting; only submit/backend actions stay
-  // disabled until the gateway is open again.
-  const placeholder = disabled
-    ? reconnecting
-      ? t.composer.placeholderReconnecting
-      : t.composer.placeholderStarting
-    : restingPlaceholder
-
-  useEffect(() => {
-    if (urlOpen) {
-      window.requestAnimationFrame(() => urlInputRef.current?.focus({ preventScroll: true }))
-    }
-  }, [urlOpen])
-
-  // Keep the floating box on-screen: re-clamp (with the real measured size +
-  // thread bounds) when it pops out and on every window resize — so a position
-  // persisted on a bigger/other monitor, a shrunk window, or now-wider sidebar
-  // can never strand it. The rAF pass re-clamps after layout settles (sidebar
-  // widths, fonts), so anyone loading in out of bounds is pulled back + saved
-  // even if the first measure was premature.
-  useEffect(() => {
-    if (!poppedOut) {
-      return undefined
-    }
-
-    const reclamp = (persist: boolean) => {
-      const el = composerRef.current
-      const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
-      setComposerPopoutPosition($composerPopoutPosition.get(), { area: readPopoutBounds(el), persist, size })
-    }
-
-    reclamp(true)
-    const raf = requestAnimationFrame(() => reclamp(true))
-    const onResize = () => reclamp(false)
-    window.addEventListener('resize', onResize)
-
-    return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('resize', onResize)
-    }
-  }, [poppedOut])
+  // Resting / reconnecting / starting placeholder text, re-rolled only on a real
+  // conversation change.
+  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
@@ -966,137 +869,13 @@ export function ChatBar({
     handleInputDrop
   } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, requestMainFocus })
 
-  // Hand a worktree off to the controller: open a fresh session anchored there,
-  // carrying the composer draft as its first turn. Clearing here means the draft
-  // travels to the new session instead of getting stashed under this one.
-  const openInWorktree = useCallback(
-    (path: string) => {
-      const text = draftRef.current
-      clearDraft()
-      clearComposerAttachments()
-      requestStartWorkSession(path, text)
-    },
-    [clearDraft]
-  )
+  // Branch / worktree hand-offs (CodingStatusRow). Owns the worktree open +
+  // branch-off/convert/list/switch actions; draft travels into the new session.
+  const { handleBranchOff, handleConvertBranch, handleListBranches, handleSwitchBranch, openInWorktree } =
+    useComposerBranch({ clearDraft, cwd, draftRef })
 
-  // Branch off into a NEW worktree (base = branch name, or current HEAD). A
-  // create failure throws back to the row (which toasts) before we touch the
-  // draft; a missing cwd / remote backend no-ops (the row hides the affordance).
-  const handleBranchOff = useCallback(
-    async (branch: string, base?: string) => {
-      const repoPath = cwd?.trim()
-      const result = repoPath && (await startWorkInRepo(repoPath, { base, branch, name: branch }))
-
-      if (result) {
-        openInWorktree(result.path)
-      }
-    },
-    [cwd, openInWorktree]
-  )
-
-  // Convert an EXISTING branch into a fresh worktree + session (no new branch).
-  // Mirrors handleBranchOff's hand-off: create the worktree, then open a session
-  // anchored there carrying the draft.
-  const handleConvertBranch = useCallback(
-    async (branch: string, path?: null | string, isDefault?: boolean) => {
-      if (path?.trim()) {
-        openInWorktree(path)
-
-        return
-      }
-
-      const repoPath = cwd?.trim()
-
-      if (repoPath && isDefault) {
-        await switchBranchInRepo(repoPath, branch)
-        openInWorktree(repoPath)
-
-        return
-      }
-
-      const result = repoPath && (await startWorkInRepo(repoPath, { existingBranch: branch }))
-
-      if (result) {
-        openInWorktree(result.path)
-      }
-    },
-    [cwd, openInWorktree]
-  )
-
-  const handleListBranches = useCallback(async () => {
-    const repoPath = cwd?.trim()
-
-    return repoPath ? listRepoBranches(repoPath) : []
-  }, [cwd])
-
-  const handleSwitchBranch = useCallback(
-    async (branch: string) => {
-      const repoPath = cwd?.trim()
-
-      if (repoPath) {
-        await switchBranchInRepo(repoPath, branch)
-      }
-    },
-    [cwd]
-  )
-
-  // Esc cancels the in-flight turn when the CHAT has focus — not just the
-  // composer input (which has its own handler above). Clicking into the
-  // transcript and hitting Esc now stops the run, matching the Stop button.
-  // Intentional only: we bail if (a) the composer/another field already
-  // handled Esc (defaultPrevented), (b) focus is in any input/textarea/
-  // contenteditable (you're typing, not stopping), or (c) a dialog/popover is
-  // open — Esc must close that overlay, never double as canceling the stream
-  // behind it. A latest-handler ref keeps the listener registered once.
-  const escCancelRef = useRef<(event: globalThis.KeyboardEvent) => void>(() => {})
-
-  escCancelRef.current = (event: globalThis.KeyboardEvent) => {
-    // `awaitingInput`: the turn is parked on a clarify / approval / sudo / secret
-    // prompt, which owns Esc (or is meant to persist) — never cancel the stream
-    // out from under it.
-    if (event.key !== 'Escape' || event.defaultPrevented || !busy || awaitingInput) {
-      return
-    }
-
-    const active = document.activeElement as HTMLElement | null
-
-    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
-      return
-    }
-
-    if (document.querySelector('[role="dialog"],[role="alertdialog"],[data-radix-popper-content-wrapper]')) {
-      return
-    }
-
-    event.preventDefault()
-    triggerHaptic('cancel')
-    void Promise.resolve(onCancel())
-  }
-
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => escCancelRef.current(event)
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
-
-  const submitUrl = () => {
-    const url = urlValue.trim()
-
-    if (!url) {
-      return
-    }
-
-    if (onAddUrl) {
-      onAddUrl(url)
-    } else {
-      insertText(`@url:${url}`)
-    }
-
-    triggerHaptic('success')
-    setUrlValue('')
-    setUrlOpen(false)
-  }
+  // Global Esc-to-cancel when the chat (not the composer input) has focus.
+  useComposerEscCancel({ awaitingInput, busy, onCancel })
 
   const {
     conversation,
@@ -1122,10 +901,7 @@ export function ChatBar({
   const contextMenu = (
     <ContextMenu
       onInsertText={insertText}
-      onOpenUrlDialog={() => {
-        triggerHaptic('open')
-        setUrlOpen(true)
-      }}
+      onOpenUrlDialog={openUrlDialog}
       onPasteClipboardImage={onPasteClipboardImage}
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}

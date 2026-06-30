@@ -27,6 +27,13 @@ BACKEND_THREAD_TITLE_RE = re.compile(
     r"(^|[^\w])(?:алекс|алек|ивчо|иво|alex|ivcho|ivo)(?:[^\w]|$)",
     re.IGNORECASE,
 )
+OWNER_THREAD_TITLE_RE = re.compile(
+    r"(^|[^\w])(?:"
+    r"емил\s+ломлиев|емо\s+ломлиев|emil\s+lomliev|"
+    r"емил|emil|емо(?!\s*(?:к\.?|кожухаров|kozhuharov)\b)"
+    r")(?:[^\w]|$)",
+    re.IGNORECASE,
+)
 KOZHUHAROV_TEXT_MENTION_RE = re.compile(
     r"(?<![\w<@-])@(кожухаров|емо\s+к|emo\s+k|kozhuharov)\b",
     re.IGNORECASE,
@@ -144,7 +151,8 @@ def lint_discord_thread_create_target(
 
     This is a safety guard for the Discord thread-creation tool, not a business
     router. It only looks at the already-authored thread title for exact
-    teammate labels such as "Алекс" / "Ивчо". It does not inspect business
+    teammate labels such as "Алекс" / "Ивчо" or owner labels such as
+    "Емо Ломлиев" / "Емил". It does not inspect business
     words like voucher, booking, backend, frontend, PBX, product, or
     reservation, and it does not decide where a case belongs.
     """
@@ -152,7 +160,24 @@ def lint_discord_thread_create_target(
     title = str(name or "")
     target_channel_id = str(channel_id or "").strip()
 
-    if not BACKEND_THREAD_TITLE_RE.search(title):
+    has_owner_title = bool(OWNER_THREAD_TITLE_RE.search(title))
+    has_backend_title = bool(BACKEND_THREAD_TITLE_RE.search(title))
+
+    if has_owner_title and target_channel_id != SKYVISION_CONTROL_TOWER_CHANNEL_ID:
+        return DiscordTargetLintResult(
+            ok=False,
+            blocked_reason="blocked_owner_route_back_thread_wrong_discord_lane",
+            expected_channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        )
+
+    if has_owner_title and not str(message_id or "").strip() and not str(initial_message or "").strip():
+        return DiscordTargetLintResult(
+            ok=False,
+            blocked_reason="blocked_owner_route_back_thread_missing_initial_message",
+            expected_channel_id=SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        )
+
+    if not has_backend_title:
         return DiscordTargetLintResult(ok=True)
 
     if target_channel_id != SKYVISION_BACKEND_CHANNEL_ID:

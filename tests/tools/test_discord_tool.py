@@ -617,6 +617,53 @@ class TestCreateThread:
         mock_req.assert_not_called()
 
     @patch("tools.discord_tool._discord_request")
+    def test_create_thread_blocks_owner_handoff_title_outside_control_tower(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+            name="SkyAI корекция – отговор за потенциални партньори към Емо",
+            initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+        ))
+
+        assert "error" in result
+        assert "blocked_owner_route_back_thread_wrong_discord_lane" in result["error"]
+        assert "1504852355588423801" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_allows_owner_handoff_title_in_control_tower(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "803", "name": "SkyAI корекция – отговор за потенциални партньори към Емо"},
+            {"id": "starter-803"},
+        ]
+
+        result = json.loads(discord_core(
+            action="create_thread",
+            channel_id="1504852355588423801",
+            name="SkyAI корекция – отговор за потенциални партньори към Емо",
+            initial_message="Емо, Пламенка предлага корекция за SkyAI.",
+        ))
+
+        assert result["success"] is True
+        assert result["thread_id"] == "803"
+        assert result["starter_message_sent"] is True
+        mock_req.assert_any_call(
+            "POST", "/channels/1504852355588423801/threads", "test-token",
+            body={
+                "name": "SkyAI корекция – отговор за потенциални партньори към Емо",
+                "auto_archive_duration": 1440,
+                "type": 11,
+            },
+        )
+        mock_req.assert_any_call(
+            "POST", "/channels/803/messages", "test-token",
+            body={"content": "Емо, Пламенка предлага корекция за SkyAI."},
+        )
+
+    @patch("tools.discord_tool._discord_request")
     def test_create_thread_blocks_backend_resolver_title_without_starter_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
 

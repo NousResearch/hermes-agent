@@ -1736,6 +1736,37 @@ class GoogleChatAdapter(BasePlatformAdapter):
         )
         await self.handle_message(event)
 
+    def _is_callback_user_authorized(self, source: Any) -> bool:
+        """Return whether a card-click caller may resolve a clarify/approval.
+
+        Fail-closed: if the runner auth path is unavailable, fall back to the
+        GOOGLE_CHAT_ALLOWED_USERS allowlist and GATEWAY_ALLOW_ALL_USERS. With
+        no allowlist and no allow-all flag, deny by default — never silently
+        let an unconfigured adapter authorize a gated action (cf. #24457).
+        """
+        caller_id = str(getattr(source, "user_id", "") or "").strip()
+        if not caller_id:
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "[GoogleChat] Falling back to env-only callback auth for %s",
+                    caller_id,
+                    exc_info=True,
+                )
+
+        allowed_csv = os.getenv("GOOGLE_CHAT_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            # Fail-closed: no allowlist means deny by default.
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        allowed = {uid.strip().lower() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed or caller_id.lower() in allowed
+
     async def _dispatch_clarify_card_click(
         self,
         *,
@@ -1745,9 +1776,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     ) -> None:
         if not clarify_id:
             return
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if callable(auth_fn) and not auth_fn(source):
+        if not self._is_callback_user_authorized(source):
             await self.send(
                 source.chat_id,
                 "⛔ You are not authorized to answer this prompt.",

@@ -675,6 +675,51 @@ class TestCardClickCallbacks:
         sent = adapter._create_message.await_args.args[1]["text"]
         assert "not authorized" in sent
 
+    @pytest.mark.asyncio
+    async def test_clarify_card_click_fails_closed_without_runner(self, adapter, monkeypatch):
+        # No runner wired → _is_callback_user_authorized must fall back to the
+        # env allowlist and deny by default (no silent authorize on a gated
+        # action). Regression for the fail-open bug where a missing auth_fn
+        # let any card click through.
+        from tools.clarify_gateway import register, wait_for_response
+
+        monkeypatch.delenv("GOOGLE_CHAT_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        clarify_id = "clarify-no-runner"
+        register(
+            clarify_id=clarify_id,
+            session_key="agent:main:google_chat:dm:spaces/S",
+            question="Pick one",
+            choices=["A", "B"],
+        )
+        adapter._clarify_state[clarify_id] = "agent:main:google_chat:dm:spaces/S"
+        # No _message_handler → no runner → auth_fn absent.
+        adapter._message_handler = None
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m/deny", "error": None})()
+        )
+
+        await adapter._dispatch_card_click(
+            {
+                "space": {"name": "spaces/S", "spaceType": "DIRECT_MESSAGE"},
+                "user": {"name": "users/999", "email": "sneaky@example.com"},
+                "message": {"name": "spaces/S/messages/CARD.CARD"},
+                "action": {
+                    "function": "hermes_clarify",
+                    "parameters": [
+                        {"key": "clarify_id", "value": clarify_id},
+                        {"key": "choice", "value": "A"},
+                    ],
+                },
+            }
+        )
+
+        assert wait_for_response(clarify_id, timeout=0.1) is None
+        assert clarify_id in adapter._clarify_state
+        sent = adapter._create_message.await_args.args[1]["text"]
+        assert "not authorized" in sent
+
 
 class TestConnectModes:
     @pytest.mark.asyncio

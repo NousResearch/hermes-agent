@@ -10423,13 +10423,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
-            # Run the agent
+            # Run the agent. Capture the session id that this run was launched
+            # against so post-run compression publication can be identity-guarded
+            # below; a /new or another lifecycle transition may move
+            # session_entry.session_id while the old run is still unwinding.
+            _run_start_session_id = session_entry.session_id
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
                 history=history,
                 source=source,
-                session_id=session_entry.session_id,
+                session_id=_run_start_session_id,
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
@@ -10538,12 +10542,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
-                session_entry.session_id = agent_result["session_id"]
-                self.session_store._save()
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding,
-                    source, session_entry, reason="agent-result-compression",
-                )
+                if session_entry.session_id == _run_start_session_id:
+                    session_entry.session_id = agent_result["session_id"]
+                    self.session_store._save()
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding,
+                        source, session_entry, reason="agent-result-compression",
+                    )
+                else:
+                    logger.info(
+                        "Skipping agent-result session split sync for %s because "
+                        "the session binding moved from %s to %s before "
+                        "compression finished",
+                        session_key or "?",
+                        _run_start_session_id,
+                        session_entry.session_id,
+                    )
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
             # Mattermost requires explicit per-platform opt-in because this is
@@ -17096,9 +17110,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_id, agent_session_id,
                 )
                 entry = self.session_store._entries.get(session_key)
+                _session_split_entry_persisted = False
                 if entry:
-                    entry.session_id = agent_session_id
-                    self.session_store._save()
+                    entry_session_id = getattr(entry, "session_id", None)
+                    if not _run_still_current():
+                        logger.info(
+                            "Skipping session split sync for stale run %s — "
+                            "generation %s is no longer current",
+                            session_key or "?",
+                            run_generation,
+                        )
+                    elif entry_session_id == agent_session_id:
+                        _session_split_entry_persisted = True
+                    elif entry_session_id != session_id:
+                        logger.info(
+                            "Skipping session split sync for %s because the "
+                            "session binding moved from %s to %s before "
+                            "compression finished",
+                            session_key or "?",
+                            session_id,
+                            entry_session_id,
+                        )
+                    else:
+                        entry.session_id = agent_session_id
+                        self.session_store._save()
+                        _session_split_entry_persisted = True
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it
@@ -17106,8 +17142,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # correct message_thread_id instead of routing to the General
                 # thread.  Failure here is non-fatal — we log and continue;
                 # worst case the message lands in General, which is the
-                # pre-fix behaviour.
-                if (
+                # pre-fix behaviour. Only do this after this run successfully
+                # published its session split; a stale /stop→/new predecessor
+                # must not mutate routing/binding state for the fresh session.
+                if _session_split_entry_persisted and (
                     getattr(source, "platform", None) == Platform.TELEGRAM
                     and getattr(source, "chat_type", None) == "dm"
                     and getattr(source, "thread_id", None) is None
@@ -17131,7 +17169,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Failed to restore thread_id from binding after session split",
                             exc_info=True,
                         )
-                if entry:
+                if _session_split_entry_persisted:
                     self._sync_telegram_topic_binding(
                         source, entry, reason="agent-run-compression",
                     )

@@ -307,6 +307,27 @@ describe('buildToolView title actions', () => {
     expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
   })
 
+  it('does not double the action verb when the context already starts with it', () => {
+    // A model-authored `context` that opens with the same verb the template
+    // prepends ("Running grep …") otherwise renders as "Running Running grep …".
+    const view = buildToolView(
+      part({
+        args: { context: 'Running grep -rn -i "bedrock" ~/.hermes/' },
+        result: undefined,
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title.startsWith('Running Running')).toBe(false)
+    expect(view.title).toBe('Running grep -rn -i "bedrock" ~/.hermes/')
+    expect(view.titleAction).toEqual({
+      prefix: '',
+      text: 'Running',
+      suffix: ' grep -rn -i "bedrock" ~/.hermes/'
+    })
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 

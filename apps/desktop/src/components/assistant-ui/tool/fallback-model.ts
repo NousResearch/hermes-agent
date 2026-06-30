@@ -1512,6 +1512,22 @@ function titlePartsFromAction(title: string, action?: string): ToolTitleParts {
   }
 }
 
+// A model-authored terminal `context`/`preview` sometimes already opens with
+// the verb the title template prepends ("Running grep …"), which renders as a
+// doubled "Running Running grep …". Drop a leading word that matches the action
+// we're about to prefix so the verb appears once.
+function withoutLeadingAction(value: string, action: string): string {
+  const verb = action.trim()
+  const text = value.trimStart()
+  const boundary = text.search(/\s/)
+
+  if (!verb || boundary < 0) {
+    return value
+  }
+
+  return text.slice(0, boundary).toLowerCase() === verb.toLowerCase() ? text.slice(boundary + 1).trimStart() : value
+}
+
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
@@ -1604,7 +1620,7 @@ function dynamicTitle(
         translateNow(
           'assistant.tool.titleTemplates.actionCommand',
           action,
-          compactPreview(summarizeShellCommand(command), 160)
+          withoutLeadingAction(compactPreview(summarizeShellCommand(command), 160), action)
         )
       )
     }

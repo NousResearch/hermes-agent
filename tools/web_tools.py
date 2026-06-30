@@ -682,14 +682,33 @@ async def web_extract_tool(
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
+        policy_blocked: List[Dict[str, Any]] = []
+        try:
+            from tools.website_policy import check_website_access
+        except Exception:
+            check_website_access = lambda _url: None  # noqa: E731
         for url in normalized_urls:
             if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address",
                 })
-            else:
-                safe_urls.append(url)
+                continue
+            blocked = check_website_access(url)
+            if blocked:
+                policy_blocked.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": blocked["message"],
+                    "blocked_by_policy": {
+                        "host": blocked["host"],
+                        "rule": blocked["rule"],
+                        "source": blocked["source"],
+                    },
+                })
+                continue
+            safe_urls.append(url)
 
         # Dispatch only safe URLs to the configured backend
         if not safe_urls:
@@ -761,9 +780,34 @@ async def web_extract_tool(
                     provider.extract, safe_urls, format=format
                 )
 
-        # Merge any SSRF-blocked results back in
-        if ssrf_blocked:
-            results = ssrf_blocked + results
+        # Re-check final provider URLs so redirects/canonicalization cannot
+        # bypass the central website policy on providers that do not enforce it
+        # internally.
+        if results:
+            filtered_results: List[Dict[str, Any]] = []
+            for result in results:
+                final_url = result.get("url", "")
+                blocked = check_website_access(final_url) if final_url else None
+                if blocked:
+                    filtered_results.append({
+                        "url": final_url,
+                        "title": result.get("title", ""),
+                        "content": "",
+                        "raw_content": "",
+                        "error": blocked["message"],
+                        "blocked_by_policy": {
+                            "host": blocked["host"],
+                            "rule": blocked["rule"],
+                            "source": blocked["source"],
+                        },
+                    })
+                else:
+                    filtered_results.append(result)
+            results = filtered_results
+
+        # Merge any blocked results back in
+        if ssrf_blocked or policy_blocked:
+            results = ssrf_blocked + policy_blocked + results
 
         response = {"results": results}
         

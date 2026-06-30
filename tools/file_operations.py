@@ -465,6 +465,11 @@ class FileOperations(ABC):
         ...
 
     @abstractmethod
+    def patch_verified(self, patch_content: str) -> PatchResult:
+        """Apply a verified anchored V4A-style patch."""
+        ...
+
+    @abstractmethod
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
@@ -1584,7 +1589,136 @@ class ShellFileOperations(FileOperations):
             # syntax-check ``lint`` so the agent can read both signals.
             lsp_diagnostics=write_result.lsp_diagnostics,
         )
-    
+
+    def patch_verified(self, patch_content: str) -> PatchResult:
+        """Apply verified anchored V4A update hunks.
+
+        The patch syntax reuses V4A update files, but each hunk must include a
+        numeric snapshot range in the ``@@`` hint, e.g. ``@@ 12..14 @@``. The
+        removed lines are treated as a local precondition; context lines are
+        used only to relocate/disambiguate the target and are never written
+        back. Adds/deletes/moves are intentionally left to V4A for now.
+        """
+        from tools import verified_patch_core as vp
+        from tools.patch_parser import OperationType, parse_v4a_patch
+
+        operations, parse_error = parse_v4a_patch(patch_content)
+        if parse_error:
+            return PatchResult(error=f"Failed to parse verified patch: {parse_error}")
+        if not operations:
+            return PatchResult(error="verified patch is empty")
+
+        resolved: Dict[str, str] = {}
+        grouped_ops: Dict[str, List[vp.VerifiedOperation]] = {}
+        range_re = re.compile(r"(?:replace\s+)?(?P<a>\d+)(?:\.\.(?P<b>\d+))?")
+
+        for op in operations:
+            if op.operation != OperationType.UPDATE:
+                return PatchResult(
+                    error=(
+                        "verified mode currently supports update hunks only; "
+                        "use mode='patch' for add/delete/move operations"
+                    )
+                )
+
+            path = self._expand_path(op.file_path)
+            if _is_write_denied(path):
+                return PatchResult(
+                    error=f"Write denied: '{path}' is a protected system/credential file."
+                )
+            if path not in resolved:
+                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+                read_result = self._exec(read_cmd)
+                if read_result.exit_code != 0:
+                    return PatchResult(error=f"Failed to read file: {path}")
+                content, _ = _strip_bom(read_result.stdout)
+                if "\x00" in content:
+                    return PatchResult(error=f"{path}: binary file, verified patch not applicable")
+                resolved[path] = content
+
+            for hunk in op.hunks:
+                hint = hunk.context_hint or ""
+                match = range_re.fullmatch(hint.strip())
+                if not match:
+                    return PatchResult(
+                        error=(
+                            f"{op.file_path}: verified hunk requires a numeric "
+                            "snapshot range in the @@ hint, e.g. @@ 12..14 @@"
+                        )
+                    )
+                start = int(match.group("a"))
+                old_lines = [line.content for line in hunk.lines if line.prefix == "-"]
+                if not old_lines:
+                    return PatchResult(
+                        error=f"{op.file_path}: verified hunk requires at least one '-' precondition line"
+                    )
+                end = int(match.group("b")) if match.group("b") else start + len(old_lines) - 1
+                if end - start + 1 != len(old_lines):
+                    return PatchResult(
+                        error=(
+                            f"{op.file_path}: @@ range {start}..{end} covers "
+                            f"{end - start + 1} lines but hunk has {len(old_lines)} '-' lines"
+                        )
+                    )
+
+                change_indexes = [
+                    i for i, line in enumerate(hunk.lines) if line.prefix in {"-", "+"}
+                ]
+                first_change = min(change_indexes)
+                last_change = max(change_indexes)
+                before = [
+                    line.content for line in hunk.lines[:first_change] if line.prefix == " "
+                ]
+                after = [
+                    line.content for line in hunk.lines[last_change + 1:] if line.prefix == " "
+                ]
+                new_lines = [line.content for line in hunk.lines if line.prefix == "+"]
+
+                grouped_ops.setdefault(path, []).append(
+                    vp.VerifiedOperation(
+                        kind="replace",
+                        start=start,
+                        end=end,
+                        old=tuple(old_lines),
+                        new=tuple(new_lines),
+                        before=tuple(before),
+                        after=tuple(after),
+                    )
+                )
+
+        staged: Dict[str, str] = {}
+        try:
+            for path, edits in grouped_ops.items():
+                staged[path] = vp.apply_operations(resolved[path], edits)
+        except vp.VerifiedPatchError as e:
+            return PatchResult(error=f"verified patch rejected: {e}")
+
+        files_modified: List[str] = []
+        combined_diff_parts: List[str] = []
+        last_lsp: Optional[str] = None
+        last_lint: Optional[Dict[str, Any]] = None
+        for path, new_content in staged.items():
+            content = resolved[path]
+            write_result = self.write_file(path, new_content)
+            if write_result.error:
+                return PatchResult(error=write_result.error)
+            combined_diff_parts.append(self._unified_diff(content, new_content, path))
+            lint_result = self._check_lint_delta(
+                path, pre_content=content, post_content=new_content
+            )
+            if lint_result:
+                last_lint = lint_result.to_dict()
+            last_lsp = write_result.lsp_diagnostics or last_lsp
+            files_modified.append(path)
+
+        return PatchResult(
+            success=True,
+            diff="\n".join(d for d in combined_diff_parts if d),
+            files_modified=files_modified,
+            lint=last_lint,
+            lsp_diagnostics=last_lsp,
+        )
+
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """
         Apply a V4A format patch.

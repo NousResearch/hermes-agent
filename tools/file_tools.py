@@ -1510,12 +1510,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     _paths_to_check = []
     if path:
         _paths_to_check.append(path)
-    if mode == "patch" and patch:
+    if mode in {"patch", "verified"} and patch:
         import re as _re
         from tools.path_security import has_traversal_component
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             v4a_path = _m.group(1).strip()
-            # V4A path headers come from patch CONTENT, not the explicit
+            # V4A/verified path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
             # in V4A headers: a legitimate multi-file patch from a single cwd
@@ -1599,6 +1599,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if not patch:
                     return tool_error("patch content required")
                 result = file_ops.patch_v4a(patch)
+            elif mode == "verified":
+                if not patch:
+                    return tool_error("patch content required for mode='verified'")
+                result = file_ops.patch_verified(patch)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1793,6 +1797,9 @@ PATCH_SCHEMA = {
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
         "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
         "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
+        "REQUIRED PARAMETERS: mode, patch.\n"
+        "VERIFIED MODE (mode='verified'): apply V4A-style update hunks with local "
+        "old-line preconditions and non-destructive context relocation. "
         "REQUIRED PARAMETERS: mode, patch."
     ),
     "parameters": {
@@ -1800,8 +1807,8 @@ PATCH_SCHEMA = {
         "properties": {
             "mode": {
                 "type": "string",
-                "enum": ["replace", "patch"],
-                "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+                "enum": ["replace", "patch", "verified"],
+                "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only. 'verified': V4A-style update hunks with @@ line range hints and '-' old-line preconditions.",
                 "default": "replace",
             },
             "path": {
@@ -1823,7 +1830,7 @@ PATCH_SCHEMA = {
             },
             "patch": {
                 "type": "string",
-                "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+                "description": "REQUIRED when mode='patch' or mode='verified'. V4A format patch content. For mode='verified', only Update File hunks are supported and each hunk must use a numeric @@ range hint (e.g. @@ 12..14 @@); '-' lines are mandatory old-content preconditions, context lines are non-destructive relocation evidence, and '+' lines are the replacement.",
             },
             "cross_profile": {
                 "type": "boolean",
@@ -1892,7 +1899,8 @@ def _handle_patch(args, **kw):
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
+        replace_all=args.get("replace_all", False), patch=args.get("patch"),
+        task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
     )

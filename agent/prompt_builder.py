@@ -834,7 +834,7 @@ PLATFORM_HINTS = {
         "You are on TrueConf, a video conferencing and messaging platform. "
         "HTML formatting is best — markdown is not reliably rendered. "
         "You can send media files natively: include MEDIA:/absolute/path/to/file in "
-        "your response and the file will be delivered as a native attachment."
+        "your response and the file will be delivered as a native attachment."),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "

@@ -1563,7 +1563,7 @@ def resolve_runtime_provider(
             or env_openrouter_base_url
         )
         if cfg_base_url and cfg_provider in {"auto", "custom"}:
-            has_custom_endpoint = True
+            has_custom_endpoint = not base_url_host_matches(cfg_base_url, "openrouter.ai")
         has_runtime_override = bool(explicit_api_key or explicit_base_url)
         should_use_pool = (
             requested_provider in {"openrouter", "auto"}

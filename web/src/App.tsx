@@ -539,7 +539,10 @@ export default function App() {
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+      <div
+        data-app-content
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0"
+      >
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"

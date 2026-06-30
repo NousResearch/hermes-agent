@@ -92,17 +92,15 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
 }
 
 function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
+  if (layoutWidthPx < 360) return 13;
+  if (layoutWidthPx <= 640) return 14;
+  if (layoutWidthPx < 720) return 12;
   if (layoutWidthPx < 1024) return 12;
   return 14;
 }
 
 function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
+  return layoutWidthPx <= 640 ? 1.2 : layoutWidthPx < 1024 ? 1.08 : 1.15;
 }
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
@@ -333,12 +331,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         aria-controls="chat-side-panel"
         className={cn(
           "shrink-0 rounded border border-current/20",
-          "px-2 py-1 text-xs font-medium tracking-wide",
+          "min-h-10 px-3 py-2 text-sm font-medium tracking-wide",
+          "sm:min-h-8 sm:px-2 sm:py-1 sm:text-xs",
           "text-text-secondary hover:text-midground hover:bg-midground/5",
         )}
       >
         <span className="inline-flex items-center gap-1.5">
-          <PanelRight className="h-3 w-3 shrink-0" />
+          <PanelRight className="h-4 w-4 shrink-0 sm:h-3 sm:w-3" />
           {modelToolsLabel}
         </span>
       </Button>,
@@ -949,6 +948,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           aria-label={modelToolsLabel}
           className={cn(
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "max-[640px]:w-[min(22rem,calc(100vw-1rem))]",
             "border-l border-current/20 text-midground",
             "bg-background-base/95",
             "transition-transform duration-200 ease-out",
@@ -1012,7 +1012,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
+    <div className="hermes-chat-page flex min-h-0 flex-1 flex-col gap-2">
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
@@ -1027,6 +1027,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
             "p-2 sm:p-3",
+            "max-[640px]:rounded-md max-[640px]:p-1.5",
           )}
           style={{
             backgroundColor: terminalBg,
@@ -1062,6 +1063,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
             className={cn(
+              "hermes-chat-copy-button",
               "absolute z-10",
               "normal-case tracking-normal font-normal",
               "rounded border border-current/30",

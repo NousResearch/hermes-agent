@@ -40,6 +40,12 @@ from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
+# Delegation profile support (lazy import to avoid circular deps)
+try:
+    from tools.delegation_profile import apply_profile
+except Exception:
+    apply_profile = None
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
@@ -683,6 +689,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    prompt_level: str = "full",
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -692,6 +699,13 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
+    if prompt_level == "goal_only":
+        # Minimal prompt — just the task and context
+        parts = [f"YOUR TASK:\n{goal}"]
+        if context and context.strip():
+            parts.append(f"\nCONTEXT:\n{context}")
+        return "\n".join(parts)
+
     parts = [
         "You are a focused subagent working on a specific delegated task.",
         "",
@@ -719,6 +733,10 @@ def _build_child_system_prompt(
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
     )
+    if prompt_level == "essential":
+        # Essential prompt — goal + context + completion instructions, no orchestrator block
+        return "\n".join(parts)
+
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -1114,6 +1132,10 @@ def _build_child_agent(
 
     delegation_cfg = _load_config()
 
+    # Resolve profile-driven settings
+    _profile_prompt_level = delegation_cfg.get("system_prompt", "full")
+    _profile_schema_trim = delegation_cfg.get("schema_trim", "none")
+
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
     # Note: enabled_toolsets=None means "all tools enabled" (the default),
@@ -1166,6 +1188,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        prompt_level=_profile_prompt_level,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1355,6 +1378,8 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # Stash profile-driven settings for schema trimming
+    child._delegate_schema_trim = _profile_schema_trim
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -3100,16 +3125,29 @@ def _load_config() -> dict:
 
         cfg = CLI_CONFIG.get("delegation") or {}
         if cfg:
-            return cfg
+            return _apply_profile_if_set(cfg)
     except Exception:
         pass
     try:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation") or {}
+        cfg = full.get("delegation") or {}
+        return _apply_profile_if_set(cfg)
     except Exception:
         return {}
+
+
+def _apply_profile_if_set(cfg: dict) -> dict:
+    """Apply delegation profile overrides if a profile key is configured.
+
+    Returns cfg unchanged if no profile is set or if
+    the delegation_profile module is not available.
+    """
+    profile_name = str(cfg.get("profile", "") or "").strip()
+    if profile_name and apply_profile is not None:
+        return apply_profile(profile_name, cfg)
+    return cfg
 
 
 # ---------------------------------------------------------------------------

@@ -245,3 +245,29 @@ WantedBy=default.target
         unit_file = tmp_path / "nonexistent.service"
         monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
         assert gw.systemd_unit_is_current(system=False) is False
+
+    def test_unreadable_unit_is_not_current(self, tmp_path, monkeypatch):
+        from hermes_cli import gateway as gw
+
+        class UnreadableUnit:
+            def exists(self):
+                return True
+
+            def read_text(self, *args, **kwargs):
+                raise PermissionError("permission denied")
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: UnreadableUnit())
+
+        assert gw.systemd_unit_is_current(system=True) is False
+
+    def test_unreadable_unit_user_is_absent(self):
+        from hermes_cli import gateway as gw
+
+        class UnreadableUnit:
+            def exists(self):
+                return True
+
+            def read_text(self, *args, **kwargs):
+                raise PermissionError("permission denied")
+
+        assert gw._read_systemd_user_from_unit(UnreadableUnit()) is None

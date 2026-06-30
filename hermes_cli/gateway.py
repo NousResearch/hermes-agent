@@ -2262,7 +2262,12 @@ def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
     if not unit_path.exists():
         return None
 
-    for line in unit_path.read_text(encoding="utf-8").splitlines():
+    try:
+        text = unit_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    for line in text.splitlines():
         if line.startswith("User="):
             value = line.split("=", 1)[1].strip()
             return value or None
@@ -2813,8 +2818,11 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
-    installed = unit_path.read_text(encoding="utf-8")
-    expected_user = _read_systemd_user_from_unit(unit_path) if system else None
+    try:
+        installed = unit_path.read_text(encoding="utf-8")
+        expected_user = _read_systemd_user_from_unit(unit_path) if system else None
+    except OSError:
+        return False
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Normalize out directives that older systemd versions silently drop
     # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by

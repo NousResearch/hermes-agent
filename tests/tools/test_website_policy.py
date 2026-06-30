@@ -449,6 +449,98 @@ class TestWebToolPolicy:
         assert result["results"][0]["content"] == ""
         assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
 
+    @pytest.mark.asyncio
+    async def test_web_extract_blocks_policy_url_before_non_firecrawl_provider(self, monkeypatch):
+        from tools import web_tools
+        from plugins.web.tavily import provider as tavily_provider
+
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                pytest.fail("tavily should not run for blocked URL")
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "tavily")
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_provider",
+            lambda _name: tavily_provider.TavilyWebSearchProvider(),
+        )
+        monkeypatch.setattr(
+            "tools.website_policy.check_website_access",
+            lambda url: {
+                "host": "blocked.test",
+                "rule": "blocked.test",
+                "source": "config",
+                "message": "Blocked by website policy",
+            },
+        )
+        monkeypatch.setattr(tavily_provider.os, "getenv", lambda key, default=None: "fake-key")
+        monkeypatch.setattr("httpx.post", lambda *a, **k: FakeResponse())
+
+        result = json.loads(await web_tools.web_extract_tool(["https://blocked.test/private"]))
+
+        assert result["results"][0]["url"] == "https://blocked.test/private"
+        assert result["results"][0]["content"] == ""
+        assert "Blocked by website policy" in result["results"][0]["error"]
+        assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
+
+    @pytest.mark.asyncio
+    async def test_web_extract_blocks_policy_final_url_from_non_firecrawl_provider(self, monkeypatch):
+        from tools import web_tools
+        from plugins.web.tavily import provider as tavily_provider
+
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "results": [
+                        {
+                            "url": "https://blocked.test/final",
+                            "title": "Blocked",
+                            "raw_content": "secret content",
+                        }
+                    ]
+                }
+
+        def fake_check(url):
+            if url == "https://allowed.test/start":
+                return None
+            if url == "https://blocked.test/final":
+                return {
+                    "host": "blocked.test",
+                    "rule": "blocked.test",
+                    "source": "config",
+                    "message": "Blocked by website policy",
+                }
+            pytest.fail(f"unexpected URL checked: {url}")
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "tavily")
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_provider",
+            lambda _name: tavily_provider.TavilyWebSearchProvider(),
+        )
+        monkeypatch.setattr("tools.website_policy.check_website_access", fake_check)
+        monkeypatch.setattr(tavily_provider.os, "getenv", lambda key, default=None: "fake-key")
+        monkeypatch.setattr("httpx.post", lambda *a, **k: FakeResponse())
+
+        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test/start"]))
+
+        assert result["results"][0]["url"] == "https://blocked.test/final"
+        assert result["results"][0]["content"] == ""
+        assert "Blocked by website policy" in result["results"][0]["error"]
+        assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
+
 
 def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypatch):
     """Malformed config with default path should fail open (return None), not crash."""

@@ -353,6 +353,56 @@ class TestUpdateJob:
         assert fetched["schedule"]["minutes"] == 120
         assert fetched["schedule_display"] == "every 120m"
 
+    def test_resaving_same_interval_schedule_preserves_due_run(self, tmp_cron_dir, monkeypatch):
+        base = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+        due_at = (base + timedelta(hours=1)).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: base)
+        job = create_job(prompt="Hourly report", schedule="every 1h")
+
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_at
+        save_jobs(jobs)
+
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: base + timedelta(hours=1, seconds=10),
+        )
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Hourly report v2",
+                "schedule": parse_schedule("every 1h"),
+            },
+        )
+
+        assert updated["next_run_at"] == due_at
+        assert get_job(job["id"])["next_run_at"] == due_at
+
+    def test_resaving_same_cron_schedule_preserves_due_run(self, tmp_cron_dir, monkeypatch):
+        base = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+        due_at = (base + timedelta(hours=1)).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: base)
+        job = create_job(prompt="Hourly cron report", schedule="0 * * * *")
+
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_at
+        save_jobs(jobs)
+
+        monkeypatch.setattr(
+            "cron.jobs._hermes_now",
+            lambda: base + timedelta(hours=1, seconds=10),
+        )
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Hourly cron report v2",
+                "schedule": parse_schedule("0 * * * *"),
+            },
+        )
+
+        assert updated["next_run_at"] == due_at
+        assert get_job(job["id"])["next_run_at"] == due_at
+
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
         assert job["enabled"] is True

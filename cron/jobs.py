@@ -847,6 +847,30 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def _schedule_run_identity(schedule: Any) -> Tuple[Any, ...]:
+    """Return the fields that affect next-run calculation for a schedule."""
+    if not isinstance(schedule, dict):
+        return ("raw", schedule)
+
+    kind = schedule.get("kind")
+    if kind == "interval":
+        return ("interval", schedule.get("minutes"))
+    if kind == "cron":
+        return ("cron", schedule.get("expr"))
+    if kind == "once":
+        return ("once", schedule.get("run_at"))
+    return (
+        "unknown",
+        tuple(
+            sorted(
+                (key, value)
+                for key, value in schedule.items()
+                if key != "display"
+            )
+        ),
+    )
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1104,6 +1128,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = _normalize_workdir(_wd)
 
             previous_inference_axes = _normalized_inference_axes(job)
+            previous_schedule_identity = _schedule_run_identity(job.get("schedule"))
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
@@ -1127,7 +1152,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     "schedule_display",
                     updated_schedule.get("display", updated.get("schedule_display")),
                 )
-                if updated.get("state") != "paused":
+                scheduling_inputs_changed = (
+                    _schedule_run_identity(updated_schedule)
+                    != previous_schedule_identity
+                )
+                if scheduling_inputs_changed and updated.get("state") != "paused":
                     updated["next_run_at"] = compute_next_run(updated_schedule)
 
             if inference_fields_changed:

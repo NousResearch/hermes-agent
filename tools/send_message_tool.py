@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -136,6 +137,12 @@ async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs)
                 _sanitize_error_text(exc),
             )
             await asyncio.sleep(delay)
+
+
+class _RichMsg:
+    """Minimal message-id carrier for sendRichMessage results."""
+    __slots__ = ("message_id",)
+    def __init__(self, mid: int): self.message_id = mid
 
 
 SEND_MESSAGE_SCHEMA = {
@@ -1109,7 +1116,39 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         last_msg = None
         warnings = []
 
-        if formatted.strip():
+        # ── Bot API 10.1 rich send fast-path ───────────────────────
+        # sendRichMessage preserves tables, task lists, math, etc.
+        # Falls through to legacy MarkdownV2 on any failure.
+        _rich_ok = False
+        if not _has_html and message.strip() and len(message) <= 32768:
+            try:
+                if inspect.iscoroutinefunction(getattr(bot, "do_api_request", None)):
+                    rich_payload: dict = {
+                        "chat_id": int_chat_id,
+                        "rich_message": {"markdown": message},
+                    }
+                    rich_payload.update(
+                        {k: v for k, v in thread_kwargs.items() if v is not None}
+                    )
+                    if disable_link_previews:
+                        rich_payload["link_preview_options"] = {"is_disabled": True}
+                    rich_result = await bot.do_api_request(
+                        "sendRichMessage", api_kwargs=rich_payload
+                    )
+                    rich_msg_id = None
+                    if isinstance(rich_result, dict):
+                        rich_msg_id = rich_result.get("message_id") or (
+                            (rich_result.get("result") or {}).get("message_id")
+                        )
+                    else:
+                        rich_msg_id = getattr(rich_result, "message_id", None)
+                    if rich_msg_id is not None:
+                        last_msg = _RichMsg(rich_msg_id)
+                        _rich_ok = True
+            except Exception:
+                pass  # Fall through to legacy MarkdownV2
+
+        if not _rich_ok and formatted.strip():
             try:
                 last_msg = await _send_telegram_message_with_retry(
                     bot,

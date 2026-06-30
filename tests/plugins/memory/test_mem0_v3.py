@@ -1,8 +1,10 @@
 """Tests for Mem0 v3 API — new tool names, paginated responses, update/delete tools."""
 
 import json
+import time
 import pytest
 
+import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
 
 
@@ -316,6 +318,31 @@ class TestMem0Prefetch:
         provider = self._make_provider(backend)
         result = provider.prefetch("where do I live?")
         assert "lives in Berlin" in result
+
+    def test_on_turn_start_queues_current_query(self):
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        provider = self._make_provider(backend)
+        provider.on_turn_start(1, "where do I live?")
+        provider._prefetch_thread.join(timeout=1)
+        result = provider.prefetch("where do I live?")
+        assert "lives in Berlin" in result
+        assert len([c for c in backend.captured if c[0] == "search"]) == 1
+
+    def test_slow_prefetch_returns_quickly(self, monkeypatch):
+        class SlowBackend(FakeBackend):
+            def search(self, query, *, filters, top_k=10, rerank=True):
+                time.sleep(0.2)
+                return super().search(query, filters=filters, top_k=top_k, rerank=rerank)
+
+        monkeypatch.setattr(mem0_plugin, "_PREFETCH_WAIT_SECS", 0.01)
+        provider = self._make_provider(
+            SlowBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        )
+        started = time.monotonic()
+        assert provider.prefetch("where do I live?") == ""
+        assert time.monotonic() - started < 0.1
+        provider._prefetch_thread.join(timeout=1)
+        assert "lives in Berlin" in provider.prefetch("where do I live?")
 
     def test_prefetch_empty_results_returns_empty(self):
         backend = FakeBackend(search_results=[])

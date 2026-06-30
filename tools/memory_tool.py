@@ -121,6 +121,12 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
+    # After this many failed consolidation attempts (overflow / zero-match) in
+    # ONE turn, stop instructing the model to "retry in this turn" and return a
+    # terminal "save skipped" result so a fragile replace/add can't loop the
+    # turn to budget exhaustion and suppress the user's reply (issue #42405).
+    _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
+
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
@@ -128,6 +134,36 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Per-turn counter of failed at-capacity consolidation attempts; reset
+        # at each turn boundary by reset_consolidation_failures() (#42405).
+        self._consolidation_failures = 0
+
+    def reset_consolidation_failures(self) -> None:
+        """Reset the per-turn consolidation-failure counter (call at turn start)."""
+        self._consolidation_failures = 0
+
+    def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """Count an at-capacity consolidation failure and degrade gracefully.
+
+        Under the per-turn cap, return ``response`` unchanged (it already tells
+        the model how to self-correct + retry in this turn). Once the cap is
+        exceeded, drop the retry instruction and return a TERMINAL result so the
+        model stops looping memory calls and proceeds to answer the user — a
+        failed memory side effect must never block the turn's reply (#42405).
+        """
+        self._consolidation_failures += 1
+        if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
+            return response
+        return {
+            "success": False,
+            "done": True,
+            "error": (
+                f"Memory consolidation failed {self._consolidation_failures} times "
+                "this turn. Stop retrying memory calls — leave memory unchanged for "
+                "now and continue with your reply to the user. The fact can be saved "
+                "in a later turn."
+            ),
+        }
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -330,8 +366,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                previews = [e[:80] + ("..." if len(e) > 80 else "") for e in entries]
-                return {
+                return self._consolidation_failure({
                     "success": False,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
@@ -340,10 +375,9 @@ class MemoryStore:
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
-                    "previews": previews,
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
-                }
+                })
 
             entries.append(content)
             self._set_entries(target, entries)
@@ -374,19 +408,17 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                previews = [e[:80] + ("..." if len(e) > 80 else "") for e in entries]
-                return {
+                return self._consolidation_failure({
                     "success": False,
-                    "error": f"No entry matched '{old_text}'. Check the previews below and retry with the exact text of the entry you want to replace.",
-                    "previews": previews,
+                    "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to replace.",
                     "current_entries": entries,
-                }
+                })
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = self._previews([e for _, e in matches])
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -404,7 +436,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return {
+                return self._consolidation_failure({
                     "success": False,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
@@ -414,7 +446,7 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
-                }
+                })
 
             entries[idx] = new_content
             self._set_entries(target, entries)
@@ -437,19 +469,17 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                previews = [e[:80] + ("..." if len(e) > 80 else "") for e in entries]
-                return {
+                return self._consolidation_failure({
                     "success": False,
-                    "error": f"No entry matched '{old_text}'. Check the previews below and retry with the exact text of the entry you want to remove.",
-                    "previews": previews,
+                    "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to remove.",
                     "current_entries": entries,
-                }
+                })
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one
                 unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = self._previews([e for _, e in matches])
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -554,7 +584,7 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
             if new_total > limit:
                 current = self._char_count(target)
-                return {
+                return self._consolidation_failure({
                     "success": False,
                     "error": (
                         f"After applying all {len(operations)} operations, memory would be at "
@@ -563,7 +593,7 @@ class MemoryStore:
                     ),
                     "current_entries": self._entries_for(target),
                     "usage": f"{current:,}/{limit:,}",
-                }
+                })
 
             # Commit.
             self._set_entries(target, working)
@@ -575,12 +605,12 @@ class MemoryStore:
         """Build a batch-abort error that reports live (uncommitted) state."""
         current = self._char_count(target)
         limit = self._char_limit(target)
-        return {
+        return self._consolidation_failure({
             "success": False,
             "error": message + " No operations were applied (batch is all-or-nothing).",
             "current_entries": self._entries_for(target),
             "usage": f"{current:,}/{limit:,}",
-        }
+        })
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -597,7 +627,16 @@ class MemoryStore:
 
     # -- Internal helpers --
 
+    @staticmethod
+    def _previews(entries: List[str], width: int = 80) -> List[str]:
+        """Truncated one-line previews of entries for error feedback."""
+        return [e[:width] + ("..." if len(e) > width else "") for e in entries]
+
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+        # A successful write means the consolidation loop made progress, so the
+        # per-turn failure budget resets (the cap counts consecutive failures,
+        # not lifetime ones within a turn) (#42405).
+        self._consolidation_failures = 0
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)

@@ -175,7 +175,8 @@ export const zhHant = defineLocale({
     showRightSidebar: '顯示右側邊欄',
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
-    openSettings: '開啟設定'
+    openSettings: '開啟設定',
+    openStarmap: '開啟記憶圖譜'
   },
 
   language: {
@@ -308,6 +309,8 @@ export const zhHant = defineLocale({
         restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
         scaleTitle: '大小',
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
+        roamTitle: '漫遊',
+        roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
         on: '開啟',
         off: '關閉',
         chooseTitle: '選擇寵物',
@@ -834,6 +837,21 @@ export const zhHant = defineLocale({
     failedToUpdate: name => `更新 ${name} 失敗`
   },
 
+  starmap: {
+    title: '記憶圖譜',
+    subtitle: (nodes, clusters) => `${clusters} 個類別中的 ${nodes} 個技能`,
+    close: '關閉記憶圖譜',
+    refresh: '重新整理',
+    memory: '記憶',
+    filterAll: '全部',
+    filterUsed: '已使用',
+    filterLearned: '已學習',
+    viewGraph: '圖譜',
+    loadFailed: '無法載入記憶圖譜',
+    loading: '載入中…',
+    emptyTitle: '尚無學習內容',
+    emptyDesc: '當 Hermes 為你的工作建立技能與記憶時，會顯示在這裡。'
+  },
   agents: {
     close: '關閉代理',
     title: '派生樹',
@@ -1500,6 +1518,8 @@ export const zhHant = defineLocale({
     stopDictation: '停止聽寫',
     transcribingDictation: '正在轉寫聽寫',
     voiceDictation: '語音聽寫',
+    speakReplies: '朗讀回覆',
+    stopSpeakingReplies: '停止朗讀回覆',
     lookupLoading: '查詢中…',
     lookupNoMatches: '沒有相符項目。',
     lookupTry: '試試',
@@ -1900,9 +1920,29 @@ export const zhHant = defineLocale({
       running: count => `${count} 個執行中`,
       cron: '排程',
       openCron: '開啟排程工作',
+      starmap: '記憶圖譜',
+      openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
       currentTurnElapsed: '目前回合已用時間',
       contextUsage: '上下文使用量',
+      contextUsagePanel: {
+        categories: {
+          conversation: '對話',
+          mcp: 'MCP',
+          memory: '記憶',
+          rules: '規則',
+          skills: '技能',
+          subagent_definitions: '子代理定義',
+          system_prompt: '系統提示詞',
+          tool_definitions: '工具定義'
+        },
+        empty: '尚無上下文資料',
+        loading: '正在載入明細…',
+        percentFull: percent => `已用 ${percent}%`,
+        title: '上下文使用量',
+        tokenSummary: (used, max) => `${used} / ${max} Tokens`
+      },
+      openContextUsage: '開啟上下文使用量明細',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',

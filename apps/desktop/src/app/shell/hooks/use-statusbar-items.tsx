@@ -3,6 +3,7 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -365,8 +366,13 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: copy.contextUsage,
-        variant: 'text'
+        menuAlign: 'end',
+        menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
+        menuContent: (
+          <ContextUsagePanel currentUsage={currentUsage} requestGateway={requestGateway} sessionId={activeSessionId} />
+        ),
+        title: copy.openContextUsage,
+        variant: 'menu'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
@@ -402,18 +408,21 @@ export function useStatusbarItems({
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
+      activeSessionId,
+      backendVersionItem,
       busy,
       chatOpen,
+      clientVersionItem,
       contextBar,
       contextUsage,
       copy,
+      currentUsage,
+      requestGateway,
       sessionStartedAt,
       showYoloToggle,
       terminalTakeover,
       toggleYolo,
       turnStartedAt,
-      clientVersionItem,
-      backendVersionItem,
       yoloActive
     ]
   )

@@ -1105,6 +1105,105 @@ class TestSessionEntryFromDictTraversalValidation:
             SessionEntry.from_dict(self._entry(session_key="agent:main:good/sub"))
 
 
+class TestDingTalkSlashChatIdSessionKey:
+    """Regression: DingTalk DM chat_ids containing '/' must produce path-safe
+    session keys and survive the _is_path_unsafe validation on reload.
+
+    Fixes #55617 — DingTalk DM session_key rejected as directory traversal.
+    """
+
+    DINGTALK_CHAT_ID = "cidNcWXuYmxUGBIug3mN5iy/9w/Ez8547TrWG+V8QP0w/E="
+
+    def test_build_session_key_encodes_slash(self):
+        """build_session_key must percent-encode '/' in DingTalk chat_ids."""
+        source = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id=self.DINGTALK_CHAT_ID,
+            chat_type="dm",
+        )
+        key = build_session_key(source)
+        assert "/" not in key, (
+            f"Session key contains unencoded '/': {key!r}"
+        )
+        assert "\\" not in key
+        assert "%2F" in key  # slash must be percent-encoded
+
+    def test_build_session_key_stable_across_calls(self):
+        """Same chat_id must always produce the same key."""
+        source = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id=self.DINGTALK_CHAT_ID,
+            chat_type="dm",
+        )
+        assert build_session_key(source) == build_session_key(source)
+
+    def test_session_key_passes_path_unsafe_check(self):
+        """The key built from a slash-containing DingTalk chat_id must NOT be
+        flagged by _is_path_unsafe (i.e. it must load cleanly from disk)."""
+        from gateway.session import _is_path_unsafe
+        source = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id=self.DINGTALK_CHAT_ID,
+            chat_type="dm",
+        )
+        key = build_session_key(source)
+        assert not _is_path_unsafe(key), (
+            f"_is_path_unsafe incorrectly flagged key: {key!r}"
+        )
+
+    def test_session_entry_round_trips_with_slash_chat_id(self):
+        """A SessionEntry built from a DingTalk-style key must survive
+        to_dict() → from_dict() without raising ValueError."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        source = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id=self.DINGTALK_CHAT_ID,
+            chat_type="dm",
+        )
+        key = build_session_key(source)
+        entry = SessionEntry(
+            session_key=key,
+            session_id="abc-123",
+            created_at=datetime(2026, 1, 1),
+            updated_at=datetime(2026, 1, 1),
+            origin=source,
+        )
+        # Must not raise ValueError("potential directory traversal")
+        restored = SessionEntry.from_dict(entry.to_dict())
+        assert restored.session_key == key
+        assert restored.session_id == "abc-123"
+
+    def test_normal_platform_ids_unchanged(self):
+        """IDs from platforms that don't use '/' (Telegram, Discord, etc.) must
+        produce byte-identical keys before and after the sanitization change."""
+        cases = [
+            (Platform.TELEGRAM, "99", "dm", "agent:main:telegram:dm:99"),
+            (Platform.DISCORD, "guild-123", "group", "agent:main:discord:group:guild-123"),
+            (Platform.SLACK, "C0123456", "group", "agent:main:slack:group:C0123456"),
+        ]
+        for platform, chat_id, chat_type, expected in cases:
+            source = SessionSource(
+                platform=platform,
+                chat_id=chat_id,
+                chat_type=chat_type,
+            )
+            assert build_session_key(source) == expected, (
+                f"Key changed for {platform.value}:{chat_id}"
+            )
+
+    def test_group_chat_with_slash_in_chat_id(self):
+        """Slash-containing IDs in group/channel sessions are also encoded."""
+        source = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id="cidNcWXuYmxUGBIug3mN5iy/9w==",
+            chat_type="group",
+        )
+        key = build_session_key(source)
+        assert "/" not in key
+        assert "%2F" in key
+
+
 class TestEnsureLoadedSkipsInvalidEntries:
     """Regression: one bad sessions.json entry must not block valid entries from loading."""
 

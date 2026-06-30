@@ -116,8 +116,12 @@ export function SidebarSessionRow({
   const onPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (!mobileStandalone || event.pointerType !== 'touch') return
     longPressFired.current = false
-    pressOrigin.current = { x: event.clientX, y: event.clientY }
+    // clearLongPress FIRST — it nulls pressOrigin, so we have to set
+    // pressOrigin AFTER (Playwright caught the previous ordering bug,
+    // where pressOrigin was wiped immediately and the movement-cancel
+    // path short-circuited because !pressOrigin was always true).
     clearLongPress()
+    pressOrigin.current = { x: event.clientX, y: event.clientY }
     // 700ms — well past iOS's natural tap window (~150ms) and past any
     // user's "deliberate firm tap" (~300-400ms). A real pin gesture is a
     // held press, not a slow tap.

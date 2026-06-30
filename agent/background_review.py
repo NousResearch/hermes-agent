@@ -725,10 +725,17 @@ def _run_review_in_thread(
                 clear_thread_tool_whitelist,
             )
 
+            # Gate the built-in memory tool on the profile's memory_enabled flag.
+            # Hardcoding ["memory", "skills"] granted the review LLM the MEMORY.md
+            # read/write tool even when a profile set memory_enabled: false,
+            # contaminating a memory-disabled profile (#54937 layer 2).
+            review_toolsets = ["skills"]
+            if review_agent._memory_enabled or review_agent._user_profile_enabled:
+                review_toolsets.insert(0, "memory")
             review_whitelist = {
                 t["function"]["name"]
                 for t in get_tool_definitions(
-                    enabled_toolsets=["memory", "skills"],
+                    enabled_toolsets=review_toolsets,
                     quiet_mode=True,
                 )
             }

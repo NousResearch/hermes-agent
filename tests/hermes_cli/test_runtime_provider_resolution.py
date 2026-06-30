@@ -2879,6 +2879,78 @@ class TestVertexRuntimeResolution:
         with pytest.raises(rp.AuthError, match="ANTHROPIC_VERTEX_PROJECT_ID"):
             rp.resolve_runtime_provider(requested="vertex")
 
+    def test_vertex_reads_project_and_region_from_config_yaml(self, monkeypatch):
+        """Config-only path: vertex.project_id / vertex.region in config.yaml
+        should be enough when no env vars are set (regression test for PR review)."""
+        monkeypatch.delenv("ANTHROPIC_VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("GCLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("CLOUD_ML_REGION", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "vertex", "default": "claude-sonnet-4-6"})
+        monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        # Patch load_config in auth.py to return a config with vertex section
+        import hermes_cli.auth as auth_mod
+        monkeypatch.setattr(
+            auth_mod, "resolve_vertex_anthropic_runtime_credentials",
+            lambda: {
+                "provider": "vertex",
+                "api_key": "gcp-adc",
+                "base_url": "https://aiplatform.googleapis.com",
+                "project_id": "config-project",
+                "region": "europe-west4",
+                "source": "gcp-adc",
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="vertex")
+
+        assert resolved["provider"] == "vertex"
+        assert resolved["project_id"] == "config-project"
+        assert resolved["region"] == "europe-west4"
+
+    def test_vertex_credential_resolver_falls_back_to_config_yaml(self, monkeypatch):
+        """resolve_vertex_anthropic_runtime_credentials reads vertex.project_id
+        and vertex.region from config.yaml when env vars are absent."""
+        monkeypatch.delenv("ANTHROPIC_VERTEX_PROJECT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("GCLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("CLOUD_ML_REGION", raising=False)
+
+        import hermes_cli.auth as auth_mod
+
+        # Patch load_config inside auth.py to return our test config
+        monkeypatch.setattr(
+            auth_mod, "resolve_vertex_anthropic_runtime_credentials",
+            auth_mod.resolve_vertex_anthropic_runtime_credentials,  # keep real fn
+        )
+
+        # We need to patch the config loader that the function imports
+        _fake_config = {"vertex": {"project_id": "yaml-project", "region": "asia-southeast1"}}
+        from hermes_cli import config as config_mod
+        monkeypatch.setattr(config_mod, "load_config", lambda: _fake_config)
+
+        creds = auth_mod.resolve_vertex_anthropic_runtime_credentials()
+        assert creds["project_id"] == "yaml-project"
+        assert creds["region"] == "asia-southeast1"
+
+    def test_vertex_env_vars_take_precedence_over_config_yaml(self, monkeypatch):
+        """Env vars should win over config.yaml vertex section."""
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "env-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "us-central1")
+
+        import hermes_cli.auth as auth_mod
+        _fake_config = {"vertex": {"project_id": "yaml-project", "region": "asia-southeast1"}}
+        from hermes_cli import config as config_mod
+        monkeypatch.setattr(config_mod, "load_config", lambda: _fake_config)
+
+        creds = auth_mod.resolve_vertex_anthropic_runtime_credentials()
+        assert creds["project_id"] == "env-project"
+        assert creds["region"] == "us-central1"
+
 
 # ----------------------------------------------------------------------
 # GitHub #27132 — provider aliases (ollama/vllm/llamacpp/llama-cpp) must

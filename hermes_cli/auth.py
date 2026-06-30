@@ -6476,11 +6476,18 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
 
 
 def resolve_vertex_anthropic_runtime_credentials() -> Dict[str, Any]:
-    """Resolve project/region for AnthropicVertex via ADC + Vertex env hints."""
+    """Resolve project/region for AnthropicVertex via ADC + Vertex env hints.
+
+    Resolution order (mirrors Bedrock's ``bedrock.region`` pattern):
+      1. Environment variables (via ``.env`` or shell)
+      2. ``vertex.project_id`` / ``vertex.region`` in ``config.yaml``
+      3. Default region ``"global"`` when no region is set anywhere
+    """
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_cli.config import get_env_value, load_config
     except Exception:
         get_env_value = None
+        load_config = None
 
     def _read_env(name: str) -> str:
         if get_env_value is not None:
@@ -6492,12 +6499,29 @@ def resolve_vertex_anthropic_runtime_credentials() -> Dict[str, Any]:
                 pass
         return str(os.getenv(name, "")).strip()
 
+    # Read config.yaml vertex section (mirrors bedrock_cfg pattern)
+    _vertex_cfg: Dict[str, Any] = {}
+    if load_config is not None:
+        try:
+            _vertex_cfg = load_config().get("vertex", {})
+            if not isinstance(_vertex_cfg, dict):
+                _vertex_cfg = {}
+        except Exception:
+            pass
+
+    # Project ID: env vars first, then config.yaml vertex.project_id
     project_id = (
         _read_env("ANTHROPIC_VERTEX_PROJECT_ID")
         or _read_env("GOOGLE_CLOUD_PROJECT")
         or _read_env("GCLOUD_PROJECT")
+        or str(_vertex_cfg.get("project_id") or "").strip()
     )
-    region = _read_env("CLOUD_ML_REGION") or "global"
+    # Region: env var first, then config.yaml vertex.region, then "global"
+    region = (
+        _read_env("CLOUD_ML_REGION")
+        or str(_vertex_cfg.get("region") or "").strip()
+        or "global"
+    )
     credentials_path = _read_env("GOOGLE_APPLICATION_CREDENTIALS")
     pconfig = PROVIDER_REGISTRY.get("vertex")
     base_url = (
@@ -6507,8 +6531,9 @@ def resolve_vertex_anthropic_runtime_credentials() -> Dict[str, Any]:
 
     if not project_id:
         raise AuthError(
-            "No Vertex Anthropic project configured. Set ANTHROPIC_VERTEX_PROJECT_ID, "
-            "GOOGLE_CLOUD_PROJECT, or GCLOUD_PROJECT.",
+            "No Vertex AI project configured. Set ANTHROPIC_VERTEX_PROJECT_ID, "
+            "GOOGLE_CLOUD_PROJECT, or GCLOUD_PROJECT in ~/.hermes/.env, "
+            "or set vertex.project_id in ~/.hermes/config.yaml.",
             provider="vertex",
             code="missing_vertex_project",
         )

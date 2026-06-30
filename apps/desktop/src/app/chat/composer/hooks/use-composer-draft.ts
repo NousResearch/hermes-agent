@@ -176,6 +176,26 @@ export function useComposerDraft({
     }
   }, [setComposerText])
 
+  // Read the editor's current plain text into draftRef + composer state. This
+  // closes the "queued rAF flush hasn't run yet" window so scope-swap/pagehide
+  // persistence captures the latest keystrokes.
+  const syncDraftFromEditor = useCallback(() => {
+    const editor = editorRef.current
+
+    if (!editor) {
+      return draftRef.current
+    }
+
+    const text = composerPlainText(editor)
+
+    if (text !== draftRef.current) {
+      draftRef.current = text
+      setComposerText(text)
+    }
+
+    return text
+  }, [setComposerText])
+
   // Imperative draft sync — the spine of the "work only when work is to be
   // performed" model. Subscribing to the composer runtime directly (not
   // `useAuiState(text)` + a `[draft]` effect) keeps per-keystroke text out of
@@ -267,28 +287,31 @@ export function useComposerDraft({
     loadIntoComposer(text, attachments)
 
     return () => {
+      const latestText = syncDraftFromEditor()
       const editing = queueEditRef.current
 
       if (editing?.sessionKey === activeQueueSessionKey) {
         stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
       } else if (!isBrowsingHistory(sessionId)) {
-        stashAt(activeQueueSessionKey)
+        stashAt(activeQueueSessionKey, latestText)
       }
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
-  // inside the debounce window would drop trailing keystrokes without this.
+  // inside the debounce/rAF window would drop trailing keystrokes without this.
   useEffect(() => {
     const flushPendingDraftPersist = () => {
-      const pending = pendingDraftPersistRef.current
+      const scope = activeQueueSessionKeyRef.current
+      const editing = queueEditRef.current
 
-      if (!pending) {
+      if (editing?.sessionKey === scope || isBrowsingHistory(sessionIdRef.current)) {
         return
       }
 
+      const latestText = syncDraftFromEditor()
       pendingDraftPersistRef.current = null
-      stashAt(pending.scope, pending.text)
+      stashAt(scope, latestText)
     }
 
     window.addEventListener('pagehide', flushPendingDraftPersist)
@@ -297,7 +320,7 @@ export function useComposerDraft({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [])
+  }, [queueEditRef, syncDraftFromEditor])
 
   return {
     activeQueueSessionKeyRef,

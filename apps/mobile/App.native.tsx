@@ -274,7 +274,26 @@ export default function App() {
           headers['X-Hermes-Session-Token'] = request.token;
           headers.authorization = `Bearer ${request.token}`;
         }
-        const response = await fetch(url, { body: request.body, headers, method, signal: controller.signal });
+        let response: Response;
+        try {
+          response = await fetch(url, { body: request.body, headers, method, signal: controller.signal });
+        } catch (fetchError: any) {
+          const diag = {
+            url,
+            method,
+            errName: fetchError?.name || 'unknown',
+            errMsg: fetchError?.message || String(fetchError),
+            errCode: fetchError?.code,
+            errCause: fetchError?.cause ? String(fetchError.cause) : undefined,
+            headers: Object.keys(headers),
+            hasToken: Boolean(request.token),
+            baseUrl,
+            path: request.path,
+          };
+          setDiagnostic('FETCH FAILED:\n' + JSON.stringify(diag, null, 2));
+          if (__DEV__) console.log('[hermes:native-fetch-fail]', diag);
+          throw fetchError;
+        }
         const text = await response.text();
         if (!response.ok) throw new Error(`Hermes API ${response.status} ${request.path}: ${text.slice(0, 240)}`);
         let data: unknown = text;

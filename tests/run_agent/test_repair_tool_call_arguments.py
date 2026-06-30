@@ -140,3 +140,12 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+    def test_backslash_before_literal_control_char(self):
+        """A backslash immediately before a literal newline is not a valid
+        JSON escape; the repair must escape the backslash (and the control
+        char) instead of silently dropping all args."""
+        raw = '{"path": "C:\\\ntmp"}'
+        result = _repair_tool_call_arguments(raw, "write_file")
+        parsed = json.loads(result)  # must parse under strict=True
+        assert parsed["path"] == "C:\\\ntmp"  # backslash + newline preserved
+

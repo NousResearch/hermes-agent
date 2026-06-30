@@ -162,6 +162,14 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
         ch = raw[i]
         if in_string:
             if ch == "\\" and i + 1 < n:
+                if ord(raw[i + 1]) < 0x20:
+                    # A backslash immediately before a literal control char is
+                    # NOT a valid JSON escape. Escape the backslash itself and
+                    # let the control-char branch below escape the following
+                    # char on the next iteration (lossless: both preserved).
+                    out.append("\\\\")
+                    i += 1
+                    continue
                 # Already-escaped char — pass through as-is
                 out.append(ch)
                 out.append(raw[i + 1])

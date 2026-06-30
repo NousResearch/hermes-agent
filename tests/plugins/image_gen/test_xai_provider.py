@@ -120,6 +120,43 @@ class TestConfig:
         model_id, _ = _resolve_model()
         assert model_id == "grok-imagine-image"
 
+    def test_scoped_config_model(self, monkeypatch):
+        monkeypatch.delenv("XAI_IMAGE_MODEL", raising=False)
+        from plugins.image_gen.xai import _resolve_model
+
+        with patch(
+            "plugins.image_gen.xai._load_xai_config",
+            return_value={"model": "grok-imagine-image-quality"},
+        ):
+            model_id, _ = _resolve_model()
+        assert model_id == "grok-imagine-image-quality"
+
+    def test_top_level_config_model(self, monkeypatch):
+        """A model picked via ``hermes tools`` is persisted to top-level
+        ``image_gen.model``; the xAI provider must honor it, not only the
+        scoped ``image_gen.xai.model``.
+        """
+        monkeypatch.delenv("XAI_IMAGE_MODEL", raising=False)
+        from plugins.image_gen.xai import _resolve_model
+
+        with patch("plugins.image_gen.xai._load_xai_config", return_value={}), patch(
+            "plugins.image_gen.xai._load_image_gen_config",
+            return_value={"model": "grok-imagine-image-quality"},
+        ):
+            model_id, _ = _resolve_model()
+        assert model_id == "grok-imagine-image-quality"
+
+    def test_explicit_model_kwarg_wins_over_config(self, monkeypatch):
+        monkeypatch.delenv("XAI_IMAGE_MODEL", raising=False)
+        from plugins.image_gen.xai import _resolve_model
+
+        with patch("plugins.image_gen.xai._load_xai_config", return_value={}), patch(
+            "plugins.image_gen.xai._load_image_gen_config",
+            return_value={"model": "grok-imagine-image"},
+        ):
+            model_id, _ = _resolve_model("grok-imagine-image-quality")
+        assert model_id == "grok-imagine-image-quality"
+
 
 # ---------------------------------------------------------------------------
 # Generate tests

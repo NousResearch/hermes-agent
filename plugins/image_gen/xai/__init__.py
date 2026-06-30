@@ -100,8 +100,29 @@ def _load_xai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which model to use and return ``(model_id, meta)``."""
+def _load_image_gen_config() -> Dict[str, Any]:
+    """Read the top-level ``image_gen`` section from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else None
+        return section if isinstance(section, dict) else {}
+    except Exception as exc:
+        logger.debug("Could not load image_gen config: %s", exc)
+        return {}
+
+
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Decide which model to use and return ``(model_id, meta)``.
+
+    Precedence: explicit caller override (e.g. the dispatched ``model`` kwarg)
+    → ``XAI_IMAGE_MODEL`` env → scoped ``image_gen.xai.model`` → top-level
+    ``image_gen.model`` (what ``hermes tools`` writes) → :data:`DEFAULT_MODEL`.
+    """
+    if isinstance(explicit, str) and explicit.strip() in _MODELS:
+        return explicit.strip(), _MODELS[explicit.strip()]
+
     env_override = os.environ.get("XAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
         return env_override, _MODELS[env_override]
@@ -110,6 +131,10 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     candidate = cfg.get("model") if isinstance(cfg.get("model"), str) else None
     if candidate and candidate in _MODELS:
         return candidate, _MODELS[candidate]
+
+    top = _load_image_gen_config().get("model")
+    if isinstance(top, str) and top in _MODELS:
+        return top, _MODELS[top]
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
@@ -234,7 +259,7 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
-        model_id, meta = _resolve_model()
+        model_id, meta = _resolve_model(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()

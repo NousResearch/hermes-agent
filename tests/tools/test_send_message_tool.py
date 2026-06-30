@@ -807,27 +807,75 @@ class TestSendToPlatformChunking:
         sent_text = send.await_args.args[2]
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in sent_text
 
-    def test_telegram_media_attaches_to_last_chunk(self):
+    def test_telegram_markdown_expansion_is_chunked_before_send(self, monkeypatch):
+        """Telegram chunking must account for MarkdownV2 escaping expansion.
 
-        sent_calls = []
+        A raw message under 4096 UTF-16 units can inflate past the limit once
+        MarkdownV2-escaped (each `!`/`.`/`-` becomes `\\!`/`\\.`/`\\-`). The
+        send path must chunk the *formatted* text so no single send exceeds
+        4096 (issue #28557).
+        """
+        from gateway.platforms.base import utf16_len
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-            sent_calls.append(media_files or [])
-            return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
+        send_lengths = []
 
-        long_msg = "word " * 2000  # ~10000 chars, well over 4096
-        media = [("/tmp/photo.png", False)]
-        with patch("tools.send_message_tool._send_telegram", fake_send):
-            asyncio.run(
-                _send_to_platform(
-                    Platform.TELEGRAM,
-                    SimpleNamespace(enabled=True, token="tok", extra={}),
-                    "123", long_msg, media_files=media,
-                )
+        async def fake_send_message(**kwargs):
+            text = kwargs["text"]
+            send_lengths.append(utf16_len(text))
+            if utf16_len(text) > 4096:
+                raise Exception("Message is too long")
+            return SimpleNamespace(message_id=len(send_lengths))
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=fake_send_message)
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.TELEGRAM,
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "123",
+                "!" * 4096,  # raw 4096 -> ~8192 after MarkdownV2 escaping
             )
-        assert len(sent_calls) >= 3
-        assert all(call == [] for call in sent_calls[:-1])
-        assert sent_calls[-1] == media
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_count >= 2
+        assert max(send_lengths) <= 4096
+
+    def test_telegram_media_attaches_after_long_text_chunks(self, tmp_path, monkeypatch):
+        """Long text is split into multiple chunks, then media is attached."""
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=2))
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        long_msg = "word " * 2000  # ~10000 chars, well over Telegram's 4096 limit
+        result = asyncio.run(
+            _send_to_platform(
+                Platform.TELEGRAM,
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "123",
+                long_msg,
+                media_files=[(str(image_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_count >= 3
+        bot.send_photo.assert_awaited_once()
 
     def test_matrix_media_uses_native_adapter_helper(self, tmp_path):
         doc_path = tmp_path / "test-send-message-matrix.pdf"

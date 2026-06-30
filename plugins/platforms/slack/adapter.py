@@ -874,6 +874,70 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:  # pragma: no cover - diagnostics must never break connect
             pass
 
+    def _warn_if_not_bot_token(self, auth_response, team_name: str) -> None:
+        """Warn when the configured token authenticates as a human, not a bot.
+
+        ``auth.test`` returns the ``user_id`` of *whatever principal owns the
+        token*. For a real bot token (``xoxb-…``) that is the app's bot user
+        and the response carries a ``bot_id``. For a **user** token
+        (``xoxp-…`` / a legacy/personal OAuth token) it is the *installing
+        human's* member ID and there is **no** ``bot_id``.
+
+        When that happens, ``self._bot_user_id`` becomes a human's member ID,
+        and every "is this the bot?" check downstream misfires: that one
+        person's ``<@…>`` mentions wake the bot (``is_mentioned`` in
+        ``_handle_slack_message``) and get stripped as if they were the bot's
+        own mention — so the agent is genuinely told it was @mentioned and
+        replies to messages merely *addressed to that human*. There is no
+        runtime API error to catch; the only detectable moment is here at
+        connect time, by noticing ``bot_id`` is absent from ``auth.test``.
+
+        Warning-only: a user token can still send/receive, and we don't want
+        to hard-fail a working-but-misconfigured install on connect. We log
+        exactly what is wrong and how to fix it, once per workspace per
+        process.
+        """
+        try:
+            warned = getattr(self, "_user_token_warned", None)
+            if warned is None:
+                warned = set()
+                self._user_token_warned = warned
+            team_key = team_name or ""
+            if team_key in warned:
+                return
+            # ``auth.test`` includes ``bot_id`` only for bot tokens. Its
+            # absence (with a resolved user_id) means a user/legacy token.
+            bot_id = ""
+            user_id = ""
+            try:
+                bot_id = auth_response.get("bot_id", "") or ""
+                user_id = auth_response.get("user_id", "") or ""
+            except Exception:
+                # Some response shapes are attribute-only; fall back to .data.
+                data = getattr(auth_response, "data", None) or {}
+                bot_id = data.get("bot_id", "") or ""
+                user_id = data.get("user_id", "") or ""
+            if not user_id:
+                return  # Nothing resolved — don't guess.
+            if not bot_id:
+                warned.add(team_key)
+                logger.warning(
+                    "[Slack] The configured Slack token for workspace %s "
+                    "authenticated as a USER (member %s), not a bot — the "
+                    "auth.test response has no 'bot_id'. This is almost "
+                    "certainly a user token (xoxp-...) instead of a Bot User "
+                    "OAuth Token (xoxb-...). The bot's identity is now bound "
+                    "to that member's ID, so mentions OF THAT PERSON will be "
+                    "misrouted as mentions of the bot (the bot replies to "
+                    "messages merely addressed to them). Use the 'Bot User "
+                    "OAuth Token' (xoxb-...) from your Slack app's 'OAuth & "
+                    "Permissions' page in SLACK_BOT_TOKEN.",
+                    team_key or "this workspace",
+                    user_id,
+                )
+        except Exception:  # pragma: no cover - diagnostics must never break connect
+            pass
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
@@ -1003,6 +1067,7 @@ class SlackAdapter(BasePlatformAdapter):
                 )
 
                 self._warn_if_missing_group_dm_scopes(auth_response, team_name)
+                self._warn_if_not_bot_token(auth_response, team_name)
 
             # Register message event handler
             @self._app.event("message")
@@ -1947,7 +2012,8 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"🖼️ Image: {image_path}"
+            # image_path is a host-local path; never echo it into chat.
+            text = "⚠️ Couldn't deliver the image attachment."
             if caption:
                 text = f"{caption}\n{text}"
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
@@ -2099,7 +2165,8 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"🎬 Video: {video_path}"
+            # video_path is a host-local path; never echo it into chat.
+            text = "⚠️ Couldn't deliver the video attachment."
             if caption:
                 text = f"{caption}\n{text}"
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
@@ -2158,7 +2225,11 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"📎 File: {file_path}"
+            # file_path is a host-local path; never echo it into chat.
+            # display_name comes from caller-supplied file_name (or basename
+            # of the host path) and is the user-facing filename only — safe
+            # to surface so the user knows which file failed.
+            text = f"⚠️ Couldn't deliver the file attachment ({display_name})."
             if caption:
                 text = f"{caption}\n{text}"
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)

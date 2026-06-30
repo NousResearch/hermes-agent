@@ -223,6 +223,9 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
+    if callable(_reset_consol):
+        _reset_consol()
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.
@@ -366,7 +369,23 @@ def build_turn_context(
         if _last >= 0 and _calibrated > _last:
             _compressor.last_prompt_tokens = _calibrated
 
-        if _compressor.should_compress_calibrated(_preflight_tokens):
+        # Upstream d153918f1: same-session compression-failure cooldown. If a
+        # recent compression failed, skip the retry for the cooldown window even
+        # when the calibrated estimate says compress (avoids tight failure loops).
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
+
+        if _compression_cooldown:
+            logger.info(
+                "Skipping preflight compression: same-session cooldown active "
+                "(~%s seconds remaining, session %s)",
+                int(_compression_cooldown.get("remaining_seconds", 0.0)),
+                agent.session_id or "none",
+            )
+        elif _compressor.should_compress_calibrated(_preflight_tokens):
             logger.info(
                 "Preflight compression: calibrated ~%s (raw ~%s × skew %.3f) >= %s "
                 "threshold (model %s, ctx %s)",
@@ -449,6 +468,7 @@ def build_turn_context(
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
+    agent._pre_verify_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

@@ -88,7 +88,16 @@ _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                       "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
                       "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                      "PASSWD", "AUTH", "DSN", "WEBHOOK")
+                      "PASSWD", "AUTH", "DSN", "WEBHOOK",
+                      # Abbreviations that appear in real-world credential
+                      # variable names but were previously undetected:
+                      # CREDS (CREDENTIALS abbreviated), BEARER
+                      # (Authorization: Bearer tokens), APIKEY (written
+                      # without an underscore). "PASS" is intentionally NOT
+                      # added — it false-positives on legitimate non-secret
+                      # vars (BYPASS_CACHE, COMPASS_DIR, PASSENGER_HOST) while
+                      # PASSWORD/PASSWD already cover the credential cases.
+                      "CREDS", "BEARER", "APIKEY")
 
 # Operational HERMES_* vars the child legitimately needs by exact name — these
 # are non-secret runtime-location flags (the same set hermes_cli treats as the

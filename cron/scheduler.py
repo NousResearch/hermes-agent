@@ -1596,7 +1596,7 @@ def _deliver_result(job: dict, content: str, success: bool = True, adapters=None
     return None
 
 
-_DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
+_DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
@@ -1737,8 +1737,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             from agent.redact import redact_sensitive_text
             stdout = redact_sensitive_text(stdout)
             stderr = redact_sensitive_text(stderr)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to redact sensitive text from output: %s", e)
+            stdout = "[REDACTED - redaction failed]"
+            stderr = "[REDACTED - redaction failed]"
 
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]

@@ -148,10 +148,11 @@ TOOLSETS = {
         "description": (
             "Video generation tools. Single ``video_generate`` tool covers "
             "text-to-video (prompt only) and image-to-video (prompt + "
-            "image_url) — the active backend auto-routes. Configure via "
+            "image_url), plus reference-to-video. Provider-specific edit/"
+            "extend workflows may appear as separate tools. Configure via "
             "``hermes tools`` → Video Generation."
         ),
-        "tools": ["video_generate"],
+        "tools": ["video_generate", "xai_video_edit", "xai_video_extend"],
         "includes": []
     },
 

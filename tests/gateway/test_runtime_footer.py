@@ -3,7 +3,10 @@ appended to final gateway replies."""
 
 from __future__ import annotations
 
+import asyncio
 import os
+
+from hermes_state import AsyncSessionDB
 
 import pytest
 
@@ -574,8 +577,8 @@ class _FakeSessionDB:
 def test_resolve_footer_stats_count_and_default_limit():
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": {"message_count": 326}})
-    count, limit = _resolve_footer_message_stats(db, "s1", {})
+    db = AsyncSessionDB(_FakeSessionDB({"s1": {"message_count": 326}}))
+    count, limit = asyncio.run(_resolve_footer_message_stats(db, "s1", {}))
     assert count == 326
     assert limit == 400  # code default when config doesn't override
 
@@ -583,18 +586,18 @@ def test_resolve_footer_stats_count_and_default_limit():
 def test_resolve_footer_stats_limit_from_config():
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": {"message_count": 326}})
+    db = AsyncSessionDB(_FakeSessionDB({"s1": {"message_count": 326}}))
     cfg = {"compression": {"hygiene_hard_message_limit": 600}}
-    count, limit = _resolve_footer_message_stats(db, "s1", cfg)
+    count, limit = asyncio.run(_resolve_footer_message_stats(db, "s1", cfg))
     assert (count, limit) == (326, 600)
 
 
 def test_resolve_footer_stats_limit_none_when_compression_disabled():
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": {"message_count": 50}})
+    db = AsyncSessionDB(_FakeSessionDB({"s1": {"message_count": 50}}))
     cfg = {"compression": {"enabled": False, "hygiene_hard_message_limit": 600}}
-    count, limit = _resolve_footer_message_stats(db, "s1", cfg)
+    count, limit = asyncio.run(_resolve_footer_message_stats(db, "s1", cfg))
     assert count == 50
     assert limit is None  # count-only "50msgs"
 
@@ -602,7 +605,7 @@ def test_resolve_footer_stats_limit_none_when_compression_disabled():
 def test_resolve_footer_stats_count_none_when_no_db():
     from gateway.run import _resolve_footer_message_stats
 
-    count, limit = _resolve_footer_message_stats(None, "s1", {})
+    count, limit = asyncio.run(_resolve_footer_message_stats(None, "s1", {}))
     assert count is None
     assert limit == 400
 
@@ -610,16 +613,16 @@ def test_resolve_footer_stats_count_none_when_no_db():
 def test_resolve_footer_stats_count_none_when_no_session_id():
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": {"message_count": 326}})
-    count, limit = _resolve_footer_message_stats(db, None, {})
+    db = AsyncSessionDB(_FakeSessionDB({"s1": {"message_count": 326}}))
+    count, limit = asyncio.run(_resolve_footer_message_stats(db, None, {}))
     assert count is None
 
 
 def test_resolve_footer_stats_failsafe_on_db_error():
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": RuntimeError("db boom")})
-    count, limit = _resolve_footer_message_stats(db, "s1", {"compression": {"hygiene_hard_message_limit": 600}})
+    db = AsyncSessionDB(_FakeSessionDB({"s1": RuntimeError("db boom")}))
+    count, limit = asyncio.run(_resolve_footer_message_stats(db, "s1", {"compression": {"hygiene_hard_message_limit": 600}}))
     # DB error -> count hidden, but limit still resolves; footer still renders
     assert count is None
     assert limit == 600
@@ -628,8 +631,8 @@ def test_resolve_footer_stats_failsafe_on_db_error():
 def test_resolve_footer_stats_missing_row():
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": None})
-    count, limit = _resolve_footer_message_stats(db, "s1", {})
+    db = AsyncSessionDB(_FakeSessionDB({"s1": None}))
+    count, limit = asyncio.run(_resolve_footer_message_stats(db, "s1", {}))
     assert count is None
     assert limit == 400
 
@@ -637,9 +640,9 @@ def test_resolve_footer_stats_missing_row():
 def test_resolve_footer_stats_bad_limit_value_falls_back_to_default():
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": {"message_count": 10}})
+    db = AsyncSessionDB(_FakeSessionDB({"s1": {"message_count": 10}}))
     cfg = {"compression": {"hygiene_hard_message_limit": "garbage"}}
-    count, limit = _resolve_footer_message_stats(db, "s1", cfg)
+    count, limit = asyncio.run(_resolve_footer_message_stats(db, "s1", cfg))
     assert count == 10
     assert limit == 400  # unparseable -> default, not a crash
 
@@ -648,10 +651,10 @@ def test_resolve_footer_stats_end_to_end_render():
     # The helper output threaded into build_footer_line produces "326/600msgs".
     from gateway.run import _resolve_footer_message_stats
 
-    db = _FakeSessionDB({"s1": {"message_count": 326}})
-    count, limit = _resolve_footer_message_stats(
+    db = AsyncSessionDB(_FakeSessionDB({"s1": {"message_count": 326}}))
+    count, limit = asyncio.run(_resolve_footer_message_stats(
         db, "s1", {"compression": {"hygiene_hard_message_limit": 600}}
-    )
+    ))
     out = build_footer_line(
         user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["messages"]}}},
         platform_key="discord",

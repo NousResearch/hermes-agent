@@ -225,6 +225,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Info", gateway_only=True, aliases=("spawn-session",),
                args_hint="agent=<name> workdir=<path> [z_command=<cmd>] <prompt>",
                gateway_config_gate="session_orchestration.enabled"),
+    CommandDef("so-stop", "Stop a managed coding-agent session by task ID",
+               "Info", gateway_only=True,
+               args_hint="task_id=<id>",
+               gateway_config_gate="session_orchestration.enabled"),
+    CommandDef("so-restart", "Restart a managed coding-agent session by task ID",
+               "Info", gateway_only=True,
+               args_hint="task_id=<id>",
+               gateway_config_gate="session_orchestration.enabled"),
 
     # Exit
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",

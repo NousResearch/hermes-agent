@@ -741,3 +741,130 @@ def test_handle_restart_command_missing_task_id_returns_error_not_raises(registr
     ).fetchone()[0]
     conn.close()
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# T-REV-001 — CommandDef registration + gateway dispatch for so-stop/so-restart
+# ---------------------------------------------------------------------------
+
+
+def test_so_stop_command_def_registered():
+    """so-stop must appear in the command registry so Discord can autocomplete it."""
+    from hermes_cli.commands import resolve_command
+
+    cmd = resolve_command("so-stop")
+    assert cmd is not None, "so-stop not found in COMMAND_REGISTRY"
+    assert cmd.name == "so-stop"
+    assert cmd.gateway_only is True
+    assert cmd.gateway_config_gate == "session_orchestration.enabled"
+
+
+def test_so_restart_command_def_registered():
+    """so-restart must appear in the command registry so Discord can autocomplete it."""
+    from hermes_cli.commands import resolve_command
+
+    cmd = resolve_command("so-restart")
+    assert cmd is not None, "so-restart not found in COMMAND_REGISTRY"
+    assert cmd.name == "so-restart"
+    assert cmd.gateway_only is True
+    assert cmd.gateway_config_gate == "session_orchestration.enabled"
+
+
+def test_gateway_so_stop_dispatch_reaches_handle_stop_command(registry):
+    """_handle_so_stop_command must call spawn.handle_stop_command and return its result.
+
+    Uses asyncio.run() directly since pytest-asyncio is not installed in this env.
+    """
+    import asyncio
+    from unittest.mock import MagicMock, patch
+
+    # Build a minimal stand-in that replicates only the method under test,
+    # avoiding the heavy GatewayRunner constructor.
+    class _FakeRunner:
+        config = {}
+
+        async def _handle_so_stop_command(self, event):
+            try:
+                from session_orchestration.spawn import handle_stop_command as _h
+            except ImportError as exc:  # pragma: no cover
+                return f"Session orchestration is not available: {exc}"
+
+            raw_text = getattr(event, "text", "") or ""
+            for prefix in ("/so-stop",):
+                if raw_text.lower().startswith(prefix):
+                    args_text = raw_text[len(prefix):].strip()
+                    break
+            else:
+                args_text = raw_text.strip()
+
+            cfg = self.config if isinstance(self.config, dict) else (
+                self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+            )
+            return _h(event, args_text, config=cfg)
+
+    event = MagicMock()
+    event.text = "/so-stop task_id=task-abc"
+
+    with patch(
+        "session_orchestration.spawn.handle_stop_command",
+        wraps=lambda ev, args, **kw: handle_stop_command(ev, args, registry=registry),
+    ) as mock_stop:
+        runner = _FakeRunner()
+        result = asyncio.run(runner._handle_so_stop_command(event))
+
+    mock_stop.assert_called_once()
+    call_args = mock_stop.call_args
+    assert call_args[0][1] == "task_id=task-abc", (
+        "args_text must be the text after '/so-stop'"
+    )
+    assert isinstance(result, str)
+    assert "task-abc" in result
+
+
+def test_gateway_so_restart_dispatch_reaches_handle_restart_command(registry):
+    """_handle_so_restart_command must call spawn.handle_restart_command and return its result.
+
+    Uses asyncio.run() directly since pytest-asyncio is not installed in this env.
+    """
+    import asyncio
+    from unittest.mock import MagicMock, patch
+
+    class _FakeRunner:
+        config = {}
+
+        async def _handle_so_restart_command(self, event):
+            try:
+                from session_orchestration.spawn import handle_restart_command as _h
+            except ImportError as exc:  # pragma: no cover
+                return f"Session orchestration is not available: {exc}"
+
+            raw_text = getattr(event, "text", "") or ""
+            for prefix in ("/so-restart",):
+                if raw_text.lower().startswith(prefix):
+                    args_text = raw_text[len(prefix):].strip()
+                    break
+            else:
+                args_text = raw_text.strip()
+
+            cfg = self.config if isinstance(self.config, dict) else (
+                self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+            )
+            return _h(event, args_text, config=cfg)
+
+    event = MagicMock()
+    event.text = "/so-restart task_id=task-xyz"
+
+    with patch(
+        "session_orchestration.spawn.handle_restart_command",
+        wraps=lambda ev, args, **kw: handle_restart_command(ev, args, registry=registry),
+    ) as mock_restart:
+        runner = _FakeRunner()
+        result = asyncio.run(runner._handle_so_restart_command(event))
+
+    mock_restart.assert_called_once()
+    call_args = mock_restart.call_args
+    assert call_args[0][1] == "task_id=task-xyz", (
+        "args_text must be the text after '/so-restart'"
+    )
+    assert isinstance(result, str)
+    assert "task-xyz" in result

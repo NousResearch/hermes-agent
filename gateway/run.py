@@ -7932,6 +7932,15 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "so-spawn":
                 return await self._handle_so_spawn_command(event)
 
+            # /so-stop and /so-restart enqueue a terminate intent; they
+            # bypass the running-agent guard (they don't touch the Hermes
+            # agent session — they only mutate the session-orchestration
+            # registry).
+            if _cmd_def_inner and _cmd_def_inner.name == "so-stop":
+                return await self._handle_so_stop_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "so-restart":
+                return await self._handle_so_restart_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -10782,6 +10791,46 @@ class GatewayRunner:
             ),
             platform_adapter=platform_adapter,
         )
+
+    async def _handle_so_stop_command(self, event: MessageEvent) -> str:
+        """Handle /so-stop — enqueue a terminate intent for a managed session."""
+        try:
+            from session_orchestration.spawn import handle_stop_command
+        except ImportError as exc:
+            return f"Session orchestration is not available: {exc}"
+
+        raw_text = getattr(event, "text", "") or ""
+        for prefix in ("/so-stop",):
+            if raw_text.lower().startswith(prefix):
+                args_text = raw_text[len(prefix):].strip()
+                break
+        else:
+            args_text = raw_text.strip()
+
+        config = self.config if isinstance(self.config, dict) else (
+            self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+        )
+        return handle_stop_command(event, args_text, config=config)
+
+    async def _handle_so_restart_command(self, event: MessageEvent) -> str:
+        """Handle /so-restart — enqueue a restart-terminate intent for a managed session."""
+        try:
+            from session_orchestration.spawn import handle_restart_command
+        except ImportError as exc:
+            return f"Session orchestration is not available: {exc}"
+
+        raw_text = getattr(event, "text", "") or ""
+        for prefix in ("/so-restart",):
+            if raw_text.lower().startswith(prefix):
+                args_text = raw_text[len(prefix):].strip()
+                break
+        else:
+            args_text = raw_text.strip()
+
+        config = self.config if isinstance(self.config, dict) else (
+            self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+        )
+        return handle_restart_command(event, args_text, config=config)
 
     async def _handle_managed_thread_reply(
         self, event, thread_id: str

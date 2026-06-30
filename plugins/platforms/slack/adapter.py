@@ -57,6 +57,36 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+_SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+
+
+async def _read_error_text_limited(
+    response: Any,
+    *,
+    limit: int = _SLACK_ERROR_BODY_LIMIT_BYTES,
+) -> str:
+    content = getattr(response, "content", None)
+    read = getattr(content, "read", None)
+    if callable(read):
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit:
+            size = min(4096, limit + 1 - total)
+            chunk = await read(size)
+            if not chunk:
+                break
+            data = bytes(chunk)
+            chunks.append(data)
+            total += len(data)
+        if total > limit:
+            release = getattr(response, "release", None)
+            if callable(release):
+                release()
+        return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
+
+    text = await response.text()
+    return str(text)[:limit]
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -815,7 +845,7 @@ class SlackAdapter(BasePlatformAdapter):
                 ) as resp:
                     if resp.status == 200:
                         return SendResult(success=True, message_id=None)
-                    body = await resp.text()
+                    body = await _read_error_text_limited(resp)
                     logger.warning(
                         "[Slack] response_url POST returned %s: %s",
                         resp.status,

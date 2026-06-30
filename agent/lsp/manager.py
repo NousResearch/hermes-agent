@@ -45,6 +45,7 @@ from agent.lsp import eventlog
 from agent.lsp.client import (
     DIAGNOSTICS_DOCUMENT_WAIT,
     LSPClient,
+    LSP_QUERY_TIMEOUT,
 )
 from agent.lsp.servers import (
     ServerContext,
@@ -430,6 +431,97 @@ class LSPService:
 
         if not already_broken:
             eventlog.log_spawn_failed(srv.server_id, per_server_root, exc)
+
+    def query_lsp_sync(
+        self,
+        file_path: str,
+        method: str,
+        params: dict,
+        *,
+        timeout: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Send an arbitrary LSP request to the server for ``file_path``.
+
+        ``method`` is the LSP method name (e.g. ``textDocument/definition``,
+        ``textDocument/hover``) and ``params`` is the JSON-RPC params dict.
+
+        This is the synchronous bridge from the agent-tool layer into the
+        async LSP client.  It opens the file if needed, ensures a server
+        is running, sends the request, and returns the result.
+
+        Returns None on any error (LSP unavailable, server spawn failure,
+        timeout, etc.) — never raises, so the tool layer doesn't need
+        try/except wrappers.
+        """
+        if not self.enabled_for(file_path):
+            return None
+        srv = find_server_for_file(file_path)
+        server_id = srv.server_id if srv else "?"
+        try:
+            t = timeout if timeout is not None else (self._wait_timeout + 2.0)
+            result = self._loop.run(
+                self._query_async(file_path, method, params),
+                timeout=t,
+            )
+            return result
+        except asyncio.TimeoutError as e:
+            eventlog.log_timeout(server_id, file_path)
+            logger.debug("LSP query %s timed out for %s: %s", method, file_path, e)
+            self._mark_broken_for_file(file_path, e)
+            return None
+        except Exception as e:  # noqa: BLE001
+            eventlog.log_server_error(server_id, file_path, e)
+            logger.debug("LSP query %s failed for %s: %s", method, file_path, e)
+            self._mark_broken_for_file(file_path, e)
+            return None
+
+    async def _query_async(self, file_path: str, method: str, params: dict) -> Any:
+        """Async inner: ensure the file is open on the server, then send the query."""
+        client = await self._get_or_spawn(file_path)
+        if client is None:
+            return None
+        abs_path = os.path.abspath(file_path)
+
+        # If the file isn't already open on the server side, open it.
+        existing = client._files.get(abs_path)  # noqa: SLF001 — peer knowledge
+        if existing is None:
+            # Determine language_id from the file extension.
+            lang_id = language_id_for(file_path) or "plaintext"
+            await client.open_file(abs_path, language_id=lang_id)
+
+        # Route the method name to the matching client method.
+        method_map = {
+            "textDocument/definition": lambda: client.go_to_definition(abs_path, 0, 0),
+            "textDocument/references": lambda: client.find_references(abs_path, 0, 0),
+            "textDocument/hover": lambda: client.hover(abs_path, 0, 0),
+            "textDocument/documentSymbol": lambda: client.document_symbols(abs_path),
+            "workspace/symbol": None,  # handled below — no file path needed
+        }
+        handler = method_map.get(method)
+        if handler is not None:
+            # Extract position from params for methods that need it.
+            pos = params.get("position", {})
+            line = pos.get("line", 0)
+            char = pos.get("character", 0)
+            if method == "textDocument/definition":
+                result = await client.go_to_definition(abs_path, line, char)
+            elif method == "textDocument/references":
+                inc_dec = params.get("context", {}).get("includeDeclaration", False)
+                result = await client.find_references(abs_path, line, char, include_declaration=inc_dec)
+            elif method == "textDocument/hover":
+                result = await client.hover(abs_path, line, char)
+            elif method == "textDocument/documentSymbol":
+                result = await client.document_symbols(abs_path)
+            else:
+                result = None
+        elif method == "workspace/symbol":
+            query = params.get("query", "")
+            result = await client.workspace_symbols(query)
+        else:
+            # Fallback: send raw request through the client's send path.
+            result = await client._send_request_with_retry(method, params, timeout=LSP_QUERY_TIMEOUT)  # noqa: SLF001
+
+        return result
 
     def shutdown(self) -> None:
         """Tear down all clients and stop the background loop."""

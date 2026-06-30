@@ -893,6 +893,89 @@ class LSPClient:
         return _dedupe(push, pull)
 
 
+    # ------------------------------------------------------------------
+    # LSP query methods (called by the agent via tools/lsp_tools.py)
+    # ------------------------------------------------------------------
+
+    async def go_to_definition(self, path: str, line: int, character: int) -> List[dict]:
+        """Return the list of definition locations for the symbol at ``(line, char)``.
+
+        Sends ``textDocument/definition`` via the existing request/response
+        path.  Result may be a single Location, a LocationLink, or a list.
+        normalises to a list for the caller.
+        """
+        uri = file_uri(os.path.abspath(path))
+        params = {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+        }
+        result = await self._send_request_with_retry(
+            "textDocument/definition", params, timeout=LSP_QUERY_TIMEOUT,
+        )
+        if result is None:
+            return []
+        if isinstance(result, list):
+            return result
+        return [result]
+
+    async def find_references(self, path: str, line: int, character: int, *, include_declaration: bool = False) -> List[dict]:
+        """Return all reference locations for the symbol at ``(line, char)``.
+
+        Sends ``textDocument/references``.  Always returns a list of
+        Location objects.
+        """
+        uri = file_uri(os.path.abspath(path))
+        params = {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": include_declaration},
+        }
+        result = await self._send_request_with_retry(
+            "textDocument/references", params, timeout=LSP_QUERY_TIMEOUT,
+        )
+        return result if isinstance(result, list) else []
+
+    async def hover(self, path: str, line: int, character: int) -> Optional[dict]:
+        """Return the Hover result (type info + docs) for the symbol at ``(line, char)``.
+
+        Sends ``textDocument/hover``.  Returns None when the server has
+        no information.
+        """
+        uri = file_uri(os.path.abspath(path))
+        params = {
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+        }
+        return await self._send_request_with_retry(
+            "textDocument/hover", params, timeout=LSP_QUERY_TIMEOUT,
+        )
+
+    async def document_symbols(self, path: str) -> List[dict]:
+        """Return all symbols defined in a file.
+
+        Sends ``textDocument/documentSymbol``.  Returns a list of
+        ``DocumentSymbol`` (tree) or ``SymbolInformation`` (flat).
+        """
+        uri = file_uri(os.path.abspath(path))
+        params = {"textDocument": {"uri": uri}}
+        result = await self._send_request_with_retry(
+            "textDocument/documentSymbol", params, timeout=LSP_QUERY_TIMEOUT,
+        )
+        return result if isinstance(result, list) else []
+
+    async def workspace_symbols(self, query: str) -> List[dict]:
+        """Search for symbols matching ``query`` across the entire workspace.
+
+        Sends ``workspace/symbol``.  Returns a list of
+        ``SymbolInformation`` objects.
+        """
+        params = {"query": query}
+        result = await self._send_request_with_retry(
+            "workspace/symbol", params, timeout=LSP_QUERY_TIMEOUT,
+        )
+        return result if isinstance(result, list) else []
+
+
 def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen: Set[str] = set()
     out: List[Dict[str, Any]] = []
@@ -933,6 +1016,88 @@ def _diagnostic_key(d: Dict[str, Any]) -> str:
     )
 
 
+# Timeout for LSP query operations (go-to-definition, find-references,
+# hover, document-symbol, workspace-symbol).  These are synchronous
+# request/response pairs with no server-side indexing — the server
+# already has the project parsed, so a few seconds is more than enough.
+LSP_QUERY_TIMEOUT = 10.0
+
+
+# ======================================================================
+# LSP query methods — exposed as agent tools in tools/lsp_tools.py
+# ======================================================================
+
+
+# NOTE on textDocument/documentSymbol and workspace/symbol
+# ---------------------------------------------------------
+# Both methods return a tree of SymbolInformation | DocumentSymbol.
+# The format methods below flatten the tree into a readable, sorted
+# text listing.  For goToDefinition et al. the raw LSP Location /
+# LocationLink is converted to a human-usable text representation.
+
+
+def _format_location(loc: dict) -> str:
+    """Format an LSP ``Location`` as ``path:line:col``.
+
+    Accepts both a bare ``Location`` and a ``LocationLink`` (which
+    wraps the target in ``targetUri`` / ``targetRange``).
+    """
+    uri = loc.get("targetUri") or loc.get("uri", "")
+    rng = loc.get("targetRange") or loc.get("range", {})
+    if not rng:
+        rng = loc.get("targetSelectionRange", {})
+    start = rng.get("start", {})
+    line = start.get("line", 0) + 1  # LSP lines are 0-based
+    col = start.get("character", 0) + 1
+    path = uri_to_path(uri) if uri else "?"
+    return f"{path}:{line}:{col}"
+
+
+def _format_symbol(sym: dict, indent: str = "") -> str:
+    """Format one LSP ``SymbolInformation`` or ``DocumentSymbol``.
+
+    ``DocumentSymbol`` is a tree node with ``children``; this function
+    recurses into children with increasing indent.
+    """
+    # DocumentSymbol
+    name = sym.get("name", "?")
+    kind = _SYMBOL_KIND_NAMES.get(sym.get("kind", 0), f"kind={sym.get('kind',0)}")
+    detail = sym.get("detail", "")
+    detail_str = f" — {detail}" if detail else ""
+
+    # Location information
+    rng = sym.get("range", {}) or {}
+    start = rng.get("start", {})
+    location = f"{start.get('line',0)+1}:{start.get('character',0)+1}"
+
+    # Detect DocumentSymbol (has children) vs SymbolInformation
+    children = sym.get("children")
+    if children is not None:
+        # DocumentSymbol tree node
+        entries = [f"{indent}{location}  {kind:20s}  {name}{detail_str}"]
+        for child in children:
+            entries.append(_format_symbol(child, indent + "  "))
+        return "\n".join(entries)
+    else:
+        # SymbolInformation — may have a location
+        loc = sym.get("location", {})
+        if loc:
+            loc_str = _format_location(loc)
+            return f"{loc_str}  {kind:20s}  {name}{detail_str}"
+        return f"{location}  {kind:20s}  {name}{detail_str}"
+
+
+_SYMBOL_KIND_NAMES: dict[int, str] = {
+    1: "File", 2: "Module", 3: "Namespace", 4: "Package",
+    5: "Class", 6: "Method", 7: "Property", 8: "Field",
+    9: "Constructor", 10: "Enum", 11: "Interface",
+    12: "Function", 13: "Variable", 14: "Constant",
+    15: "String", 16: "Number", 17: "Boolean", 18: "Array",
+    19: "Object", 20: "Key", 21: "Null", 22: "EnumMember",
+    23: "Struct", 24: "Event", 25: "Operator", 26: "TypeParameter",
+}
+
+
 __all__ = [
     "LSPClient",
     "file_uri",
@@ -940,4 +1105,5 @@ __all__ = [
     "INITIALIZE_TIMEOUT",
     "DIAGNOSTICS_DOCUMENT_WAIT",
     "DIAGNOSTICS_FULL_WAIT",
+    "LSP_QUERY_TIMEOUT",
 ]

@@ -137,6 +137,21 @@ def main():
         if msg.get("method") == "textDocument/didSave":
             continue
 
+        # --- LSP query methods (for the "query" script mode) ---
+        # Exclude lifecycle methods: initialize, shutdown, and exit are
+        # handled above — the query branch only catches code-intelligence
+        # requests that the regular clean/errors script doesn't know about.
+        if script == "query" and "id" in msg:
+            method = msg.get("method", "")
+            # Lifecycle requests should not fall into the query handler
+            if method not in ("initialize", "shutdown", "exit"):
+                req_id = msg["id"]
+                params = msg.get("params") or {}
+                result = _handle_query(method, params)
+                if result is not None:
+                    write_message({"jsonrpc": "2.0", "id": req_id, "result": result})
+                    continue
+
         if msg.get("method") == "shutdown":
             write_message({"jsonrpc": "2.0", "id": msg["id"], "result": None})
             continue
@@ -153,6 +168,115 @@ def main():
                     "error": {"code": -32601, "message": f"method not found: {msg.get('method')}"},
                 }
             )
+
+
+# ---------------------------------------------------------------------------
+# Query handler — responds to LSP query methods when script == "query"
+# ---------------------------------------------------------------------------
+
+
+def _handle_query(method: str, params: dict):
+    """Dispatch an LSP query method and return a mock result, or None if unknown."""
+    uri = (params.get("textDocument") or {}).get("uri", "") if "textDocument" in method else ""
+
+    if method == "textDocument/definition":
+        position = params.get("position", {})
+        return {
+            "uri": uri or "file:///mock.py",
+            "range": {
+                "start": {"line": position.get("line", 0) - 1 if position.get("line", 0) > 0 else 0, "character": 0},
+                "end": {"line": position.get("line", 0) - 1 if position.get("line", 0) > 0 else 0, "character": 10},
+            },
+        }
+
+    if method == "textDocument/references":
+        return [
+            {
+                "uri": uri or "file:///mock.py",
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 5},
+                },
+            },
+            {
+                "uri": uri.replace(".py", "_test.py") if uri else "file:///mock_test.py",
+                "range": {
+                    "start": {"line": 10, "character": 2},
+                    "end": {"line": 10, "character": 7},
+                },
+            },
+        ]
+
+    if method == "textDocument/hover":
+        return {
+            "contents": {
+                "kind": "markdown",
+                "value": "**int**\n\nRepresents an integer type in Python.",
+            },
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 1},
+            },
+        }
+
+    if method == "textDocument/documentSymbol":
+        return [
+            {
+                "name": "Foo",
+                "kind": 5,  # Class
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 3, "character": 0},
+                },
+                "selectionRange": {
+                    "start": {"line": 0, "character": 6},
+                    "end": {"line": 0, "character": 9},
+                },
+                "children": [
+                    {
+                        "name": "bar",
+                        "kind": 6,  # Method
+                        "range": {
+                            "start": {"line": 1, "character": 8},
+                            "end": {"line": 2, "character": 12},
+                        },
+                        "selectionRange": {
+                            "start": {"line": 1, "character": 8},
+                            "end": {"line": 1, "character": 11},
+                        },
+                    },
+                ],
+            },
+        ]
+
+    if method == "workspace/symbol":
+        query = params.get("query", "")
+        return [
+            {
+                "name": f"{query.title()}Class",
+                "kind": 5,
+                "location": {
+                    "uri": "file:///src/main.py",
+                    "range": {
+                        "start": {"line": 0, "character": 6},
+                        "end": {"line": 0, "character": 10 + len(query)},
+                    },
+                },
+            },
+            {
+                "name": f"{query.lower()}_function",
+                "kind": 12,  # Function
+                "location": {
+                    "uri": "file:///src/utils.py",
+                    "range": {
+                        "start": {"line": 5, "character": 4},
+                        "end": {"line": 5, "character": 4 + len(query) + 10},
+                    },
+                },
+            },
+        ]
+
+    return None  # Let the unknown-request handler respond with method-not-found
 
 
 if __name__ == "__main__":

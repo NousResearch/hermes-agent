@@ -194,14 +194,25 @@ def _load_xai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """Decide which model to use and return ``(model_id, meta)``.
 
-    Overrides are validated against the merged live+static catalog, so a
-    newly released xAI model can be selected the day it appears in the
+    Priority:
+    1. Caller-supplied ``caller_model`` — the dispatcher forwards top-level
+       ``image_gen.model`` (what ``hermes tools`` writes) as the ``model``
+       kwarg, mirroring the openrouter provider.
+    2. ``XAI_IMAGE_MODEL`` env override.
+    3. Scoped ``image_gen.xai.model`` in config.yaml.
+    4. :data:`DEFAULT_MODEL`.
+
+    Every candidate is validated against the merged live+static catalog,
+    so a newly released xAI model is selectable the day it appears in the
     live catalog — no code change required.
     """
     catalog = _catalog()
+    if caller_model and caller_model in catalog:
+        return caller_model, catalog[caller_model]
+
     env_override = os.environ.get("XAI_IMAGE_MODEL")
     if env_override and env_override in catalog:
         return env_override, catalog[env_override]
@@ -357,7 +368,7 @@ class XAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
-        model_id, meta = _resolve_model()
+        model_id, meta = _resolve_model(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()

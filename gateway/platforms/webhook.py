@@ -851,8 +851,10 @@ class WebhookAdapter(BasePlatformAdapter):
         ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
 
         Special token ``{__raw__}`` dumps the entire payload as indented
-        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
-        any webhook where the agent needs to see the full payload.
+        JSON (truncated to 4000 chars by default).  An optional limit can
+        be specified as ``{__raw__:20000}`` to override the default.
+        Useful for monitoring alerts or any webhook where the agent needs
+        to see the full payload.
         """
         if not template:
             truncated = json.dumps(payload, indent=2)[:4000]
@@ -862,10 +864,13 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         def _resolve(match: re.Match) -> str:
-            key = match.group(1)
+            raw_key = match.group(1)
+            raw_limit = match.group(2)
+            key = raw_key if raw_key else match.group(3)
             # Special token: dump the entire payload as JSON
             if key == "__raw__":
-                return json.dumps(payload, indent=2)[:4000]
+                limit = int(raw_limit) if raw_limit else 4000
+                return json.dumps(payload, indent=2)[:limit]
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -876,7 +881,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 return json.dumps(value, indent=2)[:2000]
             return str(value)
 
-        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+        return re.sub(r"\{(__raw__)(?::(\d+))?\}|\{([a-zA-Z0-9_.]+)\}", _resolve, template)
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict

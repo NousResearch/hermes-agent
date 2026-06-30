@@ -943,6 +943,37 @@ class TestRawTemplateToken:
         assert '"action": "closed"' in result
         assert '"number": 7' in result
 
+    def test_raw_custom_limit_via_colon_syntax(self):
+        """{__raw__:N} overrides the default 4000-char truncation limit."""
+        adapter = _make_adapter()
+        payload = {"data": "x" * 5000}
+        result = adapter._render_prompt("{__raw__:20000}", payload, "push", "test")
+        # Full JSON is ~5010 chars, should NOT be truncated at 4000
+        assert len(result) > 4000
+        assert len(result) <= 20000
+
+    def test_raw_custom_limit_small_value(self):
+        """{__raw__:N} with a small limit truncates accordingly."""
+        adapter = _make_adapter()
+        payload = {"key": "value", "nested": {"a": 1}}
+        result = adapter._render_prompt("{__raw__:20}", payload, "push", "test")
+        assert len(result) <= 20
+
+    def test_raw_custom_limit_backward_compatible(self):
+        """Bare {__raw__} still uses the 4000-char default."""
+        adapter = _make_adapter()
+        payload = {"data": "x" * 5000}
+        result = adapter._render_prompt("{__raw__}", payload, "push", "test")
+        assert len(result) <= 4000
+
+    def test_colon_in_regular_placeholder_is_literal(self):
+        """{action:3} with a colon is NOT a valid placeholder — kept literal."""
+        adapter = _make_adapter()
+        payload = {"action": "opened"}
+        result = adapter._render_prompt("Field {action:3}", payload, "push", "test")
+        # The colon-bearing text should remain untouched, not rendered as "opened"
+        assert result == "Field {action:3}"
+
 
 # ===================================================================
 # Cross-platform delivery thread_id passthrough

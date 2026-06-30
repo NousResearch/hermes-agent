@@ -17,6 +17,7 @@ from agent.anthropic_adapter import (
     _write_claude_code_credentials,
     build_anthropic_client,
     build_anthropic_bedrock_client,
+    build_anthropic_vertex_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
@@ -153,6 +154,29 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.AnthropicBedrock.call_args[1]
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" in betas
+
+    def test_vertex_client_uses_project_and_region(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.AnthropicVertex = MagicMock()
+            mock_sdk.AsyncAnthropicVertex = MagicMock()
+            build_anthropic_vertex_client(
+                "vertex-project",
+                "europe-west4",
+                timeout=123.0,
+            )
+            kwargs = mock_sdk.AnthropicVertex.call_args[1]
+            assert kwargs["project_id"] == "vertex-project"
+            assert kwargs["region"] == "europe-west4"
+            assert kwargs["timeout"].read == 123.0
+            assert kwargs["timeout"].connect == 10.0
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "interleaved-thinking" in betas
+            assert "context-1m-2025-08-07" not in betas
+
+    def test_vertex_client_requires_vertex_sdk_support(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk", new=SimpleNamespace()):
+            with pytest.raises(ImportError, match="AnthropicVertex"):
+                build_anthropic_vertex_client("vertex-project", "global")
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

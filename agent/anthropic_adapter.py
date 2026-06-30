@@ -869,6 +869,61 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
+def build_anthropic_vertex_client(
+    project_id: str,
+    region: str,
+    timeout: float = None,
+):
+    """Create an AnthropicVertex client for Claude on Google Vertex AI.
+
+    Uses ADC / ``GOOGLE_APPLICATION_CREDENTIALS`` through Anthropic's native
+    Vertex adapter. ``project_id`` and ``region`` are resolved by the caller so
+    Hermes can apply the same precedence rules across CLI/runtime paths.
+    """
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+
+        _lazy_ensure("provider.vertex_anthropic", prompt=False)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Vertex Anthropic provider. "
+            "Install it with: pip install 'anthropic[vertex]>=0.87.0'"
+        )
+    if not hasattr(_anthropic_sdk, "AnthropicVertex"):
+        raise ImportError(
+            "anthropic.AnthropicVertex not available. "
+            "Upgrade with: pip install 'anthropic[vertex]>=0.87.0'"
+        )
+    # Async parity is part of the supported SDK surface even though Hermes
+    # currently instantiates the sync client here and wraps it for async uses.
+    if not hasattr(_anthropic_sdk, "AsyncAnthropicVertex"):
+        raise ImportError(
+            "anthropic.AsyncAnthropicVertex not available. "
+            "Upgrade with: pip install 'anthropic[vertex]>=0.87.0'"
+        )
+
+    from httpx import Timeout
+
+    normalized_project_id = str(project_id or "").strip()
+    if not normalized_project_id:
+        raise ValueError("project_id is required for AnthropicVertex")
+    normalized_region = str(region or "").strip() or "global"
+    read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+
+    return _anthropic_sdk.AnthropicVertex(
+        project_id=normalized_project_id,
+        region=normalized_region,
+        timeout=Timeout(timeout=float(read_timeout), connect=10.0),
+        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
+    )
+
+
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 
@@ -903,13 +958,21 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
         return None
 
-    raw = result.stdout.strip()
+    raw = result.stdout
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = raw.decode("utf-8")
+        except Exception:
+            return None
+    if not isinstance(raw, str):
+        return None
+    raw = raw.strip()
     if not raw:
         return None
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -2643,7 +2706,15 @@ def build_anthropic_kwargs(
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
-            if _supports_adaptive_thinking(model):
+            _is_vertex = base_url and "aiplatform.googleapis.com" in str(base_url)
+            if _is_vertex:
+                # Vertex AI does not support adaptive thinking or the
+                # context-1m beta.  Fall back to enabled+budget thinking
+                # which Vertex does accept for Claude models.
+                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                kwargs["temperature"] = 1
+                kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+            elif _supports_adaptive_thinking(model):
                 kwargs["thinking"] = {
                     "type": "adaptive",
                     "display": "summarized",

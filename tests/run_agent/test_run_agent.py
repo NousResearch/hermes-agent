@@ -6937,6 +6937,69 @@ class TestAnthropicBaseUrlPassthrough:
             assert not passed_url or passed_url is None
 
 
+class TestVertexClientSelection:
+    def test_vertex_anthropic_init_uses_vertex_builder(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "vertex-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "europe-west4")
+
+        vertex_client = MagicMock()
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=AssertionError("vertex should not use build_anthropic_client"),
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_vertex_client",
+                return_value=vertex_client,
+                create=True,
+            ) as mock_build_vertex,
+        ):
+            agent = AIAgent(
+                provider="vertex",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        mock_build_vertex.assert_called_once_with(
+            "vertex-project",
+            "europe-west4",
+            timeout=None,
+        )
+        assert agent._anthropic_client is vertex_client
+        assert agent._is_anthropic_oauth is False
+
+    def test_rebuild_anthropic_client_uses_vertex_builder(self, agent):
+        agent.provider = "vertex"
+        agent.api_mode = "anthropic_messages"
+        agent._vertex_project_id = "vertex-project"
+        agent._vertex_region = "global"
+
+        new_client = MagicMock()
+
+        with (
+            patch("run_agent.get_provider_request_timeout", return_value=42.0),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                side_effect=AssertionError("vertex rebuild should not use build_anthropic_client"),
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_vertex_client",
+                return_value=new_client,
+                create=True,
+            ) as rebuild,
+        ):
+            agent._rebuild_anthropic_client()
+
+        rebuild.assert_called_once_with("vertex-project", "global", timeout=42.0)
+        assert agent._anthropic_client is new_client
+
+
 class TestAnthropicCredentialRefresh:
     def test_try_refresh_anthropic_client_credentials_rebuilds_client(self):
         with (

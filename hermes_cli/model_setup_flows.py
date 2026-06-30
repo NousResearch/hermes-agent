@@ -2147,6 +2147,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         except (KeyboardInterrupt, EOFError):
             selected = None
 
+
     if selected:
         _save_model_choice(selected)
 
@@ -2370,19 +2371,23 @@ def _model_flow_bedrock(config, current_model=""):
 
 
 def _model_flow_vertex(config, current_model=""):
-    """Google Vertex AI provider: Gemini via the OpenAI-compatible endpoint.
+    """Google Vertex AI provider: Gemini via the OpenAI-compatible endpoint,
+    Claude via the AnthropicVertex SDK.
 
-    Auth is OAuth2 — short-lived tokens minted from a service-account JSON or
+    Auth is OAuth2 -- short-lived tokens minted from a service-account JSON or
     Application Default Credentials (ADC). No static API key. The credential
     *path* lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS);
     project ID and region are non-secret and saved to config.yaml under vertex:.
+
+    Claude models are additionally supported via the AnthropicVertex SDK,
+    which can be installed with ``pip install 'anthropic[vertex]'``.
     """
     from hermes_cli.auth import (
         _prompt_model_selection,
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import load_config, save_config, get_env_value
+    from hermes_cli.config import clear_model_endpoint_credentials, load_config, save_config, get_env_value
     from hermes_cli.models import _PROVIDER_MODELS
 
     # 1. Credential source detection (fast, no network / no google-auth import).
@@ -2405,7 +2410,7 @@ def _model_flow_vertex(config, current_model=""):
     if not isinstance(vertex_cfg, dict):
         vertex_cfg = {}
 
-    # 2. Project ID (optional — falls back to the project embedded in creds).
+    # 2. Project ID (optional -- falls back to the project embedded in creds).
     current_project = str(vertex_cfg.get("project_id") or "").strip()
     try:
         project_input = input(
@@ -2416,7 +2421,7 @@ def _model_flow_vertex(config, current_model=""):
         return
     project_id = project_input or current_project
 
-    # 3. Region (default global — required for the Gemini 3.x previews).
+    # 3. Region (default global -- required for the Gemini 3.x previews).
     current_region = str(vertex_cfg.get("region") or "global").strip() or "global"
     try:
         region_input = input(f"  Vertex region [{current_region}]: ").strip()
@@ -2425,7 +2430,7 @@ def _model_flow_vertex(config, current_model=""):
         return
     region = region_input or current_region
 
-    # 4. Model selection (curated list — Vertex has no /models listing route).
+    # 4. Model selection (curated list -- Vertex has no /models listing route).
     model_list = _PROVIDER_MODELS.get("vertex", []) or [
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
@@ -2455,7 +2460,7 @@ def _model_flow_vertex(config, current_model=""):
         model["provider"] = "vertex"
         # base_url is computed at runtime from project+region; do not pin it.
         model.pop("base_url", None)
-        model.pop("api_mode", None)  # chat_completions is the profile default
+        model.pop("api_mode", None)
         clear_model_endpoint_credentials(model, clear_api_mode=False)
 
         vcfg = cfg.get("vertex")
@@ -2471,6 +2476,7 @@ def _model_flow_vertex(config, current_model=""):
         print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
     else:
         print("  No change.")
+
 
 def _select_zai_endpoint(current_base: str) -> str:
     """Present a picker for Z.AI endpoint selection during setup.

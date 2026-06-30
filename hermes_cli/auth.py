@@ -161,7 +161,7 @@ class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", "oauth_minimax", or "api_key"
+    auth_type: str  # "oauth_device_code", "oauth_external", "oauth_minimax", "api_key", "external_process", "aws_sdk", or "gcp_adc"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
@@ -433,6 +433,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
+    ),
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="gcp_adc",
+        inference_base_url="https://aiplatform.googleapis.com",
+        api_key_env_vars=(
+            "ANTHROPIC_VERTEX_PROJECT_ID",
+            "GOOGLE_CLOUD_PROJECT",
+            "GCLOUD_PROJECT",
+        ),
     ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
@@ -1529,6 +1540,10 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             if env_var in _IMPLICIT_ENV_VARS:
                 continue
             if has_usable_secret(os.getenv(env_var, "")):
+                return True
+    if pconfig and pconfig.auth_type == "gcp_adc":
+        for env_var in pconfig.api_key_env_vars:
+            if str(os.getenv(env_var, "")).strip():
                 return True
 
     # 4. Check persisted credential-pool entries that came from EXPLICIT flows
@@ -6336,6 +6351,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_minimax_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
+    if target == "vertex":
+        return get_vertex_auth_status()
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
     # API-key providers
@@ -6350,6 +6367,35 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         except ImportError:
             return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
     return {"logged_in": False}
+
+
+def get_vertex_auth_status() -> Dict[str, Any]:
+    """Return structural auth status for Google Vertex AI.
+
+    We validate the project/region resolution locally, but do not force a live
+    ADC token mint here. `hermes doctor` or an actual request is the place to
+    verify the underlying Google credential chain.
+    """
+    info: Dict[str, Any] = {"provider": "vertex"}
+    try:
+        creds = resolve_vertex_anthropic_runtime_credentials()
+        info.update(
+            {
+                "logged_in": True,
+                "project_id": creds["project_id"],
+                "region": creds["region"],
+                "base_url": creds["base_url"],
+                "source": creds.get("source", "gcp-adc"),
+                "credentials_path": creds.get("credentials_path"),
+                "hint": (
+                    "Vertex AI project/region resolved; live ADC validation "
+                    "is deferred until request time."
+                ),
+            }
+        )
+    except AuthError as exc:
+        info.update({"logged_in": False, "error": str(exc)})
+    return info
 
 
 def _get_azure_foundry_auth_status() -> Dict[str, Any]:
@@ -6427,6 +6473,57 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
         api_key = os.getenv("AZURE_FOUNDRY_API_KEY", "")
     info["logged_in"] = has_usable_secret(api_key)
     return info
+
+
+def resolve_vertex_anthropic_runtime_credentials() -> Dict[str, Any]:
+    """Resolve project/region for AnthropicVertex via ADC + Vertex env hints."""
+    try:
+        from hermes_cli.config import get_env_value
+    except Exception:
+        get_env_value = None
+
+    def _read_env(name: str) -> str:
+        if get_env_value is not None:
+            try:
+                value = get_env_value(name)
+                if value:
+                    return str(value).strip()
+            except Exception:
+                pass
+        return str(os.getenv(name, "")).strip()
+
+    project_id = (
+        _read_env("ANTHROPIC_VERTEX_PROJECT_ID")
+        or _read_env("GOOGLE_CLOUD_PROJECT")
+        or _read_env("GCLOUD_PROJECT")
+    )
+    region = _read_env("CLOUD_ML_REGION") or "global"
+    credentials_path = _read_env("GOOGLE_APPLICATION_CREDENTIALS")
+    pconfig = PROVIDER_REGISTRY.get("vertex")
+    base_url = (
+        str(getattr(pconfig, "inference_base_url", "") or "").strip().rstrip("/")
+        or "https://aiplatform.googleapis.com"
+    )
+
+    if not project_id:
+        raise AuthError(
+            "No Vertex Anthropic project configured. Set ANTHROPIC_VERTEX_PROJECT_ID, "
+            "GOOGLE_CLOUD_PROJECT, or GCLOUD_PROJECT.",
+            provider="vertex",
+            code="missing_vertex_project",
+        )
+
+    resolved = {
+        "provider": "vertex",
+        "api_key": "gcp-adc",
+        "base_url": base_url,
+        "project_id": project_id,
+        "region": region,
+        "source": "gcp-adc",
+    }
+    if credentials_path:
+        resolved["credentials_path"] = credentials_path
+    return resolved
 
 
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:

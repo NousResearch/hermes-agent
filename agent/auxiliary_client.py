@@ -5134,6 +5134,40 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    elif pconfig.auth_type == "gcp_adc":
+        try:
+            from hermes_cli.auth import AuthError, resolve_vertex_anthropic_runtime_credentials
+            from agent.anthropic_adapter import build_anthropic_vertex_client
+        except ImportError:
+            logger.warning(
+                "resolve_provider_client: vertex requested but "
+                "Anthropic Vertex dependencies are not installed"
+            )
+            return None, None
+
+        try:
+            creds = resolve_vertex_anthropic_runtime_credentials()
+            project_id = creds["project_id"]
+            region = creds["region"]
+            real_client = build_anthropic_vertex_client(project_id, region)
+        except (AuthError, ImportError, ValueError) as exc:
+            logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
+            return None, None
+
+        default_model = _get_aux_model_for_provider(provider)
+        final_model = _normalize_resolved_model(model or default_model, provider)
+        client = AnthropicAuxiliaryClient(
+            real_client,
+            final_model,
+            api_key=creds.get("api_key", "gcp-adc"),
+            base_url=creds.get("base_url", "https://aiplatform.googleapis.com"),
+        )
+        client._vertex_project_id = project_id
+        client._vertex_region = region
+        logger.debug("resolve_provider_client: vertex (%s, %s)", final_model, region)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     elif pconfig.auth_type in {"oauth_device_code", "oauth_external"}:
         # OAuth providers — route through their specific try functions
         if provider == "nous":
@@ -5281,6 +5315,8 @@ def _resolve_strict_vision_backend(
             )
             return None, None
         return resolve_provider_client("deepinfra", vision_model, is_vision=True)
+    if provider == "vertex":
+        return resolve_provider_client("vertex", model, is_vision=True)
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None

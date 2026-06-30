@@ -1465,7 +1465,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif (
-            fb_provider == "anthropic"
+            fb_provider in {"anthropic", "vertex"}
             or fb_base_url.rstrip("/").lower().endswith("/anthropic")
             or base_url_hostname(fb_base_url) == "api.anthropic.com"
         ):
@@ -1555,15 +1555,35 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
-            from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-            effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
-            agent.api_key = effective_key
-            agent._anthropic_api_key = effective_key
-            agent._anthropic_base_url = fb_base_url
-            agent._anthropic_client = build_anthropic_client(
-                effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
-            )
-            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
+            if fb_provider == "vertex":
+                from agent.anthropic_adapter import build_anthropic_vertex_client
+                from hermes_cli.auth import resolve_vertex_anthropic_runtime_credentials
+
+                vertex_runtime = resolve_vertex_anthropic_runtime_credentials()
+                agent.api_key = fb_client.api_key or vertex_runtime.get("api_key", "gcp-adc")
+                agent._anthropic_api_key = agent.api_key
+                agent._anthropic_base_url = fb_base_url or vertex_runtime.get("base_url", "")
+                agent._vertex_project_id = getattr(fb_client, "_vertex_project_id", None) or vertex_runtime["project_id"]
+                agent._vertex_region = getattr(fb_client, "_vertex_region", None) or vertex_runtime["region"]
+                agent._anthropic_client = build_anthropic_vertex_client(
+                    agent._vertex_project_id,
+                    agent._vertex_region,
+                    timeout=_fb_timeout,
+                )
+                agent._is_anthropic_oauth = False
+            else:
+                from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+
+                effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+                agent.api_key = effective_key
+                agent._anthropic_api_key = effective_key
+                agent._anthropic_base_url = fb_base_url
+                agent._vertex_project_id = None
+                agent._vertex_region = None
+                agent._anthropic_client = build_anthropic_client(
+                    effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
+                )
+                agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
             agent.client = None
             agent._client_kwargs = {}
         else:

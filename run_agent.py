@@ -4634,6 +4634,28 @@ class AIAgent:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             self._anthropic_client = build_anthropic_bedrock_client(region)
+        elif getattr(self, "provider", None) == "vertex":
+            from agent.anthropic_adapter import build_anthropic_vertex_client
+
+            project_id = getattr(self, "_vertex_project_id", None)
+            region = getattr(self, "_vertex_region", "global") or "global"
+            if not project_id:
+                from hermes_cli.auth import resolve_vertex_anthropic_runtime_credentials
+
+                vertex_runtime = resolve_vertex_anthropic_runtime_credentials()
+                project_id = vertex_runtime["project_id"]
+                region = vertex_runtime["region"]
+                self._vertex_project_id = project_id
+                self._vertex_region = region
+                self._anthropic_base_url = vertex_runtime.get("base_url", self._anthropic_base_url)
+                self._anthropic_api_key = vertex_runtime.get("api_key", self._anthropic_api_key)
+                self.api_key = self._anthropic_api_key
+                self.base_url = self._anthropic_base_url or self.base_url
+            self._anthropic_client = build_anthropic_vertex_client(
+                project_id,
+                region,
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
         else:
             from agent.anthropic_adapter import build_anthropic_client
             self._anthropic_client = build_anthropic_client(

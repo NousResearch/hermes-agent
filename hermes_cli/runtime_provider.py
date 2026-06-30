@@ -1512,6 +1512,20 @@ def _resolve_explicit_runtime(
     return None
 
 
+def _is_anthropic_vertex_model(model_id: str) -> bool:
+    """Return True if the model is a Claude model suitable for AnthropicVertex SDK.
+
+    Mirrors ``is_anthropic_bedrock_model`` in ``agent/bedrock_adapter.py``.
+    Claude models on Vertex use the AnthropicVertex SDK for full feature parity
+    (prompt caching, thinking budgets).  Non-Claude models are not yet supported
+    on the Vertex provider.
+    """
+    model_lower = (model_id or "").strip().lower()
+    if not model_lower:
+        return True  # empty model → let the API decide; assume Claude
+    return "claude" in model_lower or model_lower.startswith("anthropic/")
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -1576,38 +1590,54 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
-    # Vertex AI: OAuth2-token provider (Gemini via the OpenAI-compatible
-    # endpoint). Resolve BEFORE the custom-runtime / credential-pool / generic
-    # paths. The credential *path* (GOOGLE_APPLICATION_CREDENTIALS /
-    # VERTEX_CREDENTIALS_PATH) must never reach the credential pool or the
-    # generic api_key resolver — those would treat the file path as a static
-    # API key. Instead we mint a short-lived OAuth2 access token here and hand
-    # it to the standard OpenAI client as api_key, with base_url computed from
-    # the project ID + region. The token is re-minted per call (5-min refresh
-    # margin) by get_vertex_config(); mid-session expiry is additionally
-    # recovered on 401 by run_agent._try_refresh_vertex_client_credentials().
-    if requested_provider in ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai"):
-        from agent.vertex_adapter import get_vertex_config
+    # Vertex AI: dual-path provider. Claude models use the AnthropicVertex SDK
+    # for full feature parity (prompt caching, thinking budgets). Gemini models
+    # use the OpenAI-compatible endpoint with OAuth2 tokens. The credential
+    # *path* (GOOGLE_APPLICATION_CREDENTIALS / VERTEX_CREDENTIALS_PATH) must
+    # never reach the credential pool or the generic api_key resolver.
+    if requested_provider in {"vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai", "vertex-anthropic"}:
+        _vertex_model_cfg = _get_model_config()
+        _current_model = str(target_model or _vertex_model_cfg.get("default") or "").strip()
 
-        token, base_url = get_vertex_config()
-        if not token or not base_url:
-            raise AuthError(
-                "Vertex AI credentials could not be resolved. Vertex uses "
-                "OAuth2 (not a static API key): provide a service-account JSON "
-                "via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) "
-                "in ~/.hermes/.env, or run 'gcloud auth application-default "
-                "login' for ADC. Set the GCP project/region under vertex: in "
-                "config.yaml if they aren't embedded in the credentials. "
-                "Install the extra with: pip install 'hermes-agent[vertex]'."
-            )
-        return {
-            "provider": "vertex",
-            "api_mode": "chat_completions",
-            "base_url": base_url.rstrip("/"),
-            "api_key": token,
-            "source": "vertex-oauth",
-            "requested_provider": requested_provider,
-        }
+        if _is_anthropic_vertex_model(_current_model):
+            # Claude path: AnthropicVertex SDK (anthropic_messages mode)
+            from hermes_cli.auth import resolve_vertex_anthropic_runtime_credentials
+
+            creds = resolve_vertex_anthropic_runtime_credentials()
+            return {
+                "provider": "vertex",
+                "api_mode": "anthropic_messages",
+                "base_url": creds.get("base_url", "").rstrip("/"),
+                "api_key": creds.get("api_key", "gcp-adc"),
+                "project_id": creds["project_id"],
+                "region": creds["region"],
+                "source": creds.get("source", "gcp-adc"),
+                "vertex_anthropic": True,
+                "requested_provider": requested_provider,
+            }
+        else:
+            # Gemini path: OAuth2 token + OpenAI-compatible endpoint
+            from agent.vertex_adapter import get_vertex_config
+
+            token, base_url = get_vertex_config()
+            if not token or not base_url:
+                raise AuthError(
+                    "Vertex AI credentials could not be resolved. Vertex uses "
+                    "OAuth2 (not a static API key): provide a service-account JSON "
+                    "via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) "
+                    "in ~/.hermes/.env, or run 'gcloud auth application-default "
+                    "login' for ADC. Set the GCP project/region under vertex: in "
+                    "config.yaml if they aren't embedded in the credentials. "
+                    "Install the extra with: pip install 'hermes-agent[vertex]'."
+                )
+            return {
+                "provider": "vertex",
+                "api_mode": "chat_completions",
+                "base_url": base_url.rstrip("/"),
+                "api_key": token,
+                "source": "vertex-oauth",
+                "requested_provider": requested_provider,
+            }
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,

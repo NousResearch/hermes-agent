@@ -589,6 +589,28 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.API_SERVER].enabled is False
         assert Platform.API_SERVER not in config.get_connected_platforms()
 
+    def test_explicit_api_server_disable_wins_over_env_key(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    api_server:\n"
+            "      enabled: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("API_SERVER_KEY", "test-key")
+        monkeypatch.setenv("API_SERVER_ENABLED", "false")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.API_SERVER].enabled is False
+        assert "key" not in config.platforms[Platform.API_SERVER].extra
+        assert Platform.API_SERVER not in config.get_connected_platforms()
+
     def test_bridges_nested_gateway_platforms_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

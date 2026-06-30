@@ -1283,8 +1283,10 @@ class PhotonAdapter(BasePlatformAdapter):
             "text": text,
             "hermesSent": True,
         }
-        if markdown and _markdown_enabled():
-            body["format"] = "markdown"
+        # Native iMessage edits are text-only in spectrum-ts. Keep the
+        # markdown parameter for API compatibility, but do not request markdown
+        # edit content here because Spectrum rejects non-text edits before they
+        # reach Photon.
         try:
             await self._sidecar_call("/edit", body)
         except Exception as e:

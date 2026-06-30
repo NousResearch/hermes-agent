@@ -6,6 +6,7 @@ messages Hermes has sent in the current adapter run. These tests stub
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
@@ -86,10 +87,26 @@ async def test_edit_sent_message_posts_guarded_payload(
                 "messageId": "bot-msg-1",
                 "text": "**edited**",
                 "hermesSent": True,
-                "format": "markdown",
             },
         )
     ]
+
+
+def test_sidecar_edit_uses_text_content_before_advanced_fallback() -> None:
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(
+        encoding="utf-8"
+    )
+    edit_block = index[
+        index.index('if (req.url === "/edit")') : index.index(
+            'if (req.url === "/unsend")'
+        )
+    ]
+
+    assert "const content = spectrumText(text);" in edit_block
+    assert "spectrumMarkdown(text)" not in edit_block
+    assert edit_block.index("await target.edit(content)") < edit_block.index(
+        "client.messages.edit"
+    )
 
 
 @pytest.mark.asyncio

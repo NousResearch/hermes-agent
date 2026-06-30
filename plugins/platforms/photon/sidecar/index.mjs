@@ -1017,8 +1017,11 @@ const server = http.createServer(async (req, res) => {
       if (target.direction && target.direction !== "outbound") {
         return badRequest(res, "only outbound messages can be edited");
       }
-      const content =
-        format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      // spectrum-ts iMessage edits are text-only. Markdown edit content throws
+      // in the provider before it reaches Photon, which would fall back to the
+      // direct advanced edit path that live canaries showed can return upstream
+      // 500s.
+      const content = spectrumText(text);
       try {
         // Match OpenClaw/Spectrum's canonical edit path first. The direct
         // advanced SDK edit endpoint returned upstream 500s in live canaries,

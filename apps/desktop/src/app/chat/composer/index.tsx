@@ -44,18 +44,10 @@ import {
   setComposerPoppedOut
 } from '@/store/composer-popout'
 import {
-  $queuedPromptsBySession,
   enqueueQueuedPrompt,
-  MAX_AUTO_DRAIN_ATTEMPTS,
-  migrateQueuedPrompts,
-  promoteQueuedPrompt,
-  type QueuedPromptEntry,
-  removeQueuedPrompt,
-  shouldAutoDrain,
-  updateQueuedPrompt
+  removeQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { notify } from '@/store/notifications'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
@@ -80,15 +72,13 @@ import {
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import {
-  markActiveComposer,
-  onComposerSubmitRequest
-} from './focus'
+import { markActiveComposer, onComposerSubmitRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
+import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
@@ -137,7 +127,6 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const attachments = useStore($composerAttachments)
-  const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
   const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
@@ -156,25 +145,10 @@ export function ChatBar({
   const popoutPosition = useStore($composerPopoutPosition)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
-  const queuedPrompts = useMemo(
-    () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
-    [activeQueueSessionKey, queuedPromptsBySession]
-  )
-
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
-
-  const statusStackVisible = useMemo(
-    () =>
-      queuedPrompts.length > 0 ||
-      (statusSessionId
-        ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 ||
-          (previewStatusBySession[statusSessionId]?.length ?? 0) > 0
-        : false),
-    [previewStatusBySession, queuedPrompts.length, statusItemsBySession, statusSessionId]
-  )
 
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
@@ -207,18 +181,14 @@ export function ChatBar({
     position: popoutPosition
   })
 
-  const prevQueueKeyRef = useRef(activeQueueSessionKey)
-  const drainingQueueRef = useRef(false)
-  // Per-entry auto-drain failure counts; bounds retries so a persistent 404
-  // can't spin-loop. Cleared on success; reset naturally on remount/reconnect.
-  const drainFailuresRef = useRef(new Map<string, number>())
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
-  const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
-  const queueEditRef = useRef(queueEdit)
-  queueEditRef.current = queueEdit
+  // Coordinator-owned: the draft engine reads the live queue-edit snapshot off
+  // this ref (to suppress its stash while editing a queued prompt) and the queue
+  // engine writes it — an explicit shared handle, not a back-reference.
+  const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
 
   const { availableThemes, themeName } = useTheme()
@@ -253,10 +223,46 @@ export function ChatBar({
     stashAt
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
 
+  // The queue engine — queued turns, in-place editing, the shared drain lock,
+  // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
+  const {
+    beginQueuedEdit,
+    drainNextQueued,
+    editingQueuedPrompt,
+    exitQueuedEdit,
+    queueCurrentDraft,
+    queueEdit,
+    queuedPrompts,
+    sendQueuedNow,
+    stepQueuedEdit
+  } = useComposerQueue({
+    activeQueueSessionKey,
+    attachments,
+    busy,
+    clearDraft,
+    draftRef,
+    focusInput,
+    loadIntoComposer,
+    onCancel,
+    onSubmit,
+    queueEditRef,
+    queueSessionKey,
+    sessionId
+  })
+
+  const statusStackVisible = useMemo(
+    () =>
+      queuedPrompts.length > 0 ||
+      (statusSessionId
+        ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 ||
+          (previewStatusBySession[statusSessionId]?.length ?? 0) > 0
+        : false),
+    [previewStatusBySession, queuedPrompts.length, statusItemsBySession, statusSessionId]
+  )
+
   const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
-  const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
@@ -987,102 +993,6 @@ export function ChatBar({
     [cwd]
   )
 
-  const beginQueuedEdit = (entry: QueuedPromptEntry) => {
-    if (!activeQueueSessionKey || queueEdit) {
-      return
-    }
-
-    setQueueEdit({
-      attachments: cloneAttachments($composerAttachments.get()),
-      draft: draftRef.current,
-      entryId: entry.id,
-      sessionKey: activeQueueSessionKey
-    })
-    loadIntoComposer(entry.text, entry.attachments)
-    triggerHaptic('selection')
-    focusInput()
-  }
-
-  // Walk queued entries while editing (ArrowUp = older, ArrowDown = newer),
-  // saving the in-progress edit on each step. Stepping newer past the last
-  // entry exits edit mode and restores the pre-edit draft.
-  const stepQueuedEdit = (direction: -1 | 1) => {
-    if (!queueEdit) {
-      return false
-    }
-
-    const index = queuedPrompts.findIndex(e => e.id === queueEdit.entryId)
-    const target = index + direction
-
-    if (index < 0 || target < 0) {
-      return index >= 0 // at the oldest: swallow; missing entry: let it fall through
-    }
-
-    const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
-      attachments: cloneAttachments($composerAttachments.get()),
-      text: draftRef.current
-    })
-
-    const next = queuedPrompts[target]
-
-    if (next) {
-      setQueueEdit({ ...queueEdit, entryId: next.id })
-      loadIntoComposer(next.text, next.attachments)
-    } else {
-      setQueueEdit(null)
-      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
-    }
-
-    triggerHaptic(saved ? 'success' : 'selection')
-    focusInput()
-
-    return true
-  }
-
-  const exitQueuedEdit = (action: 'cancel' | 'save'): boolean => {
-    if (!queueEdit) {
-      return false
-    }
-
-    if (action === 'save') {
-      const text = draftRef.current
-      const next = cloneAttachments($composerAttachments.get())
-
-      if (!text.trim() && next.length === 0) {
-        return false
-      }
-
-      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
-      triggerHaptic(saved ? 'success' : 'selection')
-    } else {
-      triggerHaptic('cancel')
-    }
-
-    loadIntoComposer(queueEdit.draft, queueEdit.attachments)
-    setQueueEdit(null)
-    focusInput()
-
-    return true
-  }
-
-  const queueCurrentDraft = useCallback(() => {
-    const text = draftRef.current
-
-    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
-      return false
-    }
-
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
-      return false
-    }
-
-    clearDraft()
-    clearComposerAttachments()
-    triggerHaptic('selection')
-
-    return true
-  }, [activeQueueSessionKey, attachments, clearDraft])
-
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
   // are re-queued so nothing is lost — same safety net as a plain queue.
@@ -1102,142 +1012,6 @@ export function ChatBar({
       }
     })
   }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
-
-  // All queue drain paths share one lock + send-then-remove sequence.
-  // `pickEntry` lets each caller choose head, by-id, or skip-edited.
-  const runDrain = useCallback(
-    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
-      if (drainingQueueRef.current || !activeQueueSessionKey) {
-        return false
-      }
-
-      const entry = pickEntry(queuedPrompts)
-
-      if (!entry) {
-        return false
-      }
-
-      drainingQueueRef.current = true
-
-      try {
-        const accepted = await Promise.resolve(
-          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
-        )
-
-        if (accepted === false) {
-          return false
-        }
-
-        drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(activeQueueSessionKey, entry.id)
-        resetBrowseState(sessionId)
-
-        return true
-      } finally {
-        drainingQueueRef.current = false
-      }
-    },
-    [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
-  )
-
-  const pickDrainHead = useCallback(
-    (entries: QueuedPromptEntry[]) => {
-      const skip = queueEditRef.current?.entryId
-
-      return skip ? entries.find(e => e.id !== skip) : entries[0]
-    },
-    [] // reads the edit id off a ref so the lock-holder always sees the latest
-  )
-
-  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
-
-  const sendQueuedNow = useCallback(
-    (id: string) => {
-      if (!activeQueueSessionKey || id === queueEdit?.entryId) {
-        return false
-      }
-
-      if (busy) {
-        // Promote to the head, then interrupt. The gateway always emits a
-        // settle (message.complete + session.info running:false) when the
-        // turn unwinds, and the busy→false auto-drain below sends this entry.
-        promoteQueuedPrompt(activeQueueSessionKey, id)
-        triggerHaptic('selection')
-        void Promise.resolve(onCancel())
-
-        return true
-      }
-
-      // A manual send clears the auto-drain backoff so a stuck entry the user
-      // taps gets a fresh attempt (and re-enables auto-retry on success).
-      drainFailuresRef.current.delete(id)
-
-      return runDrain(entries => entries.find(e => e.id === id))
-    },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
-  )
-
-  // Edge-independent auto-drain: send the head whenever the session is idle and
-  // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
-  // a stale-session 404) can't strand the entry permanently nor spin-loop. The
-  // drain lock serializes sends; a remount/reconnect resets the failure counts.
-  const autoDrainNext = useCallback(() => {
-    if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
-      return
-    }
-
-    const entry = pickDrainHead(queuedPrompts)
-
-    if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
-      return
-    }
-
-    const onFail = () => {
-      const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
-      drainFailuresRef.current.set(entry.id, fails)
-
-      if (fails >= MAX_AUTO_DRAIN_ATTEMPTS) {
-        notify({
-          id: 'composer-queue-stuck',
-          kind: 'error',
-          title: t.composer.queueStuckTitle,
-          message: t.composer.queueStuckBody
-        })
-      }
-    }
-
-    void runDrain(() => entry)
-      .then(sent => {
-        if (!sent) {
-          onFail()
-        }
-      })
-      .catch(onFail)
-  }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
-
-  // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
-  // never churns, so a change there is a real session switch and must NOT
-  // migrate; only the runtime-derived key (queueSessionKey falsy → key is
-  // sessionId) churns on a backend bounce/resume of the same conversation.
-  useEffect(() => {
-    const prev = prevQueueKeyRef.current
-    prevQueueKeyRef.current = activeQueueSessionKey
-
-    if (queueSessionKey || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
-      return
-    }
-
-    migrateQueuedPrompts(prev, activeQueueSessionKey)
-  }, [activeQueueSessionKey, queueSessionKey])
-
-  // Queued turns flow whenever the session is idle — on the busy→false settle
-  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
-  // strand them. To cancel queued turns, the user deletes them from the panel.
-  useEffect(() => {
-    if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
-      autoDrainNext()
-    }
-  }, [autoDrainNext, busy, queuedPrompts.length])
 
   // Esc cancels the in-flight turn when the CHAT has focus — not just the
   // composer input (which has its own handler above). Clicking into the
@@ -1278,24 +1052,6 @@ export function ChatBar({
 
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
-
-  // Queue-edit cleanup: on session swap the scope effect already stashed the
-  // edit snapshot; only restore into the composer when still on the same scope.
-  useEffect(() => {
-    if (!queueEdit) {
-      return
-    }
-
-    if (queueEdit.sessionKey === activeQueueSessionKey) {
-      if (editingQueuedPrompt) {
-        return
-      }
-
-      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
-    }
-
-    setQueueEdit(null)
-  }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
     const submittedScope = activeQueueSessionKeyRef.current

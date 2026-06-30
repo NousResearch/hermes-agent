@@ -42,6 +42,70 @@ logger = logging.getLogger(__name__)
 
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 
+# ── Wire #7: caller-side severity map (Mothership #47 Ruling B) ──────────
+# The shared threat library marks C2 / promptware / framework patterns as
+# WARN-class in its own comments ("we WARN, not block", threat_patterns.py),
+# but this caller historically flattened every finding to a hard block. This
+# map restores the library's documented intent at the caller: a context-scope
+# C2 finding WARNS with content preserved; genuine injection / identity-hijack
+# findings still hard-block.
+#
+# Policy: default-block, allowlist-warn. A file is blocked unless EVERY finding
+# is warn-class. One block-class hit blocks the whole file.
+#
+# The warn-set is security-critical: a dropped or typo'd ID silently blocks a
+# legitimate file. So it is self-verified against the source table at import
+# (Keystone: disk is truth, including for the allowlist). The tuple-native
+# severity field is a separate upstream PR, not built here.
+_WARN_CLASS_FINDINGS = frozenset({
+    "c2_node_registration",
+    "c2_heartbeat",
+    "c2_task_pull",
+    "c2_network_connect",
+    "forced_action",
+    "anti_forensic_oneliner",
+    "anti_forensic_disk",
+    "env_var_unset_agent",
+    "known_c2_framework",
+    "c2_explicit",
+    "c2_explicit_long",
+})
+
+
+def _verify_warn_set_against_source() -> None:
+    """Fail loudly at import if _WARN_CLASS_FINDINGS drifts from the source table.
+
+    Reads the C2-through-framework warn-class region of threat_patterns.py and
+    confirms the hardcoded warn-set equals the set of context-scope IDs in that
+    region, both directions. A missing ID would silently downgrade a legitimate
+    file to a hard block under default-block policy; an extra ID is a typo or
+    stale entry that also silently hard-blocks. Either raises.
+    """
+    import re
+    from pathlib import Path
+    import tools.threat_patterns as _tp
+
+    src = Path(_tp.__file__).read_text()
+    start = src.index("C2 / Brainworm-style promptware")
+    end = src.index("Exfiltration via curl")
+    region = src[start:end]
+    source_ids = set(re.findall(r'"([a-z0-9_]+)",\s*"context"', region))
+
+    missing = source_ids - _WARN_CLASS_FINDINGS
+    extra = _WARN_CLASS_FINDINGS - source_ids
+    if missing or extra:
+        raise RuntimeError(
+            "prompt_builder warn-set drift from source table. "
+            f"In source but not warn-set (would silently hard-block): {sorted(missing)}. "
+            f"In warn-set but not source (typo or stale entry): {sorted(extra)}. "
+            "Fix _WARN_CLASS_FINDINGS to match threat_patterns.py exactly, or "
+            "if the tuple-native severity PR landed, revisit this check."
+        )
+
+
+_verify_warn_set_against_source()
+
+
 
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content.
@@ -56,8 +120,22 @@ def _scan_context_content(content: str, filename: str) -> str:
     """
     findings = _scan_for_threats(content, scope="context")
     if findings:
-        logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
-        return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
+        block_class = [f for f in findings if f not in _WARN_CLASS_FINDINGS]
+        if block_class:
+            # Default-block: any non-warn finding hard-blocks the whole file.
+            logger.warning(
+                "Context file %s blocked: %s", filename, ", ".join(findings)
+            )
+            return (
+                f"[BLOCKED: {filename} contained potential prompt injection "
+                f"({', '.join(block_class)}). Content not loaded.]"
+            )
+        # All findings warn-class: preserve content, log the warning.
+        logger.warning(
+            "Context file %s warn-class findings (content preserved): %s",
+            filename,
+            ", ".join(findings),
+        )
 
     return content
 

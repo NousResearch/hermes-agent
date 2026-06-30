@@ -39,27 +39,34 @@ log = logging.getLogger(__name__)
 _AUTOSTART_STATES = frozenset({"running"})
 
 # Transient runtime sub-states of a RUNNING gateway. A gateway only ever
-# reaches these while it is up and serving — `draining` is written by the
-# drain watcher / scale-to-zero go-dormant path when an in-flight quiesce
-# begins (gateway/run.py). It is NOT an operator stop and NOT a failed boot.
+# reaches these while it is up and serving, so they are NOT an operator stop
+# and NOT a failed boot:
+#   - `draining`  — written by the drain watcher / scale-to-zero go-dormant
+#                   path when an in-flight quiesce begins (gateway/run.py).
+#   - `degraded`  — written when the gateway comes up with some platforms
+#                   queued for retry, then "falls through to the normal
+#                   running state" (gateway/run.py #5196): the process is up,
+#                   serving cron + whatever platforms connected, and the
+#                   reconnect watcher takes the rest from there.
 #
-# When a gateway is hard-killed *while draining* (a container/VM recreate
-# SIGTERMs it before `_stop_impl` reaches its terminal-state persist), the
-# last value left in gateway_state.json is `draining`. With no explicit
-# `desired_state` to fall back to, treating that literal value as the
-# autostart intent would leave the gateway DOWN on every subsequent boot —
-# the gateway never comes back, the dashboard is up but messaging stays dark
-# (observed on a relay-opted-in staging instance, 2026-06). Map these
-# transient sub-states to `running` so a stranded drain marker reads as the
-# run-intent it actually represents. This mirrors gateway/run.py's #42675
-# handling, which persists `running` (not the mid-shutdown `draining`) when an
-# unexpected signal tears the gateway down — extended here to the case where
-# the gateway died before it could persist anything at all.
+# When a gateway is hard-killed *while in one of these states* (a container/VM
+# recreate SIGTERMs it before `_stop_impl` reaches its terminal-state persist),
+# the last value left in gateway_state.json is the transient sub-state. With no
+# explicit `desired_state` to fall back to, treating that literal value as the
+# autostart intent would leave the gateway DOWN on every subsequent boot — the
+# gateway never comes back, the dashboard is up but messaging stays dark
+# (observed on a relay-opted-in staging instance stranded at `draining`,
+# 2026-06; `degraded` is the same wedge class). Map these transient sub-states
+# to `running` so a stranded marker reads as the run-intent it actually
+# represents. This mirrors gateway/run.py's #42675 handling, which persists
+# `running` (not the mid-shutdown `draining`) when an unexpected signal tears
+# the gateway down — extended here to the case where the gateway died before it
+# could persist anything at all.
 #
 # `starting` / `startup_failed` are deliberately NOT included: those mean the
 # gateway died mid-boot or failed to come up, so auto-restarting them would
 # reintroduce the crash-loop the down-marker guard exists to prevent.
-_TRANSIENT_RUNNING_STATES = frozenset({"draining"})
+_TRANSIENT_RUNNING_STATES = frozenset({"draining", "degraded"})
 
 # Stale runtime files we sweep before recreating service slots. These
 # all hold container-namespaced state (PIDs, process tables) that's

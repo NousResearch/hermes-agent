@@ -251,6 +251,27 @@ def test_draining_runtime_state_autostarts(tmp_path: Path) -> None:
     assert not (scandir / "gateway-drained" / "down").exists()
 
 
+def test_degraded_runtime_state_autostarts(tmp_path: Path) -> None:
+    """`degraded` is the same wedge class as `draining`: the gateway came up
+    with some platforms queued for retry, then fell through to the normal
+    running state (gateway/run.py #5196) and is serving cron + connected
+    platforms. A hard-kill there strands `gateway_state=degraded`, which is
+    NOT an operator stop and NOT a failed boot. With no explicit
+    `desired_state` it must normalise to running-intent and auto-start —
+    otherwise the gateway stays DOWN forever exactly like the draining wedge."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "degraded-box", state="degraded")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert _named_actions(actions) == [ReconcileAction(
+        profile="degraded-box", prior_state="running", action="started",
+    )]
+    assert not (scandir / "gateway-degraded-box" / "down").exists()
+
+
 def test_draining_default_root_autostarts(tmp_path: Path) -> None:
     """The hosted-agent path: the default (root) profile, not a named one.
     A managed Fly instance runs the root profile; a stranded `draining` there

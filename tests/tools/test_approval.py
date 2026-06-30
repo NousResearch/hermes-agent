@@ -965,6 +965,41 @@ class TestGatewayProtection:
         assert dangerous is True
         assert "stop/restart" in desc
 
+    def test_hermes_gateway_stop_detected(self):
+        cmd = "hermes gateway stop"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "gateway" in desc.lower()
+
+    def test_hermes_gateway_restart_with_profile_flag_detected(self):
+        """A profile flag between `hermes` and `gateway` must not slip past
+        the guard. See the 2026-04-11 ade-profile self-kill incident."""
+        cmd = "hermes -p ade gateway restart"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "gateway" in desc.lower()
+
+    def test_hermes_gateway_stop_with_long_profile_flag_detected(self):
+        cmd = "hermes --profile ade gateway stop"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_hermes_gateway_multiple_flags_detected(self):
+        cmd = "hermes -p cocoa --verbose gateway restart"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_hermes_gateway_status_with_profile_flag_not_flagged(self):
+        """Read-only subcommands stay allowed even with a profile flag."""
+        cmd = "hermes -p ade gateway status"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_hermes_gateway_start_not_flagged(self):
+        cmd = "hermes gateway start"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
     def test_pkill_hermes_detected(self):
         """pkill targeting hermes/gateway processes must be caught."""
         cmd = 'pkill -f "cli.py --gateway"'

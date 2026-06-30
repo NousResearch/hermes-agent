@@ -19,6 +19,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MARKER = "Hermes patch: Preserve mixed text + attachment iMessage payloads";
+const POLL_MARKER = "Hermes patch: Tolerate empty iMessage poll titles";
 
 function scriptDir() {
   return path.dirname(fileURLToPath(import.meta.url));
@@ -115,6 +116,19 @@ function patchChildIndices(source) {
   );
 }
 
+function patchPollTitles(source) {
+  if (source.includes(POLL_MARKER)) return source;
+  if (!source.includes("const toCachedPoll = (input) =>")) return source;
+  source = replaceOnce(
+    source,
+    `\t\ttitle: input.title,\n\t\toptions: input.options.map((optionInfo) => ({ title: optionInfo.text }))`,
+    `\t\ttitle: input.title || "Poll",\n\t\toptions: input.options.map((optionInfo) => ({ title: optionInfo.text || "Option" }))`,
+    "poll title fallback"
+  );
+  source = `// ${POLL_MARKER}\n${source}`;
+  return source;
+}
+
 export function patchSpectrumTs(root = scriptDir()) {
   const dist = path.join(
     root,
@@ -132,9 +146,6 @@ export function patchSpectrumTs(root = scriptDir()) {
 
   for (const file of files) {
     const raw = fs.readFileSync(file, "utf8");
-    if (raw.includes(MARKER)) {
-      return { patched: false, file, reason: "already patched" };
-    }
     // Normalize to LF for matching so the patch works regardless of the
     // checkout's line-ending style (Windows git autocrlf produces CRLF,
     // which would otherwise defeat the \n-based search strings). The
@@ -149,10 +160,16 @@ export function patchSpectrumTs(root = scriptDir()) {
       continue;
     }
     let patched = original;
-    patched = patchRebuild(patched);
-    patched = patchInbound(patched);
-    patched = patchChildIndices(patched);
-    patched = `// ${MARKER}\n${patched}`;
+    if (!patched.includes(MARKER)) {
+      patched = patchRebuild(patched);
+      patched = patchInbound(patched);
+      patched = patchChildIndices(patched);
+      patched = `// ${MARKER}\n${patched}`;
+    }
+    patched = patchPollTitles(patched);
+    if (patched === original) {
+      return { patched: false, file, reason: "already patched" };
+    }
     if (usedCRLF) {
       patched = patched.split("\n").join(CRLF);
     }

@@ -3453,7 +3453,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        install_path=install_dir.resolve().relative_to(SKILLS_DIR.resolve()).as_posix(),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
     )

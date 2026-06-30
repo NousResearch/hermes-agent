@@ -318,6 +318,80 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+def test_scheduled_task_definition_warnings_flag_legacy_task(monkeypatch):
+    """Status should flag stale Windows task definitions as unreliable."""
+    legacy_xml = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Settings>
+    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>0</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\\Users\\alice\\AppData\\Local\\hermes\\gateway-service\\Hermes_Gateway.cmd</Command>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (0, legacy_xml, ""),
+    )
+
+    warnings = gateway_windows._scheduled_task_definition_warnings("Hermes_Gateway")
+
+    assert any("legacy gateway launcher" in warning for warning in warnings)
+    assert any("restart-on-failure is disabled" in warning for warning in warnings)
+    assert any("StartWhenAvailable is disabled" in warning for warning in warnings)
+    assert any("blocked while on battery" in warning for warning in warnings)
+    assert any("stop on battery" in warning for warning in warnings)
+
+
+def test_scheduled_task_definition_warnings_accept_current_task(monkeypatch):
+    """The current VBS + restart-on-failure task definition should stay clean."""
+    current_xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes_Gateway",
+        Path(r"C:\Users\alice\AppData\Local\hermes\gateway-service\Hermes_Gateway.vbs"),
+        r"DOMAIN\alice",
+    )
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_exec_schtasks",
+        lambda args: (0, current_xml, ""),
+    )
+
+    assert gateway_windows._scheduled_task_definition_warnings("Hermes_Gateway") == []
+
+
+def test_status_prints_scheduled_task_definition_warnings(monkeypatch, capsys):
+    """A registered-but-stale task must not look fully healthy in status output."""
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "query_task_status", lambda: {})
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(
+        gateway_windows,
+        "_scheduled_task_definition_warnings",
+        lambda task_name=None: ["Scheduled Task restart-on-failure is disabled."],
+    )
+
+    gateway_windows.status()
+
+    out = capsys.readouterr().out
+    assert "Scheduled Task registered: Hermes_Gateway" in out
+    assert "WARNING: Scheduled Task restart-on-failure is disabled." in out
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""

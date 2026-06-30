@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -1274,6 +1275,94 @@ def query_task_status() -> dict[str, str]:
     return info
 
 
+def _query_scheduled_task_xml(task_name: str) -> str | None:
+    """Return Task Scheduler XML for ``task_name`` when it can be read."""
+    code, out, _err = _exec_schtasks(["/Query", "/TN", task_name, "/XML"])
+    if code != 0:
+        return None
+    out = out.strip()
+    return out or None
+
+
+def _task_xml_text(root: ET.Element, local_name: str) -> str:
+    for elem in root.iter():
+        if elem.tag.rsplit("}", 1)[-1] == local_name:
+            return (elem.text or "").strip()
+    return ""
+
+
+def _task_xml_command_basename(command: str) -> str:
+    normalized = command.strip().strip("\"'").replace("\\", "/")
+    return normalized.rsplit("/", 1)[-1].lower()
+
+
+def _scheduled_task_definition_warnings(task_name: str | None = None) -> list[str]:
+    """Return warnings for old Windows task definitions that are not resilient.
+
+    Older installs launched ``Hermes_Gateway.cmd`` directly, disabled
+    StartWhenAvailable/restart-on-failure, and kept battery defaults that can
+    stop the gateway. Merely saying "Scheduled Task registered" hides that
+    drift, leaving users with a gateway that can silently disappear until a
+    manual restart.
+    """
+    task_name = task_name or get_task_name()
+    xml_text = _query_scheduled_task_xml(task_name)
+    if not xml_text:
+        return []
+
+    try:
+        root = ET.fromstring(xml_text.lstrip("\ufeff"))
+    except ET.ParseError:
+        return [
+            "Scheduled Task definition could not be parsed; run "
+            "`hermes gateway install --force` to refresh it."
+        ]
+
+    warnings: list[str] = []
+    command = _task_xml_text(root, "Command")
+    arguments = _task_xml_text(root, "Arguments")
+    if _task_xml_command_basename(command) != "wscript.exe":
+        warnings.append(
+            "Scheduled Task uses a legacy gateway launcher; run "
+            "`hermes gateway install --force` to refresh it."
+        )
+    elif ".vbs" not in arguments.lower():
+        warnings.append(
+            "Scheduled Task is not using the console-less gateway launcher; run "
+            "`hermes gateway install --force` to refresh it."
+        )
+
+    try:
+        restart_count = int(_task_xml_text(root, "Count") or "0")
+    except ValueError:
+        restart_count = 0
+    if restart_count <= 0:
+        warnings.append(
+            "Scheduled Task restart-on-failure is disabled; the gateway will "
+            "not relaunch after an unexpected exit."
+        )
+
+    if _task_xml_text(root, "StartWhenAvailable").lower() != "true":
+        warnings.append(
+            "Scheduled Task StartWhenAvailable is disabled; missed logon starts "
+            "may not be retried."
+        )
+
+    if _task_xml_text(root, "DisallowStartIfOnBatteries").lower() == "true":
+        warnings.append(
+            "Scheduled Task is blocked while on battery power; the gateway may "
+            "not start on laptops."
+        )
+
+    if _task_xml_text(root, "StopIfGoingOnBatteries").lower() == "true":
+        warnings.append(
+            "Scheduled Task is configured to stop on battery power; the gateway "
+            "can disappear when power state changes."
+        )
+
+    return warnings
+
+
 def _gateway_pids() -> list[int]:
     """Reuse the cross-platform PID scanner in gateway.py."""
     from hermes_cli.gateway import find_gateway_pids
@@ -1429,6 +1518,8 @@ def status(deep: bool = False) -> None:
             for key in ("status", "last run time", "last run result"):
                 if key in info:
                     print(f"  {key.title()}: {info[key]}")
+        for warning in _scheduled_task_definition_warnings(task_name):
+            print(f"WARNING: {warning}")
     elif startup_installed:
         entry = get_startup_entry_path()
         if not entry.exists():

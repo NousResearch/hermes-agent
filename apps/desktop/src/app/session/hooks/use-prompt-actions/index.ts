@@ -2,94 +2,52 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { getProfiles, transcribeAudio } from '@/hermes'
+import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
-import {
-  optimisticAttachmentRef,
-  parseCommandDispatch,
-  parseSlashCommand,
-  pathLabel,
-  sessionTitle,
-  SLASH_COMMAND_RE
-} from '@/lib/chat-runtime'
-import {
-  type CommandsCatalogLike,
-  type DesktopActionId,
-  type DesktopPickerId,
-  desktopSlashUnavailableMessage,
-  isDesktopSlashCommand,
-  resolveDesktopCommand
-} from '@/lib/desktop-slash-commands'
+import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { setSessionYolo } from '@/lib/yolo-session'
 import { clearClarifyRequest } from '@/store/clarify'
-import { openCommandPalettePage } from '@/store/command-palette'
 import {
   $composerAttachments,
-  clearComposerAttachments,
   type ComposerAttachment,
   setComposerAttachmentUploadState,
-  setComposerDraft,
-  terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setPetScale } from '@/store/pet-gallery'
-import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { clearPreviewArtifacts } from '@/store/preview-status'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
-import {
-  $busy,
-  $connection,
-  $messages,
-  $sessions,
-  $yoloActive,
-  setAwaitingResponse,
-  setBusy,
-  setMessages,
-  setModelPickerOpen,
-  setSessionPickerOpen,
-  setSessions,
-  setYoloActive
-} from '@/store/session'
+import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import type {
-  BrowserManageResponse,
   ClientSessionState,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
-  SessionSteerResponse,
-  SessionTitleResponse,
-  SlashExecResponse
+  SessionSteerResponse
 } from '../../../types'
 
+import { useSlashCommand } from './slash'
+import { useSubmitPrompt } from './submit'
 import {
-  _submitInFlight,
   appendText,
   blobToDataUrl,
   delay,
   friendlyRemoteAttachError,
   type GatewayRequest,
   inlineErrorMessage,
-  isProviderSetupError,
   isSessionBusyError,
-  isSessionIdCandidate,
   isSessionNotFoundError,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
-  renderCommandsCatalog,
-  slashStatusText,
+  type SubmitTextOptions,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
   withSessionBusyRetry
@@ -213,19 +171,7 @@ interface PromptActionsOptions {
   ) => ClientSessionState
 }
 
-interface SubmitTextOptions {
-  attachments?: ComposerAttachment[]
-  fromQueue?: boolean
-}
-
 /** Everything a slash handler needs about the invocation it's serving. */
-interface SlashActionCtx {
-  arg: string
-  command: string
-  name: string
-  recordInput: boolean
-  sessionHint?: string
-}
 
 interface RestoreMessageTarget {
   text?: string
@@ -399,284 +345,17 @@ export function usePromptActions({
     }
   }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
 
-  const submitPromptText = useCallback(
-    async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = rawText.trim()
-      const usingComposerAttachments = !options?.attachments
-
-      // Drop undefined/null holes a session switch or draft restore can leave in
-      // the attachments array (same bug class as AttachmentList #49624). Without
-      // this, the sibling iterations below (a.kind / a.label / a.refText, and the
-      // sync step) throw "Cannot read properties of undefined (reading 'refText')"
-      // and break the chat surface.
-      const attachments = (options?.attachments ?? $composerAttachments.get()).filter((a): a is ComposerAttachment =>
-        Boolean(a)
-      )
-
-      const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
-      const hasImage = attachments.some(a => a.kind === 'image')
-
-      // Refs are recomputed after sync (file.attach rewrites @file: refs to
-      // workspace-relative paths the remote gateway can resolve). Seed the
-      // optimistic message with the pre-sync refs, then rewrite once synced.
-      // Images use their base64 preview so the thumbnail renders inline without
-      // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
-      let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
-
-      const buildContextText = (atts: ComposerAttachment[]): string => {
-        // atts may be the post-sync array, which can reintroduce holes; filter
-        // before touching a.refText / a.kind.
-        const present = atts.filter((a): a is ComposerAttachment => Boolean(a))
-
-        const contextRefs = present
-          .map(a => a.refText)
-          .filter(Boolean)
-          .join('\n')
-
-        return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
-          (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
-        )
-      }
-
-      // Queue drains fire on the busy→false settle edge, where busyRef (synced
-      // from $busy by a separate effect) may still read true — honoring it would
-      // bounce the drained send. The drain lock serializes them; the user path
-      // keeps the guard so a stray Enter mid-turn can't double-submit.
-      const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
-
-      if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
-        return false
-      }
-
-      // One submit in flight per session — drop any concurrent re-fire so a
-      // stalled turn can't stack the same prompt into multiple real turns.
-      const submitLockKey = selectedStoredSessionIdRef.current || activeSessionId || '__pending_new__'
-
-      if (_submitInFlight.has(submitLockKey)) {
-        return false
-      }
-
-      _submitInFlight.add(submitLockKey)
-      let submitLockReleased = false
-
-      const releaseSubmitLock = () => {
-        if (!submitLockReleased) {
-          submitLockReleased = true
-          _submitInFlight.delete(submitLockKey)
-        }
-      }
-
-      const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-      const buildUserMessage = (): ChatMessage => ({
-        id: optimisticId,
-        role: 'user',
-        parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
-      })
-
-      const releaseBusy = () => {
-        releaseSubmitLock()
-        setMutableRef(busyRef, false)
-        setBusy(false)
-        setAwaitingResponse(false)
-      }
-
-      // Idempotent optimistic insert — re-running with the resolved sessionId
-      // after createBackendSessionForSend just overwrites with the same id.
-      const seedOptimistic = (sid: string) =>
-        updateSessionState(
-          sid,
-          state => ({
-            ...state,
-            messages: state.messages.some(m => m.id === optimisticId)
-              ? state.messages
-              : [...state.messages, buildUserMessage()],
-            busy: true,
-            awaitingResponse: true,
-            pendingBranchGroup: null,
-            sawAssistantPayload: false,
-            // Fresh submit = new turn — clear any leftover interrupt flag, else
-            // mutateStream/completeAssistantMessage drop every delta of this turn
-            // (what made drained-after-interrupt sends go silent).
-            interrupted: false
-          }),
-          selectedStoredSessionIdRef.current
-        )
-
-      // After sync rewrites refs, refresh the optimistic message in place so the
-      // transcript shows the resolved @file: ref rather than the local path.
-      const rewriteOptimistic = (sid: string) =>
-        updateSessionState(
-          sid,
-          state => ({
-            ...state,
-            messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
-          }),
-          selectedStoredSessionIdRef.current
-        )
-
-      const dropOptimistic = (sid: null | string) => {
-        if (!sid) {
-          setMessages(current => current.filter(m => m.id !== optimisticId))
-
-          return
-        }
-
-        updateSessionState(
-          sid,
-          state => ({
-            ...state,
-            messages: state.messages.filter(m => m.id !== optimisticId),
-            busy: false,
-            awaitingResponse: false,
-            pendingBranchGroup: null
-          }),
-          selectedStoredSessionIdRef.current
-        )
-      }
-
-      setMutableRef(busyRef, true)
-      setBusy(true)
-      setAwaitingResponse(true)
-      clearNotifications()
-
-      let sessionId: null | string = activeSessionId
-
-      if (sessionId) {
-        seedOptimistic(sessionId)
-      } else {
-        setMessages(current => [...current, buildUserMessage()])
-      }
-
-      if (!sessionId) {
-        try {
-          sessionId = await createBackendSessionForSend(visibleText)
-        } catch (err) {
-          dropOptimistic(null)
-          releaseBusy()
-          notifyError(err, copy.sessionUnavailable)
-
-          return false
-        }
-
-        if (!sessionId) {
-          dropOptimistic(null)
-          releaseBusy()
-          notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
-
-          return false
-        }
-
-        seedOptimistic(sessionId)
-      }
-
-      try {
-        const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
-          updateComposerAttachments: usingComposerAttachments
-        })
-
-        // Rewrite the optimistic message + prompt text with the synced refs so
-        // the gateway receives @file: paths that resolve in its workspace.
-        // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
-        attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
-        rewriteOptimistic(sessionId)
-        const text = buildContextText(syncedAttachments)
-
-        // On sleep/wake the gateway's in-memory session may have been cleared
-        // while the desktop app still holds the old session ID. Detect this,
-        // resume the stored session to re-register it, and retry once.
-        let submitErr: unknown = null
-
-        try {
-          await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: sessionId, text }))
-        } catch (firstErr) {
-          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
-            // Re-register the session in the gateway and get a fresh live ID.
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current
-            })
-
-            const recoveredId = resumed?.session_id
-
-            if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
-              await withSessionBusyRetry(() => requestGateway('prompt.submit', { session_id: recoveredId, text }))
-            } else {
-              submitErr = firstErr
-            }
-          } else {
-            submitErr = firstErr
-          }
-        }
-
-        if (submitErr !== null) {
-          throw submitErr
-        }
-
-        if (usingComposerAttachments) {
-          clearComposerAttachments()
-        }
-
-        // Submit landed — the turn now runs (busy stays true), but the submit
-        // window is closed, so release the lock for the next (sequential) send.
-        releaseSubmitLock()
-
-        return true
-      } catch (err) {
-        releaseBusy()
-
-        // A queued drain that raced a not-yet-settled turn gets a transient
-        // "session busy" (4009). Don't surface an error bubble/toast — the entry
-        // stays queued and the composer's bounded auto-drain retries when idle.
-        if (options?.fromQueue && isSessionBusyError(err)) {
-          return false
-        }
-
-        const message = inlineErrorMessage(err, copy.promptFailed)
-
-        updateSessionState(sessionId, state => ({
-          ...state,
-          messages: [
-            ...state.messages,
-            {
-              id: `assistant-error-${Date.now()}`,
-              role: 'assistant',
-              parts: [],
-              error: message || copy.promptFailed,
-              branchGroupId: state.pendingBranchGroup ?? undefined
-            }
-          ],
-          busy: false,
-          awaitingResponse: false,
-          pendingBranchGroup: null,
-          sawAssistantPayload: true
-        }))
-
-        if (isProviderSetupError(err)) {
-          requestDesktopOnboarding(copy.providerCredentialRequired)
-
-          return false
-        }
-
-        notifyError(err, copy.promptFailed)
-
-        return false
-      }
-    },
-    [
-      activeSessionId,
-      activeSessionIdRef,
-      busyRef,
-      copy,
-      createBackendSessionForSend,
-      requestGateway,
-      selectedStoredSessionIdRef,
-      syncAttachmentsForSubmit,
-      updateSessionState
-    ]
-  )
+  const submitPromptText = useSubmitPrompt({
+    activeSessionId,
+    activeSessionIdRef,
+    busyRef,
+    copy,
+    createBackendSessionForSend,
+    requestGateway,
+    selectedStoredSessionIdRef,
+    syncAttachmentsForSubmit,
+    updateSessionState
+  })
 
   // Queue a handoff of this session to a messaging platform and watch it to
   // a terminal state. We only write the request through the gateway; the
@@ -759,535 +438,21 @@ export function usePromptActions({
     [activeSessionIdRef, appendSessionTextMessage, copy, requestGateway]
   )
 
-  const executeSlashCommand = useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
-      const ensureSessionId = async (sessionHint?: string) =>
-        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
-
-      // Resolve the target session plus a writer for inline slash output, or
-      // notify + return null when none can be created. Folds the ensure / bail /
-      // build-renderSlashOutput boilerplate every exec-style handler repeats.
-      const withSlashOutput = async (
-        ctx: SlashActionCtx
-      ): Promise<{ render: (text: string) => void; sessionId: string } | null> => {
-        const sessionId = await ensureSessionId(ctx.sessionHint)
-
-        if (!sessionId) {
-          notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
-
-          return null
-        }
-
-        const render = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
-
-        return { render, sessionId }
-      }
-
-      // `exec` commands (and unknown skill / quick commands the backend owns)
-      // run on the gateway and render their text output inline. This is the only
-      // path that talks to slash.exec / command.dispatch.
-      async function runExec(ctx: SlashActionCtx): Promise<void> {
-        const { arg, command, name } = ctx
-        const resolved = await withSlashOutput(ctx)
-
-        if (!resolved) {
-          return
-        }
-
-        const { render: renderSlashOutput, sessionId } = resolved
-
-        if (!isDesktopSlashCommand(name)) {
-          renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
-
-          return
-        }
-
-        const handleDispatch = async (
-          dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
-        ): Promise<void> => {
-          if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
-            renderSlashOutput(dispatch.output ?? '(no output)')
-
-            return
-          }
-
-          if (dispatch.type === 'alias') {
-            await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
-
-            return
-          }
-
-          // send / prefill carry an optional `notice` (e.g. "⊙ Goal set …")
-          // that the backend wants shown as a system line before the message
-          // is acted on. Mirrors the TUI's createSlashHandler — without it a
-          // `/goal <text>` looked like it did nothing.
-          if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
-            renderSlashOutput(dispatch.notice.trim())
-          }
-
-          const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
-
-          // /undo returns a prefill directive: drop the backed-up message into
-          // the composer for editing instead of submitting it immediately.
-          if (dispatch.type === 'prefill') {
-            if (message) {
-              setComposerDraft(message)
-            }
-
-            return
-          }
-
-          if (!message) {
-            renderSlashOutput(
-              `/${name}: ${dispatch.type === 'skill' ? 'skill payload missing message' : 'empty message'}`
-            )
-
-            return
-          }
-
-          if (dispatch.type === 'skill') {
-            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
-          }
-
-          if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
-
-            return
-          }
-
-          await submitPromptText(message)
-        }
-
-        try {
-          const result = await requestGateway<unknown>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
-
-          const dispatch = parseCommandDispatch(result)
-
-          if (dispatch) {
-            await handleDispatch(dispatch)
-
-            return
-          }
-
-          const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
-          const body = output?.output || `/${name}: no output`
-          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
-
-          return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
-        }
-
-        try {
-          const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
-          )
-
-          if (!dispatch) {
-            renderSlashOutput('error: invalid response: command.dispatch')
-
-            return
-          }
-
-          await handleDispatch(dispatch)
-        } catch (err) {
-          renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-
-      // One handler per `action` command. Adding a desktop-native command is a
-      // registry row in desktop-slash-commands.ts plus an entry here — never a
-      // new branch in a dispatch ladder.
-      const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
-        new: async () => {
-          startFreshSessionDraft()
-        },
-        branch: async () => {
-          await branchCurrentSession()
-        },
-        // /yolo maps to the status-bar YOLO control — a per-session approval
-        // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
-        // it locally; the session-create path applies it on the first message.
-        yolo: async ({ sessionHint }) => {
-          const sid = sessionHint || activeSessionIdRef.current
-          const next = !$yoloActive.get()
-
-          if (!sid) {
-            setYoloActive(next)
-            notify({ kind: 'success', message: next ? copy.yoloArmed : copy.yoloOff })
-
-            return
-          }
-
-          try {
-            const active = await setSessionYolo(requestGateway, sid, next)
-            appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
-          } catch {
-            notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
-          }
-        },
-        // /handoff hands this session to a messaging platform. The platform is
-        // completed inline in the slash popover (backend _handoff_completions),
-        // so there is no overlay: `/handoff <platform>` runs the desktop's own
-        // handoff RPC. cli_only on the backend, so it must not reach slash.exec.
-        handoff: async ({ arg, command, recordInput, sessionHint }) => {
-          const platform = arg.trim()
-
-          if (!platform) {
-            notify({ kind: 'success', message: copy.handoff.pickPlatform })
-
-            return
-          }
-
-          const sid = sessionHint || activeSessionIdRef.current
-
-          if (!sid) {
-            notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
-
-            return
-          }
-
-          const result = await handoffSession(platform, { sessionId: sid })
-
-          if (!result.ok && result.error) {
-            appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, result.error) : result.error)
-          }
-        },
-        // /profile selects which profile new chats open in — no app relaunch.
-        // A profile is per-session now, so an existing thread can't change its
-        // profile mid-stream; `/profile <name>` points the next new chat (and
-        // the current empty draft) at that profile's backend.
-        profile: async ({ arg }) => {
-          const target = arg.trim()
-          const current = normalizeProfileKey($activeGatewayProfile.get())
-
-          if (!target) {
-            notify({ kind: 'success', message: copy.profileStatus(current) })
-
-            return
-          }
-
-          try {
-            const { profiles } = await getProfiles()
-            const match = profiles.find(profile => profile.name === target)
-
-            if (!match) {
-              notify({
-                kind: 'error',
-                title: copy.unknownProfile,
-                message: copy.noProfileNamed(target, profiles.map(profile => profile.name).join(', '))
-              })
-
-              return
-            }
-
-            const key = normalizeProfileKey(match.name)
-
-            $newChatProfile.set(key)
-            await ensureGatewayProfile(key)
-            notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
-          } catch (err) {
-            notifyError(err, copy.setProfileFailed)
-          }
-        },
-        skin: async ({ arg, command, recordInput, sessionHint }) => {
-          const sid = sessionHint || activeSessionIdRef.current
-          const message = handleSkinCommand(arg)
-
-          // No session to print into yet — surface it as a toast instead of
-          // spinning up a backend session just to change the theme.
-          if (!sid) {
-            notify({ kind: 'success', message })
-
-            return
-          }
-
-          appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, message) : message)
-        },
-        // /title <name> renames via the gateway's session.title RPC — the same
-        // path the TUI uses, NOT REST renameSession (which 404s on runtime ids)
-        // nor the slash worker (whose DB write can silently fail). Bare /title
-        // shows the current title, which the worker owns, so delegate to exec.
-        title: async ctx => {
-          if (!ctx.arg) {
-            await runExec(ctx)
-
-            return
-          }
-
-          const resolved = await withSlashOutput(ctx)
-
-          if (!resolved) {
-            return
-          }
-
-          const { render: renderSlashOutput, sessionId } = resolved
-          const { arg } = ctx
-
-          try {
-            const result = await requestGateway<SessionTitleResponse>('session.title', {
-              session_id: sessionId,
-              title: arg
-            })
-
-            const finalTitle = (result?.title || arg).trim()
-            const queued = result?.pending === true
-
-            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
-            await refreshSessions().catch(() => undefined)
-            renderSlashOutput(
-              finalTitle
-                ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`
-                : 'Session title cleared.'
-            )
-          } catch (err) {
-            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
-          }
-        },
-        help: async ctx => {
-          const resolved = await withSlashOutput(ctx)
-
-          if (!resolved) {
-            return
-          }
-
-          const { render: renderSlashOutput, sessionId } = resolved
-
-          try {
-            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
-
-            renderSlashOutput(renderCommandsCatalog(catalog, copy))
-          } catch (err) {
-            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
-          }
-        },
-        // /hatch opens the pet generator overlay (the desktop's rich, multi-step
-        // generate→pick→hatch→adopt flow). A typed description seeds the prompt
-        // so `/hatch a cyber fox` lands on the composer step prefilled.
-        hatch: async ({ arg }) => {
-          const concept = arg.trim()
-
-          if (concept) {
-            $petGenInput.set(concept)
-          }
-
-          openPetGenerate()
-        },
-        pet: async ctx => {
-          const [sub = '', rawValue = ''] = ctx.arg.trim().split(/\s+/)
-          const lower = sub.toLowerCase()
-
-          if (lower === 'list' || lower === 'gallery' || lower === 'browse' || lower === 'all') {
-            openCommandPalettePage('pets')
-
-            return
-          }
-
-          // `/pet scale <n>` resizes the floating pet locally (instant) and
-          // persists via the store — no round-trip to the slash worker.
-          if (lower === 'scale') {
-            const value = Number(rawValue)
-
-            if (!rawValue || Number.isNaN(value)) {
-              const resolved = await withSlashOutput(ctx)
-              resolved?.render('usage: /pet scale <factor>  (e.g. /pet scale 0.5)')
-
-              return
-            }
-
-            setPetScale(requestGateway, value)
-
-            return
-          }
-
-          await runExec(ctx)
-        },
-        // /browser connect|disconnect|status manages the live CDP connection on
-        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
-        // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
-        // meaningful when that process runs on this machine, so it's gated to
-        // local connections. A remote gateway would act on the wrong host.
-        browser: async ctx => {
-          const resolved = await withSlashOutput(ctx)
-
-          if (!resolved) {
-            return
-          }
-
-          const { render: renderSlashOutput, sessionId } = resolved
-
-          if ($connection.get()?.mode === 'remote') {
-            renderSlashOutput(
-              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
-            )
-
-            return
-          }
-
-          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
-          const cmdAction = rawAction.toLowerCase()
-
-          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
-            renderSlashOutput(
-              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
-            )
-
-            return
-          }
-
-          const url = cmdAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
-
-          if (url) {
-            renderSlashOutput(`checking Chromium-family browser remote debugging at ${url}...`)
-          }
-
-          try {
-            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
-              action: cmdAction,
-              session_id: sessionId,
-              ...(url && { url })
-            })
-
-            // Without a streamed session subscription, the gateway bundles its
-            // progress lines into `messages` — flush them inline.
-            result?.messages?.forEach(message => renderSlashOutput(message))
-
-            if (cmdAction === 'status') {
-              renderSlashOutput(
-                result?.connected
-                  ? `browser connected: ${result.url || '(url unavailable)'}`
-                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
-              )
-
-              return
-            }
-
-            if (cmdAction === 'disconnect') {
-              renderSlashOutput('browser disconnected')
-
-              return
-            }
-
-            if (result?.connected) {
-              renderSlashOutput('Browser connected to live Chromium-family browser via CDP')
-              renderSlashOutput(`Endpoint: ${result.url || '(url unavailable)'}`)
-              renderSlashOutput('next browser tool call will use this CDP endpoint')
-            }
-          } catch (err) {
-            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
-          }
-        }
-      }
-
-      // Picker commands open a desktop overlay; a typed arg is resolved by that
-      // picker so the command never dead-ends or falls through to the backend.
-      const openPicker = async (pickerId: DesktopPickerId, ctx: SlashActionCtx): Promise<void> => {
-        if (pickerId === 'model') {
-          if (!ctx.arg.trim()) {
-            setModelPickerOpen(true)
-
-            return
-          }
-
-          // Power users can still type `/model <name>` — run it on the backend.
-          await runExec(ctx)
-
-          return
-        }
-
-        // session picker — /resume, /sessions, /switch
-        const query = ctx.arg.trim()
-
-        if (!query) {
-          setSessionPickerOpen(true)
-
-          return
-        }
-
-        const sessions = $sessions.get()
-        const lower = query.toLowerCase()
-
-        const match =
-          sessions.find(session => session.id === query) ||
-          sessions.find(session => sessionTitle(session).toLowerCase().includes(lower)) ||
-          sessions.find(session => (session.preview ?? '').toLowerCase().includes(lower))
-
-        if (!match) {
-          if (isSessionIdCandidate(query)) {
-            await resumeStoredSession(query)
-
-            return
-          }
-
-          notify({ kind: 'error', message: copy.resumeFailed })
-
-          return
-        }
-
-        await resumeStoredSession(match.id)
-      }
-
-      // The whole dispatcher: resolve the command's desktop surface, then act on
-      // its kind. No per-command ladder — behavior lives in the registry.
-      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
-        const command = commandText.trim()
-        const { name, arg } = parseSlashCommand(command)
-
-        if (!name) {
-          const sessionId = await ensureSessionId(sessionHint)
-
-          if (sessionId) {
-            appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
-          }
-
-          return
-        }
-
-        const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
-        const surface = resolveDesktopCommand(`/${name}`)?.surface
-
-        switch (surface?.kind) {
-          case 'unavailable': {
-            const resolved = await withSlashOutput(ctx)
-            resolved?.render(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
-
-            return
-          }
-
-          case 'picker':
-            return openPicker(surface.picker, ctx)
-
-          case 'action':
-            return actionHandlers[surface.action](ctx)
-
-          default:
-            // exec spec, or an unknown skill / quick command the backend owns.
-            return runExec(ctx)
-        }
-      }
-
-      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
-    },
-    [
-      activeSessionIdRef,
-      appendSessionTextMessage,
-      branchCurrentSession,
-      busyRef,
-      copy,
-      createBackendSessionForSend,
-      handleSkinCommand,
-      handoffSession,
-      refreshSessions,
-      requestGateway,
-      resumeStoredSession,
-      startFreshSessionDraft,
-      submitPromptText
-    ]
-  )
+  const executeSlashCommand = useSlashCommand({
+    activeSessionIdRef,
+    appendSessionTextMessage,
+    branchCurrentSession,
+    busyRef,
+    copy,
+    createBackendSessionForSend,
+    handleSkinCommand,
+    handoffSession,
+    refreshSessions,
+    requestGateway,
+    resumeStoredSession,
+    startFreshSessionDraft,
+    submitPromptText
+  })
 
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {

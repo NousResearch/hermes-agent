@@ -109,6 +109,8 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
             out["api_key"] = rt["api_key"]
+        if rt.get("api_mode"):
+            out["api_mode"] = rt["api_mode"]
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
     return out
@@ -352,8 +354,14 @@ def _extract_text(response: Any) -> str:
     except Exception:
         pass
     try:
-        content = response.choices[0].message.content
-        return (content or "").strip()
+        message = response.choices[0].message
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", message)
+        if not isinstance(content, str):
+            content = str(content) if content else ""
+        return content.strip()
     except Exception:
         return ""
 

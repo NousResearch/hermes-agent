@@ -1691,6 +1691,13 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Free-form per-event metadata.  Adapters may set platform-specific
+    # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
+    # the bridge is configured to forward owner-typed messages).  Plugins
+    # consume via ``event.metadata.get(...)`` and must not rely on any
+    # particular key existing.
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -3148,12 +3155,20 @@ class BasePlatformAdapter(ABC):
     ) -> SendResult:
         """
         Send an audio file as a native voice message via the platform API.
-        
+
         Override in subclasses to send audio as voice bubbles (Telegram)
-        or file attachments (Discord). Default falls back to sending the
-        file path as text.
+        or file attachments (Discord). Default falls back to a friendly
+        notice — never echo the local audio_path into chat, since it is a
+        host filesystem path that would leak the Hermes home layout.
         """
-        text = f"🔊 Audio: {audio_path}"
+        # audio_path is intentionally NOT included in the chat text — it is a
+        # host-local path that leaks filesystem layout. The path is logged for
+        # operator diagnostics instead.
+        logger.warning(
+            "[%s] send_voice fallback: native audio send unavailable for %s",
+            self.name, audio_path,
+        )
+        text = "⚠️ Couldn't deliver the audio attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3192,9 +3207,16 @@ class BasePlatformAdapter(ABC):
         Send a video natively via the platform API.
 
         Override in subclasses to send videos as inline playable media.
-        Default falls back to sending the file path as text.
+        Default falls back to a friendly notice — never echo the local
+        video_path into chat, since it is a host filesystem path that
+        would leak the Hermes home layout.
         """
-        text = f"🎬 Video: {video_path}"
+        # See send_voice for the rationale: do not echo host paths into chat.
+        logger.warning(
+            "[%s] send_video fallback: native video send unavailable for %s",
+            self.name, video_path,
+        )
+        text = "⚠️ Couldn't deliver the video attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3213,9 +3235,22 @@ class BasePlatformAdapter(ABC):
         Send a document/file natively via the platform API.
 
         Override in subclasses to send files as downloadable attachments.
-        Default falls back to sending the file path as text.
+        Default falls back to a friendly notice — never echo the local
+        file_path into chat, since it is a host filesystem path that
+        would leak the Hermes home layout.
         """
-        text = f"📎 File: {file_path}"
+        # See send_voice for the rationale: do not echo host paths into chat.
+        logger.warning(
+            "[%s] send_document fallback: native file send unavailable for %s",
+            self.name, file_path,
+        )
+        # file_name is supplied by callers and represents the user-facing
+        # filename (already non-sensitive — it is what the agent named the
+        # output). Only show it when the caller passed one explicitly.
+        if file_name:
+            text = f"⚠️ Couldn't deliver the file attachment ({file_name})."
+        else:
+            text = "⚠️ Couldn't deliver the file attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -3233,10 +3268,17 @@ class BasePlatformAdapter(ABC):
         Send a local image file natively via the platform API.
 
         Unlike send_image() which takes a URL, this takes a local file path.
-        Override in subclasses for native photo attachments.
-        Default falls back to sending the file path as text.
+        Override in subclasses for native photo attachments. Default falls
+        back to a friendly notice — never echo the local image_path into
+        chat, since it is a host filesystem path that would leak the
+        Hermes home layout.
         """
-        text = f"🖼️ Image: {image_path}"
+        # See send_voice for the rationale: do not echo host paths into chat.
+        logger.warning(
+            "[%s] send_image_file fallback: native image send unavailable for %s",
+            self.name, image_path,
+        )
+        text = "⚠️ Couldn't deliver the image attachment."
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)

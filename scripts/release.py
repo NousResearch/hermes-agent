@@ -809,6 +809,7 @@ AUTHOR_MAP = {
     "A-FdL-Prog@users.noreply.github.com": "A-FdL-Prog",
     "l0hde@users.noreply.github.com": "l0hde",
     "difujia@users.noreply.github.com": "difujia",
+    "trevorbgordon@gmail.com": "trevorgordon981",  # PR #50590 co-author (prefer endpoints.api for Copilot base URL + empty-base-URL guard; #50252)
     "vominh1919@gmail.com": "vominh1919",
     "yue.gu2023@gmail.com": "YueLich",
     "51783311+andyylin@users.noreply.github.com": "andyylin",

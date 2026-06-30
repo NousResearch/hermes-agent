@@ -11550,6 +11550,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+    def _clear_active_overlays_for_interrupt(self) -> None:
+        """Drain and clear every input-blocking overlay left by an interrupted agent.
+
+        approval/clarify/sudo/secret prompts each block a worker thread on a
+        ``response_queue.get()``.  When the agent is interrupted the worker
+        thread is torn down, but the overlay's state dict stays set — leaving
+        the CLI input gated (``read_only`` condition + keypress filter) with no
+        thread servicing the prompt.  The result is a frozen terminal until the
+        prompt's own timeout expires.  Push a terminal value onto each queue so
+        any still-blocked thread unblocks cleanly, then nil the state out and
+        restore the user's pre-modal draft (#14026).
+
+        Safe default per prompt: approval -> "deny", clarify/sudo/secret ->
+        cancel (None / empty).  Each step is wrapped so a dead queue can't
+        prevent clearing the others.
+        """
+        if self._approval_state:
+            try:
+                self._approval_state["response_queue"].put("deny")
+            except Exception:
+                pass
+            self._approval_state = None
+        if self._clarify_state:
+            try:
+                self._clarify_state["response_queue"].put(
+                    "The user cancelled. Use your best judgement to proceed."
+                )
+            except Exception:
+                pass
+            self._clarify_state = None
+            self._clarify_freetext = False
+        if self._sudo_state:
+            try:
+                self._sudo_state["response_queue"].put("")
+            except Exception:
+                pass
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            self._restore_modal_input_snapshot()
+        if self._secret_state:
+            try:
+                self._cancel_secret_capture()
+            except Exception:
+                self._secret_state = None
+
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:
             return
@@ -11926,6 +11971,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             if stop_event is not None:
                                 stop_event.set()
                             self.agent.interrupt(interrupt_msg)
+                            # Clear any active overlay states the interrupted agent
+                            # left behind.  approval/clarify/sudo/secret prompts gate
+                            # input (read_only condition + keypress filter) until
+                            # explicitly reset — without this the CLI freezes after
+                            # an interrupt until the prompt's own timeout expires (#14026).
+                            self._clear_active_overlays_for_interrupt()
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
                                 _dbg = _hermes_home / "interrupt_debug.log"
@@ -13253,50 +13304,42 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.invalidate()
                 return
 
-            # Cancel sudo prompt
-            if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
-                self._sudo_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel secret prompt
-            if self._secret_state:
-                self._cancel_secret_capture()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel approval prompt (deny)
-            if self._approval_state:
-                self._approval_state["response_queue"].put("deny")
-                self._approval_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel slash confirmation prompt
+            # Cancel slash confirmation prompt (foreground UI, not an
+            # agent-blocking overlay — cancel and stop here).
             if self._slash_confirm_state:
                 self._submit_slash_confirm_response("cancel")
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel /model picker
+            # Cancel /model picker (foreground UI — cancel and stop here).
             if self._model_picker_state:
                 self._close_model_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel clarify prompt
-            if self._clarify_state:
-                self._clarify_state["response_queue"].put(
-                    "The user cancelled. Use your best judgement to proceed."
-                )
-                self._clarify_state = None
-                self._clarify_freetext = False
+            # Clear all agent-blocking overlays (approval/clarify/sudo/secret)
+            # in one shot.  We do NOT return after clearing — we fall through so
+            # that if the agent is also running we fire the interrupt on the same
+            # Ctrl+C press.  This fixes the case where a stale/orphaned overlay
+            # (left behind by a previous interrupt) consumes the press without
+            # ever reaching the agent-interrupt branch, leaving the chat frozen
+            # (#14026).
+            _overlay_cleared = bool(
+                self._sudo_state
+                or self._secret_state
+                or self._approval_state
+                or self._clarify_state
+            )
+            if _overlay_cleared:
+                self._clear_active_overlays_for_interrupt()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
+
+            # If we only cleared overlays and the agent is NOT running, stop here
+            # (don't fall through to the interrupt/exit path).
+            if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
             if self._agent_running and self.agent:
@@ -13353,50 +13396,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.invalidate()
                 return
 
-            # Cancel sudo prompt
-            if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
-                self._sudo_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel secret prompt
-            if self._secret_state:
-                self._cancel_secret_capture()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel approval prompt (deny)
-            if self._approval_state:
-                self._approval_state["response_queue"].put("deny")
-                self._approval_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel slash confirmation prompt
+            # Cancel slash confirmation prompt (foreground UI — cancel and stop).
             if self._slash_confirm_state:
                 self._submit_slash_confirm_response("cancel")
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel /model picker
+            # Cancel /model picker (foreground UI — cancel and stop).
             if self._model_picker_state:
                 self._close_model_picker()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel clarify prompt
-            if self._clarify_state:
-                self._clarify_state["response_queue"].put(
-                    "The user cancelled. Use your best judgement to proceed."
-                )
-                self._clarify_state = None
-                self._clarify_freetext = False
+            # Clear all agent-blocking overlays in one shot, then fall through to
+            # the agent-interrupt branch so a single Ctrl+Q both clears a stale
+            # overlay and interrupts a still-running agent (#14026).
+            _overlay_cleared = bool(
+                self._sudo_state
+                or self._secret_state
+                or self._approval_state
+                or self._clarify_state
+            )
+            if _overlay_cleared:
+                self._clear_active_overlays_for_interrupt()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
+
+            if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
             if self._agent_running and self.agent:
@@ -15359,7 +15387,21 @@ def main(
         )
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            raise ValueError(f"Unknown skill(s): {missing_display}")
+            # If at least one skill loaded, degrade gracefully: skip the
+            # unknown ones and continue. A typo'd skill name should not crash
+            # the worker (which auto-blocks the Kanban task after retries).
+            # Only when EVERY requested skill is missing do we hard-fail, so a
+            # fully-misconfigured worker fails loudly instead of running blind.
+            if loaded_skills:
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. "
+                    "Continuing with: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                    ", ".join(loaded_skills),
+                )
+            else:
+                raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             cli.system_prompt = "\n\n".join(
                 part for part in (cli.system_prompt, skills_prompt) if part

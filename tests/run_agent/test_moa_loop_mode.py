@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -196,6 +198,47 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     rt = moa_loop._slot_runtime({"provider": "openai-codex", "model": "gpt-5.5"})
 
     assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "minimax-oauth", "qwen-oauth"])
+def test_moa_provider_backed_slot_survives_aux_resolution(monkeypatch, provider):
+    """MoA can pass resolved endpoints for provider-backed slots without
+    call_llm flattening them to generic custom endpoints.
+
+    ``_slot_runtime`` resolves a provider-backed slot to ``provider`` plus a
+    concrete ``base_url``/``api_key``/``api_mode``; ``_run_reference`` then
+    forwards that dict to ``call_llm``. ``call_llm`` resolves the routing tuple
+    via ``_resolve_task_provider_model`` (which takes everything except
+    ``api_mode``, handled separately). The provider identity must survive that
+    resolution rather than being flattened to ``custom``.
+    """
+    from agent import moa_loop
+    from agent.auxiliary_client import _resolve_task_provider_model
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "anthropic_messages",
+            "base_url": f"https://{requested}.example/v1",
+            "api_key": f"token-for-{requested}",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": provider, "model": "test-model"})
+    # api_mode is forwarded to call_llm directly, not to _resolve_task_provider_model.
+    resolver_kwargs = {k: v for k, v in rt.items() if k != "api_mode"}
+    resolved_provider, model, base_url, api_key, _mode = _resolve_task_provider_model(
+        task="moa_reference",
+        **resolver_kwargs,
+    )
+
+    assert resolved_provider == provider
+    assert model == "test-model"
+    assert base_url == f"https://{provider}.example/v1"
+    assert api_key == f"token-for-{provider}"
 
 
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):

@@ -1,4 +1,5 @@
 """
+from agent.message_sanitization import _sanitize_surrogates
 Gateway runner - entry point for messaging platform integrations.
 
 This module provides:
@@ -424,6 +425,8 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    # Strip lone surrogates that crash json.dumps() in platform adapters
+    redacted = _sanitize_surrogates(redacted)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

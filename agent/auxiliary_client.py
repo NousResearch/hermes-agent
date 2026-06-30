@@ -6269,7 +6269,21 @@ def extract_content_or_reasoning(response) -> str:
     import re
 
     msg = response.choices[0].message
-    content = (msg.content or "").strip()
+
+    # Some OpenAI-compatible proxies / local backends return a dict- or
+    # str-shaped message instead of a parsed object, so ``msg.content`` would
+    # raise AttributeError (mirrors the moa / context-compressor handling).
+    # Normalize field access before dereferencing anything off the message.
+    def _msg_field(name: str):
+        if isinstance(msg, dict):
+            return msg.get(name)
+        return getattr(msg, name, None)
+
+    raw_content = msg if isinstance(msg, str) else _msg_field("content")
+    if isinstance(raw_content, str):
+        content = raw_content.strip()
+    else:
+        content = str(raw_content).strip() if raw_content else ""
 
     if content:
         # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
@@ -6285,11 +6299,11 @@ def extract_content_or_reasoning(response) -> str:
     # Content is empty or reasoning-only — try structured reasoning fields
     reasoning_parts: list[str] = []
     for field in ("reasoning", "reasoning_content"):
-        val = getattr(msg, field, None)
+        val = _msg_field(field)
         if val and isinstance(val, str) and val.strip() and val not in reasoning_parts:
             reasoning_parts.append(val.strip())
 
-    details = getattr(msg, "reasoning_details", None)
+    details = _msg_field("reasoning_details")
     if details and isinstance(details, list):
         for detail in details:
             if isinstance(detail, dict):

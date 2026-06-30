@@ -31,6 +31,15 @@ def _make_response(content, **msg_attrs):
     return types.SimpleNamespace(choices=[choice])
 
 
+def _make_raw_response(message):
+    """Wrap a raw, possibly dict-/str-shaped message as the response.
+
+    Some OpenAI-compatible proxies / local backends hand back a dict- or
+    str-shaped ``choices[0].message`` rather than a parsed object.
+    """
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+
 def _run(coro):
     """Run an async coroutine synchronously."""
     return asyncio.get_event_loop().run_until_complete(coro)
@@ -121,7 +130,7 @@ class TestSourceLinesAreGuarded:
     def _read_file(rel_path: str) -> str:
         import os
         base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        with open(os.path.join(base, rel_path)) as f:
+        with open(os.path.join(base, rel_path), encoding="utf-8") as f:
             return f.read()
 
     def test_web_tools_guarded(self):
@@ -212,3 +221,27 @@ class TestExtractContentOrReasoning:
         """When both content and reasoning exist, content wins."""
         response = _make_response("Actual answer", reasoning="Internal reasoning")
         assert extract_content_or_reasoning(response) == "Actual answer"
+
+    def test_dict_shaped_message_content(self):
+        """Some proxies/local backends return a dict-shaped message; ``.content``
+        must not be dereferenced on it (sibling of the moa / compressor fixes)."""
+        response = _make_raw_response({"role": "assistant", "content": "  Hello world  "})
+        assert extract_content_or_reasoning(response) == "Hello world"
+
+    def test_dict_shaped_message_reasoning_fallback(self):
+        """Reasoning fallback must work for a dict-shaped message too."""
+        response = _make_raw_response(
+            {"role": "assistant", "content": "", "reasoning": "Step 1: analyze..."}
+        )
+        assert extract_content_or_reasoning(response) == "Step 1: analyze..."
+
+    def test_str_shaped_message(self):
+        """A str-shaped message is treated as the content itself."""
+        response = _make_raw_response("  Hello world  ")
+        assert extract_content_or_reasoning(response) == "Hello world"
+
+    def test_non_string_content_coerced_not_crashed(self):
+        """Non-string content (e.g. a dict from some backends) is coerced, not crashed."""
+        response = _make_response({"unexpected": "shape"})
+        out = extract_content_or_reasoning(response)
+        assert isinstance(out, str) and out

@@ -1,0 +1,19 @@
+{
+  "iri": "https://atlas.blakeaber.dev/org/acme",
+  "title": "Acme Corp",
+  "markdown": "Acme Corp currently runs its data platform on Neon [cite:fact:runsOn=Neon]. The most recent touchpoint was a kickoff call on 2026-06-01 [cite:ev:evt-kickoff]. Acme has an open commitment to deliver a pilot integration by Q3 2026 [cite:cm:commit-pilot].",
+  "citations": [
+    {
+      "chunk_id": "fact:runsOn=Neon",
+      "source_iri": "https://atlas.blakeaber.dev/episode/neon-2026"
+    },
+    {
+      "chunk_id": "ev:evt-kickoff",
+      "source_iri": "https://atlas.blakeaber.dev/event/kickoff-2026-06-01"
+    },
+    {
+      "chunk_id": "cm:commit-pilot",
+      "source_iri": "https://atlas.blakeaber.dev/commitment/acme-pilot-q3"
+    }
+  ]
+}

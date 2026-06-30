@@ -241,6 +241,68 @@ export const cyberpunkTheme: DesktopTheme = {
   }
 }
 
+/** Carbon-black Algodyne operator console: red brand signal with functional status accents. */
+export const algodyneCarbonTheme: DesktopTheme = {
+  name: 'algodyne-carbon',
+  label: 'Algodyne Carbon',
+  description: 'Carbon-black Algodyne operator console with red brand signal and functional status accents',
+  colors: {
+    background: '#050505',
+    foreground: '#FAFAFA',
+    card: '#0B0B0D',
+    cardForeground: '#FAFAFA',
+    muted: '#121216',
+    mutedForeground: '#A1A1AA',
+    popover: '#101014',
+    popoverForeground: '#FAFAFA',
+    primary: '#FF4A4A',
+    primaryForeground: '#050505',
+    secondary: '#18181D',
+    secondaryForeground: '#D9D9DE',
+    accent: '#1A0E10',
+    accentForeground: '#FFB4B4',
+    border: '#2A2A2F',
+    input: '#202026',
+    ring: '#FF4A4A',
+    midground: '#FF4A4A',
+    midgroundForeground: '#050505',
+    composerRing: '#FF4A4A',
+    destructive: '#8F1F18',
+    destructiveForeground: '#FAFAFA',
+    sidebarBackground: '#080808',
+    sidebarBorder: '#222227',
+    userBubble: '#13090A',
+    userBubbleBorder: '#8F1F18'
+  },
+  terminal: {
+    foreground: '#FAFAFA',
+    cursor: '#FF4A4A',
+    selectionBackground: '#8F1F1880',
+    black: '#050505',
+    red: '#FF4A4A',
+    green: '#2F8F71',
+    yellow: '#F08A28',
+    blue: '#5BA7E4',
+    magenta: '#8F1F18',
+    cyan: '#5BA7E4',
+    white: '#FAFAFA',
+    brightBlack: '#2A2A2F',
+    brightRed: '#FF6B6B',
+    brightGreen: '#45B98F',
+    brightYellow: '#FFB05C',
+    brightBlue: '#7FC4FF',
+    brightMagenta: '#D14A43',
+    brightCyan: '#8DD4FF',
+    brightWhite: '#FFFFFF'
+  },
+  typography: {
+    fontSans: `Inter, Geist, "IBM Plex Sans", ${SYSTEM_SANS}`,
+    fontMono: `"IBM Plex Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap'
+  }
+}
+
 /** Cool slate blue for developers. Matches the CLI slate skin. */
 export const slateTheme: DesktopTheme = {
   name: 'slate',
@@ -283,6 +345,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
+  'algodyne-carbon': algodyneCarbonTheme,
   slate: slateTheme
 }
 

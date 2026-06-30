@@ -123,6 +123,76 @@ class TestWeComConnect:
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
 
+class TestWeComCleanupDefensive:
+    """_cleanup_ws must not propagate exceptions from resource close() calls."""
+
+    @staticmethod
+    def _make_adapter():
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        return WeComAdapter(PlatformConfig(enabled=True, extra={"bot_id": "b", "secret": "s"}))
+
+    @pytest.mark.asyncio
+    async def test_ws_close_error_does_not_prevent_session_close(self):
+        adapter = self._make_adapter()
+
+        ws = MagicMock()
+        ws.closed = False
+        ws.close = AsyncMock(side_effect=RuntimeError("network error"))
+        adapter._ws = ws
+
+        session = MagicMock()
+        session.closed = False
+        session.close = AsyncMock()
+        adapter._session = session
+
+        await adapter._cleanup_ws()
+
+        session.close.assert_awaited_once()
+        assert adapter._ws is None
+        assert adapter._session is None
+
+    @pytest.mark.asyncio
+    async def test_session_close_error_does_not_prevent_ws_close(self):
+        adapter = self._make_adapter()
+
+        ws = MagicMock()
+        ws.closed = False
+        ws.close = AsyncMock()
+        adapter._ws = ws
+
+        session = MagicMock()
+        session.closed = False
+        session.close = AsyncMock(side_effect=RuntimeError("network error"))
+        adapter._session = session
+
+        await adapter._cleanup_ws()
+
+        ws.close.assert_awaited_once()
+        assert adapter._ws is None
+        assert adapter._session is None
+
+    @pytest.mark.asyncio
+    async def test_both_close_errors_still_clears_references(self):
+        adapter = self._make_adapter()
+
+        ws = MagicMock()
+        ws.closed = False
+        ws.close = AsyncMock(side_effect=RuntimeError("ws boom"))
+        adapter._ws = ws
+
+        session = MagicMock()
+        session.closed = False
+        session.close = AsyncMock(side_effect=RuntimeError("session boom"))
+        adapter._session = session
+
+        # Must not raise
+        await adapter._cleanup_ws()
+
+        assert adapter._ws is None
+        assert adapter._session is None
+
+
 class TestWeComQrScan:
     @patch("plugins.platforms.wecom.adapter.time")
     @patch("plugins.platforms.wecom.adapter.json.loads")

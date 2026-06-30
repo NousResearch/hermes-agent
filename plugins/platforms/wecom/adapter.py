@@ -270,13 +270,23 @@ class WeComAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup_ws(self) -> None:
-        """Close the live websocket/session, if any."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
+        """Close the live websocket/session, if any.
+
+        Each resource is cleaned up independently so that an exception from
+        one close() call does not prevent the other from being released.
+        """
+        try:
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+        except Exception:
+            logger.debug("[%s] websocket close error (ignored)", self.name)
         self._ws = None
 
-        if self._session and not self._session.closed:
-            await self._session.close()
+        try:
+            if self._session and not self._session.closed:
+                await self._session.close()
+        except Exception:
+            logger.debug("[%s] session close error (ignored)", self.name)
         self._session = None
 
     async def _open_connection(self) -> None:

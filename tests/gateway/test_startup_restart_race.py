@@ -27,7 +27,7 @@ class StartupRaceAdapter(BasePlatformAdapter):
         self.disconnected = False
         self.background_cancelled = False
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         if self.on_connect:
             self.on_connect()
         if self.wait_for_disconnect is not None:
@@ -98,7 +98,7 @@ def make_startup_runner(tmp_path):
     runner._suspend_stuck_loop_sessions = MagicMock(return_value=0)
     runner._notify_active_sessions_of_shutdown = AsyncMock()
     runner._drain_active_agents = AsyncMock(return_value=({}, False))
-    runner._finalize_shutdown_agents = MagicMock()
+    runner._finalize_shutdown_agents = AsyncMock()
     runner._send_update_notification = AsyncMock(return_value=False)
     runner._schedule_update_notification_watch = MagicMock()
     runner._send_restart_notification = AsyncMock()

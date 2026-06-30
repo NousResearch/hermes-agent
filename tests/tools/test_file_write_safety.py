@@ -419,5 +419,77 @@ class TestGetWriteDenialReason:
         assert "protected system/credential file" in reason
 
 
+
+class TestSafeRootDenialMessageIntegration:
+    """Regression tests verifying that file-tools surface the correct denial
+    message when HERMES_WRITE_SAFE_ROOT blocks a path.
+
+    Prior to this fix, ALL write denials returned the same "protected
+    system/credential file" message regardless of root cause.  These tests
+    exercise the actual write_file / patch_replace code path, not just
+    the get_write_denial_reason() helper in isolation.
+    """
+
+    @pytest.fixture
+    def ops(self, tmp_path: Path):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        env = LocalEnvironment(cwd=str(tmp_path))
+        return ShellFileOperations(env, cwd=str(tmp_path))
+
+    def test_write_file_safe_root_outside_shows_safe_root_message(
+        self, ops, tmp_path: Path, monkeypatch
+    ):
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        outside = tmp_path / "other" / "file.txt"
+        outside.parent.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        res = ops.write_file(str(outside), "content")
+        assert res.error is not None
+        assert "outside" in res.error
+        assert "HERMES_WRITE_SAFE_ROOT" in res.error
+        assert str(safe_root) in res.error
+        assert "credential" not in res.error
+        assert not outside.exists()
+
+    def test_patch_replace_safe_root_outside_shows_safe_root_message(
+        self, ops, tmp_path: Path, monkeypatch
+    ):
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        outside = tmp_path / "other" / "file.txt"
+        outside.parent.mkdir()
+        outside.write_text("old content")
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        res = ops.patch_replace(str(outside), "old", "new")
+        assert res.error is not None
+        assert "outside" in res.error
+        assert "HERMES_WRITE_SAFE_ROOT" in res.error
+        assert "credential" not in res.error
+
+    def test_write_file_credential_path_shows_credential_message(
+        self, ops, tmp_path: Path
+    ):
+        res = ops.write_file("/etc/shadow", "content")
+        assert res.error is not None
+        assert "protected system/credential file" in res.error
+        assert "outside" not in res.error
+
+    def test_write_file_allowed_path_returns_no_error(
+        self, ops, tmp_path: Path, monkeypatch
+    ):
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        inside = safe_root / "file.txt"
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        res = ops.write_file(str(inside), "content")
+        assert res.error is None
+        assert inside.read_text() == "content"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

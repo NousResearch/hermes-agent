@@ -2599,6 +2599,36 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return False
 
 
+def _is_openrouter_upstream_rate_limit(exc: Exception) -> bool:
+    """True when the 429 came from an upstream provider routed through
+    OpenRouter, not from the user's own OpenRouter account being throttled.
+
+    OpenRouter wraps upstream errors with ``{"error": {"message": "Provider
+    returned error", "metadata": {"raw": "..."}}}`` — the user's key is
+    healthy; only the upstream model is momentarily throttled.  Marking the
+    key exhausted and rotating credentials is the wrong recovery: it burns
+    the key for ~24min when a simple model retry would have succeeded.
+
+    Mirrors the detection logic in ``agent.error_classifier._is_openrouter_upstream_error``;
+    kept local to avoid a cyclic-import between auxiliary_client and the main
+    error classifier.
+    """
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return False
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return False
+    outer_msg = str(err.get("message") or "").strip().lower()
+    if outer_msg != "provider returned error":
+        return False
+    # Require the OpenRouter-specific metadata shape.
+    metadata = err.get("metadata")
+    return isinstance(metadata, dict) and (
+        "raw" in metadata or "provider_name" in metadata
+    )
+
+
 def _is_timeout_error(exc: Exception) -> bool:
     """Detect a request timeout — the full-budget stall, distinct from a fast
     connection drop.
@@ -3016,6 +3046,18 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
 
     if _is_payment_error(exc) or _is_rate_limit_error(exc):
+        # OpenRouter upstream 429: the upstream model (DeepSeek, Anthropic,
+        # etc.) is throttled, NOT the user's OpenRouter key — don't burn the
+        # key for a 24-min exhaustion window.  The main conversation loop
+        # already handles this via error_classifier.FailoverReason.
+        # upstream_rate_limit; this brings the auxiliary client to parity.
+        if _is_openrouter_upstream_rate_limit(exc):
+            logger.debug(
+                "Auxiliary client: upstream provider 429 via OpenRouter "
+                "(provider=%s) — skipping credential rotation, key is healthy.",
+                normalized,
+            )
+            return False
         fallback_status = 402 if _is_payment_error(exc) else 429
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,

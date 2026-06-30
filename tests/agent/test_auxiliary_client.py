@@ -22,6 +22,8 @@ from agent.auxiliary_client import (
     _get_provider_chain,
     _is_payment_error,
     _is_rate_limit_error,
+    _is_openrouter_upstream_rate_limit,
+    _recover_provider_pool,
     _is_model_not_found_error,
     _is_model_incompatible_error,
     _refresh_nous_recommended_model,
@@ -1802,6 +1804,106 @@ class TestIsRateLimitError:
     def test_no_status_code_no_keywords_is_not_rate_limit(self):
         exc = Exception("connection reset")
         assert _is_rate_limit_error(exc) is False
+
+
+class TestIsOpenRouterUpstreamRateLimit:
+    """_is_openrouter_upstream_rate_limit detects OpenRouter's
+    aggregator-wrapped upstream provider 429s, distinct from the user's own
+    OpenRouter account being throttled."""
+
+    def test_wrapped_upstream_error_with_raw_metadata(self):
+        exc = Exception("Provider returned error")
+        exc.status_code = 429
+        exc.body = {
+            "error": {
+                "message": "Provider returned error",
+                "metadata": {"raw": '{"error":"rate limited"}', "provider_name": "DeepSeek"},
+            }
+        }
+        assert _is_openrouter_upstream_rate_limit(exc) is True
+
+    def test_wrapped_upstream_error_with_provider_name_only(self):
+        exc = Exception("Provider returned error")
+        exc.body = {
+            "error": {
+                "message": "Provider returned error",
+                "metadata": {"provider_name": "Anthropic"},
+            }
+        }
+        assert _is_openrouter_upstream_rate_limit(exc) is True
+
+    def test_plain_account_rate_limit_is_not_upstream(self):
+        """A genuine account-level 429 has no 'Provider returned error' wrapper."""
+        exc = Exception("Rate limit exceeded, try again in 2 seconds")
+        exc.status_code = 429
+        exc.body = {"error": {"message": "Rate limit exceeded, try again in 2 seconds"}}
+        assert _is_openrouter_upstream_rate_limit(exc) is False
+
+    def test_no_body_is_not_upstream(self):
+        exc = Exception("Rate limit exceeded")
+        assert _is_openrouter_upstream_rate_limit(exc) is False
+
+    def test_wrapped_message_without_metadata_is_not_upstream(self):
+        """'Provider returned error' alone (no OpenRouter metadata shape)
+        is not enough — could be a different aggregator's wrapper."""
+        exc = Exception("Provider returned error")
+        exc.body = {"error": {"message": "Provider returned error"}}
+        assert _is_openrouter_upstream_rate_limit(exc) is False
+
+
+class TestRecoverProviderPoolUpstreamRateLimit:
+    """_recover_provider_pool must not burn a healthy OpenRouter key when the
+    429 actually came from an upstream provider OpenRouter aggregates."""
+
+    def _make_pool(self, calls):
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def mark_exhausted_and_rotate(self, **kw):
+                calls.append(kw)
+                return None
+
+            def try_refresh_current(self):
+                return None
+
+        return _Pool()
+
+    def test_upstream_429_does_not_rotate_credential(self):
+        calls = []
+        exc = Exception("Provider returned error")
+        exc.status_code = 429
+        exc.body = {
+            "error": {
+                "message": "Provider returned error",
+                "metadata": {"raw": "{}", "provider_name": "DeepSeek"},
+            }
+        }
+        with patch("agent.auxiliary_client.load_pool", return_value=self._make_pool(calls)):
+            result = _recover_provider_pool("openrouter", exc)
+        assert result is False
+        assert calls == [], "upstream 429 must not call mark_exhausted_and_rotate"
+
+    def test_account_429_still_rotates_credential(self):
+        """A genuine account-level 429 must still trigger pool rotation —
+        this guards against the upstream-check over-matching."""
+        calls = []
+        exc = Exception("Rate limit exceeded, try again in 2 seconds")
+        exc.status_code = 429
+        exc.body = {"error": {"message": "Rate limit exceeded, try again in 2 seconds"}}
+
+        class _PoolWithRotation:
+            def has_credentials(self):
+                return True
+
+            def mark_exhausted_and_rotate(self, **kw):
+                calls.append(kw)
+                return SimpleNamespace(api_key="next-key")
+
+        with patch("agent.auxiliary_client.load_pool", return_value=_PoolWithRotation()):
+            result = _recover_provider_pool("openrouter", exc)
+        assert result is True
+        assert len(calls) == 1, "genuine account 429 must still rotate the key"
 
 
 class TestGetProviderChain:

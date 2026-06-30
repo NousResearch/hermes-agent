@@ -2012,6 +2012,19 @@ html.hermes-mobile-standalone [data-slot='aui_intro'] {
   padding-inline: 1.1rem;
   padding-block: 0;
   transition: bottom 140ms ease-out;
+  /* IMPORTANT: the intro is decorative — wordmark + tagline only. With
+     pointer-events: auto it intercepted taps in its (large) absolute box,
+     so tapping anywhere on the empty chat (incl. the composer textarea)
+     hit the intro div instead of the composer and the iOS keyboard never
+     opened. pointer-events: none lets every tap pass through to whatever
+     actually wants the focus. */
+  pointer-events: none;
+}
+/* Re-enable pointer-events on actual interactive children inside the intro
+   (links, buttons) so they remain clickable even though the wrapper opts
+   out of hit-testing. */
+html.hermes-mobile-standalone [data-slot='aui_intro'] a,
+html.hermes-mobile-standalone [data-slot='aui_intro'] button {
   pointer-events: auto;
 }
 

@@ -273,6 +273,15 @@ def build_verify_on_stop_nudge(
     if state == "passed":
         return None
 
+    # Optional shipped coding guidance, only paid when this evidence gate fires.
+    try:
+        from agent.verify_hooks import coding_verify_guidance
+
+        guidance = coding_verify_guidance()
+    except Exception:
+        guidance = None
+    addendum = f"\n\n{guidance}" if guidance else ""
+
     if verify_commands:
         command_instruction = (
             "Run the relevant verification command now ("
@@ -297,7 +306,8 @@ def build_verify_on_stop_nudge(
         f"Verification status: {_status_detail(status)}\n\n"
         f"Changed paths:\n{_format_changed_paths(paths)}\n\n"
         f"{command_instruction} If verification is not possible, explain the "
-        "concrete blocker instead of claiming the work is fully verified.]"
+        "concrete blocker instead of claiming the work is fully verified."
+        f"{addendum}]"
     )
 
 

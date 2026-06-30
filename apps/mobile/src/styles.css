@@ -1782,6 +1782,23 @@ html.hermes-mobile-standalone body::before {
 
 html.hermes-mobile-standalone [data-slot='aui_thread-viewport'] {
   padding-top: env(safe-area-inset-top);
+  /* Unified scroll cohesion: the thread viewport owns the only scroller on
+     mobile. intro + messages share its overflow, no nested scrollers, no
+     rubber-band at the document boundary. Composer is position:fixed so it
+     never participates in the scroll. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-padding-bottom: var(--thread-last-message-clearance, 6rem);
+  scrollbar-width: none;
+}
+html.hermes-mobile-standalone [data-slot='aui_thread-viewport']::-webkit-scrollbar {
+  display: none;
+}
+/* Kill scrollers anywhere outside the thread viewport: shell + composer
+   bounds must never produce a second scroll axis (otherwise pull-to-refresh
+   or rubber-band fights the thread scroll). */
+html.hermes-mobile-standalone [data-slot='composer-bounds'] {
+  overscroll-behavior: none;
 }
 
 html.hermes-mobile-standalone [data-slot='aui_thread-content'] {

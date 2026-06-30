@@ -61,8 +61,7 @@ function preprocessWithTailRepair(text: string): string {
 // Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
 // `marked` lex of the entire message, ~1.6ms per 28KB) inside a useMemo keyed
 // on the text — but the same text is re-lexed every time a message REMOUNTS
-// (virtualizer scroll, session switch) and whenever multiple surfaces render
-// the same content (remount, session switch). A small module-level
+// (virtualizer scroll, session switch). A small module-level
 // LRU keyed by the exact source string removes all of those repeat parses
 // with zero correctness risk (same input → same output). Streaming tail
 // growth misses the cache by design (every flush is a new string) — that
@@ -481,10 +480,11 @@ function MarkdownTextSurface({ containerClassName, containerProps, defer, smooth
       defer={defer}
       lineNumbers={false}
       mode="streaming"
-      // The built-in tail-bounded remend is disabled when a custom
-      // parseMarkdownIntoBlocksFn is supplied, so repair runs in
-      // preprocessWithTailRepair instead. parseIncompleteMarkdown stays
-      // false to avoid a second full-text remend pass.
+      // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+      // full accumulated text; the built-in tail-bounded remend is disabled
+      // because a custom parseMarkdownIntoBlocksFn is supplied, and
+      // parseIncompleteMarkdown stays false to avoid a second full-text
+      // remend pass.
       parseIncompleteMarkdown={false}
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}

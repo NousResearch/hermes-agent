@@ -115,6 +115,28 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
+    """Resolve api_mode for legacy/plain ``provider: custom`` endpoints.
+
+    Custom endpoints should stay conservative by default. Only direct OpenAI/xAI
+    URLs imply Responses API automatically; named custom providers can opt in via
+    their own ``api_mode`` field. This also prevents a stale persisted
+    ``model.api_mode: codex_responses`` from forcing generic relays onto the
+    Responses path after upgrades or /reset.
+    """
+    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    detected_mode = _detect_api_mode_for_url(base_url)
+
+    if configured_mode == "codex_responses" and detected_mode != "codex_responses":
+        logger.info(
+            "Ignoring persisted custom api_mode=codex_responses for non-OpenAI endpoint %s",
+            base_url or "(unknown)",
+        )
+        configured_mode = None
+
+    return configured_mode or detected_mode or "chat_completions"
+
+
 def _host_derived_api_key(base_url: str) -> str:
     """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
 
@@ -1093,7 +1115,9 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
+        "api_mode": _resolve_plain_custom_api_mode(model_cfg, base_url)
+        if effective_provider == "custom"
+        else _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,

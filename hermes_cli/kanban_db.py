@@ -9017,6 +9017,12 @@ def _default_spawn(
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # Kanban workers run unattended (no user present to approve a dangerous
+    # command) -- flag the context so tools/approval.py applies the same
+    # deny-by-default policy cron jobs already get via HERMES_CRON_SESSION,
+    # instead of silently falling through to the bare non-interactive
+    # auto-approve branch.
+    env["HERMES_KANBAN_SESSION"] = "1"
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the worker's session so it lands in state.db as `kanban`, not as an
     # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is

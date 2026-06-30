@@ -7,6 +7,8 @@ import {
   useState
 } from 'react'
 
+import { isSmartZoomWheel } from '@/lib/trackpad-gestures'
+
 interface Transform {
   scale: number
   x: number
@@ -43,6 +45,14 @@ export function useZoomPan() {
   const onWheel = useCallback(
     (event: ReactWheelEvent) => {
       event.preventDefault()
+
+      // macOS smart zoom (two-finger double-tap) → reset, not zoom-in.
+      if (isSmartZoomWheel(event)) {
+        setTransform({ scale: 1, x: 0, y: 0 })
+
+        return
+      }
+
       const rect = event.currentTarget.getBoundingClientRect()
       const cx = event.clientX - rect.left - rect.width / 2
       const cy = event.clientY - rect.top - rect.height / 2

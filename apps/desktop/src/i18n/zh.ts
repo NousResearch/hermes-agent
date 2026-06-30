@@ -176,6 +176,7 @@ export const zh: Translations = {
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
+    openStarmap: '打开记忆图谱',
     openKeybinds: '键盘快捷键'
   },
 
@@ -936,6 +937,33 @@ export const zh: Translations = {
     failedToUpdate: name => `更新 ${name} 失败`
   },
 
+  starmap: {
+    title: '记忆图谱',
+    subtitle: (nodes, clusters) => `${clusters} 个类别中的 ${nodes} 个技能`,
+    close: '关闭记忆图谱',
+    refresh: '刷新',
+    memory: '记忆',
+    filterAll: '全部',
+    filterUsed: '已使用',
+    filterLearned: '已学习',
+    viewGraph: '图谱',
+    loadFailed: '无法加载记忆图谱',
+    loading: '加载中…',
+    emptyTitle: '尚无学习内容',
+    emptyDesc: '当 Hermes 为你的工作构建技能和记忆时，会显示在这里。',
+    share: '分享图谱',
+    shareHint: '复制代码以分享此图谱，或粘贴代码以载入。仅包含布局，不含你的记忆或技能内容。',
+    shareTitle: '导入 / 导出图谱',
+    sharePlaceholder: '粘贴图谱代码…',
+    copy: '复制图谱代码',
+    copied: '已复制！',
+    importMap: '导入图谱',
+    importBtn: '加载',
+    importEmpty: '粘贴图谱代码以加载。',
+    importSuccess: nodes => `已加载包含 ${nodes} 个节点的图谱。`,
+    importedBadge: '导入的图谱',
+    resetToMine: '返回我的图谱'
+  },
   agents: {
     close: '关闭代理',
     title: '派生树',
@@ -2016,6 +2044,8 @@ export const zh: Translations = {
       running: count => `${count} 个运行中`,
       cron: '排程',
       openCron: '打开排程任务',
+      starmap: '记忆图谱',
+      openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
       currentTurnElapsed: '当前回合已用时间',
       contextUsage: '上下文用量',

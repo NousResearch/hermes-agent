@@ -2452,6 +2452,23 @@ async def run_curator():
     return {"ok": True, "pid": proc.pid, "name": "curator-run"}
 
 
+@app.get("/api/learning/graph")
+async def get_learning_graph(profile: Optional[str] = None):
+    """Learning graph payload for the desktop panel.
+
+    Profile-scoped view of learned, non-base skills plus memory chunks, with
+    graph links derived from skill relations and memory-skill overlap.
+    """
+    try:
+        from agent.learning_graph import build_learning_graph
+
+        with _profile_scope(profile):
+            return build_learning_graph()
+    except Exception:
+        _log.exception("GET /api/learning/graph failed")
+        raise HTTPException(status_code=500, detail="Failed to build learning graph")
+
+
 def _safe_call(mod, fn_name: str, default):
     try:
         fn = getattr(mod, fn_name, None)

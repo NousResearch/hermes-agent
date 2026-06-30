@@ -68,6 +68,7 @@ import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
+import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
@@ -173,10 +174,6 @@ export function ChatBar({
     position: popoutPosition
   })
 
-  const urlInputRef = useRef<HTMLInputElement | null>(null)
-
-  const [urlOpen, setUrlOpen] = useState(false)
-  const [urlValue, setUrlValue] = useState('')
   // Coordinator-owned: the draft engine reads the live queue-edit snapshot off
   // this ref (to suppress its stash while editing a queued prompt) and the queue
   // engine writes it — an explicit shared handle, not a back-reference.
@@ -214,6 +211,13 @@ export function ChatBar({
     setComposerText,
     stashAt
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+
+  // "Add URL" dialog — open/value state, autofocus, and submit (host onAddUrl or
+  // an @url: directive into the draft).
+  const { openUrlDialog, setUrlOpen, setUrlValue, submitUrl, urlInputRef, urlOpen, urlValue } = useComposerUrlDialog({
+    insertText,
+    onAddUrl
+  })
 
   // The queue engine — queued turns, in-place editing, the shared drain lock,
   // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
@@ -322,12 +326,6 @@ export function ChatBar({
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
     : restingPlaceholder
-
-  useEffect(() => {
-    if (urlOpen) {
-      window.requestAnimationFrame(() => urlInputRef.current?.focus({ preventScroll: true }))
-    }
-  }, [urlOpen])
 
   // Keep the floating box on-screen: re-clamp (with the real measured size +
   // thread bounds) when it pops out and on every window resize — so a position
@@ -975,24 +973,6 @@ export function ChatBar({
   // Global Esc-to-cancel when the chat (not the composer input) has focus.
   useComposerEscCancel({ awaitingInput, busy, onCancel })
 
-  const submitUrl = () => {
-    const url = urlValue.trim()
-
-    if (!url) {
-      return
-    }
-
-    if (onAddUrl) {
-      onAddUrl(url)
-    } else {
-      insertText(`@url:${url}`)
-    }
-
-    triggerHaptic('success')
-    setUrlValue('')
-    setUrlOpen(false)
-  }
-
   const {
     conversation,
     dictate,
@@ -1017,10 +997,7 @@ export function ChatBar({
   const contextMenu = (
     <ContextMenu
       onInsertText={insertText}
-      onOpenUrlDialog={() => {
-        triggerHaptic('open')
-        setUrlOpen(true)
-      }}
+      onOpenUrlDialog={openUrlDialog}
       onPasteClipboardImage={onPasteClipboardImage}
       onPickFiles={onPickFiles}
       onPickFolders={onPickFolders}

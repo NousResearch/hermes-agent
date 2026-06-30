@@ -43,7 +43,12 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
+from hermes_cli.config import (
+    get_hermes_home,
+    get_config_path,
+    get_env_value_prefer_dotenv,
+    read_raw_config,
+)
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
@@ -675,8 +680,6 @@ def _resolve_api_key_provider_secret(
         except Exception:
             pass
         return "", ""
-
-    from hermes_cli.config import get_env_value
 
     for env_var in pconfig.api_key_env_vars:
         # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation

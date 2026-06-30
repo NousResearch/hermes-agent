@@ -69,6 +69,37 @@ describe('parseAnsi', () => {
     expect(segments[0].text).toBe('rgb')
   })
 
+  it('skips extended-background (48;5;n) trailing args instead of leaking them as SGR codes', () => {
+    // We don't paint backgrounds, but the parser must still consume the
+    // `;5;<n>` payload after 48 so its index value isn't re-read as a
+    // standalone SGR code. Here `1` would otherwise turn bold on.
+    const segments = parseAnsi(`${ESC}[48;5;1mtext`)
+
+    expect(segments).toEqual([{ bold: false, fg: null, text: 'text' }])
+  })
+
+  it('does not let a 48;5 index value leak in and set a foreground color', () => {
+    // `31` is the leaked index here; before the fix it was parsed as the
+    // standalone red-foreground code.
+    const segments = parseAnsi(`${ESC}[48;5;31mtext`)
+
+    expect(segments).toEqual([{ bold: false, fg: null, text: 'text' }])
+  })
+
+  it('skips truecolor extended-background (48;2;r;g;b) trailing args', () => {
+    // The trailing `0` would otherwise be read as a full reset (SGR 0).
+    const segments = parseAnsi(`${ESC}[1;31m${ESC}[48;2;255;0;0mtext`)
+
+    expect(segments).toEqual([{ bold: true, fg: 'red', text: 'text' }])
+  })
+
+  it('keeps the foreground when a 48 background is set in the same SGR run', () => {
+    // 31 (red fg) then 48;5;2 (bg) — the bg index must not clobber the fg.
+    const segments = parseAnsi(`${ESC}[31;48;5;2mtext`)
+
+    expect(segments).toEqual([{ bold: false, fg: 'red', text: 'text' }])
+  })
+
   it('drops non-SGR CSI sequences (cursor motion, erase) without consuming surrounding text', () => {
     const input = `before${ESC}[2Jmiddle${ESC}[10;5Hafter`
 

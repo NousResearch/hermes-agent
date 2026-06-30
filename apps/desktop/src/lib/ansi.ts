@@ -118,8 +118,11 @@ export function parseAnsi(input: string): AnsiSegment[] {
           fg = null
         } else if (code in FG_BY_CODE) {
           fg = FG_BY_CODE[code]
-        } else if (code === 38) {
-          // 256-color / truecolor — skip the trailing args we don't render.
+        } else if (code === 38 || code === 48) {
+          // 256-color / truecolor foreground (38) or background (48) — skip
+          // the trailing index/RGB args we don't render so they can't be
+          // re-read as standalone SGR codes and corrupt the segment's
+          // bold/fg state.
           if (codes[i + 1] === 5) {
             i += 2
           } else if (codes[i + 1] === 2) {

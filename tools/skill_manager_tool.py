@@ -888,6 +888,32 @@ def _patch_skill(
     if err:
         return {"success": False, "error": err}
 
+    # Guard against catastrophic content loss from background review patches.
+    # The review agent may hallucinate old_string from the conversation
+    # transcript without reading the skill first.  When fuzzy matching
+    # finds a partial match, the replacement can silently delete most of the
+    # file.  Reject patches that shrink the file by more than 50% when
+    # called from a background review context (issue #55647).
+    try:
+        from tools.skill_provenance import is_background_review
+        if is_background_review() and len(content) > 0:
+            original_len = len(content)
+            new_len = len(new_content)
+            if new_len < original_len * 0.5:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Patch rejected: would reduce '{target_label}' from "
+                        f"{original_len} to {new_len} characters "
+                        f"({100 - new_len * 100 // original_len}% loss). "
+                        "Background review patches must not delete more than "
+                        "50% of a file. Read the skill with skill_view first, "
+                        "then make a targeted patch."
+                    ),
+                }
+    except Exception:
+        pass
+
     # If patching SKILL.md, validate frontmatter is still intact
     if not file_path:
         err = _validate_frontmatter(new_content)

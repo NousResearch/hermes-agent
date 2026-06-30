@@ -614,28 +614,6 @@
   animation: quest-glow 1.8s ease-in-out infinite;
 }
 
-.reuben-splash-stage {
-  isolation: isolate;
-}
-
-.reuben-splash-image {
-  transition:
-    filter 180ms ease,
-    opacity 180ms ease;
-}
-
-:root.dark .reuben-splash-stage {
-  background:
-    radial-gradient(circle at 50% 34%, color-mix(in srgb, var(--dt-midground) 10%, transparent), transparent 44%),
-    radial-gradient(circle at 50% 52%, color-mix(in srgb, var(--dt-foreground) 5%, transparent), transparent 58%);
-}
-
-:root.dark .reuben-splash-image {
-  filter: invert(1) hue-rotate(180deg) saturate(0.82) brightness(0.9) contrast(0.96);
-  mix-blend-mode: screen;
-  opacity: 0.9;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .quest-glow {
     animation: none;

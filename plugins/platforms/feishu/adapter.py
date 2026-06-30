@@ -152,12 +152,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\s*\|.+\|\s*$)",
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_LINE_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_MARKDOWN_TABLE_DIVIDER_RE = re.compile(r"^\s*\|(?:[-:]+\|)+\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -547,6 +549,220 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
+
+
+def _parse_markdown_table(text: str) -> List[Dict[str, Any]]:
+    """Parse markdown text and extract tables as segments.
+
+    Returns a list of dicts: each dict is either
+      {"type": "text", "content": str}
+    or
+      {"type": "table", "headers": [...], "rows": [[...], ...]}.
+
+    Tables inside fenced code blocks are left untouched — those lines become
+    part of a "text" segment so they render as code.
+    """
+    if not text or "|" not in text:
+        return [{"type": "text", "content": text}]
+
+    lines = text.splitlines(keepends=True)
+    segments: List[Dict[str, Any]] = []
+    non_table_parts: List[str] = []
+    table_lines: List[str] = []
+    in_table = False
+    in_code_block = False
+
+    def _flush_non_table() -> None:
+        if non_table_parts:
+            joined = "".join(non_table_parts)
+            if joined:
+                segments.append({"type": "text", "content": joined})
+            non_table_parts.clear()
+
+    def _flush_table() -> None:
+        nonlocal table_lines
+        if not table_lines:
+            return
+        header_line = table_lines[0].rstrip("\n")
+        # Collect data rows: skip ALL divider lines (|---|---|),
+        # not just the one immediately after the header.  This
+        # handles malformed tables where a second header-like row
+        # appears before the divider (e.g. | A | B |\n| C | D |\n|---|---|)
+        # — the divider is still a divider regardless of position.
+        row_lines = [
+            r for r in table_lines[1:]
+            if not _MARKDOWN_TABLE_DIVIDER_RE.match(r)
+        ]
+
+        def _parse_cells(line: str) -> List[str]:
+            stripped = line.strip()
+            if stripped.startswith("|"):
+                stripped = stripped[1:]
+            if stripped.endswith("|"):
+                stripped = stripped[:-1]
+            return [cell.strip() for cell in stripped.split("|")]
+
+        headers = _parse_cells(header_line)
+        rows = [_parse_cells(r) for r in row_lines]
+        # Normalize row length to match headers
+        for row in rows:
+            while len(row) < len(headers):
+                row.append("")
+            if len(row) > len(headers):
+                row[:] = row[: len(headers)]
+
+        segments.append({"type": "table", "headers": headers, "rows": rows})
+        table_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Track fenced code blocks — pipes inside them must NOT be treated as tables
+        if not in_code_block and _MARKDOWN_FENCE_OPEN_RE.match(stripped):
+            if in_table:
+                _flush_table()
+                in_table = False
+            in_code_block = True
+            non_table_parts.append(line)
+            continue
+        if in_code_block and _MARKDOWN_FENCE_CLOSE_RE.match(stripped):
+            in_code_block = False
+            non_table_parts.append(line)
+            continue
+        if in_code_block:
+            non_table_parts.append(line)
+            continue
+
+        if _MARKDOWN_TABLE_LINE_RE.match(line):
+            if not in_table:
+                _flush_non_table()
+                in_table = True
+            table_lines.append(line)
+            continue
+
+        if in_table:
+            if stripped == "":
+                _flush_table()
+                in_table = False
+                non_table_parts.append(line)
+                continue
+            if _MARKDOWN_TABLE_DIVIDER_RE.match(line):
+                table_lines.append(line)
+                continue
+            if _MARKDOWN_TABLE_LINE_RE.match(line):
+                table_lines.append(line)
+                continue
+            _flush_table()
+            in_table = False
+            non_table_parts.append(line)
+            continue
+
+        non_table_parts.append(line)
+
+    if in_table:
+        _flush_table()
+    _flush_non_table()
+
+    return segments
+
+
+def _strip_md_bold(text: str) -> str:
+    """Strip markdown bold markers (** and __) from text."""
+    if not text:
+        return text
+    text = re.sub(r'\*\*', '', text)
+    text = re.sub(r'__', '', text)
+    return text.strip()
+
+
+def _build_table_card(headers: List[str], rows: List[List[str]]) -> Optional[Dict[str, Any]]:
+    """Build a Feishu CardKit v2 table component from headers and rows.
+
+    Ref: https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/table
+
+    CardKit v2 text data_type does NOT support markdown in cells, so bold
+    markers (** and __) are stripped and header styling is applied via
+    header_style instead.
+
+    Returns None when headers is empty (degenerate table like a bare ``|``).
+    """
+    if not headers:
+        return None
+
+    # Build columns definition
+    columns = []
+    for i, h in enumerate(headers):
+        col_name = f"col_{i}"
+        columns.append({
+            "name": col_name,
+            "display_name": _strip_md_bold(h) or " ",
+            "data_type": "text",
+            "width": "auto",
+        })
+
+    # Build rows as objects mapping col_name -> cell_value
+    data_rows = []
+    for row in rows:
+        row_obj = {}
+        for i, cell in enumerate(row):
+            if i < len(headers):
+                col_name = f"col_{i}"
+                row_obj[col_name] = _strip_md_bold(cell) or " "
+        data_rows.append(row_obj)
+
+    return {
+        "tag": "table",
+        "columns": columns,
+        "rows": data_rows,
+        "header_style": {
+            "bold": True,
+            "text_align": "left",
+            "text_size": "normal",
+            "background_style": "none",
+            "text_color": "default",
+            "lines": 1,
+        },
+    }
+
+
+def _build_interactive_card_with_tables(text: str) -> Optional[Dict[str, Any]]:
+    """Build a CardKit v2 interactive card if the text contains markdown tables.
+
+    Returns None if no tables are found (caller should fall back to post message).
+    Non-table text segments become markdown elements; table segments become
+    CardKit v2 table components.
+    """
+    segments = _parse_markdown_table(text)
+    has_table = any(s["type"] == "table" for s in segments)
+    if not has_table:
+        return None
+
+    elements: List[Dict[str, Any]] = []
+    for seg in segments:
+        if seg["type"] == "text":
+            content = seg["content"].strip()
+            if content:
+                elements.append({
+                    "tag": "markdown",
+                    "content": content,
+                })
+        elif seg["type"] == "table":
+            card = _build_table_card(seg["headers"], seg["rows"])
+            if card is not None:
+                elements.append(card)
+
+    if not elements:
+        return None
+
+    return {
+        "schema": "2.0",
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "body": {
+            "elements": elements,
+        },
+    }
 
 
 def _build_markdown_post_payload(content: str) -> str:
@@ -1832,6 +2048,35 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Return True when content contains a markdown table so the stream
+        consumer finalizes by sending a fresh interactive card (and deleting
+        the post-type preview) instead of editing the preview in place.
+
+        During streaming, tables are sent as ``post`` type (pipe-delimited
+        text) because ``streaming=True`` skips the interactive-card builder.
+        At finalize, the content is re-evaluated with ``streaming=False`` and
+        an interactive CardKit v2 table is built — but the stream consumer's
+        skip-if-same optimization can short-circuit that final edit when the
+        text hasn't changed since the last streaming chunk.  Returning True
+        here tells the consumer to use the fresh-final path (send a new
+        message + delete the old preview), which always runs regardless of
+        content equality, so the table renders as a proper interactive card.
+        """
+        if not content:
+            return False
+        # Quick check: tables require pipe characters
+        if "|" not in content:
+            return False
+        # Defer to the table parser to confirm there's an actual table
+        # (not just a pipe inside a code block or prose).
+        segments = _parse_markdown_table(content)
+        return any(s["type"] == "table" for s in segments)
+
     async def send(
         self,
         chat_id: str,
@@ -1847,9 +2092,14 @@ class FeishuAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
+        # When expect_edits is set (streaming preview), pass streaming=True
+        # to _build_outbound_payload so it avoids interactive cards that
+        # cannot be reliably updated mid-stream.
+        _is_streaming = bool((metadata or {}).get("expect_edits"))
+
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                msg_type, payload = self._build_outbound_payload(chunk, streaming=_is_streaming)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1903,7 +2153,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            # During streaming edits (finalize=False), pass streaming=True
+            # so _build_outbound_payload avoids interactive cards.  On the
+            # final edit (finalize=True) we allow interactive cards so the
+            # complete table renders properly.
+            msg_type, payload = self._build_outbound_payload(
+                content, streaming=not finalize,
+            )
+
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
@@ -1923,6 +2180,32 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Feishu message.
+
+        Uses the im.v1.message.delete API.  Returns True on success.
+        """
+        if not self._client or not message_id:
+            return False
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageRequest
+            request = DeleteMessageRequest.builder().message_id(message_id).build()
+            response = await asyncio.to_thread(self._client.im.v1.message.delete, request)
+            return self._response_succeeded(response)
+        except Exception as exc:
+            logger.debug("[Feishu] delete_message %s failed: %s", message_id, exc)
+            return False
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Public delete_message for stream-consumer fresh-final cleanup.
+
+        The stream consumer's ``_try_fresh_final`` looks for a public
+        ``delete_message`` method via ``getattr(adapter, "delete_message", None)``
+        to clean up stale streaming previews.  Delegates to the private
+        ``_delete_message`` implementation.
+        """
+        return await self._delete_message(chat_id, message_id)
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -4441,13 +4724,20 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+    def _build_outbound_payload(
+        self, content: str, *, streaming: bool = False,
+    ) -> tuple[str, str]:
+        # During streaming (finalize=False), never send as interactive card.
+        # Feishu's message.update API cannot reliably update interactive card
+        # content mid-stream, causing edit failures that split the response
+        # across multiple messages.  Instead, always use "post" during streaming
+        # and let the finalize edit (or delete-and-resend) switch to interactive
+        # when the table is complete.
+        if not streaming:
+            card = _build_interactive_card_with_tables(content)
+            if card is not None:
+                return "interactive", json.dumps(card, ensure_ascii=False)
+
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

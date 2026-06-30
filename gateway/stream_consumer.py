@@ -671,7 +671,31 @@ class GatewayStreamConsumer:
                     # full response again.
                     if self._accumulated:
                         if self._fallback_final_send:
-                            await self._send_fallback_final(self._accumulated)
+                            # When the adapter prefers fresh-final streaming
+                            # (e.g. Feishu tables that need interactive cards),
+                            # intercept the fallback and send the FULL content
+                            # as a fresh message instead of just the continuation
+                            # tail.  This ensures the complete table renders as
+                            # a single interactive card and the partial streaming
+                            # preview is deleted.
+                            if self._adapter_prefers_fresh_final(self._accumulated):
+                                logger.debug(
+                                    "[StreamConsumer] fallback → _try_fresh_final "
+                                    "for table content (len=%d)",
+                                    len(self._accumulated),
+                                )
+                                sent = await self._try_fresh_final(
+                                    self._accumulated,
+                                    is_turn_final=True,
+                                )
+                                if sent:
+                                    self._final_response_sent = True
+                                    self._final_content_delivered = True
+                                    self._fallback_final_send = False
+                                else:
+                                    await self._send_fallback_final(self._accumulated)
+                            else:
+                                await self._send_fallback_final(self._accumulated)
                         elif self._final_response_sent:
                             # A finalize=True tick above already delivered the
                             # final answer via the adapter's fresh-final path
@@ -1446,8 +1470,20 @@ class GatewayStreamConsumer:
                     # finalize=True edit even when content is unchanged, so
                     # their streaming UI can transition out of the in-
                     # progress state.  Everyone else short-circuits.
+                    #
+                    # Also skip the short-circuit when the adapter prefers
+                    # fresh-final delivery for this content (e.g. Feishu
+                    # with markdown tables): the streaming preview was sent
+                    # as post-type pipe text, but the finalize path can
+                    # re-render it as an interactive CardKit v2 table.
+                    # The fresh-final path (send + delete preview) runs
+                    # regardless of content equality, so we must not
+                    # short-circuit before it.
                     if text == self._last_sent_text and not (
-                        finalize and self._adapter_requires_finalize
+                        finalize and (
+                            self._adapter_requires_finalize
+                            or self._adapter_prefers_fresh_final(text)
+                        )
                     ):
                         return True
                     # Fresh-final for long-lived previews: when finalizing

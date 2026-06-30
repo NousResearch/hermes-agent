@@ -296,6 +296,11 @@ class GatewayKanbanWatchersMixin:
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
+                # Coalesce: inject ONE wake-up per session AFTER all ✔
+                # notifications are sent. Per-delivery injection collides
+                # in _pending_messages (single-slot per session, not a
+                # queue) — only the first wake-up reaches the agent.
+                _wake_candidates: list[dict] = []
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -492,79 +497,25 @@ class GatewayKanbanWatchersMixin:
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
                         _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                         if _wake_kinds:
-                            try:
-                                _session_key = getattr(task, "session_id", None) or ""
-                                if _session_key:
-                                    _title = (task.title if task else sub["task_id"])[:120]
-                                    _assignee = task.assignee if task else ""
-                                    _parts = []
-                                    if "completed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.completed"))
-                                    if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
-                                    if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
-                                    if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
-                                    if "blocked" in _wake_kinds: _parts.append(t("gateway.kanban.wake.blocked"))
-                                    _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
-                                    _synth = t(
-                                        "gateway.kanban.wake.message",
-                                        task_id=sub["task_id"],
-                                        status=_status,
-                                        title=_title,
-                                        assignee=_assignee,
-                                        board=board_slug,
-                                    )
-                                    from gateway.session import SessionSource
-                                    from gateway.platforms.base import MessageEvent, MessageType
-                                    # KNOWN LIMITATION (tracked follow-up): the
-                                    # subscription row does not persist the
-                                    # creator's chat_type, and it is not carried
-                                    # on the session-context bridge, so we cannot
-                                    # faithfully reconstruct the creator's real
-                                    # session key here. build_session_key() keys
-                                    # DMs (":dm:<chat_id>") on a wholly different
-                                    # shape from group/thread, so any hardcoded
-                                    # value mis-routes some creators. "group" is
-                                    # the least-surprising default for the
-                                    # dashboard/group flows this wake primarily
-                                    # serves; DM-originated creators are handled
-                                    # by the follow-up that stamps + persists
-                                    # chat_type end-to-end. handle_message()
-                                    # get_or_create_session's the target, so a
-                                    # mismatch degrades to "wake lands in a fresh
-                                    # group session" — never an exception.
-                                    _source = SessionSource(
-                                        platform=plat,
-                                        chat_id=sub["chat_id"],
-                                        chat_type="group",
-                                        thread_id=sub.get("thread_id") or None,
-                                        user_id=sub.get("user_id"),
-                                        profile=sub_profile or None,
-                                    )
-                                    _synth_event = MessageEvent(
-                                        text=_synth,
-                                        message_type=MessageType.TEXT,
-                                        source=_source,
-                                        internal=True,
-                                    )
-                                    await adapter.handle_message(_synth_event)
-                                    logger.info(
-                                        "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
-                                        sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
-                                    )
-                            except Exception as _wk_err:
-                                # Best-effort: the notification itself already
-                                # delivered and the cursor has advanced, so a
-                                # broken wake path must not wedge the tick — but
-                                # log at WARNING with a traceback rather than
-                                # DEBUG so a persistently-failing wake is visible
-                                # in normal logs instead of silently no-op'ing.
-                                logger.warning(
-                                    "kanban notifier: wakeup injection failed for %s: %s",
-                                    sub["task_id"], _wk_err, exc_info=True,
-                                )
+                            _task_session = getattr(task, "session_id", None) or ""
+                            if _task_session:
+                                _wake_candidates.append({
+                                    "task_id": sub["task_id"],
+                                    "wake_kinds": _wake_kinds,
+                                    "title": (task.title if task else sub["task_id"])[:120],
+                                    "assignee": task.assignee if task else "",
+                                    "board": board_slug,
+                                    "sub": sub,
+                                    "adapter": adapter,
+                                    "plat": plat,
+                                    "sub_profile": sub_profile,
+                                })
                         if task_terminal:
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
+                if _wake_candidates:
+                    await self._inject_coalesced_wakeups(_wake_candidates)
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             # Sleep with cancellation checks.
@@ -572,6 +523,95 @@ class GatewayKanbanWatchersMixin:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    async def _inject_coalesced_wakeups(self, candidates: list[dict]) -> None:
+        """Inject one combined wake-up per agent session after all ✔ deliveries."""
+        from gateway.session import SessionSource
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        _groups: dict[tuple, list[dict]] = {}
+        for c in candidates:
+            _sub = c["sub"]
+            _key = (
+                str(c["plat"]),
+                _sub["chat_id"],
+                _sub.get("thread_id") or "",
+                c["sub_profile"] or "",
+            )
+            _groups.setdefault(_key, []).append(c)
+
+        for _key, group in _groups.items():
+            _plat_str, _chat_id, _thread_id, _profile = _key
+            _adapter = group[0]["adapter"]
+            try:
+                _plat = group[0]["plat"]
+            except Exception:
+                continue
+
+            if len(group) == 1:
+                c = group[0]
+                _parts = []
+                if "completed" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.completed"))
+                if "gave_up" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.gave_up"))
+                if "crashed" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.crashed"))
+                if "timed_out" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.timed_out"))
+                if "blocked" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.blocked"))
+                _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
+                _synth = t(
+                    "gateway.kanban.wake.message",
+                    task_id=c["task_id"],
+                    status=_status,
+                    title=c["title"],
+                    assignee=c["assignee"],
+                    board=c["board"] or "",
+                )
+            else:
+                _lines = []
+                for c in group:
+                    _parts = []
+                    if "completed" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.completed"))
+                    if "gave_up" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.gave_up"))
+                    if "crashed" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.crashed"))
+                    if "timed_out" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.timed_out"))
+                    if "blocked" in c["wake_kinds"]: _parts.append(t("gateway.kanban.wake.blocked"))
+                    _c_status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
+                    _lines.append(
+                        t("gateway.kanban.wake.message",
+                          task_id=c["task_id"],
+                          status=_c_status,
+                          title=c["title"],
+                          assignee=c["assignee"],
+                          board=c["board"] or "")
+                    )
+                _synth = "\n---\n".join(_lines)
+
+            _first_sub = group[0]["sub"]
+            _source = SessionSource(
+                platform=_plat,
+                chat_id=_chat_id,
+                chat_type="group",
+                thread_id=_thread_id or None,
+                user_id=_first_sub.get("user_id"),
+                profile=_profile or None,
+            )
+            _synth_event = MessageEvent(
+                text=_synth,
+                message_type=MessageType.TEXT,
+                source=_source,
+                internal=True,
+            )
+            try:
+                await _adapter.handle_message(_synth_event)
+                _task_ids = [c["task_id"] for c in group]
+                logger.info(
+                    "kanban notifier: woke agent for %d task(s) %s on %s/%s profile=%s",
+                    len(group), _task_ids, _plat_str, _chat_id, _profile or "default",
+                )
+            except Exception as _wk_err:
+                logger.debug(
+                    "kanban notifier: coalesced wakeup injection failed for %s: %s",
+                    [c["task_id"] for c in group], _wk_err,
+                )
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,

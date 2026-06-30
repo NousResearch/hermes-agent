@@ -6588,6 +6588,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
+    _hook_fields: dict = {}
     with write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries "
@@ -6658,6 +6659,12 @@ def _record_task_failure(
                 conn, task_id, "gave_up", payload, run_id=run_id,
             )
             blocked = True
+            _hook_fields = {
+                "failure_kind": "gave_up",
+                "reason": error[:500],
+                "trigger_outcome": outcome,
+                "failures": failures,
+            }
         else:
             # Below threshold.
             if release_claim:
@@ -6691,6 +6698,15 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+    if blocked and _hook_fields:
+        _failed_task = get_task(conn, task_id)
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_failed",
+            task_id,
+            board=get_current_board(),
+            assignee=_failed_task.assignee if _failed_task else None,
+            **_hook_fields,
+        )
     return blocked
 
 

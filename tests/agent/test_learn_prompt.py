@@ -6,7 +6,11 @@ builds a standards-guided prompt that the live agent runs as a normal turn, so
 these are the load-bearing behavior contracts.
 """
 
-from agent.learn_prompt import build_learn_prompt, _AUTHORING_STANDARDS
+from agent.learn_prompt import (
+    _AUTHORING_STANDARDS,
+    build_learn_progress_message,
+    build_learn_prompt,
+)
 
 
 class TestBuildLearnPrompt:
@@ -63,6 +67,26 @@ class TestBuildLearnPrompt:
             assert tool in std
         # #6 scripts/references/templates layout.
         assert "scripts/" in _AUTHORING_STANDARDS
+
+
+    def test_prompt_instructs_visible_progress_and_final_skill_name(self):
+        prompt = build_learn_prompt("our release checklist")
+        assert "Keep progress visible" in prompt
+        assert "created skill name and category" in prompt
+
+
+class TestBuildLearnProgressMessage:
+    def test_progress_message_shows_phases_for_described_source(self):
+        message = build_learn_progress_message("the deploy script")
+        assert "what you described" in message
+        assert "1/3 gather source material" in message
+        assert "2/3 write and save the skill" in message
+        assert "3/3 report the skill name and category" in message
+
+    def test_progress_message_names_conversation_source_for_bare_learn(self):
+        message = build_learn_progress_message("")
+        assert "this conversation" in message
+        assert "new skill name" in message
 
 
 class TestLearnRegistryWiring:

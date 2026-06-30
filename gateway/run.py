@@ -8757,14 +8757,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # web_extract, this conversation, pasted text) and authors the skill
             # via skill_manage. Mirrors the /blueprint fall-through so role
             # alternation is preserved. No engine, works on any backend.
-            from agent.learn_prompt import build_learn_prompt
+            from agent.learn_prompt import (
+                build_learn_progress_message,
+                build_learn_prompt,
+            )
 
             _learn_req = event.get_command_args().strip()
-            _ack = (
-                "Learning a skill from what you described…"
-                if _learn_req
-                else "Learning a skill from this conversation…"
-            )
+            _ack = build_learn_progress_message(_learn_req)
             try:
                 adapter = self.adapters.get(source.platform)
                 if adapter:

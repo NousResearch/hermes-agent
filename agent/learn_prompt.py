@@ -96,6 +96,23 @@ Quality bar:
   templates in `templates/`."""
 
 
+_LEARN_PROGRESS_STEPS = (
+    "1/3 gather source material",
+    "2/3 write and save the skill",
+    "3/3 report the skill name and category",
+)
+
+
+def build_learn_progress_message(user_request: str) -> str:
+    """Build the user-facing progress hint shown when ``/learn`` starts."""
+    req = (user_request or "").strip()
+    source = "what you described" if req else "this conversation"
+    lines = [f"Learning a skill from {source}..."]
+    lines.extend(f"  {step}" for step in _LEARN_PROGRESS_STEPS)
+    lines.append("I will include the new skill name when it finishes.")
+    return "\n".join(lines)
+
+
 def build_learn_prompt(user_request: str) -> str:
     """Build the agent prompt for an open-ended ``/learn`` request.
 
@@ -129,7 +146,10 @@ def build_learn_prompt(user_request: str) -> str:
         "2. Author ONE SKILL.md and save it with the `skill_manage` tool "
         "(action=\"create\"). Pick a sensible category. If the procedure needs "
         "a non-trivial script, add it under the skill's `scripts/` with "
-        "`skill_manage` write_file and reference it by relative path.\n\n"
+        "`skill_manage` write_file and reference it by relative path.\n"
+        "3. Keep progress visible where the surface supports it: first gather "
+        "source material, then write and save the skill, then report the "
+        "created skill name and category.\n\n"
         f"{_AUTHORING_STANDARDS}\n\n"
         "When done, tell the user the skill name, its category, and a "
         "one-line summary of what it captured."

@@ -1490,17 +1490,17 @@ class CLICommandsMixin:
         authors the skill via ``skill_manage``. No engine, no model-tool
         footprint, works on any terminal backend.
         """
-        from agent.learn_prompt import build_learn_prompt
+        from agent.learn_prompt import (
+            build_learn_progress_message,
+            build_learn_prompt,
+        )
 
         # Everything after the command word is the open-ended request.
         parts = cmd.strip().split(None, 1)
         user_request = parts[1].strip() if len(parts) > 1 else ""
 
         msg = build_learn_prompt(user_request)
-        if user_request:
-            print("\n⚡ Learning a skill from what you described...")
-        else:
-            print("\n⚡ Learning a skill from this conversation...")
+        print(f"\n⚡ {build_learn_progress_message(user_request)}")
         if hasattr(self, "_pending_input"):
             self._pending_input.put(msg)
         else:  # pragma: no cover - defensive (no live input loop)

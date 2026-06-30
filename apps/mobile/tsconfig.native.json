@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "react", "react-dom", "react-native"]
+  },
+  "include": [
+    "App.native.tsx",
+    "src/mobile-shims/**/*.ts",
+    "src/**/*.native.ts",
+    "src/**/*.native.tsx"
+  ],
+  "exclude": ["node_modules", "ios", "android"]
+}

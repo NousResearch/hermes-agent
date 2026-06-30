@@ -54,6 +54,16 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)', "bypass_restrictions", "all"),
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection", "all"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div", "all"),
+    # EchoLeak / CVE-2025-32711: img tag with external URL + query params used
+    # for 0-click exfiltration from markdown-rendered agent output.  Matches
+    # both HTML <img src> and markdown ![...](url?q=) forms.  The ?/= suffix
+    # distinguishes exfil beacons from innocent inline images.
+    (r'<\s*img\s[^>]*src\s*=\s*["\']?https?://[^\s"\']+[?&][^\s"\']*["\']?', "img_src_exfil", "all"),
+    (r'!\[[^\]]*\]\(https?://[^\s)]+[?&][^\s)]*\)', "img_src_exfil_md", "all"),
+    # CSS visibility concealment — Unit 42 documented: visibility:hidden and
+    # opacity:0 used to hide injected payloads in rendered HTML alongside
+    # display:none (already covered by hidden_div above).
+    (r'style\s*=\s*["\'][^"\']*(?:visibility\s*:\s*hidden|opacity\s*:\s*0)', "css_visibility_hidden", "all"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute", "all"),
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user', "deception_hide", "all"),
 

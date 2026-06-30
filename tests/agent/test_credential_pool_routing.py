@@ -8,8 +8,45 @@ Covers:
 5. Full 429 rotation cycle: retry-same → rotate → exhaust → fallback
 """
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+
+# ---------------------------------------------------------------------------
+# Provider guard helper
+# ---------------------------------------------------------------------------
+
+class TestCredentialPoolProviderGuard:
+    def test_custom_pool_matches_registered_base_url(self):
+        from agent.credential_pool import credential_pool_matches_provider
+
+        pool = MagicMock(name="CustomPool")
+        pool.provider = "custom:deepseek"
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:deepseek",
+        ):
+            assert credential_pool_matches_provider(
+                pool,
+                "custom",
+                "https://api.deepseek.com/v1",
+            )
+
+    def test_custom_pool_rejects_different_registered_base_url(self):
+        from agent.credential_pool import credential_pool_matches_provider
+
+        pool = MagicMock(name="CustomPool")
+        pool.provider = "custom:openai-codex"
+
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value="custom:deepseek",
+        ):
+            assert not credential_pool_matches_provider(
+                pool,
+                "custom",
+                "https://api.deepseek.com/v1",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -19,24 +56,45 @@ from unittest.mock import MagicMock, patch
 class TestCliTurnRoutePool:
     def test_resolve_turn_includes_pool(self):
         """CLI's _resolve_turn_agent_config must pass credential_pool in runtime."""
-        fake_pool = MagicMock(name="FakePool")
-        shell = SimpleNamespace(
-            model="gpt-5.4",
-            api_key="sk-test",
-            base_url=None,
-            provider="openai-codex",
-            api_mode="codex_responses",
-            acp_command=None,
-            acp_args=[],
-            _credential_pool=fake_pool,
-            service_tier=None,
-        )
-
         from cli import HermesCLI
-        bound = HermesCLI._resolve_turn_agent_config.__get__(shell)
-        route = bound("test message")
+
+        fake_pool = MagicMock(name="FakePool")
+        fake_pool.provider = "openai-codex"
+        shell = HermesCLI.__new__(HermesCLI)
+        shell.model = "gpt-5.4"
+        shell.api_key = "sk-test"
+        shell.base_url = None
+        shell.provider = "openai-codex"
+        shell.api_mode = "codex_responses"
+        shell.acp_command = None
+        shell.acp_args = []
+        shell._credential_pool = fake_pool
+        shell.service_tier = None
+
+        route = shell._resolve_turn_agent_config("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
+
+    def test_resolve_turn_drops_mismatched_pool(self):
+        """CLI must not carry a pool from a different provider into the turn."""
+        from cli import HermesCLI
+
+        stale_pool = MagicMock(name="StaleCodexPool")
+        stale_pool.provider = "openai-codex"
+        shell = HermesCLI.__new__(HermesCLI)
+        shell.model = "deepseek-v4-pro"
+        shell.api_key = "deepseek-key"
+        shell.base_url = "https://api.deepseek.com/v1"
+        shell.provider = "deepseek"
+        shell.api_mode = "chat_completions"
+        shell.acp_command = None
+        shell.acp_args = []
+        shell._credential_pool = stale_pool
+        shell.service_tier = None
+
+        route = shell._resolve_turn_agent_config("test message")
+
+        assert route["runtime"]["credential_pool"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +107,9 @@ class TestGatewayTurnRoutePool:
         from gateway.run import GatewayRunner
 
         fake_pool = MagicMock(name="FakePool")
-        runner = SimpleNamespace(_service_tier=None)
+        fake_pool.provider = "openai-codex"
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._service_tier = None
         runtime_kwargs = {
             "api_key": "***",
             "base_url": None,
@@ -60,10 +120,31 @@ class TestGatewayTurnRoutePool:
             "credential_pool": fake_pool,
         }
 
-        bound = GatewayRunner._resolve_turn_agent_config.__get__(runner)
-        route = bound("test message", "gpt-5.4", runtime_kwargs)
+        route = runner._resolve_turn_agent_config("test message", "gpt-5.4", runtime_kwargs)
 
         assert route["runtime"]["credential_pool"] is fake_pool
+
+    def test_resolve_turn_drops_mismatched_pool(self):
+        """Gateway must not carry a pool from a different provider into the turn."""
+        from gateway.run import GatewayRunner
+
+        stale_pool = MagicMock(name="StaleCodexPool")
+        stale_pool.provider = "openai-codex"
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._service_tier = None
+        runtime_kwargs = {
+            "api_key": "deepseek-key",
+            "base_url": "https://api.deepseek.com/v1",
+            "provider": "deepseek",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": [],
+            "credential_pool": stale_pool,
+        }
+
+        route = runner._resolve_turn_agent_config("test message", "deepseek-v4-pro", runtime_kwargs)
+
+        assert route["runtime"]["credential_pool"] is None
 
 
 # ---------------------------------------------------------------------------

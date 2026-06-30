@@ -179,7 +179,12 @@ class CLIAgentSetupMixin:
         Processing / Anthropic fast mode, attach `request_overrides` so the
         API call is marked accordingly.
         """
+        from agent.credential_pool import credential_pool_matches_provider
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        credential_pool = getattr(self, "_credential_pool", None)
+        if not credential_pool_matches_provider(credential_pool, self.provider, self.base_url):
+            credential_pool = None
 
         runtime = {
             "api_key": self.api_key,
@@ -188,7 +193,7 @@ class CLIAgentSetupMixin:
             "api_mode": self.api_mode,
             "command": self.acp_command,
             "args": list(self.acp_args or []),
-            "credential_pool": getattr(self, "_credential_pool", None),
+            "credential_pool": credential_pool,
         }
         route = {
             "model": self.model,
@@ -330,6 +335,11 @@ class CLIAgentSetupMixin:
                 pass
         
         try:
+            from agent.credential_pool import credential_pool_matches_provider
+
+            credential_pool = getattr(self, "_credential_pool", None)
+            if not credential_pool_matches_provider(credential_pool, self.provider, self.base_url):
+                credential_pool = None
             runtime = runtime_override or {
                 "api_key": self.api_key,
                 "base_url": self.base_url,
@@ -337,7 +347,7 @@ class CLIAgentSetupMixin:
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
-                "credential_pool": getattr(self, "_credential_pool", None),
+                "credential_pool": credential_pool,
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(

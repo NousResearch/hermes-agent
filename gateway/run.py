@@ -3589,7 +3589,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         mode, attach `request_overrides` so the API call is marked
         accordingly.
         """
+        from agent.credential_pool import credential_pool_matches_provider
         from hermes_cli.models import resolve_fast_mode_overrides
+
+        credential_pool = runtime_kwargs.get("credential_pool")
+        if not credential_pool_matches_provider(
+            credential_pool,
+            runtime_kwargs.get("provider"),
+            runtime_kwargs.get("base_url"),
+        ):
+            credential_pool = None
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -3598,7 +3607,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "api_mode": runtime_kwargs.get("api_mode"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
-            "credential_pool": runtime_kwargs.get("credential_pool"),
+            "credential_pool": credential_pool,
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {

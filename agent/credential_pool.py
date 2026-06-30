@@ -52,6 +52,35 @@ def _load_config_safe() -> Optional[dict]:
         return None
 
 
+def credential_pool_matches_provider(
+    pool: Any,
+    provider: Optional[str],
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return whether ``pool`` is safe to use for ``provider``.
+
+    Missing pool/provider metadata is treated as compatible to preserve legacy
+    callers and tests that pass lightweight pool doubles. Real CredentialPool
+    instances carry ``provider`` and are rejected on cross-provider mismatch.
+    """
+    if pool is None:
+        return True
+
+    current_provider = provider.strip().lower() if isinstance(provider, str) else ""
+    raw_pool_provider = getattr(pool, "provider", "")
+    pool_provider = raw_pool_provider.strip().lower() if isinstance(raw_pool_provider, str) else ""
+    if not current_provider or not pool_provider:
+        return True
+    if current_provider == pool_provider:
+        return True
+
+    if current_provider == "custom" and pool_provider.startswith(CUSTOM_POOL_PREFIX):
+        pool_key = get_custom_provider_pool_key((base_url or "").strip())
+        return bool(pool_key) and pool_key.strip().lower() == pool_provider
+
+    return False
+
+
 # --- Status and type constants ---
 
 STATUS_OK = "ok"

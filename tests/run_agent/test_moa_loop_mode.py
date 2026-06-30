@@ -198,6 +198,32 @@ def test_moa_codex_slot_preserves_provider_identity(monkeypatch):
     assert rt == {"provider": "openai-codex", "model": "gpt-5.5"}
 
 
+def test_moa_anthropic_slot_preserves_provider_identity(monkeypatch):
+    """Anthropic slots must not become custom chat-completions endpoints.
+
+    call_llm treats explicit base_url as provider=custom. For Anthropic and
+    Anthropic-compatible providers this loses the Messages API adapter and can
+    send the request to the wrong path.
+    """
+    from agent import moa_loop
+
+    def fake_resolve(*, requested, target_model=None):
+        return {
+            "provider": requested,
+            "api_mode": "anthropic_messages",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "test-token",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+    )
+
+    rt = moa_loop._slot_runtime({"provider": "anthropic", "model": "claude-sonnet-4"})
+
+    assert rt == {"provider": "anthropic", "model": "claude-sonnet-4"}
+
+
 def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     """A slot whose provider can't be resolved still attempts the call with the
     bare provider/model rather than aborting the whole MoA turn."""

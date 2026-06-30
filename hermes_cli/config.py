@@ -6789,6 +6789,11 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
+def _strip_ascii_control_credential_chars(value: str) -> str:
+    """Strip ASCII control bytes that cannot be useful in saved credentials."""
+    return "".join(ch for ch in value if ord(ch) >= 32 and ord(ch) != 127)
+
+
 def _quote_env_value(value: str) -> str:
     """Quote .env values containing characters with special dotenv meaning."""
     if value == "":
@@ -6826,7 +6831,7 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
-    value = value.replace("\n", "").replace("\r", "")
+    value = _strip_ascii_control_credential_chars(value)
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()

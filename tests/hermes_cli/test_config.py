@@ -329,6 +329,19 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
             assert os.environ["TENOR_API_KEY"] == "sk-test-secret"
 
+    def test_save_env_value_strips_ascii_control_chars(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            save_env_value("OPENAI_API_KEY", "sk-\x00live\tkey\x7f\nnext\r")
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert "OPENAI_API_KEY=sk-livekeynext" in content
+            assert "\x00" not in content
+            assert "\t" not in content
+            assert "\x7f" not in content
+            assert os.environ["OPENAI_API_KEY"] == "sk-livekeynext"
+            assert load_env()["OPENAI_API_KEY"] == "sk-livekeynext"
+
     def test_save_env_value_hardens_file_permissions_on_posix(self, tmp_path):
         if os.name == "nt":
             return

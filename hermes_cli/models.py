@@ -1879,11 +1879,34 @@ def detect_static_provider_for_model(
         return None
 
     # --- Step 1: check static provider catalogs for a direct match ---
+    candidates = []
     for pid, models in _PROVIDER_MODELS.items():
         if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
             continue
         if any(name_lower == m.lower() for m in models):
-            return (pid, name)
+            candidates.append(pid)
+
+    if candidates:
+        try:
+            from hermes_cli.auth import get_auth_status, has_usable_secret
+            from hermes_cli.models import _get_custom_base_url
+            def is_authed(pid):
+                if pid == "custom":
+                    custom_base_url = _get_custom_base_url() or ""
+                    return bool(custom_base_url.strip())
+                elif pid == "openrouter":
+                    return has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))
+                else:
+                    status = get_auth_status(pid)
+                    return bool(status.get("logged_in") or status.get("configured"))
+        except Exception:
+            def is_authed(pid):
+                return False
+
+        for pid in candidates:
+            if is_authed(pid):
+                return (pid, name)
+        return (candidates[0], name)
 
     return None
 
@@ -3464,6 +3487,51 @@ def fetch_api_models(
     be reached (network error, timeout, auth failure, etc.).
     """
     return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+
+
+def fetch_local_ollama_models(
+    base_url: Optional[str],
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Return models stored locally by an Ollama server.
+
+    Ollama's OpenAI-compatible ``/v1/models`` endpoint includes both local
+    GGUF models and installed cloud references.  ``/api/tags`` exposes the
+    metadata needed to distinguish them: cloud references carry
+    ``remote_host`` or ``remote_model``.  Return ``None`` when the endpoint
+    is unreachable or not Ollama, and an empty list when it is a valid
+    Ollama endpoint with no local models.
+    """
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return None
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
+
+    req = urllib.request.Request(
+        normalized + "/api/tags",
+        headers={"User-Agent": _HERMES_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    entries = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return None
+
+    local_models: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("remote_host") or entry.get("remote_model"):
+            continue
+        model_id = str(entry.get("name") or entry.get("model") or "").strip()
+        if model_id and model_id not in local_models:
+            local_models.append(model_id)
+    return local_models
 
 
 # ---------------------------------------------------------------------------

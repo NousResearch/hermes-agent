@@ -2293,7 +2293,10 @@ def list_picker_providers(
     The typed ``/model <name>`` path is unaffected -- only the interactive
     picker payload is narrowed.
     """
-    from hermes_cli.models import fetch_openrouter_models
+    from hermes_cli.models import (
+        fetch_local_ollama_models,
+        fetch_openrouter_models,
+    )
 
     providers = list_authenticated_providers(
         current_provider=current_provider,
@@ -2303,6 +2306,46 @@ def list_picker_providers(
         max_models=max_models,
         current_model=current_model,
     )
+
+    # A bare local Ollama config (provider=custom + localhost:11434) used to
+    # surface only its current model while the same ID also appeared under
+    # Ollama Cloud. Selecting that duplicate cloud row silently changed the
+    # endpoint to ollama.com and exposed a local model to cloud quotas.
+    # Populate the current row from Ollama's metadata-rich /api/tags endpoint
+    # and remove only genuinely local (non-remote-reference) IDs from the
+    # Ollama Cloud row.
+    local_ollama_models: Optional[list[str]] = None
+    current_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
+    active_bare_local_rows = [
+        provider
+        for provider in providers
+        if provider.get("is_current")
+        and provider.get("is_user_defined")
+        and provider.get("source") in {"model-config", "current-runtime"}
+        and str(provider.get("api_url") or "").strip().rstrip("/").lower()
+        == current_url_norm
+    ]
+    if (
+        str(current_provider or "").strip().lower() in _LOCAL_PROVIDER_ALIASES
+        and current_url_norm
+        and active_bare_local_rows
+    ):
+        try:
+            local_ollama_models = fetch_local_ollama_models(current_base_url)
+        except Exception:
+            local_ollama_models = None
+
+    local_ollama_ids = {
+        model_id.lower() for model_id in (local_ollama_models or [])
+    }
+    if local_ollama_models is not None:
+        for provider in active_bare_local_rows:
+            provider["models"] = (
+                local_ollama_models[:max_models]
+                if max_models is not None
+                else list(local_ollama_models)
+            )
+            provider["total_models"] = len(local_ollama_models)
 
     filtered: List[dict] = []
     for p in providers:
@@ -2316,6 +2359,15 @@ def list_picker_providers(
             p = dict(p)
             p["models"] = live_ids[:max_models] if max_models is not None else live_ids
             p["total_models"] = len(live_ids)
+        elif slug == "ollama-cloud" and local_ollama_ids:
+            p = dict(p)
+            cloud_models = [
+                model_id
+                for model_id in p.get("models", [])
+                if str(model_id).lower() not in local_ollama_ids
+            ]
+            p["models"] = cloud_models
+            p["total_models"] = len(cloud_models)
 
         has_models = bool(p.get("models"))
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))

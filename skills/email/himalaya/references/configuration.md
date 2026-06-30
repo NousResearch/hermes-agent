@@ -173,10 +173,10 @@ email = "work@company.com"
 # ... backend config ...
 ```
 
-Switch accounts with `--account`:
+Switch accounts with `-a` or `--account` on the subcommand:
 
 ```bash
-himalaya --account work envelope list
+himalaya envelope list --account work
 ```
 
 ## Notmuch Backend (local mail)

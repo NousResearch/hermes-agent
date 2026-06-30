@@ -11189,6 +11189,311 @@ class SkillToggle(BaseModel):
     profile: Optional[str] = None
 
 
+class ContainerSkillUploadFile(BaseModel):
+    path: str
+    content: str
+
+
+class ContainerSkillUploadRequest(BaseModel):
+    slug: str
+    files: List[ContainerSkillUploadFile]
+
+
+_CONTAINER_SKILL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$")
+_CONTAINER_SKILL_MAX_FILES = 80
+_CONTAINER_SKILL_MAX_BYTES = 512 * 1024
+
+
+def _container_skill_error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"code": code, "message": message}},
+    )
+
+
+def _verify_container_token(request: Request) -> Optional[JSONResponse]:
+    expected = os.getenv("CONTAINER_INTERNAL_TOKEN", "")
+    x_token = request.headers.get("X-Container-Token", "")
+    auth = request.headers.get("Authorization", "")
+    bearer = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    if not expected or not x_token or not bearer or x_token != expected or bearer != expected:
+        return _container_skill_error(401, "invalid_container_token", "invalid container token")
+    return None
+
+
+def _container_skills_dir() -> Path:
+    return get_hermes_home() / "skills"
+
+
+def _read_container_bundled_names(skills_dir: Path) -> set[str]:
+    manifest = skills_dir / ".bundled_manifest"
+    if not manifest.exists():
+        return set()
+    names: set[str] = set()
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            name = line.strip().split(":", 1)[0].strip()
+            if name:
+                names.add(name)
+    except OSError:
+        return set()
+    return names
+
+
+def _safe_container_skill_path(path: str) -> str | None:
+    if not path or "\\" in path or "//" in path:
+        return None
+    candidate = Path(path)
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        return None
+    return candidate.as_posix()
+
+
+def _container_skill_source(slug: str, bundled_names: set[str]) -> str:
+    return "bundled" if slug in bundled_names else "workspace"
+
+
+def _parse_container_skill_frontmatter(skill_md: Path) -> tuple[dict, str]:
+    try:
+        content = skill_md.read_text(encoding="utf-8")[:4000]
+    except OSError:
+        return {}, ""
+    try:
+        from tools.skills_tool import _parse_frontmatter
+        return _parse_frontmatter(content)
+    except Exception:
+        return {}, content
+
+
+def _list_container_skill_dirs(skills_dir: Path) -> list[tuple[str, Path]]:
+    if not skills_dir.exists():
+        return []
+    result: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for skill_md in sorted(skills_dir.rglob("SKILL.md")):
+        if any(part.startswith(".") for part in skill_md.relative_to(skills_dir).parts):
+            continue
+        skill_dir = skill_md.parent
+        slug = skill_dir.name
+        if slug in seen:
+            continue
+        seen.add(slug)
+        result.append((slug, skill_dir))
+    return result
+
+
+def _container_skill_payload(slug: str, skill_dir: Path, bundled_names: set[str]) -> dict:
+    frontmatter, body = _parse_container_skill_frontmatter(skill_dir / "SKILL.md")
+    name = str(frontmatter.get("name") or slug)
+    description = str(frontmatter.get("description") or "")
+    if not description:
+        for line in body.strip().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                description = line
+                break
+    source = _container_skill_source(slug, bundled_names)
+    payload = {
+        "slug": slug,
+        "name": name,
+        "description": description,
+        "source": source,
+        "bundled": source == "bundled",
+    }
+    for src, dst in (
+        ("version", "version"),
+        ("bundledStatus", "bundledStatus"),
+        ("bundled_status", "bundledStatus"),
+        ("reviewStatus", "reviewStatus"),
+        ("review_status", "reviewStatus"),
+        ("requiredTools", "requiredTools"),
+        ("required_tools", "requiredTools"),
+        ("permissions", "permissions"),
+    ):
+        if src in frontmatter and dst not in payload:
+            payload[dst] = frontmatter[src]
+    return payload
+
+
+def _find_container_skill(slug: str, skills_dir: Path) -> Path | None:
+    for found_slug, skill_dir in _list_container_skill_dirs(skills_dir):
+        if found_slug == slug:
+            return skill_dir
+    return None
+
+
+@app.get("/skills")
+async def list_container_skills(request: Request):
+    auth_error = _verify_container_token(request)
+    if auth_error:
+        return auth_error
+
+    skills_dir = _container_skills_dir()
+    bundled_names = _read_container_bundled_names(skills_dir)
+    skills = [
+        _container_skill_payload(slug, skill_dir, bundled_names)
+        for slug, skill_dir in _list_container_skill_dirs(skills_dir)
+    ]
+    return {"skills": skills}
+
+
+@app.post("/skills/upload", status_code=201)
+async def upload_container_skill(request: Request, body: ContainerSkillUploadRequest):
+    auth_error = _verify_container_token(request)
+    if auth_error:
+        return auth_error
+
+    slug = body.slug.strip()
+    if not _CONTAINER_SKILL_SLUG_RE.fullmatch(slug):
+        return _container_skill_error(
+            400,
+            "invalid_slug",
+            "slug must match /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/",
+        )
+    if len(body.files) > _CONTAINER_SKILL_MAX_FILES:
+        return _container_skill_error(400, "too_many_files", "max 80 files")
+
+    normalized_files: list[tuple[str, str, int]] = []
+    total_bytes = 0
+    seen_paths: set[str] = set()
+    for file in body.files:
+        safe_path = _safe_container_skill_path(file.path)
+        if safe_path is None:
+            return _container_skill_error(
+                400,
+                "unsafe_path",
+                "path contains .. or is absolute",
+            )
+        size = len(file.content.encode("utf-8"))
+        total_bytes += size
+        if total_bytes > _CONTAINER_SKILL_MAX_BYTES:
+            return _container_skill_error(
+                400,
+                "payload_too_large",
+                "total size exceeds 512KB",
+            )
+        if safe_path not in seen_paths:
+            seen_paths.add(safe_path)
+            normalized_files.append((safe_path, file.content, size))
+
+    if "SKILL.md" not in seen_paths:
+        return _container_skill_error(400, "missing_skill_md", "SKILL.md is required")
+
+    skills_dir = _container_skills_dir()
+    bundled_names = _read_container_bundled_names(skills_dir)
+    if slug in bundled_names:
+        return _container_skill_error(
+            403,
+            "bundled_skill_immutable",
+            "bundled skill is immutable",
+        )
+
+    skill_dir = skills_dir / slug
+    tmp_dir = skills_dir / f".{slug}.upload-{secrets.token_hex(8)}"
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=False)
+        for safe_path, content, _size in normalized_files:
+            dest = tmp_dir / safe_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+        if skill_dir.exists() or skill_dir.is_symlink():
+            shutil.rmtree(skill_dir)
+        tmp_dir.replace(skill_dir)
+    except OSError as exc:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return _container_skill_error(500, "write_failed", str(exc))
+
+    payload = _container_skill_payload(slug, skill_dir, bundled_names)
+    return JSONResponse(
+        status_code=201,
+        content={
+            "skill": {
+                "slug": slug,
+                "source": "workspace",
+                "path": str(skill_dir),
+                "name": payload["name"],
+                "description": payload["description"],
+                "version": str(payload.get("version") or "1.0"),
+                "bundled": False,
+                "files": [
+                    {"path": path, "sizeBytes": size}
+                    for path, _content, size in normalized_files
+                ],
+                "totalBytes": total_bytes,
+            }
+        },
+    )
+
+
+@app.get("/skills/{slug}/files")
+async def read_container_skill_file(request: Request, slug: str, path: str):
+    auth_error = _verify_container_token(request)
+    if auth_error:
+        return auth_error
+
+    safe_path = _safe_container_skill_path(path)
+    if safe_path is None:
+        return _container_skill_error(400, "unsafe_path", "path traversal denied")
+
+    skills_dir = _container_skills_dir()
+    bundled_names = _read_container_bundled_names(skills_dir)
+    skill_dir = _find_container_skill(slug, skills_dir)
+    if skill_dir is None:
+        return _container_skill_error(404, "skill_not_found", "skill not found")
+
+    file_path = skill_dir / safe_path
+    try:
+        rel_parts = Path(safe_path).parts
+        current = skill_dir
+        for part in rel_parts:
+            current = current / part
+            if current.is_symlink():
+                return _container_skill_error(400, "unsafe_path", "path traversal denied")
+        stat_result = file_path.stat()
+        if not stat.S_ISREG(stat_result.st_mode):
+            return _container_skill_error(404, "file_not_found", "file not found")
+        content = file_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _container_skill_error(404, "file_not_found", "file not found")
+    except OSError:
+        return _container_skill_error(404, "file_not_found", "file not found")
+
+    source = _container_skill_source(slug, bundled_names)
+    return {
+        "slug": slug,
+        "source": source,
+        "bundled": source == "bundled",
+        "path": safe_path,
+        "sizeBytes": stat_result.st_size,
+        "content": content,
+    }
+
+
+@app.delete("/skills/{slug}")
+async def delete_container_skill(request: Request, slug: str):
+    auth_error = _verify_container_token(request)
+    if auth_error:
+        return auth_error
+
+    skills_dir = _container_skills_dir()
+    bundled_names = _read_container_bundled_names(skills_dir)
+    skill_dir = _find_container_skill(slug, skills_dir)
+    if skill_dir is None:
+        return _container_skill_error(404, "skill_not_found", "skill not found")
+    if _container_skill_source(slug, bundled_names) == "bundled":
+        return _container_skill_error(
+            403,
+            "bundled_skill_immutable",
+            "bundled skill is immutable",
+        )
+    if skill_dir.is_symlink():
+        return _container_skill_error(400, "unsafe_path", "path traversal denied")
+
+    shutil.rmtree(skill_dir)
+    return {"slug": slug, "source": "workspace", "deleted": True}
+
+
 @app.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills

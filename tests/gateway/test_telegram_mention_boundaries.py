@@ -31,6 +31,14 @@ def _mention_entity(text, mention="@hermes_bot"):
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
 
 
+def _telegram_mention_entity(text, mention="@hermes_bot", entity_type="mention"):
+    """Build an entity with Telegram UTF-16 code-unit offset/length values."""
+    start = text.index(mention)
+    offset = len(text[:start].encode("utf-16-le")) // 2
+    length = len(mention.encode("utf-16-le")) // 2
+    return SimpleNamespace(type=entity_type, offset=offset, length=length)
+
+
 def _text_mention_entity(offset, length, user_id):
     """Build a TEXT_MENTION entity (used when the target user has no public @handle)."""
     return SimpleNamespace(
@@ -78,6 +86,12 @@ class TestRealMentionsAreDetected:
         adapter = _make_adapter()
         caption = "photo for @hermes_bot"
         msg = _message(caption=caption, caption_entities=[_mention_entity(caption)])
+        assert adapter._message_mentions_bot(msg) is True
+
+    def test_mention_after_non_bmp_characters_uses_telegram_offsets(self):
+        adapter = _make_adapter()
+        text = "\U0001f680\U0001f680 @hermes_bot hello"
+        msg = _message(text=text, entities=[_telegram_mention_entity(text)])
         assert adapter._message_mentions_bot(msg) is True
 
     def test_text_mention_entity_targets_bot(self):
@@ -183,3 +197,23 @@ class TestCaseInsensitivity:
         text = "hi @Hermes_Bot"
         msg = _message(text=text, entities=[_mention_entity(text, mention="@Hermes_Bot")])
         assert adapter._message_mentions_bot(msg) is True
+
+
+class TestTelegramUtf16EntityOffsets:
+    def test_extracts_bot_mention_username_after_non_bmp_characters(self):
+        text = "\U0001f9ea\U0001f9ea @hermes_bot please"
+        msg = _message(text=text, entities=[_telegram_mention_entity(text)])
+        assert TelegramAdapter._extract_bot_mention_usernames(msg) == {"hermes_bot"}
+
+    def test_bot_command_suffix_after_non_bmp_characters_mentions_bot(self):
+        adapter = _make_adapter()
+        text = "\U0001f9ea\U0001f9ea /new@hermes_bot"
+        entity = _telegram_mention_entity(text, mention="/new@hermes_bot", entity_type="bot_command")
+        msg = _message(text=text, entities=[entity])
+        assert adapter._message_mentions_bot(msg) is True
+
+    def test_extracts_bot_command_target_after_non_bmp_characters(self):
+        text = "\U0001f9ea\U0001f9ea /new@hermes_bot"
+        entity = _telegram_mention_entity(text, mention="/new@hermes_bot", entity_type="bot_command")
+        msg = _message(text=text, entities=[entity])
+        assert TelegramAdapter._extract_bot_mention_usernames(msg) == {"hermes_bot"}

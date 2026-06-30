@@ -103,43 +103,49 @@ export function SidebarSessionRow({
         (typeof document !== 'undefined' && document.documentElement.classList.contains('hermes-mobile-standalone')) ||
         'ontouchstart' in window)
   )
-  const longPressTimer = useRef<number | null>(null)
+  // Long-press → pin. The previous timer-based approach fired onPin from a
+  // setTimeout regardless of what the finger did afterward. On iOS WebKit,
+  // when the user touched the row and then started scrolling the drawer,
+  // pointerup/pointercancel were NOT always dispatched on the row — WebKit
+  // routes the gesture to the scroll container and eats the cancel. The
+  // timer kept ticking and fired onPin even though the user was just
+  // scrolling, so every tap-and-scroll pinned the row.
+  //
+  // New approach: gate onPin on RELEASE, not on a timer. Track press start
+  // time + origin in a ref; on pointerup, if duration ≥ 700ms AND finger
+  // didn't move > 8px, fire onPin. If WebKit eats the up (scroll), the
+  // pressInfo just leaks until the next press overwrites it — no timer
+  // means no spurious fire.
   const longPressFired = useRef(false)
-  const pressOrigin = useRef<{ x: number; y: number } | null>(null)
-  const clearLongPress = () => {
-    if (longPressTimer.current !== null) {
-      window.clearTimeout(longPressTimer.current)
-      longPressTimer.current = null
-    }
-    pressOrigin.current = null
+  const pressInfo = useRef<{ startedAt: number; x: number; y: number } | null>(null)
+  const clearPress = () => {
+    pressInfo.current = null
   }
   const onPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     if (!mobileStandalone || event.pointerType !== 'touch') return
     longPressFired.current = false
-    // clearLongPress FIRST — it nulls pressOrigin, so we have to set
-    // pressOrigin AFTER (Playwright caught the previous ordering bug,
-    // where pressOrigin was wiped immediately and the movement-cancel
-    // path short-circuited because !pressOrigin was always true).
-    clearLongPress()
-    pressOrigin.current = { x: event.clientX, y: event.clientY }
-    // 700ms — well past iOS's natural tap window (~150ms) and past any
-    // user's "deliberate firm tap" (~300-400ms). A real pin gesture is a
-    // held press, not a slow tap.
-    longPressTimer.current = window.setTimeout(() => {
+    pressInfo.current = { startedAt: Date.now(), x: event.clientX, y: event.clientY }
+  }
+  const onPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const info = pressInfo.current
+    if (!info) return
+    const dx = event.clientX - info.x
+    const dy = event.clientY - info.y
+    // > 8px in either axis = scroll/drag, not a hold-to-pin. Clear so the
+    // up event can't fire onPin even if the dwell time crossed 700ms.
+    if (dx * dx + dy * dy > 64) clearPress()
+  }
+  const onPointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const info = pressInfo.current
+    clearPress()
+    if (!mobileStandalone || event.pointerType !== 'touch' || !info) return
+    if (Date.now() - info.startedAt >= 700) {
       longPressFired.current = true
       triggerHaptic('selection')
       onPin()
-    }, 700)
+    }
   }
-  const onPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
-    // Any meaningful movement (>8px in either axis) means the user is
-    // scrolling or dragging, not holding to pin. Cancel the timer.
-    if (longPressTimer.current === null || !pressOrigin.current) return
-    const dx = event.clientX - pressOrigin.current.x
-    const dy = event.clientY - pressOrigin.current.y
-    if (dx * dx + dy * dy > 64) clearLongPress()
-  }
-  const onPointerUpOrLeave = () => clearLongPress()
+  const onPointerUpOrLeave = () => clearPress()
 
   const shell = (
     <SidebarRowShell
@@ -252,7 +258,7 @@ export function SidebarSessionRow({
         onPointerDown={onPointerDown}
         onPointerLeave={onPointerUpOrLeave}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUpOrLeave}
+        onPointerUp={onPointerUp}
       >
         {reorderable ? (
           <SidebarRowGrab

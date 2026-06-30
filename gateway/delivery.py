@@ -116,11 +116,19 @@ def _classify_dead_from_error_text(error_text: Optional[str]) -> Optional[str]:
     if not error_text:
         return None
     try:
-        from .platforms.base import classify_send_error
+        from .platforms.base import classify_send_error, is_chat_level_not_found
     except Exception:  # pragma: no cover - import guard
         return None
     kind = classify_send_error(None, error_text=error_text)
-    return kind if DeadTargetRegistry.is_dead_error_kind(kind) else None
+    if not DeadTargetRegistry.is_dead_error_kind(kind):
+        return None
+    # ``not_found`` collapses chat-level and thread/topic/message-level failures.
+    # Only a whole-chat not_found means the target is dead — a deleted forum topic
+    # or an edited-away message must not mark the entire chat (and all of its future
+    # deliveries) dead.  See gateway.dead_targets' documented scope.
+    if kind == "not_found" and not is_chat_level_not_found(error_text):
+        return None
+    return kind
 
 
 @dataclass

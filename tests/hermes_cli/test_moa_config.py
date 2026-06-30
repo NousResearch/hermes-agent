@@ -120,6 +120,38 @@ def test_exact_preset_matching_is_not_fuzzy():
     assert exact_moa_preset_name(config, "coding please fix this") is None
 
 
+def test_exact_preset_matching_skips_disabled_presets():
+    """A disabled preset must not match the implicit bare-name switch path.
+
+    Regression for #55187: with ``enabled: false`` presets, a plain model
+    switch whose name collides with a preset key (e.g. ``default``) silently
+    pivoted the session onto the MoA virtual provider. The per-preset
+    ``enabled`` opt-out must gate this implicit match.
+    """
+    config = {
+        "presets": {
+            "default": {"enabled": False},
+            "klo": {"enabled": False},
+        },
+    }
+    assert exact_moa_preset_name(config, "default") is None
+    assert exact_moa_preset_name(config, "klo") is None
+
+
+def test_exact_preset_matching_allows_enabled_presets():
+    """An explicitly enabled preset still matches the bare-name switch path."""
+    config = {
+        "presets": {
+            "fast": {"enabled": True},
+            "slow": {"enabled": False},
+        },
+    }
+    assert exact_moa_preset_name(config, "fast") == "fast"
+    assert exact_moa_preset_name(config, "slow") is None
+    # Default (no explicit enabled key) is enabled and still matches.
+    assert exact_moa_preset_name({"presets": {"x": {}}}, "x") == "x"
+
+
 def test_active_preset_toggle_validation():
     config = {"default_preset": "coding", "presets": {"coding": {}, "review": {}}}
 

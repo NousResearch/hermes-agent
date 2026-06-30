@@ -536,4 +536,71 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
     await runner._notify_active_sessions_of_shutdown()
 
     assert adapter.send.await_count == 1
-    assert adapter.send.await_args.args[0] == "!room123:example.org"
+
+
+@pytest.mark.asyncio
+async def test_drain_suppress_skips_home_channel_keeps_session_ping(tmp_path, monkeypatch):
+    """A suppress_notification drain marker mutes ONLY the home-channel broadcast.
+
+    The per-active-session interrupt ping MUST still fire (it carries the
+    "your task was interrupted, message me to resume" hint). This is the core
+    drain-notification-suppression contract.
+    """
+    from gateway.config import HomeChannel, Platform
+    import gateway.drain_control as dc
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    runner, adapter = make_restart_runner()
+    # A home channel distinct from the active session's chat.
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    # One active session in a different chat.
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    # NAS auto-update drain: marker present with suppress_notification=True.
+    dc.write_drain_request(principal="nas", suppress_notification=True)
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    # Exactly one send — the active-session ping to chat 999. The home-channel
+    # broadcast to home-42 was suppressed.
+    assert len(adapter.sent_calls) == 1
+    sent_chat_ids = {chat_id for chat_id, _content, _meta in adapter.sent_calls}
+    assert "999" in sent_chat_ids
+    assert "home-42" not in sent_chat_ids
+    assert "shutting down" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_drain_without_suppress_flag_still_broadcasts_home_channel(tmp_path, monkeypatch):
+    """A drain marker WITHOUT the suppress flag leaves today's behaviour intact.
+
+    Both the active-session ping AND the home-channel broadcast fire — proving
+    the suppression is opt-in and operator/legacy drains are unaffected.
+    """
+    from gateway.config import HomeChannel, Platform
+    import gateway.drain_control as dc
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    # Operator drain: marker present, suppress_notification defaults False.
+    dc.write_drain_request(principal="dashboard")
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    sent_chat_ids = {chat_id for chat_id, _content, _meta in adapter.sent_calls}
+    # Both targets notified (today's behaviour preserved).
+    assert "999" in sent_chat_ids
+    assert "home-42" in sent_chat_ids

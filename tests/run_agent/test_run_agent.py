@@ -2931,6 +2931,70 @@ class TestConcurrentToolExecution:
         assert post_call[1]["args"] == {"todos": [], "request_rewritten": True, "merge": True}
         assert post_call[1]["middleware_trace"] == [{"source": "request-test"}]
 
+    def test_concurrent_agent_level_tool_execution_middleware_wraps_inline_dispatch(self, agent, monkeypatch):
+        """Concurrent built-in tool paths should expose the adaptive execution boundary."""
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        seen = {}
+
+        def execution_middleware(**kwargs):
+            seen["middleware_args"] = dict(kwargs["args"])
+            seen["tool_name"] = kwargs["tool_name"]
+            downstream = kwargs["next_call"]({**kwargs["args"], "merge": True})
+            return f"mw::{downstream}"
+
+        manager = SimpleNamespace(_middleware={"tool_request": [], "tool_execution": [execution_middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", lambda kind, **kwargs: [])
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert seen["tool_name"] == "todo"
+        assert seen["middleware_args"] == {"todos": []}
+        mock_todo.assert_called_once_with(todos=[], merge=True, store=agent._todo_store)
+        assert len(messages) == 1
+        assert messages[0]["tool_call_id"] == "todo-1"
+        assert messages[0]["content"] == 'mw::{"ok":true}'
+
+    def test_concurrent_registry_tool_execution_middleware_wraps_dispatch(self, agent, monkeypatch):
+        """Concurrent registry-tool paths should run through tool_execution middleware."""
+        tool_call = _mock_tool_call(name="web_search", arguments='{"q":"alpha"}', call_id="search-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        seen = {}
+
+        def execution_middleware(**kwargs):
+            seen["middleware_args"] = dict(kwargs["args"])
+            seen["tool_name"] = kwargs["tool_name"]
+            downstream = kwargs["next_call"]({**kwargs["args"], "q": "rewritten"})
+            return f"mw::{downstream}"
+
+        manager = SimpleNamespace(_middleware={"tool_request": [], "tool_execution": [execution_middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", lambda kind, **kwargs: [])
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+
+        with patch("model_tools.registry.dispatch", return_value="search-result") as mock_dispatch:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert seen["tool_name"] == "web_search"
+        assert seen["middleware_args"] == {"q": "alpha"}
+        assert mock_dispatch.call_args.args[:2] == ("web_search", {"q": "rewritten"})
+        assert len(messages) == 1
+        assert messages[0]["tool_call_id"] == "search-1"
+        assert messages[0]["content"] == "mw::search-result"
+
     def test_concurrent_agent_level_tool_preserves_request_middleware_trace(self, agent, monkeypatch):
         tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])

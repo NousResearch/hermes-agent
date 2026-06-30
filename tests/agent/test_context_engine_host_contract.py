@@ -28,8 +28,81 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-
+from agent.context_engine import ContextEngine
 from run_agent import AIAgent
+
+
+class _ContractEngine(ContextEngine):
+    def __init__(self, name: str = "contract-engine"):
+        self._name = name
+        self.clones: list[_ContractEngine] = []
+        self.update_model_calls: list[dict[str, object]] = []
+        self.session_start_calls: list[tuple[str, dict[str, object]]] = []
+        self.shutdown_count = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def update_from_response(self, usage):
+        pass
+
+    def should_compress(self, prompt_tokens=None):
+        return False
+
+    def compress(self, messages, current_tokens=None, focus_topic=None):
+        return messages
+
+    def update_model(
+        self,
+        model: str,
+        context_length: int,
+        base_url: str = "",
+        api_key: str = "",
+        provider: str = "",
+        api_mode: str = "",
+    ):
+        self.update_model_calls.append({
+            "model": model,
+            "context_length": context_length,
+            "base_url": base_url,
+            "api_key": api_key,
+            "provider": provider,
+            "api_mode": api_mode,
+        })
+        self.context_length = context_length
+
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        self.session_start_calls.append((session_id, kwargs))
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
+
+
+class _CloningContractEngine(_ContractEngine):
+    def clone_for_agent(self) -> ContextEngine:
+        clone = _ContractEngine(self.name)
+        self.clones.append(clone)
+        return clone
+
+
+def _patch_agent_init_for_plugin_engine(monkeypatch, engine: ContextEngine) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "context": {"engine": engine.name},
+            "model": {"context_length": 200_000},
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_context_engine",
+        lambda: engine,
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 200_000,
+    )
+    monkeypatch.setattr("run_agent.OpenAI", MagicMock(return_value=MagicMock()))
 
 
 def _bare_agent() -> AIAgent:
@@ -287,3 +360,65 @@ def test_engine_collector_rejects_builtin_command_conflicts():
     # Must NOT have overwritten / registered against built-in /help.
     assert "help" not in manager._plugin_commands or \
            manager._plugin_commands["help"].get("plugin") != "context-engine:my-lcm"
+
+
+def test_agent_init_clones_plugin_context_engine_per_agent(monkeypatch):
+    """Mutable plugin engines can provide isolated per-AIAgent runtime state."""
+    registered = _CloningContractEngine()
+    _patch_agent_init_for_plugin_engine(monkeypatch, registered)
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        provider="openai",
+        model="test-model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=[],
+        session_id="agent-s1",
+        platform="telegram",
+        gateway_session_key="agent:main:telegram:dm:42",
+    )
+    clone = registered.clones[0]
+    try:
+        assert getattr(agent, "context_compressor") is clone
+        assert getattr(agent, "_owns_context_engine") is True
+        assert registered.update_model_calls == []
+        assert registered.session_start_calls == []
+        assert clone.update_model_calls[0]["context_length"] == 200_000
+        assert clone.session_start_calls[0][0] == "agent-s1"
+        assert clone.session_start_calls[0][1]["conversation_id"] == "agent:main:telegram:dm:42"
+    finally:
+        agent.close()
+
+    assert clone.shutdown_count == 1
+    assert registered.shutdown_count == 0
+    assert getattr(agent, "_owns_context_engine") is False
+
+
+def test_agent_close_does_not_shutdown_shared_plugin_context_engine(monkeypatch):
+    """The default clone_for_agent() keeps backward-compatible shared engines alive."""
+    shared = _ContractEngine()
+    _patch_agent_init_for_plugin_engine(monkeypatch, shared)
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        provider="openai",
+        model="test-model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        enabled_toolsets=[],
+        session_id="agent-s2",
+        platform="weixin",
+        gateway_session_key="agent:main:weixin:dm:77",
+    )
+    try:
+        assert getattr(agent, "context_compressor") is shared
+        assert getattr(agent, "_owns_context_engine") is False
+    finally:
+        agent.close()
+
+    assert shared.shutdown_count == 0

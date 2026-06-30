@@ -17,11 +17,13 @@ The engine is responsible for:
 
 Lifecycle:
   1. Engine is instantiated and registered (plugin register() or default)
-  2. on_session_start() called when a conversation begins
-  3. update_from_response() called after each API response with usage data
-  4. should_compress() checked after each turn
-  5. compress() called when should_compress() returns True
-  6. on_session_end() called at real session boundaries (CLI exit, /reset,
+  2. If the engine implements per-agent cloning, the host clones it for each
+     AIAgent before binding session state
+  3. on_session_start() called when a conversation begins
+  4. update_from_response() called after each API response with usage data
+  5. should_compress() checked after each turn
+  6. compress() called when should_compress() returns True
+  7. on_session_end() called at real session boundaries (CLI exit, /reset,
      gateway session expiry) — NOT per-turn
 """
 
@@ -104,6 +106,21 @@ class ContextEngine(ABC):
                 preserving information related to this topic.  Engines that
                 don't support it may simply ignore this argument.
         """
+
+    # -- Optional: agent instance lifecycle --------------------------------
+
+    def clone_for_agent(self) -> "ContextEngine":
+        """Return the context-engine instance an AIAgent should own.
+
+        Plugin registration is process-wide, but gateway runtimes may keep
+        multiple cached AIAgent instances alive at the same time (different
+        platforms, chats, cron jobs, etc.). Engines that keep mutable session
+        binding or cursor state on ``self`` should override this method and
+        return a fresh engine instance that shares durable storage/configuration
+        as needed. Stateless engines can use the default, which preserves the
+        historical shared-instance behavior.
+        """
+        return self
 
     # -- Optional: pre-flight check ----------------------------------------
 

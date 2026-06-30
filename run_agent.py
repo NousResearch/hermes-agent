@@ -3324,7 +3324,20 @@ class AIAgent:
         except Exception:
             pass
 
-        # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
+        # 6. Close context-engine resources only when this agent owns a cloned
+        # engine instance. Plugin-registered singleton engines are process-wide
+        # and may still be used by other cached agents.
+        try:
+            if getattr(self, "_owns_context_engine", False):
+                compressor = getattr(self, "context_compressor", None)
+                shutdown = getattr(compressor, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                self._owns_context_engine = False
+        except Exception:
+            pass
+
+        # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't
         # be reused.  Drops the reference proactively rather than waiting for

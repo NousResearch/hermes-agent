@@ -218,10 +218,26 @@ def _filter_fallback_chain_for_pinned_job(
     Honoured by both the init-time fallback (agent_init) and the mid-run
     fallback chain, since both consume this same list.
 
-    Override: set ``HERMES_CRON_ALLOW_CROSS_PROVIDER_FALLBACK=1`` to restore the
-    old permissive behavior (revert switch Ace asked for).
+    Override (global): set ``HERMES_CRON_ALLOW_CROSS_PROVIDER_FALLBACK=1`` to
+    restore the old permissive behavior for EVERY job (revert switch Ace asked
+    for).
+
+    Override (per-job): set ``allow_cross_provider_fallback: true`` on the job
+    dict to keep THIS job's cross-provider fallback while every other pinned job
+    stays strictly same-provider. This is the sanctioned, intentional
+    cross-provider path (e.g. a codex-primary digest that may fall back to
+    Anthropic Opus) — paired with the loud post-run fallback alert so an
+    intentional fallback is never silent. Unlike the global env switch it does
+    not re-open codex->opus drift for unrelated jobs.
     """
     if os.getenv("HERMES_CRON_ALLOW_CROSS_PROVIDER_FALLBACK", "").strip() in ("1", "true", "yes"):
+        return fallback_model
+
+    # Per-job opt-in: this job's operator declared its cross-provider fallback
+    # intentional. Accept bool true or the common truthy strings ("1"/"true"/
+    # "yes") so a hand-edited jobs.json works either way.
+    _opt_in = job.get("allow_cross_provider_fallback")
+    if _opt_in is True or (isinstance(_opt_in, str) and _opt_in.strip().lower() in ("1", "true", "yes")):
         return fallback_model
 
     pinned = str(job.get("provider") or "").strip().lower()
@@ -2055,6 +2071,82 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
+# Default alert channel for a cron fallback firing when the job does not pin its
+# own ``fallback_alert_deliver``. This is Ace's #alerts channel — a fallback
+# firing is an actionable "this shouldn't have happened" event, never #logs noise.
+_DEFAULT_FALLBACK_ALERT_DELIVER = "discord:1480528231286181948"
+
+
+def _emit_cron_fallback_alert(job: dict, agent, *, adapters=None, loop=None) -> None:
+    """Fire a LOUD alert if this cron run actually executed on a fallback model.
+
+    A provider-pinned cron job that opts into cross-provider fallback
+    (``allow_cross_provider_fallback: true``) runs on its primary in the normal
+    case. If the primary fails and the agent walks the chain to a different
+    provider/model, ``_emit_fallback_announce`` records the transition on the
+    agent as ``_last_fallback_event``. Cron passes no ``status_callback``, so
+    that interactive announce reaches nobody — this closes the gap by reading
+    the event off the (still-open) agent after ``run_conversation`` returns and
+    delivering a deliberate alert to the job's ``fallback_alert_deliver`` target
+    (default #alerts).
+
+    Routed to a SEPARATE target from the job's normal ``deliver`` so the alert
+    never pollutes the digest channel. Best-effort: any failure here is logged
+    and swallowed — a missed alert must never fail an otherwise-successful run.
+    """
+    try:
+        ev = getattr(agent, "_last_fallback_event", None)
+        if not isinstance(ev, dict) or not ev.get("new_model"):
+            return  # no fallback fired this run — the normal, quiet case
+
+        old_provider = ev.get("old_provider")
+        old_model = ev.get("old_model") or "?"
+        new_provider = ev.get("new_provider")
+        new_model = ev.get("new_model") or "?"
+        old_label = f"{old_provider}/{old_model}" if old_provider else old_model
+        new_label = f"{new_provider}/{new_model}" if new_provider else new_model
+
+        job_name = job.get("name", job.get("id", "?"))
+        msg = (
+            f"🚨 Cron fallback FIRED — `{job_name}` ran on its FALLBACK model.\n"
+            f"`{old_label}` → `{new_label}`\n"
+            f"The pinned primary failed after retries, so the run completed on the "
+            f"cross-provider fallback. This is the 'shouldn't happen' path — check "
+            f"the primary provider's health."
+        )
+
+        # Resolve the alert target. Reuse _deliver_result by handing it a
+        # synthetic job whose `deliver` points at the alert channel — this gives
+        # us the same target parsing (discord:<id>), platform config resolution,
+        # adapter-vs-standalone send, and ⚠️ failure framing for free, without
+        # duplicating the send loop.
+        alert_deliver = (
+            str(job.get("fallback_alert_deliver") or "").strip()
+            or _DEFAULT_FALLBACK_ALERT_DELIVER
+        )
+        alert_job = {
+            "id": f"{job.get('id', 'cron')}-fallback-alert",
+            "name": f"{job_name} · fallback alert",
+            "deliver": alert_deliver,
+        }
+        err = _deliver_result(alert_job, msg, success=False, adapters=adapters, loop=loop)
+        if err:
+            logger.warning(
+                "Job '%s': fallback fired but the loud alert failed to deliver: %s",
+                job.get("id", "?"), err,
+            )
+        else:
+            logger.warning(
+                "Job '%s': FALLBACK FIRED %s -> %s — loud alert sent to %s",
+                job.get("id", "?"), old_label, new_label, alert_deliver,
+            )
+    except Exception as exc:  # never let alerting break a job
+        logger.debug(
+            "Job '%s': _emit_cron_fallback_alert failed (non-fatal): %s",
+            job.get("id", "?"), exc,
+        )
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2876,6 +2968,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
+        # LOUD fallback alert: if this run actually executed on a fallback
+        # model (cross-provider opt-in jobs), fire a #alerts ping BEFORE the
+        # agent is closed below. Best-effort and isolated — never fails the run.
+        # Placed in `finally` so it fires on the success path, the
+        # agent-reported-failure path, the inactivity-timeout path, and the
+        # exception path alike (a primary that failed into a fallback can exit
+        # via any of them).
+        try:
+            if agent is not None:
+                _emit_cron_fallback_alert(job, agent)
+        except Exception as e:
+            logger.debug("Job '%s': fallback-alert hook failed: %s", job_id, e)
         try:
             if agent is not None:
                 agent.close()

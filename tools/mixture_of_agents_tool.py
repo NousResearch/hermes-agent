@@ -239,6 +239,15 @@ async def _run_aggregator_model(
         response = await _get_openrouter_client().chat.completions.create(**api_params)
         content = extract_content_or_reasoning(response)
 
+    # Still empty after the retry: do NOT return an empty success. Raise so the
+    # caller's failure path reports it instead of handing the agent a well-formed
+    # {"success": True, "response": ""} with no signal that synthesis produced
+    # nothing. Symmetric with the final-attempt guard in _run_reference_model_safe.
+    if not content:
+        raise RuntimeError(
+            f"Aggregator model {agg_model} returned empty content after retry"
+        )
+
     logger.info("Aggregation complete (%s characters)", len(content))
     return content
 

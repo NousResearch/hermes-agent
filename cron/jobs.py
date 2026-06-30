@@ -339,6 +339,11 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
+        if minutes <= 0:
+            raise ValueError(
+                f"Interval must be at least 1 minute, got '{duration_str}'. "
+                f"Use 'every N m' with N >= 1, or a cron expression for sub-minute scheduling."
+            )
         return {
             "kind": "interval",
             "minutes": minutes,

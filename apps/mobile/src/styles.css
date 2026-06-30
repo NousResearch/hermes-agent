@@ -712,6 +712,36 @@ button,
   user-select: none;
 }
 
+/* Mobile chrome: only the sidebar trigger lives in the titlebar on phone.
+   Settings/keybinds/haptics/flip/right-rail/preview/devtools all collapse
+   into the drawer or are inappropriate for a phone; hide them outright so
+   the titlebar isn't a row of dead controls. */
+html.hermes-mobile-standalone [data-tool-id='flip-panes'],
+html.hermes-mobile-standalone [data-tool-id='right-sidebar'],
+html.hermes-mobile-standalone [data-tool-id='haptics'],
+html.hermes-mobile-standalone [data-tool-id='keybinds'],
+html.hermes-mobile-standalone [data-tool-id='settings'],
+html.hermes-mobile-standalone [data-tool-id='preview-monitor'],
+html.hermes-mobile-standalone [data-tool-id='preview-devtools'],
+html.hermes-mobile-standalone [data-tool-id='preview-refresh'],
+html.hermes-mobile-standalone [data-tool-id='preview-close'] {
+  display: none !important;
+}
+
+/* Sidebar trigger morphs out when the drawer is open: the drawer overlays
+   the same screen quadrant, so leaving the trigger visible reads as a
+   stuck-on "close" affordance. Tap-outside on the overlay is the close. */
+html.hermes-mobile-standalone [data-tool-id='sidebar'] {
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms ease-out;
+}
+html.hermes-mobile-standalone:has([data-slot='sheet-overlay'][data-state='open']) [data-tool-id='sidebar'] {
+  opacity: 0;
+  transform: scale(0.85);
+  pointer-events: none;
+}
+
 /* Master-detail nav: on mobile, full-screen overlays (Settings / Command
    Center / Cron / Profiles / Messaging) open to the LIST. Tapping a row
    sets body[data-mobile-drilled] which swaps to the detail pane plus a

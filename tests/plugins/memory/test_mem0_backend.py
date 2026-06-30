@@ -57,10 +57,10 @@ class TestPlatformBackend:
         backend.search("q", filters={}, rerank=False)
         assert client.calls[0][2]["rerank"] is False
 
-    def test_search_rerank_default_true(self):
+    def test_search_rerank_default_false(self):
         backend, client = self._make()
         backend.search("q", filters={})
-        assert client.calls[0][2]["rerank"] is True
+        assert client.calls[0][2]["rerank"] is False
 
     def test_search_returns_list(self):
         backend, _ = self._make()

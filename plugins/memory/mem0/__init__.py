@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
-_PREFETCH_WAIT_SECS = 1.5
+_PREFETCH_WAIT_SECS = 3
 
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 
@@ -113,24 +113,6 @@ def _load_config() -> dict:
 # Tool schemas
 # ---------------------------------------------------------------------------
 
-LIST_SCHEMA = {
-    "name": "mem0_list",
-    "description": (
-        "List ALL stored memories about the user, unranked and paginated. "
-        "Use for a full overview/audit at conversation start, or to browse "
-        "everything when you don't have a specific query. For answering a "
-        "specific question, prefer mem0_search."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "page": {"type": "integer", "description": "Page number (default: 1)."},
-            "page_size": {"type": "integer", "description": "Results per page (default: 100, max: 200)."},
-        },
-        "required": [],
-    },
-}
-
 SEARCH_SCHEMA = {
     "name": "mem0_search",
     "description": (
@@ -147,7 +129,7 @@ SEARCH_SCHEMA = {
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
             "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
-            "rerank": {"type": "boolean", "description": "Rerank results for relevance (default: true, platform mode only)."},
+            "rerank": {"type": "boolean", "description": "Rerank results for relevance (default: false, platform mode only)."},
         },
         "required": ["query"],
     },
@@ -175,7 +157,7 @@ UPDATE_SCHEMA = {
     "name": "mem0_update",
     "description": (
         "Replace the text of an existing memory by its ID (take the ID from a "
-        "mem0_search or mem0_list result). Use when a stored fact has changed "
+        "mem0_search result). Use when a stored fact has changed "
         "or was wrong — correct it in place instead of adding a duplicate."
     ),
     "parameters": {
@@ -191,7 +173,7 @@ UPDATE_SCHEMA = {
 DELETE_SCHEMA = {
     "name": "mem0_delete",
     "description": (
-        "Delete a memory by its ID (take the ID from a mem0_search or mem0_list "
+        "Delete a memory by its ID (take the ID from a mem0_search "
         "result). Use when a stored fact is obsolete or the user asks you to "
         "forget it; prefer mem0_update if the fact merely changed."
     ),
@@ -274,7 +256,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-            {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+            {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -404,7 +386,7 @@ class Mem0MemoryProvider(MemoryProvider):
             "# Mem0 Memory\n"
             f"Active. Mode: {mode_label}. User: {self._user_id}.\n"
             "You have persistent memory of this user from past conversations. "
-            "ALWAYS call mem0_search before answering anything that could depend "
+            "You should call mem0_search before answering anything that could depend "
             "on prior context (the user's preferences, facts, history, people, "
             "projects, or earlier decisions) — do not rely on the chat window "
             "alone, and do not assume you have no memory.\n"
@@ -413,7 +395,7 @@ class Mem0MemoryProvider(MemoryProvider):
             "results surface; one search is rarely enough. Keep searching until "
             "you have every fact the question needs before you answer.\n"
             "Tools: mem0_search to find memories, mem0_add to store facts, "
-            f"mem0_list for a full overview, mem0_update and mem0_delete to manage by ID.{rerank_note}"
+            f"mem0_update and mem0_delete to manage by ID.{rerank_note}"
         )
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
@@ -446,7 +428,7 @@ class Mem0MemoryProvider(MemoryProvider):
             body = ""
             try:
                 results = backend.search(
-                    query, filters=self._read_filters(), top_k=10, rerank=True,
+                    query, filters=self._read_filters(), top_k=10, rerank=False,
                 )
                 lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
                 if lines:
@@ -517,7 +499,7 @@ class Mem0MemoryProvider(MemoryProvider):
             self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [LIST_SCHEMA, SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
+        return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._backend is None:
@@ -536,36 +518,13 @@ class Mem0MemoryProvider(MemoryProvider):
                 msg += f" Check that your {vs.get('provider', 'vector store')} is running."
             return json.dumps({"error": msg})
 
-        if tool_name == "mem0_list":
-            try:
-                page = max(1, int(args.get("page", 1)))
-                page_size = min(max(1, int(args.get("page_size", 100))), 200)
-                response = self._backend.get_all(
-                    filters=self._read_filters(), page=page, page_size=page_size,
-                )
-                self._record_success()
-                results = response.get("results", [])
-                if not results:
-                    return json.dumps({"result": "No memories stored yet."})
-                items = [{"id": m.get("id"), "memory": m.get("memory", "")}
-                         for m in results]
-                return json.dumps({
-                    "results": items,
-                    "count": response.get("count", len(items)),
-                    "page": page, "page_size": page_size,
-                })
-            except Exception as e:
-                if not _is_client_error(e):
-                    self._record_failure()
-                return tool_error(self._format_error("Failed to list memories", e))
-
-        elif tool_name == "mem0_search":
+        if tool_name == "mem0_search":
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
                 top_k = max(1, min(int(args.get("top_k", 10)), 50))
-                rerank_raw = args.get("rerank", True)
+                rerank_raw = args.get("rerank", False)
                 if isinstance(rerank_raw, str):
                     rerank = rerank_raw.lower() not in ("false", "0", "no")
                 else:

@@ -10,7 +10,7 @@ class Mem0Backend(ABC):
     """Unified interface over Platform (MemoryClient) and OSS (Memory) backends."""
 
     @abstractmethod
-    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         ...
 
     @abstractmethod
@@ -57,7 +57,7 @@ class PlatformBackend(Mem0Backend):
         from mem0 import MemoryClient
         self._client = MemoryClient(api_key=api_key)
 
-    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._client.search(query, filters=filters, top_k=top_k, rerank=rerank)
         return _unwrap_results(response)
 
@@ -118,7 +118,7 @@ class SelfHostedBackend(Mem0Backend):
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
-    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         # rerank is a platform-only feature; the self-hosted /search ignores it.
         body: dict[str, Any] = {"query": query, "top_k": top_k}
         if filters:
@@ -266,7 +266,7 @@ class OSSBackend(Mem0Backend):
             except Exception:
                 pass
 
-    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._memory.search(query, filters=filters, top_k=top_k)
         return _unwrap_results(response)
 

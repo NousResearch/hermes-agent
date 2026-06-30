@@ -326,7 +326,7 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 | **Data storage** | Mem0 Cloud (platform) or self-hosted (OSS) |
 | **Cost** | Mem0 pricing (platform) / free (OSS) |
 
-**Tools (5):** `mem0_list` (list all memories, paginated), `mem0_search` (semantic search with reranking in platform mode), `mem0_add` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID)
+**Tools (4):** `mem0_search` (semantic search; optional reranking in platform mode, off by default), `mem0_add` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID)
 
 **Setup (Platform):**
 ```bash
@@ -355,7 +355,7 @@ hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 | `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-hosted) |
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
-| `rerank` | `true` | Rerank search results for relevance (platform mode only) |
+| `rerank` | `false` | Rerank search results for relevance (platform mode only) |
 
 **OSS supported providers:**
 

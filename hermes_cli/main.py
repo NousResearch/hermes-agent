@@ -13399,10 +13399,8 @@ def main():
             msgs = db.message_count()
             print(f"Total sessions: {total}")
             print(f"Total messages: {msgs}")
-            for src in ["cli", "telegram", "discord", "whatsapp", "slack"]:
-                c = db.session_count(source=src)
-                if c > 0:
-                    print(f"  {src}: {c} sessions")
+            for src, c in sorted(db.source_counts().items()):
+                print(f"  {src}: {c} sessions")
             db_path = db.db_path
             if db_path.exists():
                 size_mb = os.path.getsize(db_path) / (1024 * 1024)

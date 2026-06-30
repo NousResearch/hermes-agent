@@ -4444,6 +4444,20 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def source_counts(self, include_archived: bool = False) -> Dict[str, int]:
+        """Return a dict mapping each source to its session count.
+
+        Unlike iterating a hardcoded source list with ``session_count``,
+        this queries ``SELECT DISTINCT source`` so new source types (e.g.
+        ``tui``, ``cron``, ``subagent``) are automatically included.
+        """
+        archive_filter = "" if include_archived else " WHERE archived = 0"
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT source, COUNT(*) FROM sessions{archive_filter} GROUP BY source"
+            )
+            return {row[0] or "cli": row[1] for row in cursor.fetchall()}
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:

@@ -1,6 +1,8 @@
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -25,6 +27,23 @@ def _node_project(root: Path) -> None:
 def _make_project(root: Path) -> None:
     root.mkdir()
     _node_project(root)
+
+
+def _chat_response(content: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        model="test-model",
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=content, tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+        ),
+    )
 
 
 @pytest.fixture
@@ -339,3 +358,86 @@ def test_is_non_code_path_classification():
     assert _is_non_code_path("src/app.ts") is False
     assert _is_non_code_path("config.yaml") is False
     assert _is_non_code_path("run_agent.py") is False
+
+
+def test_verify_on_stop_followup_preserves_attempted_final_answer(tmp_path, monkeypatch):
+    """The verification follow-up must attach to, not replace, the answer.
+
+    This exercises the real conversation-loop state machine while stubbing the
+    nudge decision and provider. The first model response is the attempted
+    final answer that triggers verify-on-stop; the second is the verification
+    receipt/blocker. The user-facing final output must contain both.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
+
+    import agent.verification_stop as verification_stop
+
+    nudge_calls = []
+
+    def _fake_verify_nudge(**kwargs):
+        nudge_calls.append(kwargs)
+        if len(nudge_calls) == 1:
+            return "[System: run verification before finalizing.]"
+        return None
+
+    monkeypatch.setattr(
+        verification_stop,
+        "build_verify_on_stop_nudge",
+        _fake_verify_nudge,
+    )
+
+    from run_agent import AIAgent
+
+    attempted_answer = "Implemented the requested parser fix."
+    verification_receipt = "Verification blocked: pytest is unavailable."
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _chat_response(attempted_answer),
+        _chat_response(verification_receipt),
+    ]
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://example.invalid/v1",
+        provider="openai-compat",
+        model="test-model",
+        max_iterations=4,
+        enabled_toolsets=[],
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        save_trajectories=False,
+        platform="cli",
+        session_id="verify-stop-preserve-test",
+    )
+    agent.client = client
+    agent._create_request_openai_client = MagicMock(return_value=client)
+    agent._close_request_openai_client = MagicMock()
+    agent._abort_request_openai_client = MagicMock()
+
+    result = agent.run_conversation(
+        "Fix the parser bug.",
+        conversation_history=[],
+        task_id="verify-stop-preserve-test",
+    )
+
+    final_response = result["final_response"]
+    assert attempted_answer in final_response
+    assert verification_receipt in final_response
+    assert final_response.index(attempted_answer) < final_response.index(
+        verification_receipt
+    )
+    assert client.chat.completions.create.call_count == 2
+    assert [call["attempts"] for call in nudge_calls] == [0, 1]
+
+    roles = [m["role"] for m in result["messages"]]
+    assert all(left != right for left, right in zip(roles, roles[1:]))
+    assert len(
+        [
+            m
+            for m in result["messages"]
+            if m.get("_verification_stop_synthetic")
+        ]
+    ) == 1

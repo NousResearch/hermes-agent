@@ -73,6 +73,23 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _merge_verify_on_stop_final_response(
+    attempted_final: Optional[str],
+    verification_final: Optional[str],
+) -> str:
+    attempted = attempted_final.strip() if isinstance(attempted_final, str) else ""
+    verification = (
+        verification_final.strip() if isinstance(verification_final, str) else ""
+    )
+    if not attempted:
+        return verification
+    if not verification:
+        return attempted
+    if attempted in verification:
+        return verification
+    return f"{attempted}\n\n{verification}"
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -586,6 +603,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    verification_stop_pending_final_response: Optional[str] = None
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
@@ -4790,6 +4808,8 @@ def run_conversation(
                     agent._verification_stop_nudges = (
                         getattr(agent, "_verification_stop_nudges", 0) + 1
                     )
+                    if verification_stop_pending_final_response is None:
+                        verification_stop_pending_final_response = final_response
                     final_msg["finish_reason"] = "verification_required"
                     messages.append(final_msg)
                     # Keep the attempted final answer in model history so the
@@ -4809,6 +4829,16 @@ def run_conversation(
                     logger.debug("verification stop-loop nudge issued (attempt %d)",
                                  agent._verification_stop_nudges)
                     continue
+
+                if verification_stop_pending_final_response:
+                    final_response = _merge_verify_on_stop_final_response(
+                        verification_stop_pending_final_response,
+                        final_response,
+                    )
+                    final_msg["content"] = _merge_verify_on_stop_final_response(
+                        verification_stop_pending_final_response,
+                        final_msg.get("content"),
+                    )
 
                 messages.append(final_msg)
                 

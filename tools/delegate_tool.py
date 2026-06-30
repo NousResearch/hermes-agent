@@ -2859,28 +2859,57 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config, merging the persistent and runtime sources.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Two sources can hold ``delegation.*``: the persistent on-disk config
+    (``hermes_cli.config.load_config`` → ``~/.hermes/config.yaml``) and the
+    in-memory runtime config (``cli.CLI_CONFIG``). Both must be honored so
+    ``delegation.provider`` / ``model`` / ``base_url`` / ``api_key`` take effect
+    regardless of the entry point (CLI, gateway, cron).
+
+    The old "return the first non-empty source" approach silently dropped
+    persistent delegation credentials (#55380): ``load_cli_config()`` seeds
+    ``CLI_CONFIG['delegation']`` from the schema defaults, so it is *always*
+    truthy — with empty-string credential fields. That early-returned the
+    default skeleton and made the persistent fallback dead code whenever ``cli``
+    was importable, so a subagent ignored ``delegation.provider`` set only in
+    ``config.yaml`` and fell back to the parent model.
+
+    Fix: overlay the persistent base with runtime values, but let a runtime
+    value win only when it actually carries something. Empty strings are the
+    "unset" sentinel for the credential fields (defaults are ``""``), so they
+    must not shadow a real persistent value. Bool/int operational keys overlay
+    when present, matching the previous "runtime wins" behavior for them.
     """
-    try:
-        from cli import CLI_CONFIG
-
-        cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
-    except Exception:
-        pass
+    persistent: dict = {}
     try:
         from hermes_cli.config import load_config
 
-        full = load_config()
-        return full.get("delegation") or {}
+        persistent = load_config().get("delegation") or {}
     except Exception:
-        return {}
+        persistent = {}
+
+    runtime: dict = {}
+    try:
+        from cli import CLI_CONFIG
+
+        runtime = CLI_CONFIG.get("delegation") or {}
+    except Exception:
+        runtime = {}
+
+    if not runtime:
+        return persistent
+    if not persistent:
+        return runtime
+
+    merged = dict(persistent)
+    for key, value in runtime.items():
+        if isinstance(value, str):
+            if value.strip():
+                merged[key] = value
+        elif value is not None:
+            merged[key] = value
+    return merged
 
 
 # ---------------------------------------------------------------------------

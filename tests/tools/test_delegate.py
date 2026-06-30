@@ -1194,6 +1194,83 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+class TestLoadConfigMergesSources(unittest.TestCase):
+    """#55380: _load_config must merge persistent + runtime delegation config.
+
+    ``load_cli_config()`` seeds ``CLI_CONFIG['delegation']`` from schema
+    defaults, so it is always truthy with empty-string credential fields. The
+    old "first non-empty source wins" early-return therefore shadowed
+    ``delegation.provider`` / ``model`` / ``base_url`` / ``api_key`` set only in
+    the persistent ``config.yaml``, and subagents fell back to the parent model.
+    """
+
+    def _patch(self, persistent, runtime):
+        """Patch the two config sources _load_config reads."""
+        import tools.delegate_tool as dt
+        persistent_patch = patch(
+            "hermes_cli.config.load_config",
+            return_value=({"delegation": persistent} if persistent is not None else {}),
+        )
+        # CLI_CONFIG is imported inside _load_config via ``from cli import
+        # CLI_CONFIG``; patch the attribute on the cli module.
+        import cli
+        runtime_patch = patch.object(
+            cli, "CLI_CONFIG",
+            {"delegation": runtime} if runtime is not None else {},
+        )
+        return dt, persistent_patch, runtime_patch
+
+    def test_runtime_default_skeleton_does_not_shadow_persistent_creds(self):
+        # Real config.yaml has the credentials; the in-memory runtime block is
+        # the default skeleton (empty-string fields). Persistent must survive.
+        persistent = {
+            "provider": "siliconflow",
+            "model": "deepseek-ai/DeepSeek-V4-Pro",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "api_key": "sk-real",
+        }
+        runtime = {"provider": "", "model": "", "base_url": "", "api_key": "", "subagent_auto_approve": False}
+        dt, pp, rp = self._patch(persistent, runtime)
+        with pp, rp:
+            cfg = dt._load_config()
+        self.assertEqual(cfg["provider"], "siliconflow")
+        self.assertEqual(cfg["model"], "deepseek-ai/DeepSeek-V4-Pro")
+        self.assertEqual(cfg["base_url"], "https://api.siliconflow.cn/v1")
+        self.assertEqual(cfg["api_key"], "sk-real")
+
+    def test_runtime_real_value_overrides_persistent(self):
+        persistent = {"provider": "openrouter", "model": "old"}
+        runtime = {"provider": "minimax-cn", "model": "MiniMax-M2"}
+        dt, pp, rp = self._patch(persistent, runtime)
+        with pp, rp:
+            cfg = dt._load_config()
+        self.assertEqual(cfg["provider"], "minimax-cn")
+        self.assertEqual(cfg["model"], "MiniMax-M2")
+
+    def test_runtime_only(self):
+        dt, pp, rp = self._patch(None, {"provider": "nous"})
+        with pp, rp:
+            cfg = dt._load_config()
+        self.assertEqual(cfg["provider"], "nous")
+
+    def test_persistent_only(self):
+        dt, pp, rp = self._patch({"provider": "zai", "api_key": "k"}, None)
+        with pp, rp:
+            cfg = dt._load_config()
+        self.assertEqual(cfg["provider"], "zai")
+        self.assertEqual(cfg["api_key"], "k")
+
+    def test_bool_and_int_keys_overlay_when_present(self):
+        # Non-string operational keys keep the prior "runtime wins" behavior.
+        persistent = {"max_concurrent_children": 3, "subagent_auto_approve": False}
+        runtime = {"max_concurrent_children": 8, "subagent_auto_approve": True}
+        dt, pp, rp = self._patch(persistent, runtime)
+        with pp, rp:
+            cfg = dt._load_config()
+        self.assertEqual(cfg["max_concurrent_children"], 8)
+        self.assertTrue(cfg["subagent_auto_approve"])
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 

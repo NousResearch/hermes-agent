@@ -693,9 +693,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if adapter_allow_from:
             if user_id in adapter_allow_from or "*" in adapter_allow_from:
                 return True
-            if source.chat_type not in {"group", "forum"}:
-                return False
-            if adapter_group_allow_from:
+            if source.chat_type in {"group", "forum"} and adapter_group_allow_from:
                 return user_id in adapter_group_allow_from or "*" in adapter_group_allow_from
             if not self._telegram_sender_auth_env_configured():
                 return False

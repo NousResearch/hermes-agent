@@ -355,6 +355,26 @@ def test_config_allowed_users_alias_authorizes_dm_sender(monkeypatch):
     assert adapter._is_user_authorized_from_message(blocked) is False
 
 
+def test_config_allow_from_does_not_mask_dm_env_allowlist(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111,333")
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+
+    adapter = _make_adapter(allow_from=["111"])
+    msg = _make_message(from_user_id=333, chat_id=333, chat_type="private")
+
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
+def test_config_allow_from_still_blocks_dm_sender_without_env(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+
+    adapter = _make_adapter(allow_from=["111"])
+    msg = _make_message(from_user_id=333, chat_id=333, chat_type="private")
+
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
 def test_removed_dm_user_blocked_before_pairing_when_allowlist_exists(monkeypatch):
     """A user removed from TELEGRAM_ALLOWED_USERS should be blocked at intake."""
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "222")

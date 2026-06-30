@@ -5,6 +5,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { clearComposerAttachments, clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { clearPendingPlan, type PendingPlan, PLAN_PENDING_SESSION, setPendingPlan } from '@/store/plans'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -29,12 +30,40 @@ interface UseComposerSubmitArgs {
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
+  pendingPlan: PendingPlan | null
+  planMode: boolean
   queueCurrentDraft: () => boolean
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+}
+
+export function planOnlyPrompt(text: string, attachments: readonly ComposerAttachment[]): string {
+  const task = text.trim() || (attachments.length ? 'Use the attached context.' : 'Plan the next requested task.')
+
+  return [
+    'Plan mode is enabled.',
+    'Create a concise implementation plan for the task below, then stop.',
+    'Use the todo tool to write the plan. Do not edit files, run commands, or start implementation yet.',
+    'Wait for the user to confirm before executing the plan.',
+    '',
+    'Task:',
+    task
+  ].join('\n')
+}
+
+export function approvedPlanPrompt(text: string, attachments: readonly ComposerAttachment[]): string {
+  const task = text.trim() || (attachments.length ? 'Use the attached context.' : 'Continue with the approved plan.')
+
+  return [
+    '[Plan approved]',
+    'Proceed with the implementation using the todo plan above. Update todo statuses as you work.',
+    '',
+    'Original task:',
+    task
+  ].join('\n')
 }
 
 /**
@@ -64,6 +93,8 @@ export function useComposerSubmit({
   onCancel,
   onSteer,
   onSubmit,
+  pendingPlan,
+  planMode,
   queueCurrentDraft,
   queueEdit,
   queuedPrompts,
@@ -80,6 +111,39 @@ export function useComposerSubmit({
     const restore = () => {
       loadIntoComposer(text, submittedAttachments)
       stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+    }
+
+    const shouldPlanFirst =
+      planMode &&
+      !pendingPlan &&
+      !SLASH_COMMAND_RE.test(text.trim()) &&
+      (text.trim().length > 0 || submittedAttachments.length > 0)
+
+    if (shouldPlanFirst) {
+      const key = submittedScope ?? PLAN_PENDING_SESSION
+      const planPrompt = planOnlyPrompt(text, submittedAttachments)
+
+      setPendingPlan(key, {
+        attachments: submittedAttachments,
+        originalText: text,
+        state: 'planning'
+      })
+
+      void Promise.resolve(onSubmit(planPrompt, { attachments: submittedAttachments, displayText: text }))
+        .then(accepted => {
+          if (accepted === false) {
+            clearPendingPlan(key)
+            restore()
+          } else {
+            clearSessionDraft(submittedScope)
+          }
+        })
+        .catch(() => {
+          clearPendingPlan(key)
+          restore()
+        })
+
+      return
     }
 
     void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))

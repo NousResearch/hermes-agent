@@ -8,6 +8,7 @@ import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
@@ -19,6 +20,7 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
+import { refreshSessionGoal } from '@/store/goals'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
@@ -38,20 +40,47 @@ const isLocalhostPreview = (target: string): boolean => /\b(?:localhost|127\.0\.
 // Real codicons per group (no sparkles): a checklist for todos, the agent glyph
 // for subagents, a background process glyph for background tasks.
 const GROUP_ICON: Record<StatusGroup['type'], string> = {
+  goal: 'target',
   todo: 'checklist',
   subagent: 'agent',
   background: 'server-process'
 }
 
-const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
+const PLAN_PLACEHOLDER_ID = 'plan:pending'
+
+const groupLabel = (group: StatusGroup, s: Translations['statusStack'], plan?: PlanControls | null) => {
+  if (group.type === 'goal') {
+    const status = group.items[0]?.goalStatus
+
+    return status === 'paused'
+      ? s.goalPaused
+      : status === 'waiting'
+        ? s.goalWaiting
+        : status === 'done'
+          ? s.goalDone
+          : s.goalActive
+  }
+
   if (group.type === 'todo') {
+    if (plan && group.items.length === 1 && group.items[0]?.id === PLAN_PLACEHOLDER_ID) {
+      return plan.state === 'planning' ? s.planDrafting : s.planReady
+    }
+
     return s.todos(group.items.filter(i => i.todoStatus === 'completed').length, group.items.length)
   }
 
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
 }
 
+interface PlanControls {
+  state: 'planning' | 'ready'
+  onCancel: () => void
+  onRun: () => void
+}
+
 interface ComposerStatusStackProps {
+  onGoalCommand?: (command: 'clear' | 'pause' | 'resume') => void
+  plan?: null | PlanControls
   /** The queue, built by the composer (it owns the queue's callbacks). Rendered
    *  as the last group so it stays fused to the composer like before. */
   queue: ReactNode
@@ -63,7 +92,7 @@ interface ComposerStatusStackProps {
  * every session-scoped status — subagents, background tasks, queue — grouped by
  * type and separated by light dividers. Collapses to nothing when empty.
  */
-export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
+export function ComposerStatusStack({ onGoalCommand, plan, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const itemsBySession = useStore($statusItemsBySession)
@@ -82,6 +111,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   useEffect(() => {
     if (sessionId) {
       void refreshBackgroundProcesses(sessionId)
+      void refreshSessionGoal(sessionId)
     }
   }, [sessionId])
 
@@ -122,13 +152,35 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   const sections: { key: string; node: ReactNode }[] = []
 
-  for (const group of groups) {
+  const renderedGroups: StatusGroup[] =
+    plan && !groups.some(g => g.type === 'todo')
+      ? [
+          {
+            type: 'todo',
+            items: [
+              {
+                id: PLAN_PLACEHOLDER_ID,
+                state: plan.state === 'planning' ? 'running' : 'done',
+                title: plan.state === 'planning' ? t.statusStack.planDrafting : t.statusStack.planReady,
+                type: 'todo'
+              }
+            ]
+          },
+          ...groups
+        ]
+      : groups
+
+  for (const group of renderedGroups) {
     sections.push({
       key: group.type,
       node: (
         <StatusSection
           accessory={
-            group.type === 'subagent' ? (
+            group.type === 'goal' ? (
+              <GoalActions item={group.items[0]} onCommand={onGoalCommand} />
+            ) : group.type === 'todo' && plan ? (
+              <PlanActions plan={plan} />
+            ) : group.type === 'subagent' ? (
               <Button
                 className="text-muted-foreground/75 hover:text-foreground/90"
                 onClick={openAgents}
@@ -140,9 +192,9 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
               </Button>
             ) : undefined
           }
-          defaultCollapsed={group.type !== 'todo'}
+          defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
-          label={groupLabel(group, t.statusStack)}
+          label={groupLabel(group, t.statusStack, plan)}
         >
           {group.items.map(item => (
             <StatusItemRow
@@ -249,5 +301,106 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
         ))}
       </div>
     </div>
+  )
+}
+
+function PlanActions({ plan }: { plan: PlanControls }) {
+  const { t } = useI18n()
+  const s = t.statusStack
+
+  return (
+    <>
+      {plan.state === 'ready' && (
+        <Tip label={s.runPlan}>
+          <Button
+            aria-label={s.runPlan}
+            className="size-5 rounded-md text-muted-foreground/75 hover:text-foreground/90"
+            onClick={event => {
+              event.stopPropagation()
+              plan.onRun()
+            }}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="debug-start" size="0.75rem" />
+          </Button>
+        </Tip>
+      )}
+      <Tip label={s.cancelPlan}>
+        <Button
+          aria-label={s.cancelPlan}
+          className="size-5 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+          onClick={event => {
+            event.stopPropagation()
+            plan.onCancel()
+          }}
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="close" size="0.75rem" />
+        </Button>
+      </Tip>
+    </>
+  )
+}
+
+function GoalActions({
+  item,
+  onCommand
+}: {
+  item?: ComposerStatusItem
+  onCommand?: (command: 'clear' | 'pause' | 'resume') => void
+}) {
+  const { t } = useI18n()
+  const s = t.statusStack
+
+  if (!item || !onCommand) {
+    return null
+  }
+
+  const paused = item.goalStatus === 'paused'
+  const done = item.goalStatus === 'done'
+
+  const primary = paused
+    ? { command: 'resume' as const, icon: 'debug-start', label: s.resumeGoal }
+    : { command: 'pause' as const, icon: 'debug-pause', label: s.pauseGoal }
+
+  return (
+    <>
+      {!done && (
+        <Tip label={primary.label}>
+          <Button
+            aria-label={primary.label}
+            className="size-5 rounded-md text-muted-foreground/75 hover:text-foreground/90"
+            onClick={event => {
+              event.stopPropagation()
+              onCommand(primary.command)
+            }}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name={primary.icon} size="0.75rem" />
+          </Button>
+        </Tip>
+      )}
+      <Tip label={s.clearGoal}>
+        <Button
+          aria-label={s.clearGoal}
+          className="size-5 rounded-md text-muted-foreground/60 hover:text-foreground/90"
+          onClick={event => {
+            event.stopPropagation()
+            onCommand('clear')
+          }}
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="trash" size="0.75rem" />
+        </Button>
+      </Tip>
+    </>
   )
 }

@@ -4,6 +4,7 @@ import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useRef
 } from 'react'
@@ -15,14 +16,27 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments } from '@/store/composer'
+import { $composerAttachments, clearComposerAttachments } from '@/store/composer'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { removeQueuedPrompt } from '@/store/composer-queue'
+import { $statusItemsBySession } from '@/store/composer-status'
+import { $goalsBySession } from '@/store/goals'
+import {
+  $pendingPlansBySession,
+  $planModeEnabled,
+  clearPendingPlan,
+  markPendingPlanReady,
+  migratePendingPlan,
+  PLAN_PENDING_SESSION,
+  setPendingPlan,
+  setPlanModeEnabled
+} from '@/store/plans'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { clearSessionTodos } from '@/store/todos'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
@@ -46,7 +60,7 @@ import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
-import { useComposerSubmit } from './hooks/use-composer-submit'
+import { approvedPlanPrompt, useComposerSubmit } from './hooks/use-composer-submit'
 import { useComposerTrigger } from './hooks/use-composer-trigger'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
@@ -95,17 +109,24 @@ export function ChatBar({
   const attachments = useStore($composerAttachments)
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
+  const goalsBySession = useStore($goalsBySession)
+  const pendingPlansBySession = useStore($pendingPlansBySession)
+  const planMode = useStore($planModeEnabled)
+  const statusItemsBySession = useStore($statusItemsBySession)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore($activeSessionAwaitingInput)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+  const planSessionKey = activeQueueSessionKey ?? PLAN_PENDING_SESSION
+  const pendingPlan = pendingPlansBySession[planSessionKey] ?? null
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
+  const goalActive = statusSessionId ? Boolean(goalsBySession[statusSessionId]) : false
 
   // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
   // every per-item status mutation or other sessions' churn (see the hook).
@@ -131,6 +152,7 @@ export function ChatBar({
   // engine writes it — an explicit shared handle, not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  const planBusySeenRef = useRef(false)
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -196,7 +218,7 @@ export function ChatBar({
     sessionId
   })
 
-  const statusStackVisible = queuedPrompts.length > 0 || statusPresent
+  const statusStackVisible = Boolean(pendingPlan) || queuedPrompts.length > 0 || statusPresent
 
   const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0
@@ -229,6 +251,8 @@ export function ChatBar({
     onCancel,
     onSteer,
     onSubmit,
+    pendingPlan,
+    planMode,
     queueCurrentDraft,
     queueEdit,
     queuedPrompts,
@@ -236,6 +260,35 @@ export function ChatBar({
     setComposerText,
     stashAt
   })
+
+  useEffect(() => {
+    if (activeQueueSessionKey) {
+      migratePendingPlan(PLAN_PENDING_SESSION, activeQueueSessionKey)
+    }
+  }, [activeQueueSessionKey])
+
+  useEffect(() => {
+    if (!pendingPlan || pendingPlan.state !== 'planning') {
+      planBusySeenRef.current = false
+
+      return
+    }
+
+    if (busy) {
+      planBusySeenRef.current = true
+
+      return
+    }
+
+    const hasTodos = statusSessionId
+      ? (statusItemsBySession[statusSessionId] ?? []).some(item => item.type === 'todo' && item.id !== 'plan:pending')
+      : false
+
+    if (hasTodos || planBusySeenRef.current) {
+      markPendingPlanReady(planSessionKey)
+      planBusySeenRef.current = false
+    }
+  }, [busy, pendingPlan, planSessionKey, statusItemsBySession, statusSessionId])
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
@@ -676,6 +729,65 @@ export function ChatBar({
     sessionId
   })
 
+  const runPendingPlan = useCallback(() => {
+    if (!pendingPlan) {
+      return
+    }
+
+    const plan = pendingPlan
+    const key = planSessionKey
+
+    clearPendingPlan(key)
+    triggerHaptic('submit')
+
+    void Promise.resolve(
+      onSubmit(approvedPlanPrompt(plan.originalText, plan.attachments), {
+        attachments: plan.attachments,
+        displayText: plan.originalText
+      })
+    )
+      .then(accepted => {
+        if (accepted === false) {
+          setPendingPlan(key, { ...plan, state: 'ready' })
+        }
+      })
+      .catch(() => setPendingPlan(key, { ...plan, state: 'ready' }))
+  }, [onSubmit, pendingPlan, planSessionKey])
+
+  const cancelPendingPlan = useCallback(() => {
+    clearPendingPlan(planSessionKey)
+
+    if (statusSessionId) {
+      clearSessionTodos(statusSessionId)
+    }
+
+    triggerHaptic('cancel')
+  }, [planSessionKey, statusSessionId])
+
+  const sendGoalCommand = useCallback(
+    (command: 'clear' | 'pause' | 'resume') => {
+      triggerHaptic('selection')
+      void Promise.resolve(onSubmit(`/goal ${command}`))
+    },
+    [onSubmit]
+  )
+
+  const startGoalFromComposer = useCallback(() => {
+    const text = draftRef.current.trim()
+
+    triggerHaptic('selection')
+
+    if (!text) {
+      void Promise.resolve(onSubmit('/goal status'))
+
+      return
+    }
+
+    clearDraft()
+    clearComposerAttachments()
+    void Promise.resolve(onSubmit(`/goal ${text}`))
+  }, [clearDraft, draftRef, onSubmit])
+
   const contextMenu = (
     <ContextMenu
       onInsertText={insertText}
@@ -707,10 +819,14 @@ export function ChatBar({
         status: conversation.status
       }}
       disabled={disabled}
+      goalActive={goalActive}
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
+      onGoal={startGoalFromComposer}
+      onPlanModeChange={setPlanModeEnabled}
       onSteer={steerDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
+      planMode={planMode}
       state={state}
       voiceStatus={voiceStatus}
     />
@@ -872,6 +988,16 @@ export function ChatBar({
               its own --status-stack-measured-height so the thread's clearance
               accounts for it. Collapses to nothing when every status is empty. */}
           <ComposerStatusStack
+            onGoalCommand={sendGoalCommand}
+            plan={
+              pendingPlan
+                ? {
+                    onCancel: cancelPendingPlan,
+                    onRun: runPendingPlan,
+                    state: pendingPlan.state
+                  }
+                : null
+            }
             queue={
               activeQueueSessionKey && queuedPrompts.length > 0 ? (
                 <QueuePanel

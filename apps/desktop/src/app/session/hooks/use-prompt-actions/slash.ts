@@ -15,6 +15,7 @@ import {
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { applyGoalStatusText } from '@/store/goals'
 import { notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
@@ -60,7 +61,7 @@ interface SlashCommandDeps {
   startFreshSessionDraft: () => void
   submitPromptText: (
     rawText: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
+    options?: { attachments?: ComposerAttachment[]; displayText?: string; fromQueue?: boolean }
   ) => Promise<boolean>
 }
 
@@ -146,7 +147,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // is acted on. Mirrors the TUI's createSlashHandler — without it a
           // `/goal <text>` looked like it did nothing.
           if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
-            renderSlashOutput(dispatch.notice.trim())
+            const notice = dispatch.notice.trim()
+            renderSlashOutput(notice)
+            applyGoalStatusText(sessionId, notice)
           }
 
           const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
@@ -198,7 +201,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           const output = result && typeof result === 'object' ? (result as SlashExecResponse) : null
           const body = output?.output || `/${name}: no output`
-          renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
+          const text = output?.warning ? `warning: ${output.warning}\n${body}` : body
+          renderSlashOutput(text)
+          applyGoalStatusText(sessionId, text)
 
           return
         } catch {

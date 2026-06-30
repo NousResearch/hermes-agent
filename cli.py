@@ -6378,6 +6378,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     f"    [bold {_accent_hex()}]{('/' + name):<22}[/] [dim]-[/] {_escape(desc)}"
                 )
 
+        # Plugin-registered slash commands. These dispatch correctly via
+        # process_command() but were previously absent from /help, leaving
+        # users no way to discover them (issue #55609). Mirror the Skill
+        # Commands section above. Guarded defensively because plugin
+        # discovery can raise in degraded environments.
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+            plugin_cmds = get_plugin_commands()
+        except Exception:
+            plugin_cmds = {}
+        if plugin_cmds:
+            _cprint(f"\n  🔌 {_BOLD}Plugin Commands{_RST} ({len(plugin_cmds)} available):")
+            for name, meta in sorted(plugin_cmds.items()):
+                desc = meta.get("description", "") if isinstance(meta, dict) else ""
+                ChatConsole().print(
+                    f"    [bold {_accent_hex()}]{('/' + name):<22}[/] [dim]-[/] {_escape(desc)}"
+                )
+
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")

@@ -42,6 +42,11 @@
       "note": "Official npm lockfiles carry dependency and vulnerability fixes."
     },
     {
+      "pattern": "apps/desktop/src/app/session/hooks/use-prompt-actions.ts",
+      "action": "upstream",
+      "note": "Official desktop split moved this hook into use-prompt-actions/; drop the deleted legacy file during sync."
+    },
+    {
       "pattern": "pyproject.toml",
       "action": "official_with_overlay",
       "note": "Take official deps; re-apply fork-only optional extras after merge."

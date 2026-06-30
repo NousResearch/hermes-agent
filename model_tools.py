@@ -866,6 +866,8 @@ def _shell_command_class(command: Any) -> str:
         return "package_manager"
     if executable in {"curl", "wget", "ssh", "scp", "rsync"}:
         return "network"
+    if executable in {"sleep", "wait"}:
+        return "wait"
     if executable in {"ls", "pwd", "find", "grep", "rg", "cat", "head", "tail", "stat"}:
         return "filesystem"
     if subcommand in {"run", "serve", "server", "dev"}:
@@ -873,10 +875,33 @@ def _shell_command_class(command: Any) -> str:
     return "unknown"
 
 
+def _tool_wait_kind(function_name: str, function_args: Dict[str, Any], command_class: Optional[str] = None) -> Optional[str]:
+    """Return a low-cardinality class for intentional tool waits."""
+    if function_name == "terminal":
+        if bool(function_args.get("background", False)):
+            return "background_wait"
+        if command_class == "server":
+            return "server_watch"
+        if command_class == "wait":
+            return "sleep_wait"
+        if command_class in {"build", "test", "package_manager"}:
+            return "foreground_build"
+        return None
+    if function_name == "process":
+        action = str(function_args.get("action") or "").strip().lower()
+        if action == "wait":
+            return "background_wait"
+        if action in {"poll", "log", "list"}:
+            return "poll"
+        return None
+    return None
+
+
 def _tool_command_metadata(function_name: str, function_args: Dict[str, Any]) -> Dict[str, Any]:
     """Build secret-safe execution metadata for command-like tools."""
     if function_name == "terminal":
-        metadata: Dict[str, Any] = {"command_class": _shell_command_class(function_args.get("command"))}
+        command_class = _shell_command_class(function_args.get("command"))
+        metadata: Dict[str, Any] = {"command_class": command_class}
         timeout = function_args.get("timeout")
         if timeout is None:
             try:
@@ -889,6 +914,9 @@ def _tool_command_metadata(function_name: str, function_args: Dict[str, Any]) ->
             metadata["timeout_seconds"] = int(timeout)
         for key in ("background", "notify_on_complete", "pty"):
             metadata[key] = bool(function_args.get(key, False))
+        wait_kind = _tool_wait_kind(function_name, function_args, command_class)
+        if wait_kind:
+            metadata["wait_kind"] = wait_kind
         return metadata
     if function_name == "execute_code":
         metadata = {"command_class": "python"}
@@ -900,6 +928,15 @@ def _tool_command_metadata(function_name: str, function_args: Dict[str, Any]) ->
             timeout = None
         if isinstance(timeout, (int, float)) and timeout > 0:
             metadata["timeout_seconds"] = int(timeout)
+        return metadata
+    if function_name == "process":
+        metadata = {"command_class": "process"}
+        timeout = function_args.get("timeout")
+        if isinstance(timeout, (int, float)) and timeout > 0:
+            metadata["timeout_seconds"] = int(timeout)
+        wait_kind = _tool_wait_kind(function_name, function_args, "process")
+        if wait_kind:
+            metadata["wait_kind"] = wait_kind
         return metadata
     return {}
 

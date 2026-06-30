@@ -759,6 +759,7 @@ class TestToolCallOutputBackfill:
             background=True,
             notify_on_complete=True,
             pty=False,
+            wait_kind="background_wait",
         )
 
         assert ended["observation"] is observation
@@ -777,6 +778,7 @@ class TestToolCallOutputBackfill:
         assert ended["metadata"]["hermes.tool.background"] is True
         assert ended["metadata"]["hermes.tool.notify_on_complete"] is True
         assert ended["metadata"]["hermes.tool.pty"] is False
+        assert ended["metadata"]["hermes.tool.wait_kind"] == "background_wait"
 
     def test_serialize_messages_keeps_tool_name_and_call_id(self):
         sys.modules.pop("plugins.observability.langfuse", None)

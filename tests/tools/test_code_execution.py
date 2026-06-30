@@ -44,6 +44,7 @@ from tools.code_execution_tool import (
     build_execute_code_schema,
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
+    _execution_error_kind,
     _execute_remote,
 )
 
@@ -77,6 +78,18 @@ class TestSandboxRequirements(unittest.TestCase):
         self.assertEqual(EXECUTE_CODE_SCHEMA["name"], "execute_code")
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["properties"])
         self.assertIn("code", EXECUTE_CODE_SCHEMA["parameters"]["required"])
+
+    def test_execute_code_error_kind_contract(self):
+        validation_result = json.loads(execute_code(""))
+        self.assertEqual(validation_result["error_kind"], "validation_error")
+
+        runtime_result = json.loads(execute_code("raise RuntimeError('boom')"))
+        self.assertEqual(runtime_result["status"], "error")
+        self.assertEqual(runtime_result["error_kind"], "runtime_error")
+
+        self.assertEqual(_execution_error_kind("SyntaxError: invalid syntax", exit_code=1), "syntax_error")
+        self.assertEqual(_execution_error_kind("blocked by approval guard"), "approval_blocked")
+        self.assertEqual(_execution_error_kind(status="timeout"), "timeout")
 
 
 class TestHermesToolsGeneration(unittest.TestCase):

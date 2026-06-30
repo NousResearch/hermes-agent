@@ -11,6 +11,7 @@ from model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     _shell_command_class,
+    _tool_command_metadata,
     TOOL_TO_TOOLSET_MAP,
 )
 
@@ -26,9 +27,33 @@ class TestHandleFunctionCall:
         assert _shell_command_class("npm build") == "build"
         assert _shell_command_class("git status --short") == "git"
         assert _shell_command_class("curl https://example.com") == "network"
+        assert _shell_command_class("sleep 30") == "wait"
         assert _shell_command_class("./deploy-prod-with-secret-token") == "unknown"
         assert _shell_command_class("API_TOKEN=***") == "unknown"
         assert _shell_command_class(None) == "unknown"
+
+    def test_tool_wait_kind_metadata_distinguishes_intentional_waits(self):
+        assert _tool_command_metadata("terminal", {
+            "command": "npm run build",
+            "background": False,
+        })["wait_kind"] == "foreground_build"
+        assert _tool_command_metadata("terminal", {
+            "command": "sleep 30",
+            "background": False,
+        })["wait_kind"] == "sleep_wait"
+        assert _tool_command_metadata("terminal", {
+            "command": "python -m http.server",
+            "background": True,
+            "notify_on_complete": True,
+        })["wait_kind"] == "background_wait"
+        assert _tool_command_metadata("process", {
+            "action": "wait",
+            "timeout": 60,
+        }) == {
+            "command_class": "process",
+            "timeout_seconds": 60,
+            "wait_kind": "background_wait",
+        }
 
     def test_agent_loop_tool_returns_error(self):
         for tool_name in _AGENT_LOOP_TOOLS:
@@ -152,12 +177,14 @@ class TestHandleFunctionCall:
             assert payload["background"] is True
             assert payload["notify_on_complete"] is True
             assert payload["pty"] is False
+            assert payload["wait_kind"] == "background_wait"
             metadata_values = {
                 payload["command_class"],
                 payload["timeout_seconds"],
                 payload["background"],
                 payload["notify_on_complete"],
                 payload["pty"],
+                payload["wait_kind"],
             }
             assert "API_TOKEN" not in repr(metadata_values)
 

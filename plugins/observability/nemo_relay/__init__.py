@@ -576,6 +576,8 @@ def on_post_tool_call(**kwargs: Any) -> None:
             "hermes.tool.notify_on_complete": kwargs.get("notify_on_complete"),
             "pty": kwargs.get("pty"),
             "hermes.tool.pty": kwargs.get("pty"),
+            "wait_kind": kwargs.get("wait_kind"),
+            "hermes.tool.wait_kind": kwargs.get("wait_kind"),
             "error_type": kwargs.get("error_type"),
             "error_kind": kwargs.get("error_kind"),
             "hermes.tool.error_kind": kwargs.get("error_kind"),

@@ -74,6 +74,26 @@ DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
+
+def _execution_error_kind(error: object = "", *, status: str | None = None, exit_code: int | None = None) -> str:
+    """Return a stable, low-cardinality error kind for execute_code results."""
+    if status == "timeout" or exit_code == 124:
+        return "timeout"
+    if status == "interrupted" or exit_code == 130:
+        return "interrupted"
+    message = str(error or "").lower()
+    if "approval" in message or "blocked" in message:
+        return "approval_blocked"
+    if "python 3 is not available" in message or "not available" in message:
+        return "environment_error"
+    if "syntaxerror" in message or "indentationerror" in message:
+        return "syntax_error"
+    if "permission" in message or "operation not permitted" in message:
+        return "permission_denied"
+    if exit_code not in (None, 0):
+        return "runtime_error"
+    return "execution_error"
+
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
 # match a safe prefix, the operational HERMES_ allowlist, or (on Windows) an
@@ -924,6 +944,7 @@ def _execute_remote(
                     "environment. Install Python to use execute_code with "
                     "remote backends."
                 ),
+                "error_kind": "environment_error",
                 "tool_calls_made": 0,
                 "duration_seconds": 0,
             })
@@ -991,6 +1012,7 @@ def _execute_remote(
         return json.dumps({
             "status": "error",
             "error": str(exc),
+            "error_kind": _execution_error_kind(exc),
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
         }, ensure_ascii=False)
@@ -1046,6 +1068,7 @@ def _execute_remote(
     if status == "timeout":
         timeout_msg = f"Script timed out after {timeout}s and was killed."
         result["error"] = timeout_msg
+        result["error_kind"] = "timeout"
         # Include timeout message in output so the LLM always surfaces it
         # to the user (see local path comment — same reasoning, #10807).
         if stdout_text:
@@ -1057,12 +1080,14 @@ def _execute_remote(
             duration, timeout, tool_call_counter[0],
         )
     elif status == "interrupted":
+        result["error_kind"] = "interrupted"
         result["output"] = (
             stdout_text + "\n[execution interrupted — user sent a new message]"
         )
     elif exit_code != 0:
         result["status"] = "error"
         result["error"] = f"Script exited with code {exit_code}"
+        result["error_kind"] = _execution_error_kind(result["error"], exit_code=exit_code)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1095,11 +1120,12 @@ def execute_code(
     if not SANDBOX_AVAILABLE:
         return json.dumps({
             "error": "execute_code sandbox is unavailable in this environment. "
-                     "Use normal tool calls (terminal, read_file, write_file, ...) instead."
+                     "Use normal tool calls (terminal, read_file, write_file, ...) instead.",
+            "error_kind": "environment_error",
         })
 
     if not code or not code.strip():
-        return tool_error("No code provided.")
+        return tool_error("No code provided.", error_kind="validation_error")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
@@ -1115,6 +1141,7 @@ def execute_code(
         return json.dumps({
             "status": "error",
             "error": _guard.get("message") or "execute_code blocked by approval guard.",
+            "error_kind": "approval_blocked",
             "tool_calls_made": 0,
             "duration_seconds": 0,
         }, ensure_ascii=False)
@@ -1456,6 +1483,7 @@ def execute_code(
         if status == "timeout":
             timeout_msg = f"Script timed out after {timeout}s and was killed."
             result["error"] = timeout_msg
+            result["error_kind"] = "timeout"
             # Include timeout message in output so the LLM always surfaces it
             # to the user.  When output is empty, models often treat the result
             # as "nothing happened" and produce an empty response, which the
@@ -1469,10 +1497,12 @@ def execute_code(
                 duration, timeout, tool_call_counter[0],
             )
         elif status == "interrupted":
+            result["error_kind"] = "interrupted"
             result["output"] = stdout_text + "\n[execution interrupted — user sent a new message]"
         elif exit_code != 0:
             result["status"] = "error"
             result["error"] = stderr_text or f"Script exited with code {exit_code}"
+            result["error_kind"] = _execution_error_kind(result["error"], exit_code=exit_code)
             # Include stderr in output so the LLM sees the traceback
             if stderr_text:
                 result["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
@@ -1492,6 +1522,7 @@ def execute_code(
         return json.dumps({
             "status": "error",
             "error": str(exc),
+            "error_kind": _execution_error_kind(exc),
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
         }, ensure_ascii=False)

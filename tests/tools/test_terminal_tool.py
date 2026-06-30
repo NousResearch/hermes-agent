@@ -1,5 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
+import json
+
 import tools.terminal_tool as terminal_tool
 
 
@@ -28,6 +30,22 @@ def test_terminal_schema_advertises_persistent_env_state():
     assert "exported environment variables persist between calls" in description
     assert "activate a virtualenv" in description
     assert "do not re-source the same environment before every command" in description
+
+
+def test_terminal_error_kind_contract(monkeypatch):
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    timeout_result = json.loads(terminal_tool.terminal_tool("sleep 2", timeout=1))
+    assert timeout_result["exit_code"] == 124
+    assert timeout_result["error_kind"] == "timeout"
+
+    nonzero_result = json.loads(terminal_tool.terminal_tool("python -c 'import sys; sys.exit(7)'"))
+    assert nonzero_result["exit_code"] == 7
+    assert nonzero_result["error_kind"] == "nonzero_exit"
+
+    expected_nonzero = json.loads(terminal_tool.terminal_tool("grep definitely-not-present /dev/null"))
+    assert expected_nonzero["exit_code"] == 1
+    assert expected_nonzero["error_kind"] == "expected_nonzero_exit"
 
 
 def test_printf_literal_sudo_does_not_trigger_rewrite(monkeypatch):

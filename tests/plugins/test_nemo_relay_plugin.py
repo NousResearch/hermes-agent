@@ -288,6 +288,7 @@ def test_nemo_relay_plugin_exports_command_metadata(monkeypatch):
         background=True,
         notify_on_complete=True,
         pty=False,
+        wait_kind="background_wait",
     )
 
     tool_end = next(event for event in fake.events if event[0] == "tool.call_end")
@@ -297,6 +298,7 @@ def test_nemo_relay_plugin_exports_command_metadata(monkeypatch):
     assert data["hermes.tool.background"] is True
     assert data["hermes.tool.notify_on_complete"] is True
     assert data["hermes.tool.pty"] is False
+    assert data["hermes.tool.wait_kind"] == "background_wait"
     assert "SECRET" not in repr({k: v for k, v in data.items() if k.startswith("hermes.tool.")})
 
 

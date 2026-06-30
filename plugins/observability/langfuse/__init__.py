@@ -1081,6 +1081,7 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
                       background: Optional[bool] = None,
                       notify_on_complete: Optional[bool] = None,
                       pty: Optional[bool] = None,
+                      wait_kind: Optional[str] = None,
                       **_: Any) -> None:
     task_key = _trace_key(
         task_id,
@@ -1147,6 +1148,8 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
         "hermes.tool.notify_on_complete": notify_on_complete,
         "pty": pty,
         "hermes.tool.pty": pty,
+        "wait_kind": wait_kind,
+        "hermes.tool.wait_kind": wait_kind,
     }
     metadata.update({k: v for k, v in command_attrs.items() if v is not None})
 

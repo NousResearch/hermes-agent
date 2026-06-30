@@ -1691,6 +1691,32 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     return None
 
 
+def _terminal_error_kind(message: object = "", *, exit_code: int | None = None, exit_note: str | None = None) -> str:
+    """Return a stable, low-cardinality error kind for terminal results."""
+    if exit_note:
+        return "expected_nonzero_exit"
+    if exit_code == 124:
+        return "timeout"
+    if exit_code == 130:
+        return "interrupted"
+    message_text = str(message or "").lower()
+    if "timed out" in message_text or "timeout" in message_text:
+        return "timeout"
+    if "approval" in message_text or "blocked" in message_text:
+        return "approval_blocked"
+    if "permission" in message_text or "operation not permitted" in message_text:
+        return "permission_denied"
+    if "not found" in message_text or "no such file" in message_text:
+        return "not_found"
+    if "failed to start background process" in message_text:
+        return "spawn_failed"
+    if "command execution failed" in message_text or "failed to execute command" in message_text:
+        return "execution_error"
+    if exit_code not in (None, 0):
+        return "nonzero_exit"
+    return "execution_error"
+
+
 def _command_requires_pipe_stdin(command: str) -> bool:
     """Return True when PTY mode would break stdin-driven commands.
 
@@ -1891,6 +1917,7 @@ def terminal_tool(
                 "output": "",
                 "exit_code": -1,
                 "error": f"Invalid command: expected string, got {type(command).__name__}",
+                "error_kind": "validation_error",
                 "status": "error",
             }, ensure_ascii=False)
 
@@ -1937,6 +1964,7 @@ def terminal_tool(
                     f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
                     f"notify_on_complete=true for long-running commands."
                 ),
+                "error_kind": "validation_error",
             }, ensure_ascii=False)
 
         # Guardrail: long-lived server/watch commands should run as managed
@@ -1948,6 +1976,7 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": guidance,
+                    "error_kind": "validation_error",
                     "status": "error",
                 }, ensure_ascii=False)
 
@@ -2049,6 +2078,7 @@ def terminal_tool(
                             "output": "",
                             "exit_code": -1,
                             "error": f"Terminal tool disabled: environment creation failed ({e})",
+                            "error_kind": "environment_error",
                             "status": "disabled"
                         }, ensure_ascii=False)
 
@@ -2078,6 +2108,7 @@ def terminal_tool(
                         "Run `hermes gateway restart` from a separate shell outside "
                         "the running gateway."
                     ),
+                    "error_kind": "approval_blocked",
                     "status": "error",
                 }, ensure_ascii=False)
 
@@ -2109,6 +2140,7 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": approval.get("message", fallback_msg),
+                    "error_kind": "approval_blocked",
                     "status": "blocked"
                 }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
@@ -2129,6 +2161,7 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": workdir_error,
+                    "error_kind": "validation_error",
                     "status": "blocked"
                 }, ensure_ascii=False)
 
@@ -2385,10 +2418,12 @@ def terminal_tool(
 
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:
+                error_message = f"Failed to start background process: {str(e)}"
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
-                    "error": f"Failed to start background process: {str(e)}"
+                    "error": error_message,
+                    "error_kind": _terminal_error_kind(error_message, exit_code=-1),
                 }, ensure_ascii=False)
         else:
             # Run foreground command with retry logic
@@ -2413,7 +2448,8 @@ def terminal_tool(
                         return json.dumps({
                             "output": "",
                             "exit_code": 124,
-                            "error": f"Command timed out after {effective_timeout} seconds"
+                            "error": f"Command timed out after {effective_timeout} seconds",
+                            "error_kind": "timeout",
                         }, ensure_ascii=False)
                     
                     # Retry on transient errors
@@ -2427,10 +2463,12 @@ def terminal_tool(
                     
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
                                  max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+                    error_message = f"Command execution failed: {type(e).__name__}: {str(e)}"
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": f"Command execution failed: {type(e).__name__}: {str(e)}"
+                        "error": error_message,
+                        "error_kind": _terminal_error_kind(error_message, exit_code=-1),
                     }, ensure_ascii=False)
                 
                 # Got a result
@@ -2499,6 +2537,8 @@ def terminal_tool(
                 result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+            if returncode != 0:
+                result_dict["error_kind"] = _terminal_error_kind(output, exit_code=returncode, exit_note=exit_note)
 
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -2506,10 +2546,12 @@ def terminal_tool(
         import traceback
         tb_str = traceback.format_exc()
         logger.error("terminal_tool exception:\n%s", tb_str)
+        error_message = f"Failed to execute command: {str(e)}"
         return json.dumps({
             "output": "",
             "exit_code": -1,
-            "error": f"Failed to execute command: {str(e)}",
+            "error": error_message,
+            "error_kind": _terminal_error_kind(error_message, exit_code=-1),
             "traceback": tb_str,
             "status": "error"
         }, ensure_ascii=False)

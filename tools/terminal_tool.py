@@ -1142,7 +1142,6 @@ def _get_env_config() -> Dict[str, Any]:
     coder_api_key = os.getenv("CODER_API_KEY", "")
     coder_organization = os.getenv("CODER_ORGANIZATION", "")
     coder_workspace = os.getenv("CODER_WORKSPACE", "")
-    coder_template = os.getenv("CODER_TEMPLATE", "")
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
@@ -1189,7 +1188,6 @@ def _get_env_config() -> Dict[str, Any]:
         "coder_api_key": coder_api_key,
         "coder_organization": coder_organization,
         "coder_workspace": coder_workspace,
-        "coder_template": coder_template,
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
@@ -1380,14 +1378,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
     elif env_type == "coder":
-        if not cc.get("coder_url") or not cc.get("coder_api_key") or not cc.get("coder_template"):
-            raise ValueError("Coder environment requires CODER_URL, CODER_API_KEY, and CODER_TEMPLATE")
+        if not cc.get("coder_url") or not cc.get("coder_api_key"):
+            raise ValueError("Coder environment requires CODER_URL and CODER_API_KEY")
         return _CoderEnvironment(
             base_url=cc["coder_url"],
-            template_name=cc["coder_template"],
             task_id=task_id,
             api_key=cc["coder_api_key"],
-            organization_name=cc.get("coder_organization") or None,
             workspace_name=cc.get("coder_workspace") or None,
             cwd=cwd,
             timeout=timeout,
@@ -2059,7 +2055,6 @@ def terminal_tool(
                                 "coder_api_key": config.get("coder_api_key", ""),
                                 "coder_organization": config.get("coder_organization", ""),
                                 "coder_workspace": config.get("coder_workspace", ""),
-                                "coder_template": config.get("coder_template", ""),
                                 "coder_forward_env": config.get("coder_forward_env", []),
                                 "coder_workspace_startup_timeout": config.get("coder_workspace_startup_timeout", 180),
                             }
@@ -2601,9 +2596,9 @@ def check_terminal_requirements() -> bool:
             return os.getenv("DAYTONA_API_KEY") is not None
 
         elif env_type == "coder":
-            if not config.get("coder_url") or not config.get("coder_api_key") or not config.get("coder_template"):
+            if not config.get("coder_url") or not config.get("coder_api_key"):
                 logger.error(
-                    "Coder backend selected but CODER_URL, CODER_API_KEY, and CODER_TEMPLATE must all be set."
+                    "Coder backend selected but CODER_URL and CODER_API_KEY must both be set."
                 )
                 return False
             return True

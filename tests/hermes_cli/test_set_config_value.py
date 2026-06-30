@@ -124,21 +124,21 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
-    def test_terminal_coder_url_org_workspace_and_template_go_to_config_and_env(self, _isolated_hermes_home):
+    def test_terminal_coder_url_org_and_workspace_go_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.coder_url", "https://coder.example")
         set_config_value("terminal.coder_organization", "acme")
         set_config_value("terminal.coder_workspace", "shared-dev")
-        set_config_value("terminal.coder_template", "devcontainer")
+        set_config_value("terminal.coder_workspace_startup_timeout", "240")
         config = _read_config(_isolated_hermes_home)
         env_content = _read_env(_isolated_hermes_home)
         assert "coder_url: https://coder.example" in config
         assert "coder_organization: acme" in config
         assert "coder_workspace: shared-dev" in config
-        assert "coder_template: devcontainer" in config
+        assert "coder_workspace_startup_timeout: '240'" in config or "coder_workspace_startup_timeout: 240" in config
         assert "CODER_URL=https://coder.example" in env_content
         assert "CODER_ORGANIZATION=acme" in env_content
         assert "CODER_WORKSPACE=shared-dev" in env_content
-        assert "CODER_TEMPLATE=devcontainer" in env_content
+        assert "TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT=240" in env_content
 
 
 # ---------------------------------------------------------------------------

@@ -479,8 +479,8 @@ class TestGetFileOpsCoderBackend:
             "coder_api_key": "token",
             "coder_organization": "org",
             "coder_workspace": "ws",
-            "coder_template": "docker-build",
             "coder_forward_env": ["GITHUB_TOKEN"],
+            "coder_workspace_startup_timeout": 240,
             "container_cpu": 1,
             "container_memory": 5120,
             "container_disk": 51200,
@@ -515,10 +515,10 @@ class TestGetFileOpsCoderBackend:
         assert kwargs["env_type"] == "coder"
         assert kwargs["container_config"]["coder_url"] == "http://127.0.0.1:7080"
         assert kwargs["container_config"]["coder_api_key"] == "token"
-        assert kwargs["container_config"]["coder_template"] == "docker-build"
         assert kwargs["container_config"]["coder_organization"] == "org"
         assert kwargs["container_config"]["coder_workspace"] == "ws"
         assert kwargs["container_config"]["coder_forward_env"] == ["GITHUB_TOKEN"]
+        assert kwargs["container_config"]["coder_workspace_startup_timeout"] == 240
 
 
 class TestPatchSchemaShape:

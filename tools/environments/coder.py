@@ -1,8 +1,7 @@
 """Minimal Coder execution environment.
 
-v1 bootstrap implementation: resolve a workspace agent over the Coder REST API,
-optionally create or auto-start a stopped workspace, open the workspace PTY
-websocket, and read terminal output until EOF.
+Resolve an existing workspace agent over the Coder REST API, open the workspace
+PTY websocket, and read terminal output until EOF.
 
 Current intentional limitations for the bootstrap step:
 - treats websocket EOF/close as successful completion
@@ -98,31 +97,6 @@ def _workspace_search_url(base_url: str) -> str:
 
 
 
-def _user_organizations_url(base_url: str, user: str = "me") -> str:
-    user_part = urllib.parse.quote(user, safe="")
-    return f"{base_url.rstrip('/')}/api/v2/users/{user_part}/organizations"
-
-
-def _user_organization_by_name_url(base_url: str, organization_name: str, user: str = "me") -> str:
-    user_part = urllib.parse.quote(user, safe="")
-    org_part = urllib.parse.quote(organization_name, safe="")
-    return f"{base_url.rstrip('/')}/api/v2/users/{user_part}/organizations/{org_part}"
-
-
-def _template_by_name_url(base_url: str, organization_id: str, template_name: str) -> str:
-    org_part = urllib.parse.quote(organization_id, safe="")
-    template_part = urllib.parse.quote(template_name, safe="")
-    return f"{base_url.rstrip('/')}/api/v2/organizations/{org_part}/templates/{template_part}"
-
-
-
-def _create_workspace_url(base_url: str, organization_id: str, user: str = "me") -> str:
-    org_part = urllib.parse.quote(organization_id, safe="")
-    user_part = urllib.parse.quote(user, safe="")
-    return f"{base_url.rstrip('/')}/api/v2/organizations/{org_part}/members/{user_part}/workspaces"
-
-
-
 def _find_workspace_by_name(*, base_url: str, workspace_name: str, api_key: str, timeout: int = 10) -> dict | None:
     response = requests.get(
         _workspace_search_url(base_url),
@@ -141,89 +115,6 @@ def _find_workspace_by_name(*, base_url: str, workspace_name: str, api_key: str,
             if owner in (None, "", "me") or owner == workspace.get("owner_name"):
                 return workspace
     return None
-
-
-
-def _get_organization_id(*, base_url: str, api_key: str, organization_name: str | None = None, timeout: int = 10) -> str:
-    if organization_name:
-        response = requests.get(
-            _user_organization_by_name_url(base_url, organization_name),
-            headers=_coder_headers(api_key),
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        org_id = payload.get("id") if isinstance(payload, dict) else None
-        if not org_id:
-            raise RuntimeError(f"Coder organization {organization_name!r} payload did not include an id")
-        return org_id
-
-    response = requests.get(
-        _user_organizations_url(base_url),
-        headers=_coder_headers(api_key),
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, list) or not payload:
-        raise RuntimeError("Coder user has no accessible organizations for workspace creation")
-    default_org = next((org for org in payload if isinstance(org, dict) and org.get("is_default")), None)
-    chosen = default_org or payload[0]
-    org_id = chosen.get("id") if isinstance(chosen, dict) else None
-    if not org_id:
-        raise RuntimeError("Coder organization payload did not include an id")
-    return org_id
-
-
-def _resolve_template_id(*, base_url: str, organization_id: str, template_name: str, api_key: str, timeout: int = 10) -> str:
-    response = requests.get(
-        _template_by_name_url(base_url, organization_id, template_name),
-        headers=_coder_headers(api_key),
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    template_id = payload.get("id") if isinstance(payload, dict) else None
-    if not template_id:
-        raise RuntimeError(f"Coder template {template_name!r} payload did not include an id")
-    return template_id
-
-
-
-def _create_workspace(
-    *,
-    base_url: str,
-    workspace_name: str,
-    template_name: str,
-    api_key: str,
-    organization_name: str | None = None,
-    timeout: int = 10,
-) -> dict:
-    organization_id = _get_organization_id(
-        base_url=base_url,
-        api_key=api_key,
-        organization_name=organization_name,
-        timeout=timeout,
-    )
-    template_id = _resolve_template_id(
-        base_url=base_url,
-        organization_id=organization_id,
-        template_name=template_name,
-        api_key=api_key,
-        timeout=timeout,
-    )
-    response = requests.post(
-        _create_workspace_url(base_url, organization_id),
-        headers={**_coder_headers(api_key), "Content-Type": "application/json", "Accept": "application/json"},
-        json={"name": workspace_name, "template_id": template_id},
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"Unexpected create-workspace payload for Coder workspace {workspace_name!r}")
-    return payload
-
 
 
 def coder_workspace_exists(*, base_url: str, workspace_name: str, api_key: str, timeout: int = 10) -> bool:
@@ -251,10 +142,8 @@ class CoderEnvironment(BaseEnvironment):
         self,
         *,
         base_url: str,
-        template_name: str,
         task_id: str,
         api_key: str,
-        organization_name: str | None = None,
         workspace_name: str | None = None,
         cwd: str = "~",
         timeout: int = 60,
@@ -264,8 +153,6 @@ class CoderEnvironment(BaseEnvironment):
     ):
         super().__init__(cwd=cwd, timeout=timeout)
         self.base_url = base_url.rstrip("/")
-        self.template_name = template_name
-        self.organization_name = organization_name or None
         self.task_id = task_id
         self.workspace = workspace_name or coder_workspace_name_for_task(task_id)
         self.api_key = api_key
@@ -304,14 +191,7 @@ class CoderEnvironment(BaseEnvironment):
             timeout=self.timeout,
         )
         if payload is None:
-            payload = _create_workspace(
-                base_url=self.base_url,
-                workspace_name=self.workspace,
-                template_name=self.template_name,
-                api_key=self.api_key,
-                organization_name=self.organization_name,
-                timeout=self.timeout,
-            )
+            raise RuntimeError(f"Coder workspace {self.workspace!r} does not exist")
         workspace_id = payload.get("id") if isinstance(payload, dict) else None
         if not workspace_id:
             raise RuntimeError(f"Coder workspace {self.workspace!r} did not include a workspace id")

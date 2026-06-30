@@ -72,13 +72,14 @@ class TestParseEnvVar:
                 container_config={
                     "coder_url": "https://coder.example",
                     "coder_api_key": "secret-token",
-                    "coder_template": "devcontainer",
                     "coder_forward_env": ["GITHUB_TOKEN"],
+                    "coder_workspace_startup_timeout": 240,
                 },
             )
 
         assert result is fake_env
         assert mock_coder.call_args.kwargs["forward_env"] == ["GITHUB_TOKEN"]
+        assert mock_coder.call_args.kwargs["workspace_startup_timeout"] == 240
 
     def test_falls_back_to_default(self):
         with patch.dict("os.environ", {}, clear=False):

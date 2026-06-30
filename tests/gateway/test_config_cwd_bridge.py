@@ -33,7 +33,6 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "coder_url": "CODER_URL",
             "coder_organization": "CODER_ORGANIZATION",
             "coder_workspace": "CODER_WORKSPACE",
-            "coder_template": "CODER_TEMPLATE",
             "coder_forward_env": "TERMINAL_CODER_FORWARD_ENV",
             "coder_workspace_startup_timeout": "TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT",
             "cwd": "TERMINAL_CWD",
@@ -234,7 +233,6 @@ class TestNestedTerminalCwdPlaceholderSkip:
                 "coder_url": "https://coder.example",
                 "coder_organization": "acme",
                 "coder_workspace": "shared-dev",
-                "coder_template": "devcontainer",
                 "coder_forward_env": ["GITHUB_TOKEN"],
                 "coder_workspace_startup_timeout": 240,
             }
@@ -244,7 +242,6 @@ class TestNestedTerminalCwdPlaceholderSkip:
         assert result["CODER_URL"] == "https://coder.example"
         assert result["CODER_ORGANIZATION"] == "acme"
         assert result["CODER_WORKSPACE"] == "shared-dev"
-        assert result["CODER_TEMPLATE"] == "devcontainer"
         assert result["TERMINAL_CODER_FORWARD_ENV"] == '["GITHUB_TOKEN"]'
         assert result["TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT"] == "240"
 

@@ -152,6 +152,80 @@ class TestSafeCommand:
         assert desc is None
 
 
+class TestDetectDangerousChmodChown:
+    """World/other-writable chmod and recursive-root chown must be flagged
+    regardless of where the write bit / ``-R`` flag sits in the arguments.
+
+    The detector used to require the write permission to be the *last*
+    character of the symbolic mode (so ``chmod a+rwx`` slipped past while the
+    equivalent ``chmod 777`` was caught) and the ``-R`` flag to be the last
+    character of its cluster immediately followed by ``root`` (so ``chown -Rv
+    root`` slipped past while ``chown -R root`` was caught).
+    """
+
+    # Each grants write to other/all — functionally equivalent to, or broader
+    # than, the spellings (777 / a+w) that were already flagged.
+    WORLD_WRITABLE_CHMOD = [
+        "chmod a+rwx secret.sh",
+        "chmod o+rwx secret.sh",
+        "chmod o+wx secret.sh",
+        "chmod a+wx secret.sh",
+        "chmod -R a+rwx /srv/app",
+        "chmod o=rwx secret.sh",
+        "chmod a=rw secret.sh",
+        "chmod --recursive a+rwx /srv",
+        # Spellings that were already detected — kept as regression guards.
+        "chmod 777 secret.sh",
+        "chmod -R 777 /srv/app",
+        "chmod a+w secret.sh",
+        "chmod o+rw secret.sh",
+    ]
+
+    RECURSIVE_CHOWN_ROOT = [
+        "chown -Rv root /etc",
+        "chown -Rh root /etc",
+        "chown -R --preserve-root root /etc",
+        # Spellings that were already detected — kept as regression guards.
+        "chown -R root /etc",
+        "chown -hR root /etc",
+        "chown -R root:root /etc",
+        "chown --recursive root /etc",
+    ]
+
+    # Must NOT be flagged — guards against over-broad matching.
+    SAFE_PERMISSION_COMMANDS = [
+        "chmod 644 file.txt",              # not world/other-writable
+        "chmod u+x script.sh",             # owner execute only
+        "chmod g+w shared.txt",            # group-writable, not other/all
+        "chmod o+r public.txt",            # other read, no write
+        "chmod o-w locked.txt",            # removing other-write
+        "chown alice file.txt",            # not recursive
+        "chown -v root file.txt",          # verbose, not recursive
+        "chown -R alice /root/data",       # recursive to alice; 'root' only in the path
+        "chown --recursive alice /root",   # recursive to alice; 'root' only in the path
+    ]
+
+    def test_world_writable_chmod_flagged(self):
+        for cmd in self.WORLD_WRITABLE_CHMOD:
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"expected flagged: {cmd!r}"
+            assert key is not None
+            assert "writable" in desc.lower()
+
+    def test_recursive_chown_root_flagged(self):
+        for cmd in self.RECURSIVE_CHOWN_ROOT:
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"expected flagged: {cmd!r}"
+            assert key is not None
+            assert "chown" in desc.lower()
+
+    def test_safe_permission_commands_not_flagged(self):
+        for cmd in self.SAFE_PERMISSION_COMMANDS:
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"unexpected flag: {cmd!r} -> {desc!r}"
+            assert key is None
+
+
 def _clear_session(key):
     """Replace for removed clear_session() — directly clear internal state."""
     approval_module._session_approved.pop(key, None)

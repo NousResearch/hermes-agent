@@ -423,6 +423,133 @@ moa:
     assert agg_call["tools"] is not None
 
 
+def test_moa_facade_measures_aggregator_context_before_call_and_reuses_references(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.5
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent import moa_loop
+    from agent.moa_loop import MoAAggregatorContextOverflow, MoAChatCompletions
+
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 1_000,
+    )
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    facade = MoAChatCompletions("review")
+    current_user = "what should we do next?"
+    oversized_history = [
+        {"role": "user", "content": "old context " * 8_000},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": current_user},
+    ]
+
+    try:
+        facade.create(messages=oversized_history, tools=[{"type": "function"}])
+    except MoAAggregatorContextOverflow as exc:
+        assert exc.estimated_tokens > exc.context_length
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("expected MoA aggregator preflight overflow")
+
+    assert [c["task"] for c in calls] == ["moa_reference"]
+
+    compressed_history = [
+        {"role": "assistant", "content": "[summary of old context]"},
+        {"role": "user", "content": current_user},
+    ]
+    response = facade.create(messages=compressed_history, tools=[{"type": "function"}])
+
+    assert response.choices[0].message.content == "aggregator acted"
+    assert [c["task"] for c in calls] == ["moa_reference", "moa_aggregator"]
+
+
+def test_moa_reference_context_fits_each_reference_model(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-small-context
+      aggregator:
+        provider: openrouter
+        model: anthropic/claude-opus-4.8
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent import moa_loop
+    from agent.model_metadata import estimate_request_tokens_rough
+    from agent.moa_loop import MoAChatCompletions
+
+    def fake_context_length(model, **_kwargs):
+        if model == "gpt-small-context":
+            return 1_200
+        return 1_000_000
+
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", fake_context_length)
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        if kwargs["task"] == "moa_reference":
+            return _response("reference advice")
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+
+    facade = MoAChatCompletions("review")
+    current_user = "this current turn must remain visible to the reference"
+    facade.create(
+        messages=[
+            {"role": "user", "content": "old context " * 8_000},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": current_user},
+        ],
+        tools=[{"type": "function"}],
+    )
+
+    ref_call = next(c for c in calls if c["task"] == "moa_reference")
+    assert estimate_request_tokens_rough(ref_call["messages"]) <= 900
+    joined = "\n".join(m["content"] for m in ref_call["messages"])
+    assert "Earlier MoA advisory context omitted" in joined
+    assert current_user in joined
+    assert [c["task"] for c in calls] == ["moa_reference", "moa_aggregator"]
+
+
 def test_moa_disabled_preset_skips_references(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

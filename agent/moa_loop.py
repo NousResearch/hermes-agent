@@ -35,6 +35,8 @@ _MAX_REFERENCE_WORKERS = 8
 # back without replaying megabytes. The acting aggregator always gets the full,
 # untrimmed transcript; this budget only shapes the advisory copy.
 _REFERENCE_TOOL_RESULT_BUDGET = 4000
+_REFERENCE_OUTPUT_RESERVE_TOKENS = 4096
+_REFERENCE_MIN_INPUT_BUDGET_TOKENS = 512
 
 # System prompt prepended to every reference-model call. References are
 # advisory — they do NOT act, call tools, or own the task. Without this
@@ -62,6 +64,26 @@ _REFERENCE_SYSTEM_PROMPT = (
     "tools or access. Your response is private guidance handed to the "
     "aggregator, not an answer shown to the user."
 )
+
+
+class MoAAggregatorContextOverflow(RuntimeError):
+    """Raised before calling the aggregator when the measured request is too large."""
+
+    def __init__(
+        self,
+        *,
+        estimated_tokens: int,
+        context_length: int,
+        aggregator_label: str,
+    ) -> None:
+        self.estimated_tokens = estimated_tokens
+        self.context_length = context_length
+        self.aggregator_label = aggregator_label
+        super().__init__(
+            "MoA aggregator input exceeds the context window of this model: "
+            f"estimated request {estimated_tokens:,} tokens > context window "
+            f"{context_length:,} tokens (aggregator={aggregator_label})."
+        )
 
 
 
@@ -139,6 +161,7 @@ def _run_reference(
     """
     label = _slot_label(slot)
     try:
+        ref_messages = _fit_reference_messages_to_slot(slot, ref_messages)
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
         # trimmed view (_reference_messages) already strips the agent's own
@@ -358,6 +381,150 @@ def _extract_text(response: Any) -> str:
         return ""
 
 
+def _slot_context_length(slot: dict[str, str]) -> int | None:
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        runtime = _slot_runtime(slot)
+        return get_model_context_length(
+            str(runtime.get("model") or slot.get("model") or ""),
+            base_url=str(runtime.get("base_url") or ""),
+            api_key=str(runtime.get("api_key") or ""),
+            provider=str(runtime.get("provider") or slot.get("provider") or ""),
+        )
+    except Exception:
+        logger.debug("MoA slot context budget resolution failed for %s", _slot_label(slot), exc_info=True)
+        return None
+
+
+def _reference_input_target_tokens(context_length: int) -> int:
+    if context_length <= _REFERENCE_MIN_INPUT_BUDGET_TOKENS:
+        return max(1, int(context_length * 0.75))
+    reserve = min(_REFERENCE_OUTPUT_RESERVE_TOKENS, max(0, context_length // 4))
+    return max(_REFERENCE_MIN_INPUT_BUDGET_TOKENS, context_length - reserve)
+
+
+def _reference_request_tokens(messages: list[dict[str, Any]]) -> int:
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    return estimate_request_tokens_rough(
+        [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *messages]
+    )
+
+
+def _fit_reference_messages_to_slot(
+    slot: dict[str, str],
+    ref_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    context_length = _slot_context_length(slot)
+    if not context_length:
+        return ref_messages
+
+    target_tokens = _reference_input_target_tokens(context_length)
+    if _reference_request_tokens(ref_messages) <= target_tokens:
+        return ref_messages
+
+    note = {
+        "role": "assistant",
+        "content": (
+            "[Earlier MoA advisory context omitted to fit this reference "
+            "model's context window.]"
+        ),
+    }
+    kept_reversed: list[dict[str, Any]] = []
+    for msg in reversed(ref_messages):
+        candidate = [note, msg, *reversed(kept_reversed)]
+        if _reference_request_tokens(candidate) <= target_tokens:
+            kept_reversed.append(msg)
+
+    fitted = [note, *reversed(kept_reversed)]
+    if len(fitted) > 1:
+        logger.info(
+            "MoA reference context fitted for %s: %d -> %d messages "
+            "(target ~%s tokens, ctx %s)",
+            _slot_label(slot),
+            len(ref_messages),
+            len(fitted),
+            f"{target_tokens:,}",
+            f"{context_length:,}",
+        )
+        return fitted
+
+    latest = ref_messages[-1] if ref_messages else {"role": "user", "content": ""}
+    text = latest.get("content") if isinstance(latest, dict) else ""
+    if not isinstance(text, str):
+        text = str(text or "")
+    trimmed = _trim_reference_text_to_fit(
+        text,
+        role=str(latest.get("role") or "user") if isinstance(latest, dict) else "user",
+        note=note,
+        target_tokens=target_tokens,
+    )
+    return [note, trimmed]
+
+
+def _trim_reference_text_to_fit(
+    text: str,
+    *,
+    role: str,
+    note: dict[str, str],
+    target_tokens: int,
+) -> dict[str, str]:
+    marker = "\n[... truncated to fit reference model context ...]\n"
+    low = 0
+    high = len(text)
+    best = ""
+    while low <= high:
+        keep = (low + high) // 2
+        if keep >= len(text):
+            candidate_text = text
+        else:
+            head = keep // 2
+            tail = keep - head
+            candidate_text = f"{text[:head]}{marker}{text[-tail:] if tail else ''}"
+        candidate = {"role": role if role in {"user", "assistant"} else "user", "content": candidate_text}
+        if _reference_request_tokens([note, candidate]) <= target_tokens:
+            best = candidate_text
+            low = keep + 1
+        else:
+            high = keep - 1
+    return {"role": role if role in {"user", "assistant"} else "user", "content": best}
+
+
+def _latest_user_content(messages: list[dict[str, Any]]) -> str | None:
+    for msg in reversed(messages):
+        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            return msg["content"]
+    return None
+
+
+def _aggregator_context_length(aggregator: dict[str, str]) -> int | None:
+    return _slot_context_length(aggregator)
+
+
+def _raise_if_aggregator_context_overflow(
+    *,
+    messages: list[dict[str, Any]],
+    aggregator: dict[str, str],
+    tools: list[dict[str, Any]] | None,
+) -> None:
+    context_length = _aggregator_context_length(aggregator)
+    if not context_length:
+        return
+
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    estimated_tokens = estimate_request_tokens_rough(messages, tools=tools)
+    if estimated_tokens <= context_length:
+        return
+
+    raise MoAAggregatorContextOverflow(
+        estimated_tokens=estimated_tokens,
+        context_length=context_length,
+        aggregator_label=_slot_label(aggregator),
+    )
+
+
 def aggregate_moa_context(
     *,
     user_prompt: str,
@@ -455,6 +622,8 @@ class MoAChatCompletions:
         # for free, without re-firing on a pure no-op re-call.
         self._ref_cache_key: tuple | None = None
         self._ref_cache_outputs: list[tuple[str, str]] = []
+        self._reuse_reference_outputs_after_overflow = False
+        self._overflow_retry_user_content: str | None = None
 
     def _emit(self, event: str, **kwargs: Any) -> None:
         cb = self.reference_callback
@@ -500,9 +669,18 @@ class MoAChatCompletions:
         ).hexdigest()
         _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
         _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
+        _latest_user = _latest_user_content(messages)
+        _reuse_after_overflow = (
+            self._reuse_reference_outputs_after_overflow
+            and bool(self._ref_cache_outputs)
+            and _latest_user is not None
+            and _latest_user == self._overflow_retry_user_content
+        )
 
-        if _refs_from_cache:
+        if _refs_from_cache or _reuse_after_overflow:
             reference_outputs = list(self._ref_cache_outputs)
+            if _reuse_after_overflow:
+                self._ref_cache_key = _cache_key
         else:
             reference_outputs = _run_references_parallel(
                 reference_models,
@@ -535,6 +713,9 @@ class MoAChatCompletions:
                     ref_count=_ref_count,
                 )
 
+        if aggregator.get("provider") == "moa":
+            raise RuntimeError("MoA aggregator cannot be another MoA preset")
+        agg_kwargs = dict(api_kwargs)
         agg_messages = [dict(m) for m in messages]
         if reference_outputs:
             joined = "\n\n".join(
@@ -557,9 +738,19 @@ class MoAChatCompletions:
             else:
                 agg_messages.append({"role": "user", "content": guidance})
 
-        if aggregator.get("provider") == "moa":
-            raise RuntimeError("MoA aggregator cannot be another MoA preset")
-        agg_kwargs = dict(api_kwargs)
+        try:
+            _raise_if_aggregator_context_overflow(
+                messages=agg_messages,
+                aggregator=aggregator,
+                tools=agg_kwargs.get("tools"),
+            )
+        except MoAAggregatorContextOverflow:
+            self._reuse_reference_outputs_after_overflow = True
+            self._overflow_retry_user_content = _latest_user
+            raise
+
+        self._reuse_reference_outputs_after_overflow = False
+        self._overflow_retry_user_content = None
         agg_kwargs["messages"] = agg_messages
         # The aggregator is the acting model. Resolve its slot to the provider's
         # real runtime (base_url/api_key/api_mode) and call it through the same

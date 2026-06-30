@@ -2353,6 +2353,9 @@ def run_conversation(
 
                 status_code = getattr(api_error, "status_code", None)
                 error_context = agent._extract_api_error_context(api_error)
+                _measured_context_tokens = getattr(api_error, "estimated_tokens", None)
+                if isinstance(_measured_context_tokens, int) and _measured_context_tokens > approx_tokens:
+                    approx_tokens = _measured_context_tokens
 
                 # ── Classify the error for structured recovery decisions ──
                 _compressor = getattr(agent, "context_compressor", None)

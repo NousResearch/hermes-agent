@@ -370,6 +370,14 @@ def _gateway_provider_error_reply(text: str) -> str:
     )
 
 
+def _gateway_provider_error_status_mode() -> str:
+    """Return how chat gateways should surface provider-error status messages."""
+    return os.getenv(
+        "HERMES_GATEWAY_PROVIDER_ERROR_STATUS_MODE",
+        "chat",
+    ).strip().lower()
+
+
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     r"api\s+(?:call\s+)?failed"
@@ -445,6 +453,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
+        if _gateway_provider_error_status_mode() in {
+            "log",
+            "logs",
+            "none",
+            "off",
+            "suppress",
+            "suppressed",
+        }:
+            return None
         return _gateway_provider_error_reply(text)
     return text
 

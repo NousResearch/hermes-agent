@@ -160,6 +160,15 @@ def test_telegram_status_sanitizes_raw_provider_security_errors():
     assert "req_123" not in sanitized
 
 
+def test_chat_gateway_can_suppress_provider_errors_to_logs(monkeypatch):
+    """Operators can keep provider-error status messages out of chat entirely."""
+    monkeypatch.setenv("HERMES_GATEWAY_PROVIDER_ERROR_STATUS_MODE", "log")
+
+    raw = "API call failed after 3 retries: HTTP 503 provider unavailable"
+
+    assert _prepare_gateway_status_message("slack", "warn", raw) is None
+
+
 def test_telegram_final_response_sanitizes_raw_provider_errors():
     """Final Telegram replies should not expose raw provider/security details."""
     raw = (

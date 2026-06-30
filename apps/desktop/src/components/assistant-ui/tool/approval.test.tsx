@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
+import { APPROVAL_RESPONSE_TIMEOUT_MS } from '@/lib/approval-response'
 import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
@@ -79,7 +80,11 @@ describe('PendingToolApproval', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
+      expect(request).toHaveBeenCalledWith(
+        'approval.respond',
+        { choice: 'once', session_id: 'sess-1' },
+        APPROVAL_RESPONSE_TIMEOUT_MS
+      )
     })
     expect($approvalRequest.get()).toBeNull()
   })
@@ -105,7 +110,11 @@ describe('PendingToolApproval', () => {
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'sess-1' })
+      expect(request).toHaveBeenCalledWith(
+        'approval.respond',
+        { choice: 'deny', session_id: 'sess-1' },
+        APPROVAL_RESPONSE_TIMEOUT_MS
+      )
     })
   })
 

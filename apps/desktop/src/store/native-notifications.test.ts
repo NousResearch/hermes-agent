@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { APPROVAL_RESPONSE_TIMEOUT_MS } from '@/lib/approval-response'
+
 import { $gateway } from './gateway'
 import {
   dispatchNativeNotification,
@@ -183,13 +185,21 @@ describe('respondToApprovalAction', () => {
 
     await respondToApprovalAction('bg', 'approve')
 
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      { choice: 'once', session_id: 'bg' },
+      APPROVAL_RESPONSE_TIMEOUT_MS
+    )
     expect($approvalRequest.get()).toBeNull()
   })
 
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith(
+      'approval.respond',
+      { choice: 'deny', session_id: 'bg' },
+      APPROVAL_RESPONSE_TIMEOUT_MS
+    )
   })
 
   it('ignores unknown action ids', async () => {

@@ -295,14 +295,16 @@ export function GatewaySettings() {
     try {
       // Save (don't apply/restart) so the login window has a URL to use and the
       // oauth mode is persisted, without yet flipping the live connection.
-      const saved = await window.hermesDesktop.saveConnectionConfig({
-        mode: 'remote',
-        profile: scope ?? undefined,
-        remoteAuthMode: 'oauth',
-        remoteUrl: trimmedUrl
-      })
+      if (!state.envOverride) {
+        const saved = await window.hermesDesktop.saveConnectionConfig({
+          mode: 'remote',
+          profile: scope ?? undefined,
+          remoteAuthMode: 'oauth',
+          remoteUrl: trimmedUrl
+        })
 
-      setState(saved)
+        setState(saved)
+      }
 
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
@@ -463,13 +465,13 @@ export function GatewaySettings() {
                   <Pill tone="primary">
                     <Check className="size-3" /> {g.signedIn}
                   </Pill>
-                  <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
+                  <Button disabled={signingIn} onClick={() => void signOut()} variant="outline">
                     {signingIn ? <Loader2 className="animate-spin" /> : null}
                     {g.signOut}
                   </Button>
                 </div>
               ) : (
-                <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
+                <Button disabled={signingIn || !trimmedUrl} onClick={() => void signIn()}>
                   {signingIn ? <Loader2 className="animate-spin" /> : <LogIn />}
                   {isPasswordProvider ? g.signIn : g.signInWith(providerLabel)}
                 </Button>

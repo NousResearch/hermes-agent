@@ -17,6 +17,8 @@ const {
   shell,
   systemPreferences
 } = require('electron')
+const APP_NAME = 'Reuben'
+const APP_ID = 'local.hki.reuben.desktop'
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
@@ -149,6 +151,7 @@ try {
 }
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
+app.setName(APP_NAME)
 if (USER_DATA_OVERRIDE) {
   const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)
   fs.mkdirSync(resolvedUserData, { recursive: true })
@@ -402,7 +405,6 @@ const BOOT_FAKE_STEP_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 650
   return Math.max(120, raw)
 })()
-const APP_NAME = 'Hermes'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 const WINDOW_BUTTON_POSITION = {
@@ -676,16 +678,15 @@ function previewFileMetadata(filePath, mimeType) {
   }
 }
 
-app.setName(APP_NAME)
 // Windows toast notifications silently no-op unless an AppUserModelID is set:
 // `new Notification().show()` returns without error and nothing appears. The
 // AUMID must match the installed Start Menu shortcut's AUMID, which
-// electron-builder derives from the build `appId` (com.nousresearch.hermes) —
+// electron-builder derives from the build `appId` —
 // keep this string in sync with package.json `build.appId`. macOS/Linux don't
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(APP_ID)
 }
 // Seed the native About panel with the live Hermes version. This is refreshed
 // on every open via the explicit "About" menu handler (refreshAboutPanel), so
@@ -2566,8 +2567,8 @@ async function applyUpdatesPosixInApp() {
   }
 
   const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', `${APP_NAME}.app`),
+    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', `${APP_NAME}.app`)
   ].find(directoryExists)
   const targetApp = runningAppBundle()
 
@@ -3835,7 +3836,11 @@ async function waitForHermes(baseUrl, token) {
 
   while (Date.now() < deadline) {
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      if (token) {
+        await fetchJson(`${baseUrl}/api/status`, token)
+      } else {
+        await fetchPublicJson(`${baseUrl}/api/status`)
+      }
       return
     } catch (error) {
       lastError = error
@@ -4426,7 +4431,7 @@ function openOauthLoginWindow(baseUrl) {
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: 'Sign in to Hermes gateway',
+        title: `Sign in to ${APP_NAME} gateway`,
         autoHideMenuBar: true,
         webPreferences: {
           contextIsolation: true,
@@ -4740,10 +4745,23 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
 
-  const remoteToken = decryptDesktopSecret(block.token)
-  const authMode = normAuthMode(block.authMode)
+  const remoteToken = envOverride
+    ? String(process.env.HERMES_DESKTOP_REMOTE_TOKEN || '')
+    : decryptDesktopSecret(block.token)
+  let authMode = normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
   const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
+
+  if (envOverride && remoteUrl) {
+    try {
+      const probe = await probeRemoteAuthMode(remoteUrl)
+      if (probe.authMode === 'oauth' || probe.authMode === 'token') {
+        authMode = probe.authMode
+      }
+    } catch {
+      // Keep the persisted fallback mode if the public probe is unreachable.
+    }
+  }
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
@@ -4887,6 +4905,41 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
   }
 }
 
+async function resolveEnvRemoteConnection(rawEnvUrl, rawEnvToken) {
+  const baseUrl = normalizeRemoteBaseUrl(rawEnvUrl)
+  let authMode = rawEnvToken ? 'token' : 'oauth'
+
+  try {
+    const status = await fetchPublicJson(`${baseUrl}/api/status`, { timeoutMs: 8_000 })
+    authMode = authModeFromStatus(status)
+  } catch (error) {
+    if (rawEnvToken) {
+      return buildRemoteConnection(baseUrl, 'token', rawEnvToken, 'env')
+    }
+
+    const err = new Error(
+      `Could not reach remote Hermes gateway at ${baseUrl}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+    err.cause = error
+    throw err
+  }
+
+  if (authMode === 'oauth') {
+    return buildRemoteConnection(baseUrl, 'oauth', null, 'env')
+  }
+
+  if (!rawEnvToken) {
+    throw new Error(
+      'HERMES_DESKTOP_REMOTE_URL points at a token-auth remote gateway, but HERMES_DESKTOP_REMOTE_TOKEN is not set. ' +
+        'Set HERMES_DESKTOP_REMOTE_TOKEN or enable gateway login auth on the remote gateway.'
+    )
+  }
+
+  return buildRemoteConnection(baseUrl, 'token', rawEnvToken, 'env')
+}
+
 // Resolve the remote backend for a given profile, or null when that profile
 // should run a LOCAL backend. Precedence:
 //   1. explicit per-profile remote override (connection.json `profiles[name]`)
@@ -4906,17 +4959,12 @@ async function resolveRemoteBackend(profile) {
     return buildRemoteConnection(override.url, override.authMode, token, 'profile')
   }
 
-  // 2. Env override (global, token-auth only).
+  // 2. Env override (global). Probe /api/status so gated gateways use the
+  //    cookie + ws-ticket path; ungated/token gateways still require a token.
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
   if (rawEnvUrl) {
-    if (!rawEnvToken) {
-      throw new Error(
-        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-          'Both must be provided to connect to a remote Hermes backend.'
-      )
-    }
-    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
+    return resolveEnvRemoteConnection(rawEnvUrl, rawEnvToken)
   }
 
   // 3. Global remote.
@@ -5439,7 +5487,7 @@ function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
     height: SESSION_WINDOW_MIN_HEIGHT,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: APP_NAME,
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -5639,7 +5687,7 @@ function createWindow() {
     ...computeWindowOptions(savedWindowState, screen.getAllDisplays()),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: APP_NAME,
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit
@@ -6197,7 +6245,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   // and the body click still works.
   const actions = Array.isArray(payload?.actions) ? payload.actions : []
   const notification = new Notification({
-    title: payload?.title || 'Hermes',
+    title: payload?.title || APP_NAME,
     body: payload?.body || '',
     silent: Boolean(payload?.silent),
     actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
@@ -7117,18 +7165,18 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00).
+// reuben:// deep links (e.g. reuben://blueprint/morning-brief?time=08:00).
 // A docs/dashboard "Send to App" button opens this URL; we route it into the
 // running app's chat composer. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
-const HERMES_PROTOCOL = 'hermes'
+const APP_PROTOCOL = 'reuben'
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 
 function _extractDeepLink(argv) {
   if (!Array.isArray(argv)) return null
-  return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
+  return argv.find(a => typeof a === 'string' && a.startsWith(`${APP_PROTOCOL}://`)) || null
 }
 
 function handleDeepLink(url) {
@@ -7140,7 +7188,7 @@ function handleDeepLink(url) {
     rememberLog(`[deeplink] ignoring malformed url: ${url}`)
     return
   }
-  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
+  // reuben://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
   const kind = parsed.hostname || ''
   const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
   const params = {}
@@ -7171,7 +7219,7 @@ ipcMain.handle('hermes:deep-link-ready', () => {
     const queued = _pendingDeepLink
     _pendingDeepLink = null
     handleDeepLink(
-      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
+      `${APP_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
         (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
     )
   }
@@ -7183,9 +7231,9 @@ function registerDeepLinkProtocol() {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can
       // relaunch us with the URL.
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+      app.setAsDefaultProtocolClient(APP_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
     } else {
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
+      app.setAsDefaultProtocolClient(APP_PROTOCOL)
     }
   } catch (err) {
     rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
@@ -7193,7 +7241,7 @@ function registerDeepLinkProtocol() {
 }
 
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
-// second-instance argv. Without the lock a second `hermes://` launch spawns a
+// second-instance argv. Without the lock a second `reuben://` launch spawns a
 // whole new app instead of routing into the running one.
 const _gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!_gotSingleInstanceLock) {
@@ -7231,7 +7279,7 @@ app.whenReady().then(() => {
   registerPowerResumeListeners()
   createWindow()
 
-  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
+  // Win/Linux cold start: the launching reuben:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
   if (_coldStartLink) handleDeepLink(_coldStartLink)
 

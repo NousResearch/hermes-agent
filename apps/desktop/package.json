@@ -1,9 +1,9 @@
 {
-  "name": "hermes",
-  "productName": "Hermes",
+  "name": "reuben",
+  "productName": "Reuben",
   "private": true,
   "version": "0.17.0",
-  "description": "Native desktop shell for Hermes Agent.",
+  "description": "Native desktop shell for Reuben.",
   "author": "Nous Research",
   "type": "module",
   "main": "electron/main.cjs",
@@ -145,18 +145,18 @@
   },
   "build": {
     "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
+    "appId": "local.hki.reuben.desktop",
+    "productName": "Reuben",
+    "executableName": "Reuben",
     "protocols": [
       {
-        "name": "Hermes Protocol",
+        "name": "Reuben Protocol",
         "schemes": [
-          "hermes"
+          "reuben"
         ]
       }
     ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "artifactName": "Reuben-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
       "output": "release"
@@ -197,11 +197,11 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "CFBundleDisplayName": "Reuben",
+        "CFBundleExecutable": "Reuben",
+        "CFBundleName": "Reuben",
+        "NSAudioCaptureUsageDescription": "Reuben uses audio capture for voice conversations.",
+        "NSMicrophoneUsageDescription": "Reuben uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
@@ -211,7 +211,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install Reuben",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -233,7 +233,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "Reuben",
       "target": [
         "nsis",
         "msi"
@@ -243,7 +243,7 @@
     "linux": {
       "category": "Development",
       "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "synopsis": "Native desktop shell for Reuben.",
       "target": [
         "AppImage",
         "deb",
@@ -254,8 +254,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "Reuben",
+      "uninstallDisplayName": "Reuben",
       "warningsAsErrors": false
     }
   }

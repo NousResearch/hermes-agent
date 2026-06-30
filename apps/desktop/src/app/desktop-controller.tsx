@@ -358,7 +358,7 @@ export function DesktopController() {
     return () => unsubscribe?.()
   }, [])
 
-  // hermes:// deep links (e.g. a docs "Send to App" button for an automation blueprint).
+  // reuben:// deep links (e.g. a docs "Send to App" button for an automation blueprint).
   // Build the equivalent /blueprint slash command from the payload and drop
   // it into the composer — the user reviews/edits, then sends; the agent (or
   // the shared command handler) creates the job. Signal readiness so a link

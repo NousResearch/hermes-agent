@@ -49,7 +49,7 @@ export function BootFailureOverlay() {
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
       .catch(() => undefined)
-  }, [visible])
+  }, [boot.error, visible])
 
   // Resolve whether this boot failure is a remote-gateway reauth so we can
   // offer the actionable "Sign in" path instead of the local-only recovery
@@ -78,7 +78,7 @@ export function BootFailureOverlay() {
         return
       }
 
-      if (cancelled || !isRemoteReauthFailure(config)) {
+      if (cancelled || !isRemoteReauthFailure(config, boot.error)) {
         return
       }
 

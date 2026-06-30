@@ -27,6 +27,12 @@ describe('isRemoteReauthFailure', () => {
     expect(isRemoteReauthFailure(config({ remoteOauthConnected: true }))).toBe(false)
   })
 
+  it('true for a connected-looking oauth session when boot reports an auth failure', () => {
+    expect(
+      isRemoteReauthFailure(config({ remoteOauthConnected: true }), 'Your remote gateway session has expired.')
+    ).toBe(true)
+  })
+
   it('false for a local gateway', () => {
     expect(isRemoteReauthFailure(config({ mode: 'local' }))).toBe(false)
   })

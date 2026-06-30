@@ -32,7 +32,14 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
 // fix it — only re-establishing the remote session can. A connected oauth
 // session, or a token/local gateway, boots for some other reason the
 // local-recovery buttons address, so those return false here.
-export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined): boolean {
+function isRemoteAuthError(message?: string | null): boolean {
+  return /sign in|session (?:has )?expired|not signed in|oauth session|websocket ticket/i.test(String(message || ''))
+}
+
+export function isRemoteReauthFailure(
+  config: DesktopConnectionConfig | null | undefined,
+  errorMessage?: string | null
+): boolean {
   if (!config) {
     return false
   }
@@ -40,7 +47,7 @@ export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | u
   return (
     config.mode === 'remote' &&
     config.remoteAuthMode === 'oauth' &&
-    !config.remoteOauthConnected &&
+    (!config.remoteOauthConnected || isRemoteAuthError(errorMessage)) &&
     Boolean(config.remoteUrl)
   )
 }

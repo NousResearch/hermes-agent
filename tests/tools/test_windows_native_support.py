@@ -601,6 +601,29 @@ class TestSubprocessCompatHelpers:
             "can respawn the gateway after Electron exits."
         )
 
+    def test_windows_hide_flags_includes_breakaway_from_job(self, monkeypatch):
+        """CREATE_BREAKAWAY_FROM_JOB is load-bearing for ``windows_hide_flags()``.
+
+        Without it, ``CREATE_NO_WINDOW`` alone is silently ignored when the
+        parent process lives inside a Windows Job Object (Electron, Tauri,
+        etc.).  Every subprocess spawn produces a visible ``cmd.exe`` flash
+        instead of running headless.
+
+        Regression guard for issue #55604.
+        """
+        from hermes_cli import _subprocess_compat as sc
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        flags = sc.windows_hide_flags()
+        assert flags & 0x08000000, "missing CREATE_NO_WINDOW"
+        assert flags & 0x01000000, (
+            "CREATE_BREAKAWAY_FROM_JOB (0x01000000) must be present in "
+            "windows_hide_flags() so child processes inside Electron / Tauri "
+            "job objects are not forcibly re-parented."
+        )
+        # Must NOT include DETACHED_PROCESS — that severs stdio and breaks
+        # capture_output=True, which is the whole point of hide vs detach.
+        assert not (flags & 0x00000008), "DETACHED_PROCESS must not be in hide flags"
+
     def test_windows_detach_flags_without_breakaway_drops_only_that_bit(
         self, monkeypatch
     ):

@@ -298,3 +298,25 @@ def test_flush_guard_clamps_overshooting_cursor():
 
     # min(5, 2) = 2 → nothing skipped below start_idx, cursor settles at 2
     assert agent._last_flushed_db_idx == 2
+
+
+def test_repair_message_sequence_deduplicates_tool_call_ids():
+    """Duplicate tool response messages for the same tool_call_id should be dropped."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "run the tools"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "function": {"name": "test", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "res1"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "res1 duplicate"},
+    ]
+    repairs = repair_message_sequence(agent, messages)
+    assert repairs == 1
+    assert len(messages) == 3
+    assert messages[0] == {"role": "user", "content": "run the tools"}
+    assert messages[1]["role"] == "assistant"
+    assert messages[2] == {"role": "tool", "tool_call_id": "call_1", "content": "res1"}

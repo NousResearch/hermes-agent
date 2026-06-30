@@ -408,6 +408,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             tc_id = msg.get("tool_call_id")
             if tc_id and tc_id in known_tool_ids:
                 filtered.append(msg)
+                known_tool_ids.discard(tc_id)
             else:
                 repairs += 1
         else:

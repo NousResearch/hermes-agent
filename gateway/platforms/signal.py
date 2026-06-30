@@ -193,11 +193,30 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
         return None
 
 
+def _utf16_to_codepoint_index(text: str, utf16_offset: int) -> int:
+    """Convert a UTF-16 code-unit offset into a Python code-point index.
+
+    signal-cli reports mention offsets in UTF-16 code units (the same protocol
+    fact ``signal_format._utf16_len`` relies on), while Python ``str`` slicing
+    is code-point indexed. A non-BMP char (e.g. an emoji) counts as two UTF-16
+    units but one code point, so the two indices diverge after it.
+    """
+    units = 0
+    for idx, ch in enumerate(text):
+        if units >= utf16_offset:
+            return idx
+        units += 2 if ord(ch) > 0xFFFF else 1
+    return len(text)
+
+
 def _render_mentions(text: str, mentions: list) -> str:
     """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
 
     Signal encodes @mentions as the Unicode object replacement character
     with out-of-band metadata containing the mentioned user's UUID/number.
+
+    The ``start``/``length`` metadata is expressed in UTF-16 code units, so it
+    is mapped to code-point indices before slicing the Python ``str``.
     """
     if not mentions or "\uFFFC" not in text:
         return text
@@ -207,10 +226,14 @@ def _render_mentions(text: str, mentions: list) -> str:
     for mention in sorted_mentions:
         start = mention.get("start", 0)
         length = mention.get("length", 1)
+        # signal-cli offsets are UTF-16 code units; convert to code-point
+        # indices so emoji-before-mention text slices at the right boundary.
+        start_cp = _utf16_to_codepoint_index(text, start)
+        end_cp = _utf16_to_codepoint_index(text, start + length)
         # Use the mention's number or UUID as the replacement
         identifier = mention.get("number") or mention.get("uuid") or "user"
         replacement = f"@{identifier}"
-        text = text[:start] + replacement + text[start + length:]
+        text = text[:start_cp] + replacement + text[end_cp:]
     return text
 
 

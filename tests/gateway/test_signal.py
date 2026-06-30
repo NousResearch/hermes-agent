@@ -298,6 +298,43 @@ class TestSignalHelpers:
         result = _render_mentions(text, [])
         assert result == "Hello world"
 
+    def test_render_mentions_emoji_before_mention(self):
+        # signal-cli reports mention offsets in UTF-16 code units. A non-BMP
+        # emoji (👋 = 2 UTF-16 units, 1 code point) before the placeholder
+        # makes the reported start (3) exceed the code-point index (2). If the
+        # str is sliced by the raw UTF-16 offset, the ￼ placeholder is left
+        # in and the @identifier lands one position too far.
+        from gateway.platforms.signal import _render_mentions
+        text = "\U0001F44B ￼ hi"  # 👋 ￼ hi
+        mentions = [{"start": 3, "length": 1, "number": "+15551230000"}]
+        result = _render_mentions(text, mentions)
+        assert result == "\U0001F44B @+15551230000 hi"
+        assert "￼" not in result
+
+    def test_render_mentions_bmp_only_unchanged(self):
+        # Regression guard: with no non-BMP char before the mention the UTF-16
+        # offset equals the code-point index, so behavior is identical.
+        from gateway.platforms.signal import _render_mentions
+        text = "hi ￼ there"
+        mentions = [{"start": 3, "length": 1, "number": "+15551230000"}]
+        result = _render_mentions(text, mentions)
+        assert result == "hi @+15551230000 there"
+        assert "￼" not in result
+
+    def test_render_mentions_multiple_with_emoji(self):
+        # Two mentions, an emoji before both. Reverse-by-start replacement must
+        # still land each @identifier at the right code-point position.
+        from gateway.platforms.signal import _render_mentions
+        text = "\U0001F44B ￼ and ￼"  # 👋 ￼ and ￼
+        # UTF-16 offsets: 👋=2 units -> first ￼ at u16 3, second ￼ at u16 9.
+        mentions = [
+            {"start": 3, "length": 1, "number": "+15550000001"},
+            {"start": 9, "length": 1, "number": "+15550000002"},
+        ]
+        result = _render_mentions(text, mentions)
+        assert result == "\U0001F44B @+15550000001 and @+15550000002"
+        assert "￼" not in result
+
     def test_check_requirements_missing(self, monkeypatch):
         from gateway.platforms.signal import check_signal_requirements
         monkeypatch.delenv("SIGNAL_HTTP_URL", raising=False)

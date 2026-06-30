@@ -4444,6 +4444,23 @@ class SessionDB:
             cursor = self._conn.execute(f"SELECT COUNT(*) FROM sessions s{where_sql}", params)
             return cursor.fetchone()[0]
 
+    def source_counts(
+        self,
+        include_archived: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return per-source session counts, ordered by count descending.
+
+        Each entry has keys ``source`` and ``count``.  Excludes archived
+        sessions by default (same as ``session_count``).
+        """
+        where = "" if include_archived else " WHERE archived = 0"
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT source, COUNT(*) AS cnt FROM sessions{where}"
+                " GROUP BY source ORDER BY cnt DESC"
+            )
+            return [{"source": row[0], "count": row[1]} for row in cursor]
+
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
         with self._lock:

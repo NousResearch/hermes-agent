@@ -4778,3 +4778,29 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 
     monkeypatch.setattr(hermes_state.time, "time", lambda: 1016.0)
     assert db.try_acquire_compression_lock("s1", "holder-b", ttl_seconds=10.0) is True
+
+
+def test_source_counts(db):
+    db.create_session(session_id="s1", source="cli")
+    db.create_session(session_id="s2", source="telegram")
+    db.create_session(session_id="s3", source="cli")
+    db.create_session(session_id="s4", source="cron")
+    db.create_session(session_id="s5", source="tui")
+    result = db.source_counts()
+    assert result[0] == {"source": "cli", "count": 2}
+    # Remaining sources each have count 1; order among ties is not guaranteed
+    remaining = {e["source"]: e["count"] for e in result[1:]}
+    assert remaining == {"telegram": 1, "cron": 1, "tui": 1}
+
+
+def test_source_counts_excludes_archived(db):
+    db.create_session(session_id="s1", source="cli")
+    db.create_session(session_id="s2", source="cron")
+    db.set_session_archived("s2", True)
+    result = db.source_counts()
+    assert len(result) == 1
+    assert result[0] == {"source": "cli", "count": 1}
+    # With include_archived=True, both appear
+    result_all = db.source_counts(include_archived=True)
+    sources = {e["source"]: e["count"] for e in result_all}
+    assert sources == {"cli": 1, "cron": 1}

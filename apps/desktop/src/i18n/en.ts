@@ -523,7 +523,7 @@ export const en: Translations = {
         `Connection used only when “${profile}” is the active profile. Leave it unset to inherit the default.`,
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
-        'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
+        'This launch is using HERMES_DESKTOP_REMOTE_URL or HERMES_DESKTOP_REMOTE_TOKEN. Saving still writes the URL for normal Finder/Dock launches.',
       localTitle: 'Local gateway',
       localDesc: 'Local backends are configured by URL, just like any other backend.',
       remoteTitle: 'Remote gateway',

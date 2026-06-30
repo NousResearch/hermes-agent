@@ -293,18 +293,17 @@ export function GatewaySettings() {
     setSigningIn(true)
 
     try {
-      // Save (don't apply/restart) so the login window has a URL to use and the
-      // oauth mode is persisted, without yet flipping the live connection.
-      if (!state.envOverride) {
-        const saved = await window.hermesDesktop.saveConnectionConfig({
-          mode: 'remote',
-          profile: scope ?? undefined,
-          remoteAuthMode: 'oauth',
-          remoteUrl: trimmedUrl
-        })
+      // Save (don't apply/restart) so the URL + oauth mode are durable for the
+      // next Finder/Dock launch, even when this process was booted from an env
+      // override like HERMES_DESKTOP_REMOTE_URL.
+      const saved = await window.hermesDesktop.saveConnectionConfig({
+        mode: 'remote',
+        profile: scope ?? undefined,
+        remoteAuthMode: 'oauth',
+        remoteUrl: trimmedUrl
+      })
 
-        setState(saved)
-      }
+      setState(saved)
 
       const result = await window.hermesDesktop.oauthLoginConnectionConfig(trimmedUrl)
 
@@ -517,7 +516,7 @@ export function GatewaySettings() {
       <div className="mt-6 flex flex-wrap items-center justify-end gap-4">
         <Button
           className="mr-auto"
-          disabled={state.envOverride || testing || !canUseRemote}
+          disabled={testing || !canUseRemote}
           onClick={() => void testRemote()}
           size="sm"
           variant="text"
@@ -525,10 +524,10 @@ export function GatewaySettings() {
           {testing ? <Loader2 className="animate-spin" /> : null}
           {g.testRemote}
         </Button>
-        <Button disabled={state.envOverride || saving} onClick={() => void save(false)} size="sm" variant="textStrong">
+        <Button disabled={saving} onClick={() => void save(false)} size="sm" variant="textStrong">
           {g.saveForRestart}
         </Button>
-        <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
+        <Button disabled={saving} onClick={() => void save(true)} size="sm">
           {saving ? <Loader2 className="animate-spin" /> : null}
           {g.saveAndReconnect}
         </Button>

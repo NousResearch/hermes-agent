@@ -64,6 +64,7 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
+import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
@@ -971,45 +972,8 @@ export function ChatBar({
   const { handleBranchOff, handleConvertBranch, handleListBranches, handleSwitchBranch, openInWorktree } =
     useComposerBranch({ clearDraft, cwd, draftRef })
 
-  // Esc cancels the in-flight turn when the CHAT has focus — not just the
-  // composer input (which has its own handler above). Clicking into the
-  // transcript and hitting Esc now stops the run, matching the Stop button.
-  // Intentional only: we bail if (a) the composer/another field already
-  // handled Esc (defaultPrevented), (b) focus is in any input/textarea/
-  // contenteditable (you're typing, not stopping), or (c) a dialog/popover is
-  // open — Esc must close that overlay, never double as canceling the stream
-  // behind it. A latest-handler ref keeps the listener registered once.
-  const escCancelRef = useRef<(event: globalThis.KeyboardEvent) => void>(() => {})
-
-  escCancelRef.current = (event: globalThis.KeyboardEvent) => {
-    // `awaitingInput`: the turn is parked on a clarify / approval / sudo / secret
-    // prompt, which owns Esc (or is meant to persist) — never cancel the stream
-    // out from under it.
-    if (event.key !== 'Escape' || event.defaultPrevented || !busy || awaitingInput) {
-      return
-    }
-
-    const active = document.activeElement as HTMLElement | null
-
-    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
-      return
-    }
-
-    if (document.querySelector('[role="dialog"],[role="alertdialog"],[data-radix-popper-content-wrapper]')) {
-      return
-    }
-
-    event.preventDefault()
-    triggerHaptic('cancel')
-    void Promise.resolve(onCancel())
-  }
-
-  useEffect(() => {
-    const onKeyDown = (event: globalThis.KeyboardEvent) => escCancelRef.current(event)
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  // Global Esc-to-cancel when the chat (not the composer input) has focus.
+  useComposerEscCancel({ awaitingInput, busy, onCancel })
 
   const submitUrl = () => {
     const url = urlValue.trim()

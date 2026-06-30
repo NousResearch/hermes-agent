@@ -7,6 +7,8 @@ multiplex mode fails closed instead of leaking.
 """
 import pytest
 
+from pathlib import Path
+
 from agent import secret_scope as ss
 
 
@@ -86,3 +88,71 @@ class TestMcpInterpolationUsesScope:
         monkeypatch.setenv("MY_MCP_TOKEN", "env-token")
         # multiplex off: legacy os.environ resolution
         assert _interpolate_env_vars("${MY_MCP_TOKEN}") == "env-token"
+
+
+class TestProfilePathResolutionUnderMultiplexScope:
+    """Profile-scoped paths must follow the per-turn _profile_runtime_scope.
+
+    The multiplexed gateway (gateway.multiplex_profiles) serves every profile
+    from ONE process, scoping each inbound turn with _profile_runtime_scope —
+    the same in-process-many-profiles topology as the desktop tui_gateway. The
+    profile-isolation fixes (per-call path resolution + thread context
+    propagation) must therefore hold under THIS scope too, not just desktop.
+    This is the regression guard proving reachability is not desktop-only.
+    """
+
+    def _profiles(self, tmp_path):
+        prof_a = tmp_path / "profA"
+        prof_b = tmp_path / "profB"
+        for p in (prof_a, prof_b):
+            (p / "skills").mkdir(parents=True, exist_ok=True)
+            (p / "state").mkdir(parents=True, exist_ok=True)
+        return prof_a, prof_b
+
+    def test_skills_dir_follows_multiplex_scope(self, tmp_path):
+        from gateway.run import _profile_runtime_scope
+        import tools.skills_hub as sh
+
+        prof_a, prof_b = self._profiles(tmp_path)
+        with _profile_runtime_scope(prof_a):
+            a_seen = Path(sh.SKILLS_DIR)
+        with _profile_runtime_scope(prof_b):
+            b_seen = Path(sh.SKILLS_DIR)
+
+        assert a_seen == prof_a / "skills"
+        assert b_seen == prof_b / "skills"
+
+    def test_cache_dir_follows_multiplex_scope(self, tmp_path):
+        from gateway.run import _profile_runtime_scope
+        import gateway.platforms.base as gb
+
+        _prof_a, prof_b = self._profiles(tmp_path)
+        with _profile_runtime_scope(prof_b):
+            seen = gb.get_image_cache_dir()
+        assert str(seen).startswith(str(prof_b))
+
+    def test_worker_thread_inherits_multiplex_scope(self, tmp_path):
+        """A wrapped worker spawned inside the scope must see the right profile.
+
+        The _profile_runtime_scope docstring relies on copy_context() carrying
+        the override into the agent worker thread; this proves the M2 fix
+        primitive delivers that under the multiplexer's scope.
+        """
+        import threading
+
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_hermes_home
+        from tools.thread_context import propagate_context_to_thread
+
+        _prof_a, prof_b = self._profiles(tmp_path)
+        seen = {}
+
+        def worker():
+            seen["home"] = str(get_hermes_home())
+
+        with _profile_runtime_scope(prof_b):
+            t = threading.Thread(target=propagate_context_to_thread(worker))
+            t.start()
+            t.join()
+
+        assert seen["home"] == str(prof_b)

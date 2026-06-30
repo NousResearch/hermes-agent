@@ -210,4 +210,29 @@ describe('preprocessMarkdown', () => {
 
     expect(() => preprocessMarkdown(input)).not.toThrow()
   })
+
+  it('keeps $$<digit>$$ display math intact instead of escaping it as currency', () => {
+    const output = preprocessMarkdown('$$5x = 10$$')
+
+    expect(output).toContain('$$5x = 10$$')
+    expect(output).not.toContain('\\$')
+  })
+
+  it('rewrites double-backslash bracket math to dollar delimiters', () => {
+    const output = preprocessMarkdown('\\\\(x^2\\\\)')
+
+    expect(output).toContain('$x^2$')
+  })
+
+  it('rewrites [/math] and [/inline] tag pairs to dollar delimiters', () => {
+    expect(preprocessMarkdown('[/math]a+b[/math]')).toContain('$$a+b$$')
+    expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
+  })
+
+  it('escapes currency dollars in prose so they are not parsed as math', () => {
+    const output = preprocessMarkdown('$5 and $10')
+
+    expect(output).toContain('\\$5')
+    expect(output).toContain('\\$10')
+  })
 })

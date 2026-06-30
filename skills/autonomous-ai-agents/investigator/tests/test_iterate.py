@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Unit tests for the iterate-context loop logic — deterministic, no network.
+"""Unit tests for the Investigator loop — deterministic, no network.
 
 Monkeypatches iterate.rank so the loop's stop/cap/tombstone/eligibility logic is tested in
-isolation (no Ollama, no hermes). Run:
-    python3 -m pytest tests/test_iterate.py -v        (or)   python3 tests/test_iterate.py
+isolation (no Ollama, no hermes). Resolves the sibling information-gain ranker via
+INFOGAIN_SCRIPTS_DIR. Run:
+    python3 tests/test_iterate.py
 """
 
 import os
@@ -11,6 +12,9 @@ import sys
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+# Point the investigator at the sibling information-gain ranker (source tree) + make iterate importable.
+os.environ.setdefault("INFOGAIN_SCRIPTS_DIR",
+                      os.path.abspath(os.path.join(_HERE, "..", "..", "information-gain", "scripts")))
 sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
 
 import iterate  # noqa: E402
@@ -59,9 +63,7 @@ class LoopLogic(unittest.TestCase):
         self.assertFalse(out["artificial_cap_bound"])
 
     def test_k_caps_research_per_round(self):
-        # 5 above floor, K=2 -> only 2 researched in the (single, then converged) round
         self._patch([[q("a", .9), q("b", .8), q("c", .7), q("d", .6), q("e", .5)]])
-        # after answering a,b the same list returns; c,d,e still above floor -> more rounds
         out = iterate.iterate("p", {"k": 2, "max_rounds": 1, "floor": 0.12},
                               answerer=found_answerer, responder=mock_responder)
         self.assertEqual(out["n_answered"], 2)          # only K researched
@@ -70,7 +72,6 @@ class LoopLogic(unittest.TestCase):
         self.assertTrue(out["artificial_cap_bound"])
 
     def test_answered_filter_drives_convergence(self):
-        # same 3 questions every round; once all answered -> converged (no new above floor)
         same = [q("a", .9), q("b", .8), q("c", .7)]
         self._patch([same])
         out = iterate.iterate("p", {"k": 2, "max_rounds": 5, "floor": 0.12},
@@ -80,7 +81,6 @@ class LoopLogic(unittest.TestCase):
         self.assertEqual(out["rounds"], 2 + 1)          # r1: a,b · r2: c · r3: converged
 
     def test_max_rounds_with_fresh_questions(self):
-        # fresh distinct questions each round -> never converges -> hits max_rounds
         self._patch([[q("r1a", .9), q("r1b", .8)],
                      [q("r2a", .9), q("r2b", .8)],
                      [q("r3a", .9), q("r3b", .8)],
@@ -101,7 +101,6 @@ class LoopLogic(unittest.TestCase):
         self.assertIn("known gap", out["tombstones"][0]["evidence"])
 
     def test_context_grows_monotonically(self):
-        # each rank() call should see one more fact than the last (append-only context)
         self._patch([[q("a", .9), q("b", .8)], [q("c", .7), q("d", .6)], [q("e", .5)]])
         iterate.iterate("p", {"k": 2, "max_rounds": 3, "floor": 0.12},
                         answerer=found_answerer, responder=mock_responder)
@@ -110,7 +109,6 @@ class LoopLogic(unittest.TestCase):
         self.assertEqual(sizes, [0, 2, 4])              # facts accrue across rounds
 
     def test_extract_recovers_long_false_positive(self):
-        # is_api_error mislabels a long real answer (about errors) -> recover from `error`
         text, err = iterate._extract({"content": "", "error": "API error: " + ("x. " * 100)})
         self.assertIsNone(err)
         self.assertGreater(len(text), 200)
@@ -133,6 +131,22 @@ class LoopLogic(unittest.TestCase):
         bot = iterate.validate_selection("p", "bottom", 2, answerer=found_answerer, responder=mock_responder)
         self.assertEqual(top["selected"], ["top1", "top2"])
         self.assertEqual(bot["selected"], ["bot1", "bot2"])  # reversed: worst-first
+
+    # ── capability ladder ──
+    def test_capability_act_is_full_default(self):
+        cfg = iterate.apply_capability({}, "act")
+        self.assertIn("terminal", cfg["answer_toolsets"])
+        self.assertEqual(cfg["answer_directive"], "")
+
+    def test_capability_read_downscopes(self):
+        cfg = iterate.apply_capability({}, "read")
+        self.assertNotIn("terminal", cfg["answer_toolsets"])
+        self.assertIn("READ-ONLY", cfg["answer_directive"])
+
+    def test_capability_experiment_reversible_directive(self):
+        cfg = iterate.apply_capability({}, "experiment")
+        self.assertIn("terminal", cfg["answer_toolsets"])
+        self.assertIn("REVERSIBLE", cfg["answer_directive"])
 
 
 if __name__ == "__main__":

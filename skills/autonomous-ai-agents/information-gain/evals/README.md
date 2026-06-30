@@ -1,9 +1,9 @@
 # Evals
 
-Evaluation + validation harnesses for the information-gain ranker and the iterate-context wrapper.
-Findings live in `../references/{benchmark-findings,evsi-validation-findings}.md`. Most run on the
-host against `localhost:11434` (immune to container restarts); the wrapper validation runs **inside
-the hermes container** (the grounded answerer shells out to `hermes`).
+Evaluation + validation harnesses for the **information-gain ranker**. Findings live in
+`../references/{benchmark-findings,evsi-validation-findings}.md`. These run on the host against
+`localhost:11434` (immune to container restarts). The end-to-end **wrapper** A/B harness moved with the
+loop into the sibling **`investigator`** skill (`../../investigator/evals/validate_wrapper.py`).
 
 | script | what it does | findings |
 |---|---|---|
@@ -15,7 +15,8 @@ the hermes container** (the grounded answerer shells out to `hermes`).
 | `validate_evsi.py` | inject projected answer → re-derive → judge **realized change** (+ realized **stakes**). `--source bucket\|all_scored`. | §P1a, §Agentic realized calibration |
 | `analyze_evsi.py` | post-hoc calibration + formula ablations from a validate_evsi run. | §P1a / §P1c |
 | `analyze_validity.py` | de-confounded per-regime analysis (stakes-judge calibration, regret). | §realized-stakes instrument |
-| `validate_wrapper.py` | end-to-end #21: baseline vs wrapper(top-K), blind A/B. `--cwd` pins to a real project (de-confounds). | §Wrapper end-to-end |
+
+*(End-to-end wrapper A/B — `validate_wrapper.py` — now lives in the `investigator` skill's `evals/`.)*
 
 ## Headline results
 

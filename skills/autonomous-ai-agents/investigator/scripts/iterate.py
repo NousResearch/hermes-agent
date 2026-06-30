@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""iterate.py — minimal iterate-context wrapper around the info-gain ranker (KISS v1).
+"""iterate.py — the Investigator: build context to convergence, then respond.
 
-The skill ranks clarifying questions; this wrapper builds context to convergence and then
-responds. The loop (one continuously-growing context — append-only):
+A dedicated investigator skill, SEPARATE from the `information-gain` ranker. It *calls* the ranker
+to get the next-best questions, then answers them with a full Hermes agent and folds each distilled
+fact into one continuously-growing context (append-only). The loop:
 
     tombstones = []                                  # answered facts + known gaps
     for round in range(max_rounds):
@@ -10,21 +11,27 @@ responds. The loop (one continuously-growing context — append-only):
         ranked   = infogain.run(problem, evidence)   # rank given everything known so far
         above    = [q in ranked if value >= floor and not already answered][:K]   # top-K BY RANK
         if not above: stop "converged"
-        for q in above: tombstones += grounded_answer(q)   # `ask` skill, all tools, distilled
+        for q in above: tombstones += grounded_answer(q)   # `ask` skill, full agency, distilled
     final = respond(problem, evidence)
 
 Design notes:
 - Selection is **top-K by rank** (sidesteps the absolute-threshold problem; floor only ends the loop).
-- The grounded ANSWERER is the `ask` skill (`dispatch_single`: full Hermes agent, all tools, isolated
-  context) — only the distilled fact returns, so the loop context stays lean. Runs INSIDE the hermes
-  container (`hermes` binary). NOT_FOUND is recorded as a plain gap (no revival machinery yet — YAGNI).
+- The grounded ANSWERER is the `ask` skill (`dispatch_single`: full Hermes agent, isolated context) —
+  only the distilled fact returns, so the loop context stays lean. Runs INSIDE the hermes container.
+- **Capability ladder** (`--capability`, default `act`): full agency by default (all tools, unattended);
+  `experiment`/`read` only down-scope for caution. See CAPABILITIES below + references/investigator.md.
+- NOT_FOUND is recorded as a plain gap (no revival machinery yet — YAGNI).
 - `answerer`/`responder` are injectable so the loop logic is testable on the host with a mock
   (no hermes / no model calls): `--dry-run`.
 
-Usage (inside the container):
+Usage (inside the container, from the user's project dir):
     python3 scripts/iterate.py --problem "Add authentication to my web app"
-    python3 scripts/iterate.py --problem "..." --validate top --k 2      # end-to-end test (#21)
+    python3 scripts/iterate.py --problem "..." --capability read     # down-scope to read-only
+    python3 scripts/iterate.py --problem "..." --validate top --k 2   # end-to-end test (#21)
 On the host (loop logic only): python3 scripts/iterate.py --problem "..." --dry-run
+
+Depends on the information-gain ranker (resolved via INFOGAIN_SCRIPTS_DIR / HERMES_HOME) and the
+`ask` skill's model_utils (resolved via HERMES_HOME).
 """
 
 import argparse
@@ -35,10 +42,18 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-sys.path.insert(0, _HERE)
+# This skill depends on the information-gain ranker — resolve its scripts dir (mirrors the
+# model_utils idiom). INFOGAIN_SCRIPTS_DIR overrides for tests / non-standard installs.
+_INFOGAIN = os.environ.get("INFOGAIN_SCRIPTS_DIR") or os.path.join(
+    _HOME, "skills", "autonomous-ai-agents", "information-gain", "scripts")
+sys.path.insert(0, _INFOGAIN)
 sys.path.insert(0, os.path.join(_HOME, "skills", "productivity", "ask", "scripts"))
 
-import infogain  # noqa: E402
+try:
+    import infogain  # noqa: E402  — the next-best-questions ranker
+except ImportError as e:
+    raise SystemExit("investigator requires the information-gain skill (infogain.py). Looked in "
+                     f"{_INFOGAIN!r}. Set INFOGAIN_SCRIPTS_DIR or HERMES_HOME.") from e
 
 try:
     from model_utils import dispatch_single, resolve_alias  # noqa: E402
@@ -47,10 +62,25 @@ except Exception as _e:  # the `ask` skill (model_utils) is required for live (n
     _HAVE_ASK = False
     _ASK_ERR = str(_e)
 
+# Capability ladder. DEFAULT = act (full agency, unattended) — today's behavior. The other levels
+# only DOWN-scope: they set the answerer's toolsets and inject a restriction directive. (Toolset
+# read-only granularity is best-effort/instruction-level in v1; act is unaffected.)
+CAPABILITIES = {
+    "act": {"toolsets": "file,web,terminal", "directive": ""},
+    "experiment": {"toolsets": "file,web,terminal",
+                   "directive": "You may run REVERSIBLE experiments (prefer a scratch/worktree dir) to "
+                                "find out, but do NOT make irreversible or production changes."},
+    "read": {"toolsets": "file,web",
+             "directive": "READ-ONLY: inspect, search, and read only. Do NOT modify files, run mutating "
+                          "commands, or take any action with side effects. If answering requires an "
+                          "action, reply NOT_FOUND: needs <action> (capability restricted)."},
+}
+
 DEFAULTS = {
     "k": 6, "max_rounds": 3, "floor": 0.12,
     "answer_model": "glm", "answer_provider": "ollama-glm",
-    "answer_toolsets": "file,web,terminal", "answer_timeout": 300, "answer_max_turns": None,
+    "answer_toolsets": "file,web,terminal", "answer_directive": "",  # = act (default)
+    "answer_timeout": 300, "answer_max_turns": None,
     # Where the grounded answerer researches. None = inherit the caller's cwd (the user's project
     # in a real session). Pin it when the wrapper runs detached from the project — a live test showed
     # the answerer otherwise researches the install dir and misses the actual project.
@@ -58,6 +88,14 @@ DEFAULTS = {
     "responder_model": "glm", "responder_provider": "ollama-glm", "responder_timeout": 300,
     "responder_toolsets": "", "responder_cwd": None,  # responder usually synthesizes from facts (no tools)
 }
+
+
+def apply_capability(cfg, level):
+    """Set answer_toolsets + answer_directive from a capability level (act|experiment|read)."""
+    cap = CAPABILITIES.get(level, CAPABILITIES["act"])
+    cfg["answer_toolsets"] = cap["toolsets"]
+    cfg["answer_directive"] = cap["directive"]
+    return cfg
 
 
 def _rank_cfg():
@@ -100,9 +138,11 @@ def _extract(r):
 
 
 def grounded_answer(question, problem, evidence, cfg):
-    """(found, text) — research one question with a full Hermes agent (all tools), distilled."""
+    """(found, text) — research one question with a full Hermes agent, distilled."""
     facts = "\n".join(f"- {e}" for e in evidence) or "(none yet)"
-    prompt = (f"TASK: {problem}\n\nEstablished so far:\n{facts}\n\n"
+    directive = cfg.get("answer_directive", "")
+    head = (directive + "\n\n") if directive else ""
+    prompt = (f"{head}TASK: {problem}\n\nEstablished so far:\n{facts}\n\n"
               f"Research and answer THIS question CONCISELY (1-3 sentences), using any tools you need:\n"
               f"  {question}\n\n"
               f"If you genuinely cannot determine it, reply EXACTLY: NOT_FOUND: <brief reason>.")
@@ -225,13 +265,16 @@ def main(argv=None):
     p.add_argument("--k", type=int, default=DEFAULTS["k"])
     p.add_argument("--max-rounds", type=int, default=DEFAULTS["max_rounds"])
     p.add_argument("--floor", type=float, default=DEFAULTS["floor"])
+    p.add_argument("--capability", choices=["act", "experiment", "read"], default="act",
+                   help="full agency (act, default) | reversible experiments | read-only.")
     p.add_argument("--validate", choices=["baseline", "top", "bottom"],
                    help="end-to-end test: respond after answering baseline/top-k/bottom-k.")
     p.add_argument("--dry-run", action="store_true", help="mock answerer/responder (host, no hermes).")
     p.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
 
-    cfg = {"k": args.k, "max_rounds": args.max_rounds, "floor": args.floor}
+    cfg = apply_capability({"k": args.k, "max_rounds": args.max_rounds, "floor": args.floor},
+                           args.capability)
     answerer = _mock_answerer if args.dry_run else None
     responder = _mock_responder if args.dry_run else None
     if not args.dry_run and not _HAVE_ASK:
@@ -245,11 +288,12 @@ def main(argv=None):
     else:
         out = iterate(args.problem, cfg, answerer, responder, prog)
     out["elapsed_s"] = round(time.time() - t0, 1)
+    out["capability"] = args.capability
 
     if args.json:
         print(json.dumps(out, indent=2, default=str))
     else:
-        print(f"\n=== stop: {out.get('stop_reason', out.get('which'))} · "
+        print(f"\n=== stop: {out.get('stop_reason', out.get('which'))} · cap={args.capability} · "
               f"rounds={out.get('rounds', 1)} · answered={out.get('n_answered', '-')} "
               f"gaps={out.get('n_gaps', '-')} · {out['elapsed_s']}s ===\n")
         for t in out["tombstones"]:

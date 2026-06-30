@@ -22,9 +22,14 @@ import random
 import sys
 import time
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
-sys.path.insert(0, _HERE)
+_HERE = os.path.dirname(os.path.abspath(__file__))            # investigator/evals
+_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))     # investigator/scripts -> iterate
+# pipeline + testbank live in the information-gain ranker skill (this skill depends on it):
+_INFOGAIN = os.environ.get("INFOGAIN_SCRIPTS_DIR") or os.path.join(
+    _HOME, "skills", "autonomous-ai-agents", "information-gain", "scripts")
+sys.path.insert(0, _INFOGAIN)                                 # pipeline
+sys.path.insert(0, os.path.join(_INFOGAIN, "..", "evals"))   # testbank
 
 import iterate  # noqa: E402
 import pipeline  # noqa: E402

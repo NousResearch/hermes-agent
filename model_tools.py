@@ -810,6 +810,12 @@ def _coerce_json(value: str, expected_python_type: type):
 
 def _coerce_number(value: str, integer_only: bool = False):
     """Try to parse *value* as a number.  Returns original string on failure."""
+    # Preserve leading zeros - "007", "0123", etc. are significant strings
+    # (zip codes, country codes, zero-padded IDs).  Only coerce when the
+    # string representation would not lose information.
+    stripped = value.strip()
+    if stripped.lstrip("-").startswith("0") and len(stripped) > 1 and stripped not in ("0", "-0"):
+        return value
     try:
         f = float(value)
     except (ValueError, OverflowError):

@@ -165,3 +165,67 @@ jobs:
               sys.exit(1)
           print('All checks passed (or were skipped)')
           "
+
+  # ─────────────────────────────────────────────────────────────────────
+  # CI timing report: collect per-job/step durations from the GitHub API,
+  # cache them on main (as a baseline), and on PRs generate an HTML diff
+  # report with a gantt chart + per-step breakdown. The report is uploaded
+  # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
+  # ─────────────────────────────────────────────────────────────────────
+  ci-timings:
+    name: CI timing report
+    needs: [all-checks-pass, docker]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Restore baseline cache (PR only)
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ci-timings-baseline.json
+          # Prefix-match: exact key will never hit (run_id differs), so
+          # restore-keys finds the most recent baseline from main.
+          key: ci-timings-baseline-never-exact
+          restore-keys: |
+            ci-timings-baseline-
+
+      - name: Collect timings and generate report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/ci/timings_report.py \
+            --baseline ci-timings-baseline.json \
+            --output ci-timings-report.html \
+            --json-out ci-timings.json \
+            --summary-out ci-timings-summary.md
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        id: ci-timings-artifact
+        with:
+          name: ci-timings-report
+          path: ci-timings-report.html
+          retention-days: 14
+          archive: false
+
+      - name: Output summary
+        env:
+          REPORT_URL: ${{ steps.ci-timings-artifact.outputs.artifact-url}}
+        run: |
+          echo "# CI Timing report" >> "$GITHUB_STEP_SUMMARY"
+          echo "[View the full interactive report]($REPORT_URL)" >> "$GITHUB_STEP_SUMMARY"
+          cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save baseline cache (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp ci-timings.json ci-timings-baseline.json
+
+      - name: Upload baseline to cache (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ci-timings-baseline.json
+          key: ci-timings-baseline-${{ github.run_id }}

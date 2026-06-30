@@ -5465,7 +5465,12 @@ class AIAgent:
             str: Final assistant response
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
-        return result["final_response"]
+        # run_conversation's error/exhaustion paths (invalid response after
+        # max retries, payload-too-large after compression, compaction
+        # disabled, …) return a result dict with an ``error`` key but no
+        # ``final_response``. Use .get so chat() degrades to an empty string
+        # instead of raising KeyError — matching every other call site.
+        return result.get("final_response") or ""
 
     def _run_codex_app_server_turn(
         self,
@@ -5658,10 +5663,10 @@ def main(
     print(f"📞 API Calls: {result['api_calls']}")
     print(f"💬 Messages: {len(result['messages'])}")
     
-    if result['final_response']:
+    if result.get('final_response'):
         print("\n🎯 FINAL RESPONSE:")
         print("-" * 30)
-        print(result['final_response'])
+        print(result.get('final_response'))
     
     # Save sample trajectory to UUID-named file if requested
     if save_sample:

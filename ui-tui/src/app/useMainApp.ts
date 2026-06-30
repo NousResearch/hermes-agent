@@ -24,6 +24,7 @@ import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -149,29 +150,12 @@ export function useMainApp(gw: GatewayClient) {
     // A drag-resize emits a burst of 'resize' events; syncing `cols` on every
     // one remounts the visible transcript rows each tick (they're keyed on
     // cols so yoga re-measures), turning a smooth drag into a flickering
-    // remount storm. Throttle with a leading+trailing edge: the first event
-    // reflows immediately (the drag stays responsive), the rest collapse to at
-    // most one reflow per RESIZE_COALESCE_MS, and the trailing edge always
-    // applies the final width so the settled layout is exact.
-    let lastReflow = 0
-    let trailing: ReturnType<typeof setTimeout> | undefined
-
-    const apply = () => {
-      lastReflow = Date.now()
-      setCols(stdout.columns ?? 80)
-    }
-
-    const sync = () => {
-      const elapsed = Date.now() - lastReflow
-
-      clearTimeout(trailing)
-
-      if (elapsed >= RESIZE_COALESCE_MS) {
-        apply()
-      } else {
-        trailing = setTimeout(apply, RESIZE_COALESCE_MS - elapsed)
-      }
-    }
+    // remount storm. Coalesce the burst with a leading+trailing throttle: the
+    // first event reflows immediately (the drag stays responsive), the rest
+    // collapse to at most one reflow per RESIZE_COALESCE_MS, and the trailing
+    // edge always applies the final width so the settled layout is exact.
+    const coalescer = createResizeCoalescer(() => setCols(stdout.columns ?? 80), RESIZE_COALESCE_MS)
+    const sync = () => coalescer.schedule()
 
     stdout.on('resize', sync)
 
@@ -180,7 +164,7 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     return () => {
-      clearTimeout(trailing)
+      coalescer.cancel()
       stdout.off('resize', sync)
 
       if (stdout.isTTY) {

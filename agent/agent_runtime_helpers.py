@@ -1463,6 +1463,36 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 agent._client_log_context(),
             )
             return client
+    if agent.provider == "custom":
+        # Local Ollama is configured as provider "custom" (the "ollama"/"vllm"/
+        # "llamacpp" aliases all normalize to "custom" in providers.py). Route it
+        # through Ollama's NATIVE /api/chat — which honors per-request num_ctx and
+        # returns correct streaming tool_calls, unlike the OpenAI-compat /v1 path —
+        # but ONLY when the endpoint is positively identified as Ollama, so a
+        # non-Ollama "custom" server (vLLM / llama.cpp / LM Studio) is never
+        # mis-routed. Gated on HERMES_OLLAMA_NATIVE: when unset,
+        # is_native_ollama_base_url() returns False immediately (no probe), so
+        # behavior is byte-identical to the existing /v1 path.
+        from agent.ollama_native_adapter import OllamaNativeClient, is_native_ollama_base_url
+
+        base_url = str(client_kwargs.get("base_url", "") or "")
+        if is_native_ollama_base_url(base_url):
+            safe_kwargs = {
+                k: v for k, v in client_kwargs.items()
+                if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
+            }
+            if "http_client" not in safe_kwargs:
+                keepalive_http = agent._build_keepalive_http_client(base_url)
+                if keepalive_http is not None:
+                    safe_kwargs["http_client"] = keepalive_http
+            client = OllamaNativeClient(**safe_kwargs)
+            _ra().logger.info(
+                "Ollama native client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                agent._client_log_context(),
+            )
+            return client
     # Inject TCP keepalives so the kernel detects dead provider connections
     # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
     # this, a peer that drops mid-stream leaves the socket in a state where

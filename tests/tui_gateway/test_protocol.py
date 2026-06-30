@@ -1495,6 +1495,43 @@ def test_skills_manage_search_uses_tools_hub_sources(server):
     search.assert_called_once_with("showroom", ["source"], source_filter="all", limit=20)
 
 
+def test_skills_manage_browse_ignores_invalid_pagination(server):
+    browse = MagicMock(
+        side_effect=[
+            {"items": [], "page": 3, "total_pages": 1, "total": 0},
+            {"items": [], "page": 1, "total_pages": 1, "total": 0},
+        ]
+    )
+    fake_hub = types.SimpleNamespace(browse_skills=browse)
+
+    with patch.dict(sys.modules, {"hermes_cli.skills_hub": fake_hub}):
+        resp_with_query_page = server.handle_request({
+            "id": "skills-browse-query-page",
+            "method": "skills.manage",
+            "params": {
+                "action": "browse",
+                "query": "3",
+                "page": "not-int",
+                "page_size": "wide",
+            },
+        })
+        resp_with_bad_query = server.handle_request({
+            "id": "skills-browse-bad-query",
+            "method": "skills.manage",
+            "params": {
+                "action": "browse",
+                "query": 7,
+                "page": float("inf"),
+                "page_size": None,
+            },
+        })
+
+    assert "error" not in resp_with_query_page
+    assert "error" not in resp_with_bad_query
+    assert browse.call_args_list[0].kwargs == {"page": 3, "page_size": 20}
+    assert browse.call_args_list[1].kwargs == {"page": 1, "page_size": 20}
+
+
 def test_command_dispatch_steer_fallback_sends_message(server):
     """command.dispatch /steer with no active agent falls back to send."""
     sid = "test-session"

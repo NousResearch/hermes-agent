@@ -13470,6 +13470,13 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5023, str(e))
 
 
+def _coerce_skills_browse_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 @method("skills.manage")
 def _(rid, params: dict) -> dict:
     action, query = params.get("action", "list"), params.get("query", "")
@@ -13514,11 +13521,19 @@ def _(rid, params: dict) -> dict:
         if action == "browse":
             from hermes_cli.skills_hub import browse_skills
 
-            pg = int(params.get("page", 0) or 0) or (
-                int(query) if query.isdigit() else 1
+            pg = _coerce_skills_browse_int(params.get("page", 0) or 0, 0)
+            if not pg:
+                pg = (
+                    _coerce_skills_browse_int(query, 1)
+                    if isinstance(query, str) and query.isdigit()
+                    else 1
+                )
+            page_size = _coerce_skills_browse_int(
+                params.get("page_size", 20) or 20,
+                20,
             )
             return _ok(
-                rid, browse_skills(page=pg, page_size=int(params.get("page_size", 20)))
+                rid, browse_skills(page=pg, page_size=page_size)
             )
         if action == "inspect":
             from hermes_cli.skills_hub import inspect_skill

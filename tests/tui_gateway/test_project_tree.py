@@ -350,3 +350,30 @@ def test_colliding_repo_basenames_disambiguate_labels():
     labels = sorted(p["label"] for p in tree["projects"])
 
     assert labels == ["x/proj", "y/proj"]
+
+
+def test_stale_git_repo_root_does_not_hijack_placement():
+    """A session whose cwd is NOT under its persisted git_repo_root must not be
+    grouped under that repo's main lane. The persisted root is stale (the session
+    was created elsewhere and the column was never updated); the session should
+    instead be unscoped (flat Recents) rather than appearing as a phantom member
+    of an unrelated repo.
+
+    Regression: pre-v0.17.0 sessions with cwd in a non-git directory and a stale
+    git_repo_root pointing at the hermes-agent source repo appeared duplicated
+    under both "main" (from the stale root) and "default" (from the heuristic).
+    """
+    # No resolver — forces the persisted-root fallback path.
+    sessions = [
+        _session("/some/non/git/dir", branch="", repo_root="/unrelated/hermes-agent"),
+    ]
+
+    tree = pt.build_tree([], sessions, [], resolve=None, hydrate=True)
+
+    # The session must NOT appear under /unrelated/hermes-agent.
+    repo_roots = {p["id"] for p in tree["projects"]}
+    assert "/unrelated/hermes-agent" not in repo_roots
+
+    # The session is unscoped (not in any project) — it belongs in flat Recents.
+    assert tree["projects"] == []
+    assert sessions[0]["id"] not in tree["scoped_session_ids"]

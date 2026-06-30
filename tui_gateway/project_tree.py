@@ -150,9 +150,13 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
         label = base_name(worktree_root) or worktree_root
         return _placement(repo_root, worktree_root, label, worktree_root, False, False)
 
-    # No live probe: trust the backend-persisted root (group by it, split main by
-    # the session's recorded branch). Kanban tasks still collapse by path shape.
-    if persisted_root:
+    # No live probe: trust the backend-persisted root ONLY when the cwd actually
+    # lives under it (or equals it). A stale/incorrect git_repo_root — e.g. a
+    # pre-v0.17.0 session that recorded a repo root its cwd was never nested under
+    # — must not hijack placement: fall through to the heuristic so the session
+    # groups by its own directory name instead of appearing as a phantom member of
+    # an unrelated repo's "main" lane.
+    if persisted_root and _is_path_under(persisted_root, cwd):
         kanban_dir = kanban_worktree_dir(cwd)
         if kanban_dir:
             return _placement(persisted_root, _kanban_lane_id(persisted_root), "kanban", kanban_dir, False, True)
@@ -163,13 +167,22 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
 
 
 def _session_repo_root(session: dict, resolve: Optional[Resolve]) -> str:
-    """The COMMON repo root a session belongs to (folds linked worktrees)."""
+    """The COMMON repo root a session belongs to (folds linked worktrees).
+
+    When the live probe resolves a cwd, its answer is authoritative. Without a
+    probe we fall back to the persisted ``git_repo_root`` column, but only when
+    the cwd actually lives under (or equals) that root — a stale value left over
+    from a pre-v0.17.0 session must not hijack grouping.
+    """
     cwd = (session.get("cwd") or "").strip()
     if cwd and resolve:
         info = resolve(cwd)
         if info and info.get("repo_root"):
             return info["repo_root"]
-    return (session.get("git_repo_root") or "").strip()
+    root = (session.get("git_repo_root") or "").strip()
+    if root and cwd and not _is_path_under(root, cwd):
+        return ""
+    return root
 
 
 # ---------------------------------------------------------------------------

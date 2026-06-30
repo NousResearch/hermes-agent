@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { bulkDeleteSessions, getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -45,6 +45,31 @@ describe('Hermes REST session helpers', () => {
         timeoutMs: 60_000
       })
     )
+  })
+
+  it('posts ids to the bulk-delete endpoint and routes by profile', async () => {
+    api.mockResolvedValue({ deleted: 2, ok: true })
+
+    await bulkDeleteSessions(['s1', 's2'], 'xiaoxuxu')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/bulk-delete',
+      method: 'POST',
+      body: { ids: ['s1', 's2'], profile: 'xiaoxuxu' },
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('omits the profile field for the default profile on bulk delete', async () => {
+    api.mockResolvedValue({ deleted: 1, ok: true })
+
+    await bulkDeleteSessions(['s1'])
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/bulk-delete',
+      method: 'POST',
+      body: { ids: ['s1'] }
+    })
   })
 
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

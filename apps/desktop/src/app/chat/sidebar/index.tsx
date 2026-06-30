@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
@@ -166,6 +167,12 @@ const GROUP_BODY = cn(SCROLL_Y, COMPACT_FLAT)
 const HEADER_ACTION_BTN =
   'text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100'
 
+// Same hover-revealed affordance as HEADER_ACTION_BTN, but turns destructive-red
+// on hover — used for the "Delete all chats" trash so it reads as dangerous
+// without shouting at rest.
+const HEADER_DESTRUCTIVE_BTN =
+  'text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/section:opacity-100 focus-visible:opacity-100'
+
 // The view toggle (overview group toggle / in-project back) is the one control
 // that stays visible at all times — it's the stable navigation affordance, not
 // a hover-revealed action.
@@ -206,6 +213,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
+  onDeleteAllSessions: () => Promise<void> | void
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
@@ -221,6 +229,7 @@ export function ChatSidebar({
   onLoadMoreMessaging,
   onResumeSession,
   onDeleteSession,
+  onDeleteAllSessions,
   onArchiveSession,
   onBranchSession,
   onNewSessionInWorkspace,
@@ -278,6 +287,7 @@ export function ChatSidebar({
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [searchPending, setSearchPending] = useState(false)
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
   const [messagingLoadMorePending, setMessagingLoadMorePending] = useState<Record<string, boolean>>({})
   const [recentsLoadMorePending, setRecentsLoadMorePending] = useState(false)
@@ -1286,6 +1296,20 @@ export function ChatSidebar({
                           </Button>
                         ) : null}
                       </div>
+                      {!showAllProfiles && !agentsGrouped && (agentSessions.length > 0 || pinnedSessions.length > 0) ? (
+                        <Button
+                          aria-label={s.deleteAll.action}
+                          className={HEADER_DESTRUCTIVE_BTN}
+                          onClick={event => {
+                            event.stopPropagation()
+                            setDeleteAllOpen(true)
+                          }}
+                          size="icon-xs"
+                          variant="ghost"
+                        >
+                          <Codicon name="trash" size="0.75rem" />
+                        </Button>
+                      ) : null}
                     </div>
                   )
                 }
@@ -1401,6 +1425,17 @@ export function ChatSidebar({
         )}
       </SidebarContent>
       <ProjectDialog />
+      <ConfirmDialog
+        busyLabel={s.deleteAll.busy}
+        confirmLabel={s.deleteAll.confirm}
+        description={s.deleteAll.body(Math.max(sessionsTotal, agentSessions.length + pinnedSessions.length))}
+        destructive
+        doneLabel={s.deleteAll.done}
+        onClose={() => setDeleteAllOpen(false)}
+        onConfirm={() => onDeleteAllSessions()}
+        open={deleteAllOpen}
+        title={s.deleteAll.title}
+      />
     </Sidebar>
   )
 }

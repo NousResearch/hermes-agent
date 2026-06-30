@@ -431,7 +431,11 @@ async def test_matrix_resume_quoted_title_same_room():
     )
 
     assert "Resumed session" in result
-    runner._session_db._db.resolve_session_by_title.assert_called_once_with("Project B Plan")
+    runner._session_db._db.resolve_session_by_title.assert_called_once_with(
+        "Project B Plan",
+        source="matrix",
+        user_id="@alice:example.org",
+    )
 
 
 @pytest.mark.asyncio

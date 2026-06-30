@@ -1084,7 +1084,16 @@ class QQAdapter(BasePlatformAdapter):
             event: InteractionEvent,
             session_key: str,
     ) -> bool:
-        """Authorize approval/update interactions against session + operator."""
+        """Authorize approval/update interactions against session + operator.
+
+        Behavior depends on the gateway's ``group_sessions_per_user`` config:
+
+        * ``True``  (default, per-user isolation) — group/guild session keys
+          carry a ``user_id`` suffix; the operator must match it.
+        * ``False`` (shared group context) — group/guild session keys have
+          no user_id suffix; any operator from that chat is accepted, since
+          all members share one context by design.
+        """
         parsed = self._parse_gateway_session_key(session_key)
         operator = str(event.operator_openid or "").strip()
         if not parsed or parsed.get("platform") != "qqbot" or not operator:
@@ -1100,7 +1109,14 @@ class QQAdapter(BasePlatformAdapter):
             if not event_chat or event_chat != chat_id:
                 return False
             session_user = str(parsed.get("user_id", "")).strip()
-            return bool(session_user) and operator == session_user
+            if session_user:
+                # Per-user isolation mode: key carries user_id, must match.
+                return operator == session_user
+            # Shared-context mode (group_sessions_per_user=False):
+            # key has no user_id; any operator in this chat may resolve.
+            # Safety note: real authorization still happens at the platform
+            # allowlist layer (operator must be in QQ_ALLOWED_USERS).
+            return True
 
         return False
 

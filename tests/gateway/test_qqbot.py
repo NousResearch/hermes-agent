@@ -1307,6 +1307,131 @@ class TestAdapterInteractionDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Authorization gate for group shared-context session keys
+# (_is_authorized_interaction_for_session)
+# ---------------------------------------------------------------------------
+#
+# When the gateway runs with ``group_sessions_per_user: false`` (i.e. the
+# group is treated as a single shared context), the agent writes group
+# session keys *without* a trailing ``user_id``. The earlier implementation
+# hard-required a user_id suffix for group/guild chat_type and silently
+# dropped the click — the agent thread then blocked forever.
+#
+# These tests lock in the corrected behavior: when the session_key has no
+# user_id, any operator from the matching chat is accepted; when it does
+# have a user_id, the existing per-user match is preserved.
+
+
+class TestGroupSharedContextAuthorization:
+    """_is_authorized_interaction_for_session: group_sessions_per_user=False path."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def _make_event(self, *, chat_type, group_openid="", guild_id="",
+                    group_member_openid="", user_openid=""):
+        from gateway.platforms.qqbot.keyboards import InteractionEvent
+        return InteractionEvent(
+            id="i",
+            chat_type=chat_type,
+            scene={0: "guild", 1: "group", 2: "c2c"}.get(chat_type, ""),
+            group_openid=group_openid,
+            guild_id=guild_id,
+            group_member_openid=group_member_openid,
+            user_openid=user_openid,
+        )
+
+    def test_group_session_without_user_id_accepts_any_operator(self):
+        # Shared-context key (no user_id suffix). group_sessions_per_user=False
+        # is the agent's signal that all members share one session.
+        adapter = self._make_adapter()
+        event = self._make_event(
+            chat_type=1,  # group
+            group_openid="chat-1",
+            group_member_openid="member-A",  # different from session key
+        )
+        session_key = "agent:main:qqbot:group:chat-1"  # no user_id
+        assert adapter._is_authorized_interaction_for_session(event, session_key) is True
+
+    def test_guild_session_without_user_id_accepts_any_operator(self):
+        adapter = self._make_adapter()
+        event = self._make_event(
+            chat_type=0,  # guild
+            guild_id="guild-1",
+            group_member_openid="member-A",
+        )
+        session_key = "agent:main:qqbot:guild:guild-1"
+        assert adapter._is_authorized_interaction_for_session(event, session_key) is True
+
+    def test_group_session_with_user_id_requires_matching_operator(self):
+        # Per-user isolation key. The existing strict-match contract must
+        # remain intact — only the user_id encoded in the key can resolve.
+        adapter = self._make_adapter()
+        event_matching = self._make_event(
+            chat_type=1,
+            group_openid="chat-1",
+            group_member_openid="member-A",
+        )
+        event_other = self._make_event(
+            chat_type=1,
+            group_openid="chat-1",
+            group_member_openid="member-B",
+        )
+        session_key = "agent:main:qqbot:group:chat-1:member-A"
+        assert adapter._is_authorized_interaction_for_session(
+            event_matching, session_key
+        ) is True
+        assert adapter._is_authorized_interaction_for_session(
+            event_other, session_key
+        ) is False
+
+    def test_group_session_chat_mismatch_is_rejected_even_without_user_id(self):
+        # Even in shared-context mode, the chat must match. An operator
+        # from a different group cannot resolve a session in chat-1.
+        adapter = self._make_adapter()
+        event = self._make_event(
+            chat_type=1,
+            group_openid="chat-2",  # different group
+            group_member_openid="member-A",
+        )
+        session_key = "agent:main:qqbot:group:chat-1"
+        assert adapter._is_authorized_interaction_for_session(event, session_key) is False
+
+    def test_c2c_requires_operator_to_match_chat_id(self):
+        # C2C contract unchanged: operator must equal the chat_id.
+        adapter = self._make_adapter()
+        event = self._make_event(chat_type=2, user_openid="user-1")
+        # user-1 == chat_id → allowed
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:c2c:user-1"
+        ) is True
+        # user-1 != chat_id → denied
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:c2c:user-2"
+        ) is False
+
+    def test_non_qqbot_platform_key_is_rejected(self):
+        adapter = self._make_adapter()
+        event = self._make_event(chat_type=1, group_openid="chat-1",
+                                  group_member_openid="member-A")
+        # Even with shared-context shape, a non-qqbot platform key is rejected.
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:telegram:group:chat-1"
+        ) is False
+
+    def test_empty_operator_is_rejected(self):
+        adapter = self._make_adapter()
+        event = self._make_event(chat_type=1, group_openid="chat-1",
+                                  group_member_openid="")
+        # group_member_openid falls back to user_openid, also empty.
+        # operator_openid resolves to "" → reject.
+        assert adapter._is_authorized_interaction_for_session(
+            event, "agent:main:qqbot:group:chat-1"
+        ) is False
+
+
+# ---------------------------------------------------------------------------
 # Quoted-message handling (message_type=103 → msg_elements)
 # ---------------------------------------------------------------------------
 

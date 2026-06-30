@@ -56,6 +56,52 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertEqual(dict(tool_call.function)["name"], "read_file")
         self.assertEqual(choice.message.content, "I'll inspect that.")
 
+    def test_invalid_tool_call_block_remains_visible_as_text(self) -> None:
+        tool_response = (
+            "I tried to inspect that.\n"
+            "<tool_call>"
+            '{"id":"call_bad","type":"function",'
+            '"function":{"name":"read_file","arguments":{"path":"README.md",}}}'
+            "</tool_call>"
+            "\nPlease retry with valid JSON."
+        )
+
+        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+            response = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "read README.md"}],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {"name": "read_file", "parameters": {}},
+                    }
+                ],
+            )
+
+        choice = response.choices[0]
+        self.assertEqual(choice.finish_reason, "stop")
+        self.assertEqual(choice.message.tool_calls, [])
+        self.assertIn("<tool_call>", choice.message.content)
+        self.assertIn("Please retry with valid JSON.", choice.message.content)
+
+    def test_invalid_bare_tool_call_json_remains_visible_as_text(self) -> None:
+        tool_response = (
+            'Before {"id":"call_bad","type":"function",'
+            '"function":{"name":"read_file","arguments":{"path":"README.md",}}} after'
+        )
+
+        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+            response = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "read README.md"}],
+            )
+
+        choice = response.choices[0]
+        self.assertEqual(choice.finish_reason, "stop")
+        self.assertEqual(choice.message.tool_calls, [])
+        self.assertIn('"function"', choice.message.content)
+        self.assertIn("after", choice.message.content)
+
     def test_stream_true_returns_iterable_text_chunks(self) -> None:
         with patch.object(self.client, "_run_prompt", return_value=("Hello from ACP", "")):
             stream = self.client._create_chat_completion(

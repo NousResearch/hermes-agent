@@ -2953,6 +2953,9 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         return camofox_click(ref, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "click")
+    if blocked is not None:
+        return blocked
 
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -2991,6 +2994,9 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         return camofox_type(ref, text, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "type")
+    if blocked is not None:
+        return blocked
 
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -3126,6 +3132,9 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         return camofox_press(key, task_id)
 
     effective_task_id = _last_session_key(task_id or "default")
+    blocked = _blocked_private_page_action(effective_task_id, "press")
+    if blocked is not None:
+        return blocked
     result = _run_browser_command(effective_task_id, "press", [key])
 
     if result.get("success"):
@@ -3143,6 +3152,23 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
 
 
 
+
+
+def _blocked_private_page_action(effective_task_id: str, action: str) -> Optional[str]:
+    """Return a blocked payload when an unsafe cloud page would receive input."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    return json.dumps({
+        "success": False,
+        "error": (
+            "Blocked: page URL targets a private or internal address "
+            f"({blocked_url}). Refusing to {action} on this page in this "
+            "browser mode."
+        ),
+    }, ensure_ascii=False)
 
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:

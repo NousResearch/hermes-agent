@@ -377,6 +377,15 @@ function advancedSpacePhone(space) {
   return phone || phoneTargetFromSpaceId(space?.id) || undefined;
 }
 
+function advancedChatId(space) {
+  const id = String(space?.id ?? "").trim();
+  if (id.includes(";-;") || id.includes(";+;")) return id;
+  const phone = advancedSpacePhone(space);
+  if (phone) return `any;-;${phone}`;
+  if (id) return id;
+  throw new Error("could not resolve advanced iMessage chat id");
+}
+
 async function withAdvancedIMessageClient(space, fn) {
   if (!advancedCreateClient) {
     throw new Error(
@@ -954,7 +963,11 @@ const server = http.createServer(async (req, res) => {
       }
       const content =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
-      await space.send(editContent(content, target));
+      if (typeof target.edit === "function") {
+        await target.edit(content);
+      } else {
+        await space.send(editContent(content, target));
+      }
       return ok(res, { messageId, edited: true });
     }
     if (req.url === "/unsend") {
@@ -980,7 +993,11 @@ const server = http.createServer(async (req, res) => {
       if (target.direction && target.direction !== "outbound") {
         return badRequest(res, "only outbound messages can be unsent");
       }
-      await space.send(unsendContent(target));
+      if (typeof target.unsend === "function") {
+        await target.unsend();
+      } else {
+        await space.send(unsendContent(target));
+      }
       knownMessages.delete(messageId);
       return ok(res, { messageId, unsent: true });
     }
@@ -998,18 +1015,27 @@ const server = http.createServer(async (req, res) => {
       if (options.length < 2) {
         return badRequest(res, "at least two poll options are required");
       }
-      if (typeof pollContent !== "function") {
-        return badRequest(res, "native polls not supported on this platform");
-      }
       const space = await resolveSpace(spaceId);
-      const result = await space.send(
-        pollContent(question.trim(), ...options.map((option) => option.trim()))
+      const cleanQuestion = question.trim();
+      const cleanOptions = options.map((option) => option.trim());
+      const pollState = await withAdvancedIMessageClient(space, (client) =>
+        client.polls.create(space.id, cleanQuestion, cleanOptions, {
+          clientMessageId: clientMessageId("poll"),
+        })
       );
-      rememberKnownMessage(result);
       return ok(res, {
-        messageId: result?.id || null,
-        question: question.trim(),
-        optionCount: options.length,
+        messageId: pollState?.pollMessageGuid || null,
+        pollMessageId: pollState?.pollMessageGuid || null,
+        question: pollState?.title || cleanQuestion,
+        optionCount: Array.isArray(pollState?.options)
+          ? pollState.options.length
+          : cleanOptions.length,
+        options: Array.isArray(pollState?.options)
+          ? pollState.options.map((option) => ({
+              id: option.optionIdentifier,
+              text: option.text,
+            }))
+          : [],
       });
     }
     if (

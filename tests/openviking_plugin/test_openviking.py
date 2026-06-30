@@ -106,6 +106,7 @@ def make_prefetch_provider(monkeypatch, responses, **env):
         "OPENVIKING_RECALL_FULL_READ_LIMIT",
         "OPENVIKING_RECALL_PREFER_ABSTRACT",
         "OPENVIKING_RECALL_RESOURCES",
+        "OPENVIKING_PROFILE_MAX_CHARS",
     ):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -987,6 +988,9 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/api/v1/content/read":
                     query = parse_qs(parsed.query)
                     uri = query.get("uri", [""])[0]
+                    if uri.startswith("viking://user/memories/"):
+                        self.send_error(404)
+                        return
                     records["reads"].append(uri)
                     self._send_json({"result": {"content": "E2E full L2 memory content."}})
                     return
@@ -1029,6 +1033,7 @@ class TestOpenVikingAutoRecallPrefetch:
             "OPENVIKING_RECALL_MAX_INJECTED_CHARS",
             "OPENVIKING_RECALL_PREFER_ABSTRACT",
             "OPENVIKING_RECALL_RESOURCES",
+            "OPENVIKING_PROFILE_MAX_CHARS",
             "OPENVIKING_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)

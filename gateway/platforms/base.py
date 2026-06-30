@@ -5254,6 +5254,15 @@ class BasePlatformAdapter(ABC):
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
 
+        def _parse_backtick_fence_line(line: str) -> tuple[int, str] | None:
+            stripped = line.strip()
+            if not stripped.startswith("```"):
+                return None
+            marker_len = len(stripped) - len(stripped.lstrip("`"))
+            if marker_len < 3:
+                return None
+            return marker_len, stripped[marker_len:]
+
         chunks: List[str] = []
         remaining = content
         # When the previous chunk ended mid-code-block, this holds the
@@ -5326,14 +5335,18 @@ class BasePlatformAdapter(ABC):
             in_code = carry_lang is not None
             lang = carry_lang or ""
             for line in chunk_body.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("```"):
+                fence = _parse_backtick_fence_line(line)
+                if fence:
+                    _, trailing = fence
                     if in_code:
-                        in_code = False
-                        lang = ""
+                        # Per CommonMark, a closing fence may be followed only
+                        # by whitespace. Lines like "``` not a close" are code.
+                        if trailing.strip() == "":
+                            in_code = False
+                            lang = ""
                     else:
                         in_code = True
-                        tag = stripped[3:].strip()
+                        tag = trailing.strip()
                         lang = tag.split()[0] if tag else ""
 
             if in_code:

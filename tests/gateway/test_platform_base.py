@@ -1417,6 +1417,21 @@ class TestTruncateMessage:
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
 
+    def test_trailing_text_after_fence_marker_stays_inside_code_block(self):
+        adapter = self._adapter()
+        msg = (
+            "Before\n```text\n``` not a close\n"
+            + "inside line\n" * 60
+            + "```\nAfter"
+        )
+        chunks = adapter.truncate_message(msg, max_length=180)
+
+        assert len(chunks) > 1
+        assert "``` not a close" in chunks[0]
+        assert any(
+            chunk.startswith("```text\n") for chunk in chunks[1:]
+        ), "continuation chunks should reopen the still-active code block"
+
     def test_each_chunk_under_max_length(self):
         adapter = self._adapter()
         msg = "word " * 500

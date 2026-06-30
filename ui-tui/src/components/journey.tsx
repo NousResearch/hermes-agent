@@ -1,5 +1,5 @@
 import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdout } from '@hermes/ink'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
@@ -54,12 +54,29 @@ interface JourneyProps {
   t: Theme
 }
 
-type Mode = 'detail' | 'item' | 'timeline'
+// Flattened timeline tree: a slice header followed by its chronological items.
+type TreeRow =
+  | { bucket: BucketRow; kind: 'slice' }
+  | { bucket: BucketRow; kind: 'node'; last: boolean; node: BucketNode }
+
 type Cell = { color?: string; text: string }
 
 const MAX_CHART_ROWS = 8
 
 const rowText = (row: Run[]) => row.map(run => run[0]).join('')
+
+const treeLength = (buckets: BucketRow[]) => buckets.reduce((n, b) => n + 1 + b.nodes.length, 0)
+
+const buildTree = (buckets: BucketRow[]): TreeRow[] => {
+  const out: TreeRow[] = []
+
+  for (const bucket of buckets) {
+    out.push({ bucket, kind: 'slice' })
+    bucket.nodes.forEach((node, j) => out.push({ bucket, kind: 'node', last: j === bucket.nodes.length - 1, node }))
+  }
+
+  return out
+}
 
 // Center a fixed-height window on the cursor, clamped to list bounds.
 const windowStart = (cursor: number, len: number, h: number) =>
@@ -102,14 +119,14 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const cols = Math.max(40, (stdout?.columns ?? 90) - 3)
   const rows = Math.max(16, (stdout?.rows ?? 30) - 2)
   const chartRows = Math.max(5, Math.min(MAX_CHART_ROWS, Math.floor(rows * 0.32)))
+  const page = Math.max(4, rows - 6)
 
-  const palette = useMemo(() => deriveStarmapPalette(t.color.primary, t.color.text), [t.color.primary, t.color.text])
+  const palette = deriveStarmapPalette(t.color.primary, t.color.text)
 
   const [data, setData] = useState<FramesResponse | null>(null)
   const [err, setErr] = useState('')
-  const [selectedRow, setSelectedRow] = useState(0)
-  const [selectedNode, setSelectedNode] = useState(0)
-  const [mode, setMode] = useState<Mode>('timeline')
+  const [cursor, setCursor] = useState(0)
+  const [mode, setMode] = useState<'item' | 'timeline'>('timeline')
   const [tick, setTick] = useState(0)
   const itemScroll = useRef<null | ScrollBoxHandle>(null)
 
@@ -126,8 +143,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         }
 
         setData(r)
-        setSelectedRow(Math.max(0, (r?.buckets?.length ?? 1) - 1))
-        setSelectedNode(0)
+        setCursor(Math.max(0, treeLength(r?.buckets ?? []) - 1)) // open on the newest entry
         setMode('timeline')
       })
       .catch((e: unknown) => alive && setErr(rpcErrorMessage(e)))
@@ -137,20 +153,17 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     }
   }, [gw, cols, chartRows])
 
-  useEffect(() => setSelectedNode(0), [selectedRow])
+  const tree = buildTree(data?.buckets ?? [])
+  const activeRow = tree[Math.min(cursor, Math.max(0, tree.length - 1))]
+  const activeNode = activeRow?.kind === 'node' ? activeRow.node : undefined
+  const activeBucket = activeRow?.bucket
 
   useEffect(() => {
     if (mode === 'item') {
       itemScroll.current?.scrollTo(0)
       setTick(x => x + 1)
     }
-  }, [mode, selectedNode])
-
-  const buckets = data?.buckets ?? []
-  const selected = buckets.length ? buckets[Math.min(selectedRow, buckets.length - 1)] : null
-  const nodes = selected?.nodes ?? []
-  const activeNode = nodes[Math.min(selectedNode, Math.max(0, nodes.length - 1))]
-  const page = Math.max(4, rows - 6)
+  }, [mode, cursor])
 
   const scrollItem = (dy: number) => {
     itemScroll.current?.scrollBy(dy)
@@ -166,7 +179,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
     if (mode === 'item') {
       if (back) {
-        return setMode('detail')
+        return setMode('timeline')
       }
 
       if (key.upArrow || ch === 'k') {
@@ -200,66 +213,38 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       return
     }
 
-    if (mode === 'detail') {
-      if (back) {
-        return setMode('timeline')
-      }
-
-      // Only memories carry body text; a skill row is already its own full
-      // detail, so don't let it drill into an empty page.
-      if ((key.return || key.rightArrow || ch === 'l') && activeNode?.body) {
-        return setMode('item')
-      }
-
-      if (key.upArrow || ch === 'k') {
-        return setSelectedNode(v => Math.max(0, v - 1))
-      }
-
-      if (key.downArrow || ch === 'j') {
-        return setSelectedNode(v => Math.min(nodes.length - 1, v + 1))
-      }
-
-      if (key.pageUp || (key.ctrl && ch === 'u')) {
-        return setSelectedNode(v => Math.max(0, v - page))
-      }
-
-      if (key.pageDown || (key.ctrl && ch === 'd')) {
-        return setSelectedNode(v => Math.min(nodes.length - 1, v + page))
-      }
-
-      if (ch === 'g') {
-        return setSelectedNode(0)
-      }
-
-      if (ch === 'G') {
-        return setSelectedNode(Math.max(0, nodes.length - 1))
-      }
-
-      return
-    }
-
     if (back) {
       return onClose()
     }
 
-    if ((key.return || key.rightArrow || ch === 'l') && buckets.length) {
-      return setMode('detail')
+    // Only memories carry body text; everything else is already fully shown
+    // inline in the tree, so don't drill into an empty page.
+    if ((key.return || key.rightArrow || ch === 'l') && activeNode?.body) {
+      return setMode('item')
     }
 
     if (key.upArrow || ch === 'k') {
-      return setSelectedRow(v => Math.max(0, v - 1))
+      return setCursor(v => Math.max(0, v - 1))
     }
 
     if (key.downArrow || ch === 'j') {
-      return setSelectedRow(v => Math.min(buckets.length - 1, v + 1))
+      return setCursor(v => Math.min(tree.length - 1, v + 1))
+    }
+
+    if (key.pageUp || (key.ctrl && ch === 'u')) {
+      return setCursor(v => Math.max(0, v - page))
+    }
+
+    if (key.pageDown || (key.ctrl && ch === 'd')) {
+      return setCursor(v => Math.min(tree.length - 1, v + page))
     }
 
     if (ch === 'g') {
-      return setSelectedRow(0)
+      return setCursor(0)
     }
 
     if (ch === 'G') {
-      return setSelectedRow(Math.max(0, buckets.length - 1))
+      return setCursor(Math.max(0, tree.length - 1))
     }
   })
 
@@ -289,8 +274,8 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     )
   }
 
-  // ── Item: a single skill/memory, body scrolled via the shared ScrollBox ──
-  if (mode === 'item' && selected && activeNode) {
+  // ── Item: a single memory, body scrolled via the shared ScrollBox ──
+  if (mode === 'item' && activeBucket && activeNode) {
     const body = activeNode.body ? activeNode.body.split(/\r?\n/) : ['No additional detail recorded yet.']
 
     return (
@@ -302,7 +287,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
             </Text>
           </Text>
           <Text color={t.color.muted}>
-            {selected.label} · {activeNode.meta} · item {selectedNode + 1}/{nodes.length}
+            {activeBucket.label} · {activeNode.meta}
           </Text>
         </Box>
 
@@ -328,65 +313,12 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     )
   }
 
-  // ── Detail: the slice's skills + memories as a selectable list ──
-  if (mode === 'detail' && selected) {
-    const h = Math.max(4, rows - 6)
-    const start = windowStart(selectedNode, nodes.length, h)
-
-    return (
-      <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
-        <Box flexDirection="column" marginBottom={1}>
-          <Text wrap="truncate-end">
-            <Text bold color={selected.color ? fadeHex(palette, selected.color, 1) : t.color.primary}>
-              {selected.label}
-            </Text>
-            <Text color={t.color.muted}>
-              {'  '}
-              {selected.skills} skills · {selected.memories} memories
-              {selected.category ? ` · ${selected.category}` : ''} · slice {selected.index + 1}/{buckets.length}
-            </Text>
-          </Text>
-        </Box>
-
-        <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} overflow="hidden">
-          {nodes.length ? (
-            nodes.slice(start, start + h).map((node, i) => {
-              const idx = start + i
-
-              return (
-                <ListRow
-                  active={idx === selectedNode}
-                  cells={[
-                    { color: t.color.muted, text: ` ${String(idx + 1).padStart(2, ' ')} ` },
-                    { color: fadeInk(palette, node.style, 1), text: `${node.glyph} ${node.fullLabel || node.label}` },
-                    { color: t.color.muted, text: `  ${node.meta}${node.body ? '  ›' : ''}` }
-                  ]}
-                  key={`${node.label}:${idx}`}
-                  t={t}
-                />
-              )
-            })
-          ) : (
-            <Text color={t.color.muted}>No objects in this slice.</Text>
-          )}
-        </Box>
-
-        <Footer>
-          <Hint t={t}>
-            {nodes.length ? `${selectedNode + 1}/${nodes.length} · ` : ''}↑↓/jk move
-            {activeNode?.body ? ' · Enter/→ open' : ''} · g/G top/bottom · Esc/← back · q close
-          </Hint>
-        </Footer>
-      </Box>
-    )
-  }
-
-  // ── Timeline: static chart overview + selectable slice list ──
+  // ── Timeline: static chart overview + a chronological slice/item tree ──
   const axisGap = Math.max(1, cols - 2 - data.axis.start.length - data.axis.end.length)
   const dataGrid = data.frames.at(-1)?.grid.filter(r => !rowText(r).trimStart().startsWith('trajectory')) ?? []
   const chartGrid = dataGrid.slice(-MAX_CHART_ROWS)
   const listH = Math.max(3, rows - chartGrid.length - (data.categories?.length ? 11 : 10))
-  const start = windowStart(selectedRow, buckets.length, listH)
+  const start = windowStart(cursor, tree.length, listH)
 
   return (
     <Box alignItems="stretch" flexDirection="column" flexGrow={1} paddingX={1} paddingY={1}>
@@ -431,39 +363,52 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
       </Box>
 
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} overflow="hidden">
-        <Text color={t.color.muted}>Timeline slices</Text>
-        {buckets.slice(start, start + listH).map((bucket, i) => {
-          const idx = start + i
-          const top = bucket.nodes[0]
-
-          return (
-            <ListRow
-              active={idx === selectedRow}
-              cells={[
-                { color: t.color.muted, text: ` ${String(idx + 1).padStart(2, ' ')} ` },
-                {
-                  color: bucket.color ? fadeHex(palette, bucket.color, 0.85) : t.color.label,
-                  text: bucket.label.padEnd(7, ' ')
-                },
-                {
-                  color: t.color.muted,
-                  text: ` ${bucket.skills} skills · ${bucket.memories} memories${
-                    bucket.category ? ` · ${bucket.category}` : ''
-                  }  ${top ? top.fullLabel || top.label : 'empty'}`
-                }
-              ]}
-              key={`${bucket.label}:${idx}`}
-              t={t}
-            />
-          )
-        })}
+        {tree.slice(start, start + listH).map((row, i) => (
+          <TreeLine active={start + i === cursor} key={start + i} palette={palette} row={row} t={t} />
+        ))}
       </Box>
 
       <Footer>
         {data.summary.length ? <Hint t={t}>{data.summary.join(' · ')}</Hint> : null}
-        <Hint t={t}>↑↓/jk move · Enter/→ open · g/G top/bottom · q close</Hint>
+        <Hint t={t}>
+          ↑↓/jk move{activeNode?.body ? ' · Enter/→ open' : ''} · g/G top/bottom · q close
+        </Hint>
       </Footer>
     </Box>
+  )
+}
+
+function TreeLine({ active, palette, row, t }: { active: boolean; palette: StarmapPalette; row: TreeRow; t: Theme }) {
+  if (row.kind === 'slice') {
+    const { bucket } = row
+
+    return (
+      <ListRow
+        active={active}
+        cells={[
+          { color: bucket.color ? fadeHex(palette, bucket.color, 0.85) : t.color.label, text: bucket.label },
+          {
+            color: t.color.muted,
+            text: ` · ${bucket.skills} skills · ${bucket.memories} memories${bucket.category ? ` · ${bucket.category}` : ''}`
+          }
+        ]}
+        t={t}
+      />
+    )
+  }
+
+  const { last, node } = row
+
+  return (
+    <ListRow
+      active={active}
+      cells={[
+        { color: t.color.muted, text: ` ${last ? '└─' : '├─'} ` },
+        { color: fadeInk(palette, node.style, 1), text: `${node.glyph} ${node.fullLabel || node.label}` },
+        { color: t.color.muted, text: `  ${node.meta}${node.body ? '  ›' : ''}` }
+      ]}
+      t={t}
+    />
   )
 }
 

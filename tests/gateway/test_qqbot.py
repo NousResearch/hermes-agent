@@ -2220,3 +2220,45 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+    def test_read_events_raises_after_silent_loop_exit(self):
+        """Regression: ws closing mid-loop (between condition and receive) must
+        surface as a RuntimeError, not a silent return that erases backoff.
+
+        Issue #55492: `_listen_loop` resets `backoff_idx = 0` immediately
+        after `await self._read_events()` returns. If the receive loop exits
+        without raising, the next iteration would re-enter and exit again
+        — burning accumulated backoff without sleeping.
+
+        Mirrors the WeCom post-loop guard in PR #55486 for consistency
+        across websocket adapters (gateway/platforms/wecom/adapter.py).
+        """
+        # `aiohttp` is a real runtime dep of the adapter, but tests in this
+        # repo may run in environments where the import isn't resolved by
+        # the Pyright/pytest stub. Fall back to a sentinel int that the
+        # adapter's elif-chain simply ignores (PING branch is `pass`, the
+        # only one that doesn't need any extra attribute on the message).
+        try:
+            import aiohttp as _aio
+            ping_type = _aio.WSMsgType.PING
+        except ImportError:  # pragma: no cover - safety net for local envs
+            ping_type = 0x09  # aiohttp.WSMsgType.PING
+
+        adapter = self._make_adapter()
+
+        class _FakeWs:
+            # Mutable `closed` so the first iteration enters the loop
+            # (`closed=False`), the second sees it flipped to True after
+            # `receive()` returns — exactly the race issue #55492 describes.
+            def __init__(self):
+                self.closed = False
+
+            async def receive(self):
+                self.closed = True  # external close between checks
+                # PING is the most inert branch — no parsing, no raise.
+                return SimpleNamespace(type=ping_type)
+
+        adapter._running = True
+        adapter._ws = _FakeWs()
+        with pytest.raises(RuntimeError, match="loop exit without error frame"):
+            asyncio.run(adapter._read_events())

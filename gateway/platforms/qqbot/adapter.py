@@ -702,6 +702,19 @@ class QQAdapter(BasePlatformAdapter):
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
 
+        # while loop exited without raising — ws closed externally between
+        # the loop condition check and `receive()` (e.g. during handshake).
+        # Without this guard, `_listen_loop` sees a normal return, resets
+        # `backoff_idx` to 0 on the next line, and re-enters `_read_events`
+        # which exits again immediately — wasting an iteration and erasing
+        # any backoff the reconnect path had earned. See issue #55492 for
+        # the diagnostic; mirrors the WeCom post-loop guard in PR #55486
+        # so all websocket adapters handle silent loop exits uniformly.
+        if self._running:
+            raise RuntimeError(
+                "QQBot WebSocket closed (loop exit without error frame)"
+            )
+
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
 

@@ -1,0 +1,52 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+# This app is part of the root npm workspace; the root package-lock.json is the
+# source of truth. `npm install` inside apps/mobile may create a local lockfile.
+/package-lock.json
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# Generated embedded renderer for React Native WebView. Build with
+# `npm run renderer:bundle`; keep only the declaration file committed.
+/src/bundled-renderer-html.ts
+/src/generated/bundled-renderer-html.ts
+# Vite build output that bundle-renderer-html.mjs inlines into the .ts above.
+# Hashed filenames per build → enormous PR diffs if tracked.
+/assets/renderer/
+
+# generated native folders
+/ios
+/android

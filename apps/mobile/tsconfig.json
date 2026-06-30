@@ -1,0 +1,18 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "@/app/*": ["src/hermes-app/*"],
+      "@/*": ["src/*"],
+      "@hermes/shared": ["src/mobile-shims/hermes-shared"]
+    },
+    "types": ["react", "react-dom"]
+  },
+  "include": ["App.tsx", "App.native.tsx", "index.ts", "src/mobile-shims/**/*.ts", "src/**/*.native.ts", "src/**/*.native.tsx", "scripts/**/*.mjs"],
+  "exclude": ["node_modules", "ios", "android", "src/**/*.test.ts", "src/**/*.test.tsx"]
+}

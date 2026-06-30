@@ -194,6 +194,49 @@ def test_background_review_summarizer_receives_captured_messages_after_close(mon
     assert captured["notification_mode"] == "on"
 
 
+def test_background_review_strips_image_payloads_from_review_history(monkeypatch):
+    captured: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            captured["history"] = kwargs["conversation_history"]
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    data_url = "data:image/png;base64," + ("A" * 2000)
+    messages_snapshot = [
+        {
+            "role": "tool",
+            "tool_call_id": "call_img",
+            "content": [
+                {"type": "text", "text": "screen"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }
+    ]
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=messages_snapshot,
+        review_memory=True,
+    )
+
+    assert "data:image" not in str(captured["history"])
+    assert "[screenshot]" in str(captured["history"])
+    assert "data:image" in str(messages_snapshot)
+
+
 def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
     """Regression guard for #15216.
 

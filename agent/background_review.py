@@ -24,6 +24,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from agent.tool_dispatch_helpers import _trajectory_normalize_msg
+
 logger = logging.getLogger(__name__)
 
 
@@ -742,11 +744,16 @@ def _run_review_in_thread(
             try:
                 # Routed to a different model -> replay a digest (cache is cold
                 # on that model anyway, so minimise cold-written tokens). Same
-                # model -> replay the full snapshot (warm cache reads).
+                # model -> replay the full snapshot (warm cache reads). In both
+                # cases strip binary image payloads before handing the history to
+                # the review fork.
                 _review_history = (
                     _digest_history(messages_snapshot) if _routed
                     else messages_snapshot
                 )
+                review_history = [
+                    _trajectory_normalize_msg(m) for m in _review_history
+                ]
                 review_agent.run_conversation(
                     user_message=(
                         prompt
@@ -754,7 +761,7 @@ def _run_review_in_thread(
                         "management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
-                    conversation_history=_review_history,
+                    conversation_history=review_history,
                 )
             finally:
                 clear_thread_tool_whitelist()

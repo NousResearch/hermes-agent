@@ -492,6 +492,46 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_list_counts_serialized_payload_size(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        data_url = "data:image/png;base64," + ("A" * 210_000)
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "img1",
+                "content": [
+                    {"type": "text", "text": "screenshot"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ]
+
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+
+        assert isinstance(msgs[0]["content"], str)
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        assert data_url in env.execute.call_args[1]["stdin_data"]
+
+    def test_multimodal_list_without_env_truncates_inline(self):
+        data_url = "data:image/png;base64," + ("A" * 210_000)
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "img1",
+                "content": [
+                    {"type": "text", "text": "screenshot"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ]
+
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+
+        assert isinstance(msgs[0]["content"], str)
+        assert "Truncated" in msgs[0]["content"]
+        assert len(msgs[0]["content"]) < len(data_url)
+
 
 # ── Per-tool threshold integration ────────────────────────────────────
 

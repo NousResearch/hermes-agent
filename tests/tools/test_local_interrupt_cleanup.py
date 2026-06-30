@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.environments import local as local_mod
 from tools.environments.local import LocalEnvironment
 
 _HAS_POSIX_PROCESS_GROUPS = all(hasattr(os, name) for name in ("getpgid", "killpg"))

@@ -601,6 +601,18 @@ def _preserve_parent_mcp_toolsets(
 
 
 DEFAULT_MAX_ITERATIONS = 50
+# Hard per-summary character ceiling layered on top of the dynamic
+# headroom budget (see _apply_summary_budget). Belt-and-suspenders for
+# models that ignore the "be concise" instruction. 0 disables the ceiling.
+DEFAULT_MAX_SUMMARY_CHARS = 24000
+# Fraction of the parent's *remaining* context headroom that the whole batch
+# of subagent summaries is allowed to consume. The per-summary budget is this
+# slice divided across the batch, so N children can't collectively blow the
+# parent's window (the compression/429 death-spiral in issue/PR #9126).
+_SUMMARY_HEADROOM_FRACTION = 0.5
+# Floor so a single summary always gets a usable slice even when the parent is
+# already nearly full — below this we'd be truncating to noise.
+_MIN_SUMMARY_CHARS = 2000
 # No default wall-clock cap on child agents: legitimate heavy subagent work
 # (deep reviews, research fan-outs, slow reasoning models) was being killed
 # mid-task. Errors should come from what the child actually does; stuck-child
@@ -702,8 +714,10 @@ def _build_child_system_prompt(
         "- Any issues encountered\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
-        "Be thorough but concise -- your response is returned to the "
-        "parent agent as a summary."
+        "Keep your final summary tight: lead with outcomes, prefer bullet "
+        "points over paragraphs, and don't replay your whole process. Your "
+        "response is returned to the parent agent as a summary, and overlong "
+        "summaries crowd out the parent's context window."
     )
     if role == "orchestrator":
         child_note = (
@@ -784,6 +798,24 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
+
+
+def _emit_parent_console(parent_agent, line: str) -> None:
+    """Emit a human-readable progress line to the parent's console.
+
+    Routes through ``parent_agent._safe_print`` when available so headless
+    stdio hosts (ACP, gateway API) can redirect non-protocol output to
+    stderr via their configured ``_print_fn``. A bare ``print()`` would
+    otherwise land on stdout and corrupt JSON-RPC framing.
+    """
+    printer = getattr(parent_agent, "_safe_print", None)
+    if callable(printer):
+        try:
+            printer(line)
+            return
+        except Exception:
+            pass
+    print(line)
 
 
 def _build_child_progress_callback(
@@ -1197,6 +1229,22 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
+    # Defensive: validate override_acp_command exists on PATH before honoring
+    # it. Models occasionally pass acp_command="copilot" / "claude" / etc. in
+    # delegate_task tool calls despite the schema saying not to, which forces
+    # the subagent onto the copilot-acp transport below and crashes the
+    # gateway when the binary is missing (e.g. headless container deploys).
+    if override_acp_command:
+        import shutil as _shutil
+
+        if not _shutil.which(override_acp_command):
+            logger.warning(
+                "Ignoring acp_command=%r: binary not found on PATH; "
+                "falling back to default transport.",
+                override_acp_command,
+            )
+            override_acp_command = None
+            override_acp_args = None
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -1507,6 +1555,181 @@ def _dump_subagent_timeout_diagnostic(
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
         return None
+
+
+def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
+    """Write a subagent's full summary to the delegation cache and return path.
+
+    Mirrors web_extract's ``_store_full_text``: the file lands in
+    ``cache/delegation`` which is mounted read-only into remote backends
+    (Docker/Modal/SSH) via ``credential_files._CACHE_DIRS``, so the parent's
+    terminal/``read_file`` tools can page through the complete text on any
+    backend. Returns the absolute path, or None on failure (best-effort:
+    the trimmed head+tail is still returned to the parent regardless).
+    """
+    try:
+        from hermes_constants import get_hermes_dir
+        import datetime as _dt
+
+        cache_dir = get_hermes_dir("cache/delegation", "delegation_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = cache_dir / f"subagent-summary-{task_index}-{ts}.txt"
+        path.write_text(summary, encoding="utf-8")
+        return str(path)
+    except Exception as exc:
+        logger.debug("Failed to spill subagent summary to file: %s", exc)
+        return None
+
+
+def _trim_summary_with_footer(
+    summary: str, cap: int, task_index: int
+) -> tuple[str, Optional[str]]:
+    """Return (model_text, spill_path) for one over-budget summary.
+
+    Mirrors web_extract's ``_truncate_with_footer``: keep a head+tail window
+    (~75% head / ~25% tail, snapped to line boundaries) so the subagent's
+    opening AND its closing (outcomes / files-changed / issues, which live at
+    the end) both survive, spill the full text to disk, and append a footer
+    telling the parent exactly how much it's seeing and the precise
+    ``read_file offset=`` to page into the omitted middle. Deterministic.
+    """
+    original_len = len(summary)
+    head_budget = int(cap * 0.75)
+    tail_budget = cap - head_budget
+
+    head = summary[:head_budget]
+    tail = summary[-tail_budget:]
+    # Snap the head cut back to the last newline so we don't slice mid-line.
+    nl = head.rfind("\n")
+    if nl > head_budget * 0.5:
+        head = head[:nl]
+    # Snap the tail cut forward to the next newline for the same reason.
+    nl = tail.find("\n")
+    if 0 <= nl < tail_budget * 0.5:
+        tail = tail[nl + 1:]
+
+    spill_path = _spill_summary_to_file(task_index, summary)
+
+    footer_lines = [
+        "",
+        "─" * 8 + " [SUMMARY TRUNCATED] " + "─" * 8,
+        f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "
+        f"of {original_len:,} total — trimmed to protect the parent's context window.",
+    ]
+    if spill_path:
+        # read_file is 1-indexed; +2 moves past the last head line shown.
+        middle_start_line = head.count("\n") + 2
+        footer_lines.append(f"Full subagent output saved to: {spill_path}")
+        footer_lines.append(
+            f'To read the omitted middle: read_file path="{spill_path}" '
+            f"offset={middle_start_line} limit=200  (the file is the complete "
+            f"summary; raise/lower offset to page through it)."
+        )
+    else:
+        footer_lines.append(
+            "Full output could not be stored to disk; the head+tail above is "
+            "all that was preserved."
+        )
+    footer_lines.append("─" * 37)
+
+    model_text = head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines)
+    return model_text, spill_path
+
+
+def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]:
+    """Per-summary character budget sized against the parent's *remaining*
+    context headroom, split across the batch.
+
+    The overflow this guards against is N summaries entering the parent
+    context at once (batch fan-out), not any single summary being large.  We
+    take a fraction of the headroom the parent has left (resolved context
+    length minus what's already in its prompt) and divide it across the batch,
+    converting tokens→chars at the standard ~4 chars/token estimate.
+
+    Returns the per-summary char budget, or None when the parent's context
+    state is unknown (no compressor / no token count) — in which case the
+    caller falls back to the static char ceiling only.
+    """
+    try:
+        compressor = getattr(parent_agent, "context_compressor", None)
+        context_length = getattr(compressor, "context_length", None)
+        if not isinstance(context_length, int) or context_length <= 0:
+            return None
+
+        used_tokens = getattr(parent_agent, "session_prompt_tokens", 0)
+        if not isinstance(used_tokens, (int, float)) or used_tokens < 0:
+            used_tokens = 0
+
+        # Reserve the compressor's output budget so we measure INPUT headroom.
+        reserved = getattr(compressor, "max_tokens", 0) or 0
+        headroom_tokens = context_length - int(used_tokens) - int(reserved)
+        if headroom_tokens <= 0:
+            # Parent is already over budget — give each summary only the floor.
+            return _MIN_SUMMARY_CHARS
+
+        batch_token_budget = int(headroom_tokens * _SUMMARY_HEADROOM_FRACTION)
+        per_summary_tokens = batch_token_budget // max(1, n_summaries)
+        per_summary_chars = per_summary_tokens * 4  # ~4 chars/token
+        return max(_MIN_SUMMARY_CHARS, per_summary_chars)
+    except Exception:
+        logger.debug("Summary budget computation failed", exc_info=True)
+        return None
+
+
+def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
+    """Trim subagent summaries in-place so the batch can't overflow the
+    parent's context window, spilling full text to disk so nothing is lost.
+
+    The effective per-summary cap is the MIN of:
+      - the dynamic headroom budget (remaining parent context ÷ batch size), and
+      - the static ``delegation.max_summary_chars`` ceiling (0 = disabled).
+
+    When a summary exceeds the cap, its full text is written to a file and the
+    in-context summary becomes a head slice plus a pointer to that file. This
+    addresses issue/PR #9126: batch fan-out returned N full summaries verbatim,
+    blowing the parent context and (on rate-limited providers) triggering a
+    compression/429 death spiral.
+    """
+    summaries = [
+        r for r in results if isinstance(r, dict) and isinstance(r.get("summary"), str) and r["summary"]
+    ]
+    if not summaries:
+        return
+
+    cfg = _load_config()
+    try:
+        static_ceiling = int(cfg.get("max_summary_chars", DEFAULT_MAX_SUMMARY_CHARS))
+    except (TypeError, ValueError):
+        static_ceiling = DEFAULT_MAX_SUMMARY_CHARS
+
+    dynamic_budget = _parent_summary_char_budget(parent_agent, len(summaries))
+
+    # Combine the two caps. Either can be absent/disabled.
+    candidates = [c for c in (static_ceiling, dynamic_budget) if c and c > 0]
+    if not candidates:
+        return  # both disabled / unknown → leave summaries untouched
+    cap = min(candidates)
+
+    for entry in summaries:
+        summary = entry["summary"]
+        if len(summary) <= cap:
+            continue
+        original_len = len(summary)
+        model_text, spill_path = _trim_summary_with_footer(
+            summary, cap, entry.get("task_index", -1)
+        )
+        entry["summary"] = model_text
+        entry["summary_truncated"] = True
+        if spill_path:
+            entry["summary_full_path"] = spill_path
+        logger.debug(
+            "[subagent-%s] summary trimmed %d → ~%d chars (spill=%s)",
+            entry.get("task_index", "?"),
+            original_len,
+            cap,
+            spill_path or "none",
+        )
 
 
 def _run_single_child(
@@ -2421,9 +2644,9 @@ def delegate_task(
                             try:
                                 spinner_ref.print_above(completion_line)
                             except Exception:
-                                print(f"  {completion_line}")
+                                _emit_parent_console(parent_agent, f"  {completion_line}")
                         else:
-                            print(f"  {completion_line}")
+                            _emit_parent_console(parent_agent, f"  {completion_line}")
 
                         # Update spinner text to show remaining count
                         if spinner_ref and remaining > 0:
@@ -2436,6 +2659,12 @@ def delegate_task(
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])
+
+        # Cap subagent summaries against the parent's remaining context
+        # headroom (split across the batch) before they enter the parent's
+        # conversation. Full text is spilled to disk so nothing is lost.
+        # Covers both the single-task and batch paths. See PR #9126.
+        _apply_summary_budget(results, parent_agent)
 
         # Notify parent's memory provider of delegation outcomes
         if (
@@ -3042,6 +3271,30 @@ def _build_role_param_description() -> str:
     )
 
 
+# Known ACP-compatible CLIs that delegate_task can shell out to. Kept
+# narrow on purpose: only the ones agent/copilot_acp_client.py and friends
+# actually understand. Add new entries here when a new ACP CLI ships.
+_KNOWN_ACP_BINARIES: tuple[str, ...] = ("copilot", "claude", "codex")
+
+
+def _acp_binary_available() -> bool:
+    """True iff at least one known ACP CLI is on PATH.
+
+    Used to gate inclusion of ``acp_command`` / ``acp_args`` in the
+    delegate_task schema. On headless hosts (Railway / Fly / Docker /
+    fresh VPS) without any of these binaries, exposing the fields invites
+    the model to hallucinate ``acp_command="copilot"`` from the schema's
+    description, which used to crash subagent runs and take the gateway
+    down. Pruning the fields from the schema removes the temptation.
+
+    Not cached: ``shutil.which`` is cheap and we want the schema to react
+    to mid-session installs without forcing a process restart.
+    """
+    import shutil as _shutil
+
+    return any(_shutil.which(name) for name in _KNOWN_ACP_BINARIES)
+
+
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
 
@@ -3058,6 +3311,25 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+
+    # Prune ACP overrides from the schema when no known ACP CLI is on PATH.
+    # The runtime guard in _build_child_agent remains as defense-in-depth for
+    # internal callers / tests / future code paths that skip the schema layer.
+    if not _acp_binary_available():
+        overrides_params["properties"].pop("acp_command", None)
+        overrides_params["properties"].pop("acp_args", None)
+        tasks_schema = dict(overrides_params["properties"].get("tasks", {}))
+        if "items" in tasks_schema:
+            items = dict(tasks_schema["items"])
+            if "properties" in items:
+                items["properties"] = {
+                    k: v
+                    for k, v in items["properties"].items()
+                    if k not in ("acp_command", "acp_args")
+                }
+            tasks_schema["items"] = items
+            overrides_params["properties"]["tasks"] = tasks_schema
+
     return {
         "description": _build_top_level_description(),
         "parameters": overrides_params,

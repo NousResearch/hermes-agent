@@ -52,6 +52,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
+    is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
 )
@@ -3209,6 +3210,7 @@ def run_conversation(
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
+                    FailoverReason.upstream_rate_limit,
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
@@ -3223,13 +3225,30 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
-                        agent._credential_pool,
-                        provider=agent.provider,
-                        base_url=getattr(agent, "base_url", None),
+                    #
+                    # Exception: an upstream-aggregator 429 — the credential
+                    # pool can't help when the *upstream* model (DeepSeek,
+                    # etc.) is throttling OpenRouter, so always fall back to a
+                    # different model regardless of pool state.
+                    _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                    pool_may_recover = (
+                        False if _is_upstream
+                        else _ra()._pool_may_recover_from_rate_limit(
+                            agent._credential_pool,
+                            provider=agent.provider,
+                            base_url=getattr(agent, "base_url", None),
+                        )
                     )
                     if not pool_may_recover:
-                        if classified.reason == FailoverReason.billing:
+                        if _is_upstream:
+                            _upstream_name = (classified.error_context or {}).get(
+                                "upstream_provider", "aggregator"
+                            )
+                            agent._buffer_status(
+                                f"⚠️ Upstream {_upstream_name} rate-limited — "
+                                "switching to fallback model..."
+                            )
+                        elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
                             )
@@ -3532,6 +3551,45 @@ def run_conversation(
                             }
                         _retry.restart_with_compressed_messages = True
                         break
+
+                    # The error is output-cap-shaped (about max_tokens being
+                    # too large) but the provider's wording didn't let us parse
+                    # the available output budget.  Compression CANNOT help here
+                    # — the input already fits; the call fails deterministically
+                    # on the oversized max_tokens.  Routing it into compression
+                    # re-sends the same max_tokens, gets the identical 400, and
+                    # death-loops until "cannot compress further" (#55546).
+                    # Fail fast with an actionable message instead of looping.
+                    if is_output_cap_error(error_msg):
+                        agent._flush_status_buffer()
+                        agent._vprint(
+                            f"{agent.log_prefix}❌ The provider rejected the request because "
+                            f"max_tokens exceeds its output cap for this model.",
+                            force=True,
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}   💡 Lower model.max_tokens in your config.yaml to "
+                            f"at or below the model's max-output limit. "
+                            f"(This is an output-cap error, not a context overflow — "
+                            f"compression cannot fix it.)",
+                            force=True,
+                        )
+                        logger.error(
+                            f"{agent.log_prefix}Output-cap error not routed into compression "
+                            f"(max_tokens over provider cap): {error_msg[:200]}"
+                        )
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "error": (
+                                "max_tokens exceeds the provider's output cap for this model. "
+                                "Lower model.max_tokens in config.yaml."
+                            ),
+                            "partial": True,
+                            "failed": True,
+                        }
 
                     # Error is about the INPUT being too large.  Only reduce
                     # context_length when the provider explicitly reports the

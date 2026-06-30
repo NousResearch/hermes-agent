@@ -516,16 +516,18 @@ except Exception:
 def get_anthropic_key() -> str:
     """Return the first usable Anthropic credential, or ``""``.
 
-    Checks both the ``.env`` file (via ``get_env_value``) and the process
-    environment (``os.getenv``).  The fallback order mirrors the
-    ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars`` tuple:
+    Checks both the ``.env`` file and the process environment, preferring
+    ``~/.hermes/.env`` so a deliberate key rotation isn't shadowed by a stale
+    shell export (matches the api-key resolution path — see #20591).  The
+    order mirrors the ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars``
+    tuple:
 
         ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
     """
-    from hermes_cli.config import get_env_value
+    from hermes_cli.config import get_env_value_prefer_dotenv
 
     for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
-        value = get_env_value(var) or os.getenv(var, "")
+        value = get_env_value_prefer_dotenv(var) or ""
         if value:
             return value
     return ""
@@ -666,7 +668,8 @@ def _resolve_api_key_provider_secret(
 
             token, source = resolve_copilot_token()
             if token:
-                return get_copilot_api_token(token), source
+                api_token, _base_url = get_copilot_api_token(token)
+                return api_token, source
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
@@ -676,8 +679,10 @@ def _resolve_api_key_provider_secret(
     from hermes_cli.config import get_env_value
 
     for env_var in pconfig.api_key_env_vars:
-        # Check both os.environ and ~/.hermes/.env file
-        val = (get_env_value(env_var) or "").strip()
+        # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation
+        # in the user's .env file isn't shadowed by a stale shell export
+        # inherited from a parent process (Codex CLI, test runners, etc.).
+        val = (get_env_value_prefer_dotenv(env_var) or "").strip()
         if has_usable_secret(val):
             return val, env_var
 
@@ -6708,6 +6713,26 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "copilot":
+        # Resolve the Copilot API base URL from the token-exchange response
+        # (endpoints.api, with a proxy-ep fallback), which is authoritative
+        # for Enterprise / proxied accounts. Falls back to the registry
+        # default and is guarded non-empty below so chat inference never
+        # resolves an empty base URL (#50252).
+        base_url = env_url.rstrip("/") if env_url else pconfig.inference_base_url
+        try:
+            from hermes_cli.copilot_auth import (
+                resolve_copilot_token,
+                get_copilot_api_token,
+            )
+            raw_token, _ = resolve_copilot_token()
+            if raw_token:
+                _, resolved = get_copilot_api_token(raw_token)
+                resolved = (resolved or "").strip()
+                if resolved:
+                    base_url = resolved
+        except Exception as exc:
+            logger.debug("Copilot base URL resolution fell back to default: %s", exc)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:
@@ -6715,6 +6740,12 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "lmstudio":
         base_url = _normalize_lmstudio_runtime_base_url(base_url)
+
+    # Last-resort guard: an API-key provider must never hand back an empty
+    # base URL (a set-but-empty COPILOT_API_BASE_URL or similar env override
+    # otherwise wedges chat inference — #50252).
+    if not (isinstance(base_url, str) and base_url.strip()):
+        base_url = pconfig.inference_base_url
 
     return {
         "provider": provider_id,

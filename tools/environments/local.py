@@ -982,7 +982,16 @@ class LocalEnvironment(BaseEnvironment):
 
         try:
             if _IS_WINDOWS:
-                proc.terminate()
+                try:
+                    from gateway.status import terminate_pid
+
+                    terminate_pid(proc.pid, force=True)
+                except Exception:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=2.0)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             else:
                 try:
                     pgid = os.getpgid(proc.pid)

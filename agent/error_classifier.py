@@ -31,6 +31,9 @@ class FailoverReason(enum.Enum):
     # Billing / quota
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
+    # Upstream model rate-limited (aggregator 429) — fallback to a different
+    # model, NOT credential rotation. The user's key is healthy.
+    upstream_rate_limit = "upstream_rate_limit"
 
     # Server-side
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
@@ -911,6 +914,22 @@ def _classify_by_status(
                 FailoverReason.overloaded,
                 retryable=True,
             )
+        # Distinguish an OpenRouter-aggregator upstream 429 (an upstream model
+        # like DeepSeek rate-limited OpenRouter's aggregate traffic) from an
+        # account-level 429 (the user's key is actually throttled). OpenRouter
+        # wraps upstream errors with the outer message "Provider returned
+        # error" — the user's key is healthy, so marking it exhausted / rotating
+        # is wrong and burns the key for ~24min. Fall back to a different model.
+        if _is_openrouter_upstream_error(body, provider):
+            upstream_provider = _extract_upstream_provider_name(body)
+            ctx = {"upstream_provider": upstream_provider} if upstream_provider else {}
+            return result_fn(
+                FailoverReason.upstream_rate_limit,
+                retryable=True,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context=ctx,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -1447,3 +1466,49 @@ def _extract_message(error: Exception, body: dict) -> str:
             return msg.strip()[:500]
     # Fallback to str(error)
     return str(error)[:500]
+
+
+def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
+    """Detect OpenRouter's aggregator-wrapped upstream provider errors.
+
+    OpenRouter returns errors from upstream model providers (DeepSeek,
+    Anthropic, etc.) wrapped with the outer message "Provider returned error"
+    and the real error nested in ``metadata.raw``. This signal means the
+    user's OpenRouter key is healthy — the upstream provider is the one that
+    failed — so credential rotation is the wrong recovery.
+    """
+    if not isinstance(body, dict):
+        return False
+    provider_lower = (provider or "").strip().lower()
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return False
+    outer_msg = str(err.get("message") or "").strip().lower()
+    if outer_msg != "provider returned error":
+        return False
+    # Require either the explicit OpenRouter provider OR the metadata shape
+    # that only OpenRouter produces (metadata.raw / metadata.provider_name).
+    if provider_lower == "openrouter":
+        return True
+    metadata = err.get("metadata")
+    if isinstance(metadata, dict) and (
+        "raw" in metadata or "provider_name" in metadata
+    ):
+        return True
+    return False
+
+
+def _extract_upstream_provider_name(body: Any) -> Optional[str]:
+    """Pull the upstream provider name out of OpenRouter's error metadata."""
+    if not isinstance(body, dict):
+        return None
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return None
+    metadata = err.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    name = metadata.get("provider_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return None

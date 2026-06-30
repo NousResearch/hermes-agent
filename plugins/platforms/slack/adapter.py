@@ -2039,7 +2039,8 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"🖼️ Image: {image_path}"
+            # image_path is a host-local path; never echo it into chat.
+            text = "⚠️ Couldn't deliver the image attachment."
             if caption:
                 text = f"{caption}\n{text}"
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
@@ -2190,7 +2191,8 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"🎬 Video: {video_path}"
+            # video_path is a host-local path; never echo it into chat.
+            text = "⚠️ Couldn't deliver the video attachment."
             if caption:
                 text = f"{caption}\n{text}"
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
@@ -2249,7 +2251,11 @@ class SlackAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            text = f"📎 File: {file_path}"
+            # file_path is a host-local path; never echo it into chat.
+            # display_name comes from caller-supplied file_name (or basename
+            # of the host path) and is the user-facing filename only — safe
+            # to surface so the user knows which file failed.
+            text = f"⚠️ Couldn't deliver the file attachment ({display_name})."
             if caption:
                 text = f"{caption}\n{text}"
             return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)

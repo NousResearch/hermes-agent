@@ -1707,3 +1707,126 @@ class TestMediaDeliveryDiagnosability:
         assert any(r.endswith("cache/documents") for r in roots)
         # Legacy layout still present.
         assert any(r.endswith("image_cache") for r in roots)
+
+
+# ---------------------------------------------------------------------------
+# Media-send fallback must not leak host filesystem paths into chat
+# ---------------------------------------------------------------------------
+
+
+class _CapturingAdapter(BasePlatformAdapter):
+    """Minimal concrete BasePlatformAdapter that records what send() sees.
+
+    The four media-send fallbacks (send_voice, send_video, send_document,
+    send_image_file) historically forwarded their *_path argument into the
+    chat text. That argument is a host filesystem path inside the Hermes
+    cache, so any subclass that fell back to super() — like the Telegram
+    adapter on a rejected video — would leak the host's directory layout
+    into the user's chat.
+    """
+
+    def __init__(self):
+        from gateway.config import Platform, PlatformConfig
+        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        self.sent: list[dict] = []
+
+    async def connect(self) -> bool:  # pragma: no cover - not exercised
+        return True
+
+    async def disconnect(self) -> None:  # pragma: no cover - not exercised
+        return None
+
+    async def get_chat_info(self, chat_id):  # pragma: no cover - not exercised
+        return {"name": chat_id, "type": "dm"}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+        self.sent.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id="m1")
+
+
+class TestMediaFallbackDoesNotLeakHostPath:
+    """Regression: the four base-class media fallbacks must not echo *_path.
+
+    Telegram, Discord, and Slack adapters all fall back to these base
+    implementations on native-send failure. When they did, the user saw
+    a chat message like ``🎬 Video: /home/.../hermes/cache/video/abc.mp4``
+    — a host filesystem path with no actionable information.
+    """
+
+    SENSITIVE_PATH = "/home/jayne/.hermes/cache/media/sensitive_host_path_abc123.bin"
+
+    @pytest.mark.asyncio
+    async def test_send_voice_fallback_omits_audio_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_voice(chat_id="123", audio_path=self.SENSITIVE_PATH)
+        assert result.success
+        assert len(adapter.sent) == 1
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "audio" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_fallback_omits_video_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_video(chat_id="123", video_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "video" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_document_fallback_omits_file_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_document(chat_id="123", file_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "file" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_document_fallback_includes_explicit_filename_only(self):
+        """A caller-supplied file_name is user-facing and may be shown — but
+        the host file_path argument must still be suppressed."""
+        adapter = _CapturingAdapter()
+        result = await adapter.send_document(
+            chat_id="123",
+            file_path=self.SENSITIVE_PATH,
+            file_name="report.pdf",
+        )
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "report.pdf" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_fallback_omits_image_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_image_file(chat_id="123", image_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "image" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_caption_is_preserved_in_fallback(self):
+        """The user-supplied caption is still shown — only the path is suppressed."""
+        adapter = _CapturingAdapter()
+        await adapter.send_video(
+            chat_id="123",
+            video_path=self.SENSITIVE_PATH,
+            caption="Here's the daily summary.",
+        )
+        sent_text = adapter.sent[0]["content"]
+        assert "Here's the daily summary." in sent_text
+        assert self.SENSITIVE_PATH not in sent_text

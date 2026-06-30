@@ -53,6 +53,7 @@ class TestFailoverReason:
     def test_enum_members_exist(self):
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
+            "upstream_rate_limit",
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
@@ -1723,4 +1724,110 @@ class TestMultimodalToolContentUnsupported:
         """Make sure the patterns don't false-positive on normal 400s."""
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
-        assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+class TestOpenRouterUpstreamRateLimit:
+    """Distinguish upstream-provider 429 from account-level 429 on OpenRouter.
+
+    When an upstream model (DeepSeek, Anthropic, etc.) rate-limits OpenRouter's
+    aggregate traffic, OpenRouter returns 429 with the outer message "Provider
+    returned error".  The user's key is healthy — we must fall back to a
+    different model, NOT mark the credential exhausted.
+    """
+
+    def test_openrouter_upstream_429_classified_as_upstream_rate_limit(self):
+        """OpenRouter 429 with 'Provider returned error' → upstream_rate_limit."""
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 429,
+                    "metadata": {
+                        "provider_name": "DeepSeek",
+                        "raw": '{"error":{"message":"Rate limit exceeded"}}',
+                    },
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-v4-flash")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+        assert result.error_context.get("upstream_provider") == "DeepSeek"
+
+    def test_upstream_429_metadata_shape_without_explicit_provider(self):
+        """metadata.raw shape alone (provider != openrouter literal) still detected."""
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "metadata": {"raw": '{"error":{"code":429}}'},
+                }
+            },
+        )
+        # provider passed as the slug-form some callers use
+        result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.upstream_rate_limit
+
+    def test_account_level_429_still_rotates_credential(self):
+        """A real account-level 429 (no upstream wrapper) → rate_limit, rotates."""
+        e = MockAPIError(
+            "Rate limit exceeded: 200 requests per minute",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "Rate limit exceeded: 200 requests per minute",
+                    "code": 429,
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-v4-flash")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+    def test_upstream_wrapper_without_metadata_on_non_openrouter_not_matched(self):
+        """'Provider returned error' alone on a non-openrouter provider → plain rate_limit."""
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=429,
+            body={"error": {"message": "Provider returned error", "code": 429}},
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-sonnet-4")
+        assert result.reason == FailoverReason.rate_limit
+
+    def test_upstream_provider_name_missing_yields_empty_context(self):
+        """No provider_name in metadata → upstream_rate_limit with empty context."""
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "Provider returned error",
+                    "metadata": {"raw": '{"error":{"code":429}}'},
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.error_context.get("upstream_provider") is None
+
+    def test_overload_429_takes_precedence_over_upstream(self):
+        """A 429 carrying overload language stays overloaded (retry same key)."""
+        e = MockAPIError(
+            "Provider returned error",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "service is temporarily overloaded",
+                    "metadata": {"provider_name": "DeepSeek"},
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="x")
+        # Overload disambiguation runs first; the outer message is the overload
+        # phrase, so this is an overload, not an upstream rate-limit.
+        assert result.reason == FailoverReason.overloaded

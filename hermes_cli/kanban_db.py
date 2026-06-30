@@ -594,6 +594,36 @@ def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
     return attachments_root(board=board) / task_id
 
 
+def artifacts_root(board: Optional[str] = None) -> Path:
+    """Return the directory where completed-task deliverables are archived.
+
+    Scratch workspaces are deliberately ephemeral: :func:`complete_task` removes
+    them after a successful run so the Kanban workspaces tree does not grow
+    without bound.  Deliverables passed explicitly via
+    ``kanban_complete(artifacts=[...])`` need the opposite lifecycle: they must
+    remain readable after the worker exits and the scratch directory is swept.
+
+    ``HERMES_KANBAN_ARTIFACTS_ROOT`` pins the archive root for operators who
+    want artifacts on a specific volume.  Otherwise artifacts are kept next to
+    the board's other durable storage, per-board and outside ``workspaces/`` so
+    workspace cleanup cannot delete them.
+    """
+    override = os.environ.get("HERMES_KANBAN_ARTIFACTS_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser()
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "artifacts"
+    return board_dir(slug) / "artifacts"
+
+
+def task_artifacts_dir(task_id: str, board: Optional[str] = None) -> Path:
+    """Return the stable artifact archive directory for a completed task."""
+    return artifacts_root(board=board) / task_id
+
+
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
@@ -3975,6 +4005,76 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+def _archive_completion_artifacts(
+    task_id: str,
+    metadata: Optional[dict],
+    *,
+    board: Optional[str] = None,
+) -> Optional[dict]:
+    """Copy explicit completion artifacts to durable per-task storage.
+
+    Workers often produce deliverables inside their scratch workspace and pass
+    those paths through ``kanban_complete(artifacts=[...])``.  The completion
+    path cleans scratch workspaces immediately after marking the task done, so
+    event payloads could point at files that disappear before humans or child
+    agents read them.  Archive only the explicit artifact list — not the whole
+    workspace — to preserve cleanup semantics and avoid copying secrets or
+    incidental build caches.
+
+    Best-effort by design: missing paths, directories, and copy errors are
+    recorded in metadata but never block task completion.
+    """
+    if not isinstance(metadata, dict):
+        return metadata
+    raw = metadata.get("artifacts")
+    if not isinstance(raw, (list, tuple)):
+        return metadata
+
+    archived: list[str] = []
+    archive_map: dict[str, str] = {}
+    archive_errors: dict[str, str] = {}
+    dest_dir: Optional[Path] = None
+    used_names: set[str] = set()
+
+    for item in raw:
+        src_text = str(item).strip()
+        if not src_text:
+            continue
+        src = Path(src_text).expanduser()
+        try:
+            if not src.is_file():
+                archive_errors[src_text] = "not a file or missing"
+                continue
+            if dest_dir is None:
+                dest_dir = task_artifacts_dir(task_id, board=board)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = src.name or "artifact"
+            dest = dest_dir / safe_name
+            stem = dest.stem or "artifact"
+            suffix = dest.suffix
+            counter = 1
+            while dest.exists() or dest.name in used_names:
+                dest = dest_dir / f"{stem}-{counter}{suffix}"
+                counter += 1
+            shutil.copy2(src, dest)
+            used_names.add(dest.name)
+            dest_s = str(dest)
+            archived.append(dest_s)
+            archive_map[src_text] = dest_s
+        except Exception as exc:  # best-effort; completion must continue
+            archive_errors[src_text] = str(exc)
+
+    if not archived and not archive_errors:
+        return metadata
+    updated = dict(metadata)
+    if archived:
+        updated["artifacts"] = archived
+        updated["artifact_archive_map"] = archive_map
+    if archive_errors:
+        updated["artifact_archive_errors"] = archive_errors
+    return updated
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4041,6 +4141,8 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    metadata = _archive_completion_artifacts(task_id, metadata)
 
     with write_txn(conn):
         if expected_run_id is None:

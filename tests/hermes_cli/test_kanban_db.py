@@ -2404,6 +2404,65 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
 # Deferred scratch cleanup for parent/child handoff (#33774)
 # ---------------------------------------------------------------------------
 
+def test_completion_archives_explicit_scratch_artifacts_before_cleanup(kanban_home):
+    """Explicit completion artifacts survive scratch workspace cleanup.
+
+    Regression for workers that passed ``kanban_complete(artifacts=[...])`` with
+    paths inside their scratch workspace: completion deleted the workspace before
+    humans or downstream agents could read the declared deliverable.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="artifact producer", assignee="worker")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        artifact = ws / "report.md"
+        artifact.write_text("durable handoff\n", encoding="utf-8")
+
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="produced report",
+            metadata={"artifacts": [str(artifact)]},
+        )
+        run = kb.latest_run(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert run and run.metadata
+    archived_paths = run.metadata["artifacts"]
+    assert len(archived_paths) == 1
+    archived = Path(archived_paths[0])
+    assert archived == kb.task_artifacts_dir(tid) / "report.md"
+    assert archived.read_text(encoding="utf-8") == "durable handoff\n"
+    assert run.metadata["artifact_archive_map"][str(artifact)] == str(archived)
+    completed = [ev for ev in events if ev.kind == "completed"][-1]
+    assert completed.payload is not None
+    assert completed.payload["artifacts"] == [str(archived)]
+
+
+def test_completion_records_missing_artifact_but_still_completes(kanban_home):
+    """A bad artifact path should not block task completion."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="missing artifact", assignee="worker")
+        missing = str(kanban_home / "kanban" / "workspaces" / tid / "missing.md")
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="attempted artifact",
+            metadata={"artifacts": [missing]},
+        )
+        task = kb.get_task(conn, tid)
+        run = kb.latest_run(conn, tid)
+
+    assert task is not None
+    assert task.status == "done"
+    assert run and run.metadata
+    assert run.metadata["artifacts"] == [missing]
+    assert run.metadata["artifact_archive_errors"] == {missing: "not a file or missing"}
+
+
 def test_cleanup_workspace_deferred_while_child_active(kanban_home):
     """A scratch parent's workspace survives completion while a child is still active.
 

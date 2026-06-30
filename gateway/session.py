@@ -89,6 +89,22 @@ def _is_path_unsafe(value: object) -> bool:
     return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
 
 
+def _sanitize_key_component(value: str) -> str:
+    r"""Encode path-unsafe characters in a session key component.
+
+    Some platforms (DingTalk, WhatsApp) use ``/`` or ``\`` in their chat
+    identifiers.  Session keys are stored in ``sessions.json`` and validated
+    by :func:`_is_path_unsafe` on load, so any ``/`` or ``\`` in a raw
+    chat_id triggers a false-positive "directory traversal" rejection.
+
+    Only the characters that :func:`_is_path_unsafe` rejects (``/``, ``\``,
+    and ``..``) are encoded.  Other special characters (``@``, ``+``, ``=``,
+    etc.) are left as-is because they are safe in dict keys and common in
+    platform identifiers.
+    """
+    return value.replace("/", "%2F").replace("\\", "%5C").replace("..", "%2E%2E")
+
+
 @dataclass
 class SessionSource:
     """
@@ -791,10 +807,13 @@ def build_session_key(
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+        if dm_chat_id:
+            dm_chat_id = _sanitize_key_component(dm_chat_id)
 
         if dm_chat_id:
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+                safe_thread = _sanitize_key_component(source.thread_id)
+                return f"{ns}:{platform}:dm:{dm_chat_id}:{safe_thread}"
             return f"{ns}:{platform}:dm:{dm_chat_id}"
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
@@ -809,11 +828,14 @@ def build_session_key(
                 or dm_participant_id
             )
         if dm_participant_id:
+            dm_participant_id = _sanitize_key_component(str(dm_participant_id))
             if source.thread_id:
-                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+                safe_thread = _sanitize_key_component(source.thread_id)
+                return f"{ns}:{platform}:dm:{dm_participant_id}:{safe_thread}"
             return f"{ns}:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
-            return f"{ns}:{platform}:dm:{source.thread_id}"
+            safe_thread = _sanitize_key_component(source.thread_id)
+            return f"{ns}:{platform}:dm:{safe_thread}"
         return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
@@ -825,9 +847,9 @@ def build_session_key(
     key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
-        key_parts.append(source.chat_id)
+        key_parts.append(_sanitize_key_component(source.chat_id))
     if source.thread_id:
-        key_parts.append(source.thread_id)
+        key_parts.append(_sanitize_key_component(source.thread_id))
 
     # In threads, default to shared sessions (all participants see the same
     # conversation).  Per-user isolation only applies when explicitly enabled
@@ -837,7 +859,7 @@ def build_session_key(
         isolate_user = False
 
     if isolate_user and participant_id:
-        key_parts.append(str(participant_id))
+        key_parts.append(_sanitize_key_component(str(participant_id)))
 
     return ":".join(key_parts)
 

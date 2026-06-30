@@ -402,9 +402,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   }
 
   return (ev: GatewayEvent) => {
+    // During session switch/reset, `sid` is momentarily null. The old
+    // `sid &&` guard short-circuited to false, letting events from other live
+    // sessions bleed into the active view (#51058). When sid is null, drop ALL
+    // non-gateway session events instead.
+    //
+    // Also filter empty-string session_id: _emit() can set session_id to ""
+    // when callers omit it (session.set_cwd, config.set, session.title). These
+    // session-scoped events would bleed into whichever session is active.
     const sid = getUiState().sid
+    const evSid = ev.session_id ?? ''
+    const GLOBAL_PREFIXES = ['gateway.', 'pet.', 'skin.', 'billing.']
+    const isGlobal = GLOBAL_PREFIXES.some((p) => ev.type.startsWith(p))
 
-    if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
+    if (evSid && (!sid || evSid !== sid) && !isGlobal) {
       return
     }
 

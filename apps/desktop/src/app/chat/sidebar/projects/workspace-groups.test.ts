@@ -684,6 +684,39 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['keep'])
     expect(overlaid.sessionCount).toBe(1)
   })
+
+  it('evicts a session from the main lane when the live overlay places it into a worktree lane', () => {
+    // Session was in main when the backend tree was captured, but the live
+    // $sessions cache now has it under a worktree cwd. The overlay must place
+    // it ONLY in the worktree lane — not both.
+    const session = makeSession('/www/app/.worktrees/feature', { id: 'moved', git_branch: 'feature' })
+
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [session] }),
+            lane({ id: '/www/app/.worktrees/feature', label: 'feature', path: '/www/app/.worktrees/feature', sessions: [] })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [session])
+    const mainLane = overlaid.repos[0].groups.find(g => g.isMain)
+    const featureLane = overlaid.repos[0].groups.find(g => g.path === '/www/app/.worktrees/feature')
+
+    // Session must NOT appear in the main lane
+    expect(mainLane?.sessions ?? []).toHaveLength(0)
+    // Session must appear only in the worktree lane
+    expect(featureLane?.sessions.map(s => s.id)).toEqual(['moved'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
 })
 
 describe('overlayLivePreviews', () => {

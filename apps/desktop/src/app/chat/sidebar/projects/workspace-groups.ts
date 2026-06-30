@@ -494,6 +494,22 @@ export function overlayRepoLanes(
       }
     }
 
+    // Evict the session from any OTHER lane the backend snapshot may have
+    // placed it in (e.g. a turn that moved the session's cwd from main to a
+    // new worktree — the overlay places it into the worktree lane, but without
+    // this eviction the stale main-lane entry persists and the session appears
+    // under both groups until the next backend tree refresh).
+    for (const g of lanes) {
+      if (g !== lane) {
+        const idx = g.sessions.findIndex(s => s.id === session.id)
+
+        if (idx >= 0) {
+          g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
+          changed = true
+        }
+      }
+    }
+
     lane.sessions = upsertSession(lane.sessions, session)
     changed = true
   }

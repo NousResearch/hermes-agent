@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-16T18:04:33Z",
+  "updated_at": "2026-06-30T10:14:11Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -153,7 +153,13 @@
       },
       "models": [
         {
+          "id": "anthropic/claude-fable-5"
+        },
+        {
           "id": "anthropic/claude-opus-4.8"
+        },
+        {
+          "id": "anthropic/claude-opus-4.8-fast"
         },
         {
           "id": "anthropic/claude-sonnet-4.6"

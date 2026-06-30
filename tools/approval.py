@@ -499,6 +499,12 @@ DANGEROUS_PATTERNS = [
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Shell execution via heredoc — `bash <<'EOF' ... EOF` runs arbitrary
+    # shell commands without triggering the `bash -c` pattern above. The
+    # inner commands may not individually match any dangerous pattern (e.g.
+    # data-exfiltration pipelines using curl/cat) yet are still executed in
+    # a full shell context.
+    (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
     # Git destructive operations that can lose uncommitted work or rewrite
     # shared history. Not captured by rm/chmod/etc patterns.
     (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),

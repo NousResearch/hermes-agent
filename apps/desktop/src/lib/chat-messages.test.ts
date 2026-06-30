@@ -6,7 +6,10 @@ import {
   appendReasoningPart,
   chatMessageText,
   preserveLocalAssistantErrors,
+  reasoningPart,
+  reconcileCompletedTextParts,
   renderMediaTags,
+  textPart,
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
@@ -783,5 +786,71 @@ describe('upsertToolPart', () => {
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
+  })
+})
+
+describe('reconcileCompletedTextParts', () => {
+  const toolCallPart = (name: string, id: string): ChatMessagePart => {
+    const [part] = upsertToolPart([], { name, tool_id: id }, 'complete')
+
+    return part
+  }
+
+  it('keeps assistant text streamed before an inline tool call (issue #53204)', () => {
+    const streamed: ChatMessagePart[] = [
+      textPart("Good, I've saved the new AP info to Honcho."),
+      toolCallPart('honcho_conclude', 'tc-1'),
+      textPart('All set.')
+    ]
+
+    // The gateway's completion text is just the trailing block after the tool.
+    const completed = reconcileCompletedTextParts(streamed, 'All set.')
+
+    expect(completed.map(part => part.type)).toEqual(['text', 'tool-call', 'text'])
+    expect((completed[0] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe(
+      "Good, I've saved the new AP info to Honcho."
+    )
+    expect((completed[2] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe('All set.')
+  })
+
+  it('keeps identical pre-tool narration even when it matches the trailing completion text', () => {
+    const streamed: ChatMessagePart[] = [textPart('Okay.'), toolCallPart('terminal', 'tc-dup'), textPart('Okay.')]
+
+    const completed = reconcileCompletedTextParts(streamed, 'Okay.')
+
+    expect(completed.map(part => part.type)).toEqual(['text', 'tool-call', 'text'])
+    expect((completed[0] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe('Okay.')
+    expect((completed[2] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe('Okay.')
+  })
+
+  it('does not duplicate text when the completion repeats the only streamed block', () => {
+    const streamed: ChatMessagePart[] = [textPart('Hello world')]
+
+    const completed = reconcileCompletedTextParts(streamed, 'Hello world')
+
+    expect(completed.map(part => part.type)).toEqual(['text'])
+    expect((completed[0] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe('Hello world')
+  })
+
+  it('replaces the trailing streamed text with the final completion text', () => {
+    const streamed: ChatMessagePart[] = [
+      textPart('Before the tool.'),
+      toolCallPart('terminal', 'tc-2'),
+      textPart('After the to')
+    ]
+
+    const completed = reconcileCompletedTextParts(streamed, 'After the tool ran fine.')
+
+    expect(completed.map(part => part.type)).toEqual(['text', 'tool-call', 'text'])
+    expect((completed[0] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe('Before the tool.')
+    expect((completed[2] as Extract<ChatMessagePart, { type: 'text' }>).text).toBe('After the tool ran fine.')
+  })
+
+  it('drops a reasoning part the completion text duplicates', () => {
+    const streamed: ChatMessagePart[] = [reasoningPart('The answer is 42.')]
+
+    const completed = reconcileCompletedTextParts(streamed, 'The answer is 42.')
+
+    expect(completed.map(part => part.type)).toEqual(['text'])
   })
 })

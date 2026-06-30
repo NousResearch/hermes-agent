@@ -1,6 +1,10 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 
-import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import {
+  dedupeGeneratedImageEchoesInParts,
+  generatedImageEchoSources,
+  stripGeneratedImageEchoes
+} from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
@@ -126,6 +130,51 @@ export function chatMessageText(message: ChatMessage): string {
     .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
     .map(part => part.text)
     .join('')
+}
+
+// Reconcile the streamed parts of an assistant turn with the gateway's
+// completion text. `finalText` is the completion payload after renderMediaTags +
+// trim; it is the *trailing* assistant text of the turn (everything after the
+// last inline tool call), not the whole response. Earlier parts — narration
+// emitted before an inline tool call — are preserved verbatim, so text streamed
+// before a tool call is never lost (even when it happens to equal the trailing
+// completion text). Only the trailing run of text/reasoning parts (after the
+// last non-streamed part, e.g. a tool call) is reconciled: a part there is
+// dropped when the completion text fully duplicates it (prefix/suffix overlap,
+// after whitespace normalization), then the freshly media-rendered completion
+// text is appended. Turns without a tool call have a single trailing text part
+// that overlaps `finalText`, so they collapse to just that text — unchanged.
+// See issue #53204.
+export function reconcileCompletedTextParts(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+  const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+  const dedupeReference = normalize(visibleFinalText)
+
+  let boundary = parts.length
+
+  while (boundary > 0) {
+    const part = parts[boundary - 1]
+
+    if (part.type !== 'text' && part.type !== 'reasoning') {
+      break
+    }
+
+    boundary--
+  }
+
+  const head = parts.slice(0, boundary)
+
+  const keptTrailing = dedupeReference
+    ? parts.slice(boundary).filter(part => {
+        const streamed = normalize((part as Extract<ChatMessagePart, { type: 'text' | 'reasoning' }>).text)
+
+        return !(streamed && (dedupeReference.startsWith(streamed) || streamed.startsWith(dedupeReference)))
+      })
+    : parts.slice(boundary)
+
+  const kept = [...head, ...keptTrailing]
+
+  return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
 }
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/

@@ -41,8 +41,13 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
-    # Skills
-    "skills_list", "skill_view", "skill_manage",
+    # Skills. skill_discover/skill_acquire are the fork's discovery + trust-gated
+    # hub-install tools (#718d3bd42); they belong to the `skills` toolset, so they
+    # must be in core too — otherwise the `skills` toolset is a superset of the
+    # hermes-cli composite and never reverse-maps as enabled (it silently shows
+    # disabled, and the two tools are unreachable in a default CLI session).
+    # Both self-gate at runtime (check_fn / trust-staging), so default exposure is safe.
+    "skills_list", "skill_view", "skill_manage", "skill_discover", "skill_acquire",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",

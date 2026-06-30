@@ -479,18 +479,24 @@ def generate_family_questions(problem, framing, families, model, n_per=3, timeou
         return []
 
     def _one(fam):
+        local = [] if sink is not None else None
         obj, err = _call_json(model, questions_prompt(problem, framing, n_per, evidence=evidence,
-                                                      family=fam), timeout, num_predict=900)
+                                                      family=fam), timeout, num_predict=900, sink=local)
         recs = _parse_question_items(obj)
         for r in recs:
             r["family"] = fam["name"]
             r["lens"] = fam.get("lens", "scoped")
         out = dict(fam)
         out["questions"] = recs
-        return out
+        return out, (local[0] if local else None)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(families), MAX_WORKERS)) as ex:
-        return list(ex.map(_one, families))
+        results = list(ex.map(_one, families))
+    if sink is not None:  # collect per-family captures after the parallel map (avoid the append race)
+        for _o, cap in results:
+            if cap:
+                sink.append(cap)
+    return [out for out, _cap in results]
 
 # NOTE: there is deliberately NO family-level "narrow/negate" stage. Families are domain EXPOSURE
 # (coverage) only — every question is scored on its own merit by the per-question VOI pipeline, and

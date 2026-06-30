@@ -111,7 +111,7 @@ def _resolve_families(args):
     env = os.environ.get("INFOGAIN_FAMILIES")
     if cli is not None:
         fam["enabled"] = bool(cli)
-    elif env is not None:
+    elif env not in (None, ""):  # empty string = unset (don't silently disable the default-on feature)
         fam["enabled"] = _truthy(env)
     return fam
 
@@ -182,21 +182,32 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
     for _ in range(cfg["max_rounds"]):
         rounds_used += 1
         avoid = [r["question"] for r in seen]
-        gen_sink, cons_sink = None, None
+        gen_sink, cons_sink, fq_sink = None, None, None
         if families_on and rounds_used == 1:
             # Round 1 with families: generate families (once), then questions within each.
             log(f"round 1: generating families + per-family questions via {fam_model} ...")
+            gen_sink = [] if trace else None      # stage 1a (families) -> "generation" slot
+            fq_sink = [] if trace else None        # stage 1b (per-family questions)
             fams, _fe = pipeline.generate_families(
                 problem, framing, fam_model, n_scoped=fam_cfg.get("n_scoped", 3),
                 contrarian=fam_cfg.get("contrarian", True), vantage=fam_cfg.get("vantage", "auto"),
-                timeout=cfg["gen_timeout"])
+                timeout=cfg["gen_timeout"], sink=gen_sink)
             fams_q = pipeline.generate_family_questions(
                 problem, framing, fams, fam_model, n_per=fam_cfg.get("questions_per_family", 3),
-                timeout=cfg["gen_timeout"], evidence=evidence)
+                timeout=cfg["gen_timeout"], evidence=evidence, sink=fq_sink)
             families_meta = [{"name": f["name"], "scope": f.get("scope", ""),
                               "lens": f.get("lens", "scoped")} for f in fams_q]
             new_qs = voi.dedupe([q for f in fams_q for q in f.get("questions", [])])
             log(f"round 1: {len(families_meta)} families -> {len(new_qs)} questions")
+            if not new_qs:
+                # Families generation yielded nothing (e.g. a transient stage-1a JSON error). Don't
+                # zero the run with a misleading "already well-specified" — degrade to the flat path.
+                log("families produced no questions; falling back to flat generation")
+                gen_sink = [] if trace else None
+                new_qs, _ = pipeline.generate_questions(
+                    problem, framing, qg_model, cfg["questions_per_round"], avoid,
+                    cfg["gen_timeout"], sink=gen_sink,
+                    samples=cfg["gen_samples"], temperature=cfg["gen_temperature"], evidence=evidence)
         else:
             # Flat generation (families off, or refill rounds 2+).
             log(f"round {rounds_used}: generating {cfg['questions_per_round']} "
@@ -221,6 +232,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
                 trace_obj["rounds"].append({
                     "round": rounds_used,
                     "generation": (gen_sink[0] if gen_sink else None),
+                    "family_questions": fq_sink,
                     "consolidation": (cons_sink[0] if cons_sink else None),
                     "dropped_as_duplicate": dropped, "questions": [],
                     "stop_reason": "no new questions"})
@@ -257,6 +269,7 @@ def run(problem, cfg, progress=None, trace=False, evidence=None):
             trace_obj["rounds"].append({
                 "round": rounds_used,
                 "generation": (gen_sink[0] if gen_sink else None),
+                "family_questions": fq_sink,
                 "consolidation": (cons_sink[0] if cons_sink else None),
                 "dropped_as_duplicate": dropped,
                 "questions": [_trace_question(r) for r in fresh],
@@ -554,6 +567,10 @@ def render_trace(result):
             "**Prompt sent:**\n```\n" + _clip(g.get("prompt", ""), 650) + "\n```",
             "**Raw model output:**\n```\n" + _clip(g.get("raw", ""), 900) + "\n```",
         ]
+        for i, cap in enumerate(rd.get("family_questions") or []):
+            out.append(f"### Stage 1b — per-family questions [{i + 1}]\n"
+                       "**Prompt sent:**\n```\n" + _clip((cap or {}).get("prompt", ""), 500) + "\n```\n"
+                       "**Raw:**\n```\n" + _clip((cap or {}).get("raw", ""), 600) + "\n```")
         if rd.get("dropped_as_duplicate"):
             out.append("**Dropped as duplicate of an earlier round:** "
                        + "; ".join(rd["dropped_as_duplicate"]))

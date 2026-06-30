@@ -144,7 +144,9 @@ highest-value question (this is common for the contrarian/vantage lenses); irrel
 self-prune because their questions score low individually. The `family` tag adds a tier to the MMR
 diversity kernel (`family > target > question`) so selection **spreads across families**, and the
 report is **grouped by family** (contrarian/vantage labelled). Turn off with `--no-families` (or
-`INFOGAIN_FAMILIES=off`) for the flat generator. Cost ≈ `questions_per_family × n_families` candidates.
+`INFOGAIN_FAMILIES=off`) for the flat generator. Cost ≈ `questions_per_family × (n_scoped + contrarian +
+vantage)` candidates (~12–15 at defaults), with a one-call fallback to the flat generator if family
+generation yields nothing.
 
 ## Automating the loop — the `investigator` skill
 

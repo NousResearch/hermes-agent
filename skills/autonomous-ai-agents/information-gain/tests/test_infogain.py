@@ -219,6 +219,45 @@ class TestPipelineMocked(unittest.TestCase):
         self.assertEqual(len(qs), 1)
         self.assertEqual(qs[0]["target"], "t1")
 
+    # ── families layer ──
+    def test_generate_families_parses_and_defaults_lens(self):
+        obj = {"families": [{"name": "Scope", "scope": "s", "lens": "scoped"},
+                            {"name": "Approach", "scope": "s"},   # missing lens -> default scoped
+                            {"name": "", "scope": "x"}]}           # empty name dropped
+        with mock.patch.object(pipeline, "_call_json", return_value=(obj, None)):
+            fams, err = pipeline.generate_families("p", {"goal": "g", "decision": "d"}, "fast")
+        self.assertEqual([f["name"] for f in fams], ["Scope", "Approach"])
+        self.assertEqual(fams[1]["lens"], "scoped")
+        self.assertIsNone(err)
+
+    def test_generate_families_empty_returns_error(self):
+        with mock.patch.object(pipeline, "_call_json", return_value=(None, "bad json")):
+            fams, err = pipeline.generate_families("p", {"goal": "g"}, "fast")
+        self.assertEqual(fams, [])
+        self.assertIsNotNone(err)  # so run() can fall back
+
+    def test_generate_family_questions_tags_and_early_return(self):
+        obj = {"questions": [{"question": "Q1", "type": "scope", "why": "w", "target": "t1"}]}
+        families = [{"name": "Approach", "scope": "s", "lens": "contrarian"}]
+        with mock.patch.object(pipeline, "_call_json", return_value=(obj, None)):
+            out = pipeline.generate_family_questions("p", {"goal": "g"}, families, "fast", n_per=2)
+        self.assertEqual(out[0]["questions"][0]["family"], "Approach")
+        self.assertEqual(out[0]["questions"][0]["lens"], "contrarian")
+        self.assertEqual(pipeline.generate_family_questions("p", {}, [], "fast"), [])  # empty -> []
+
+    def test_vantage_auto_gate(self):
+        self.assertTrue(pipeline._vantage_relevant({"goal": "deploy a service to a server", "decision": ""}))
+        self.assertFalse(pipeline._vantage_relevant({"goal": "should I buy or rent a home", "decision": "advice"}))
+
+    def test_questions_prompt_family_lens_directive(self):
+        contra = pipeline.questions_prompt("p", {"goal": "g", "decision": "d"}, 3,
+                                           family={"name": "F", "scope": "s", "lens": "contrarian"})
+        self.assertIn("CHALLENGE", contra)
+        vant = pipeline.questions_prompt("p", {"goal": "g", "decision": "d"}, 3,
+                                         family={"name": "F", "scope": "s", "lens": "vantage"})
+        self.assertIn("vantage", vant.lower())
+        self.assertNotIn("FAMILY", pipeline.questions_prompt("p", {"goal": "g", "decision": "d"}, 3))
+
     def test_generate_questions_multisample_union_dedup(self):
         # two independent samples; t2 appears in both -> deduped; union covers t1,t2,t3
         obj1 = {"questions": [{"question": "Q-A", "type": "scope", "why": "w", "target": "t1"},
@@ -313,6 +352,55 @@ class TestOrchestrationMocked(unittest.TestCase):
                 "derivable_prob": 0.1,
             })
         return out
+
+    _FAM_CFG = {"enabled": True, "n_scoped": 2, "contrarian": True, "vantage": "off",
+                "questions_per_family": 2, "family_sim": 0.5, "families_model": "fast"}
+
+    def _fake_families(self):
+        return [{"name": "Scope", "scope": "s", "lens": "scoped"},
+                {"name": "Approach", "scope": "s", "lens": "contrarian"}]
+
+    def _fake_family_questions(self, *a, **k):
+        fams = a[2] if len(a) > 2 else k["families"]
+        out = []
+        for fi, fam in enumerate(fams):
+            qs = self._fake_round(2, base_target=f"f{fi}")
+            for q in qs:
+                q["family"], q["lens"] = fam["name"], fam.get("lens", "scoped")
+            out.append({**fam, "questions": qs})
+        return out
+
+    def test_families_branch_runs_and_tags(self):
+        cfg = self._cfg(max_rounds=2, target_bucket_size=3, min_bucket_size=1, families=self._FAM_CFG)
+        with mock.patch.object(pipeline, "frame_and_plan",
+                               return_value=({"goal": "g", "decision": "d", "success_criteria": [],
+                                              "baseline_plan": "p"}, None)), \
+             mock.patch.object(pipeline, "generate_families",
+                               side_effect=lambda *a, **k: (self._fake_families(), None)), \
+             mock.patch.object(pipeline, "generate_family_questions", side_effect=self._fake_family_questions), \
+             mock.patch.object(pipeline, "project_answers_batch", side_effect=lambda p, f, recs, *a, **k: recs), \
+             mock.patch.object(pipeline, "judge_plan_change_batch", side_effect=lambda p, f, b, recs, *a, **k: recs):
+            result = infogain.run("vague systems task", cfg)
+        self.assertEqual({f["lens"] for f in result["families"]}, {"scoped", "contrarian"})
+        self.assertTrue(result["bucket"])
+        self.assertTrue(all(r.get("family") for r in result["bucket"]))  # every kept record is tagged
+
+    def test_families_empty_falls_back_to_flat(self):
+        # the regression guard: a stage-1a failure must degrade to flat, not produce an empty run
+        cfg = self._cfg(max_rounds=2, questions_per_round=4, target_bucket_size=2, min_bucket_size=1,
+                        families=self._FAM_CFG)
+        flat = mock.MagicMock(side_effect=lambda *a, **k: (self._fake_round(4), None))
+        with mock.patch.object(pipeline, "frame_and_plan",
+                               return_value=({"goal": "g", "decision": "d", "success_criteria": [],
+                                              "baseline_plan": "p"}, None)), \
+             mock.patch.object(pipeline, "generate_families", side_effect=lambda *a, **k: ([], "boom")), \
+             mock.patch.object(pipeline, "generate_family_questions", side_effect=lambda *a, **k: []), \
+             mock.patch.object(pipeline, "generate_questions", flat), \
+             mock.patch.object(pipeline, "project_answers_batch", side_effect=lambda p, f, recs, *a, **k: recs), \
+             mock.patch.object(pipeline, "judge_plan_change_batch", side_effect=lambda p, f, b, recs, *a, **k: recs):
+            result = infogain.run("task", cfg)
+        self.assertTrue(flat.called)        # flat fallback fired
+        self.assertTrue(result["bucket"])   # NOT empty (the bug would give an empty bucket)
 
     def test_loop_stops_at_target_in_one_round(self):
         cfg = self._cfg(question_gen_model="fast", answer_model="fast",

@@ -188,9 +188,10 @@ return { final, tombstones }
     enforces both rules. *(Likely a small addition to info-gain: pass NOT_FOUND questions as a
     "known gaps" list so generation neither re-asks them nor treats them as resolved.)*
 
-**Where it lives:** `scripts/iterate.py` in this skill (composes `infogain.run` + `dispatch_single`
-research + responder); promote to its own `clarify-and-respond` skill if it grows. Info-gain stays
-report-only.
+**Where it lives:** **promoted to its own sibling `investigator` skill**
+(`../investigator/scripts/iterate.py`) — composes `infogain.run` + `dispatch_single` research +
+responder. Info-gain stays report-only. (Earlier notes below that say "iterate.py in this skill" are
+historical — the wrapper now lives in the investigator skill.)
 
 **Cost reality (grounded changes this a lot).** The scoring is cheap Ollama (~14 calls/round, ~30s),
 but each grounded answer is a **full agent-loop research call (~30–60s + web)**. K=2 × ~3 rounds = ~6

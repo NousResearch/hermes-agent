@@ -31,7 +31,7 @@ Usage (inside the container, from the user's project dir):
 On the host (loop logic only): python3 scripts/iterate.py --problem "..." --dry-run
 
 Depends on the information-gain ranker (resolved via INFOGAIN_SCRIPTS_DIR / HERMES_HOME) and the
-`ask` skill's model_utils (resolved via HERMES_HOME).
+`ask` skill's model_utils (resolved via ASK_SCRIPTS_DIR / HERMES_HOME).
 """
 
 import argparse
@@ -47,7 +47,8 @@ _HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 _INFOGAIN = os.environ.get("INFOGAIN_SCRIPTS_DIR") or os.path.join(
     _HOME, "skills", "autonomous-ai-agents", "information-gain", "scripts")
 sys.path.insert(0, _INFOGAIN)
-sys.path.insert(0, os.path.join(_HOME, "skills", "productivity", "ask", "scripts"))
+_ASK = os.environ.get("ASK_SCRIPTS_DIR") or os.path.join(_HOME, "skills", "productivity", "ask", "scripts")
+sys.path.insert(0, _ASK)
 
 try:
     import infogain  # noqa: E402  — the next-best-questions ranker

@@ -305,6 +305,8 @@ _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
 )
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
 
 def mask_secret(
     value: str,
@@ -346,6 +348,9 @@ def mask_secret(
         >>> mask_secret("long-token", head=6, tail=4, floor=18)
         '***'
     """
+    if not value:
+        return empty
+    value = _CONTROL_CHARS_RE.sub("", value)
     if not value:
         return empty
     if len(value) < floor:

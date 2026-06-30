@@ -2,7 +2,7 @@
 title: hermes-agent Architecture Handoff - Hermes Agent Workflow Commander
 status: handoff
 created: '2026-06-27'
-updated: '2026-06-27'
+updated: '2026-06-29'
 ---
 
 # Architecture: hermes-agent Slice For Hermes Agent Workflow Commander
@@ -10,15 +10,17 @@ updated: '2026-06-27'
 ## Scope
 
 This architecture handoff describes the Hermes-owned implementation slice for Hermes Agent Workflow Commander.
-Hermes owns user-facing orchestration, Project Binding, BMAD mount, Bound Project Cwd enforcement, BMAD workflow invocation, project-work materialization, phase tasks, HILT gates, callback ingress, Story Timeline, reconciliation, diagnostics, and the strict Archon CLI adapter.
-Archon owns generic Controller Binding, workflow run state, workflow CLI producer surfaces, callback outbox, signed callback production, and callback delivery health facts.
+Hermes owns user-facing orchestration, Project Binding, BMAD mount, Bound Project Cwd enforcement, BMAD workflow invocation, project-work materialization, phase tasks, HILT gates, workflow event ingress, Story Timeline, reconciliation, diagnostics, and strict workflow provider adapters.
+Workflow providers own provider binding persistence, workflow run state, command producer surfaces, event outbox delivery, signed workflow event production, and delivery health facts.
+Archon is the first provider implementation under provider key `archon`.
 
 ## Governing Decisions
 
 - Hermes remains the human-facing command center and reconciliation owner.
-- Hermes Project Binding is distinct from Archon Controller Binding.
-- Hermes-to-Archon control uses a strict CLI adapter.
-- Archon-to-Hermes mutation uses signed typed callback events that Hermes validates before mutation.
+- Hermes Project Binding is distinct from workflow provider binding.
+- Hermes-to-provider control uses a strict provider adapter.
+- Provider-to-Hermes mutation uses signed typed workflow events that Hermes validates before mutation.
+- Provider `archon` maps provider commands to Archon CLI JSON in v1.
 - `sprint-status.yaml` remains a BMAD planning and audit artifact, not the Hermes runtime queue.
 - Hermes Kanban remains the runtime project-work owner.
 - Done requires Hermes done verification even if Archon has completed and GitHub PR state is favorable.
@@ -37,8 +39,11 @@ hermes-agent/
     materialization.py
     phase_tasks.py
     gates.py
-    archon_cli_adapter.py
-    archon_callbacks.py
+    provider_commands.py
+    workflow_events.py
+    workflow_providers/
+      base.py
+      archon.py
     reconciliation.py
     story_timeline.py
   tests/
@@ -47,8 +52,8 @@ hermes-agent/
 
 ### Project Binding
 
-Project Binding stores profile identity, Bound Project Cwd, GitHub context, BMAD skill mount path, Archon Controller Binding metadata, display name, enabled state, and validation state.
-Migration and uniqueness tests must prove profile, cwd, GitHub context, BMAD mount, and Archon metadata cannot conflict.
+Project Binding stores profile identity, Bound Project Cwd, GitHub context, BMAD skill mount path, workflow provider binding metadata, display name, enabled state, and validation state.
+Migration and uniqueness tests must prove profile, cwd, GitHub context, BMAD mount, and provider metadata cannot conflict.
 
 ### BMAD Mount And Invocation
 
@@ -66,16 +71,18 @@ Phase task creation splits each BMAD story into linked Prepare Story and Impleme
 Phase Task identity is derived from Project Work Item identity plus phase kind.
 Idempotency tests must prove repeated materialization does not duplicate Project Work Items, phase tasks, or reserved gate metadata.
 
-### Archon CLI Adapter
+### Workflow Provider Control Adapter
 
-The strict Archon CLI adapter invokes Archon commands from the Bound Project Cwd and captures stdout, stderr, exit code, timeout, correlation id, workflow name, workflow run reference, and parsed JSON.
+The strict provider adapter invokes provider commands from the Bound Project Cwd when the selected provider requires cwd.
+It captures stdout, stderr, exit code, timeout, correlation id, workflow name, workflow run reference, provider key, and parsed JSON.
 The adapter fails closed on malformed JSON, schema mismatch, timeout, or unexpected exit code.
+Provider `archon` implements this adapter through Archon CLI JSON in v1.
 
-### Callback Ingress
+### Workflow Event Ingress
 
-The profile-routed `archon-event` callback path validates schema version, signature, replay window, event id, event type, controller binding reference, project or codebase reference, workflow run reference, idempotency key, profile route, profile-scoped secret, and authorization.
-Hermes stores callback receipts and does not duplicate workflow references, gates, comments, or project-work transitions on duplicate delivery.
-Hermes rejects callbacks signed with a valid secret for the wrong profile before mutation.
+The profile-routed `/p/{profile}/webhooks/workflow-events/{provider}` path validates schema version, signature, replay window, provider, event id, event type, provider binding reference, project or codebase reference, workflow run reference, idempotency key, profile route, profile-scoped secret, and authorization.
+Hermes stores workflow event receipts and does not duplicate workflow references, gates, comments, or project-work transitions on duplicate delivery.
+Hermes rejects workflow events signed with a valid secret for the wrong profile before mutation.
 
 ### Gates
 
@@ -85,9 +92,9 @@ Gate decisions store actor, timestamp, gate kind, decision, evidence references,
 
 ### Timeline, Reconciliation, And Diagnostics
 
-Story Timeline renders source-specific state from BMAD, Hermes, Archon, GitHub, callbacks, and human gates.
+Story Timeline renders source-specific state from BMAD, Hermes, workflow provider, GitHub, workflow events, and human gates.
 Reconciliation repairs deterministic projection gaps and preserves unresolved conflicts.
-Diagnostics classify configuration issues, user decisions, external delays, implementation defects, duplicate callbacks, outbox backlog, stale PR references, and unresolved gates with actionable recovery paths.
+Diagnostics classify configuration issues, user decisions, external delays, implementation defects, duplicate workflow events, outbox backlog, stale PR references, and unresolved gates with actionable recovery paths.
 
 ## Contract Surface
 
@@ -96,20 +103,20 @@ The relevant subset must be regenerated into this local handoff before Hermes co
 
 Hermes consumes these shared examples:
 
-- Controller Binding payload and status fixtures.
-- Workflow control CLI success and error envelopes.
-- Callback event envelope fixtures.
-- Callback rejection fixtures, including valid signature under the wrong profile secret.
-- Callback delivery status fixtures.
+- Workflow Provider Binding payload and status fixtures.
+- Workflow command success and error envelopes.
+- Workflow event envelope fixtures.
+- Workflow event rejection fixtures, including valid signature under the wrong profile secret.
+- Workflow delivery status fixtures.
 - Project Work Item identity fixtures for new, unchanged, changed, missing, malformed, and duplicate-prevention cases.
 - Phase Task identity fixtures for Prepare Story and Implement Story stability across reruns.
 
 ## Dependency Notes
 
-Depends on: local shared contract examples plus Archon producer stories for Controller Binding, workflow control CLI JSON, callback events, and delivery health.
-Contract needed: Controller Binding payload schema, workflow CLI result envelope, callback event envelope, callback delivery status schema, Project Work Item identity schema, Phase Task identity schema, gate record shape, and reconciliation result shape.
-Blocking behavior: Hermes consumer stories cannot complete until relevant Archon fixtures exist and Hermes tests parse them.
-Integration validation: Hermes pytest fixtures consume Archon producer examples, reject invalid callback examples, and prove duplicate-safe project-work mutation.
+Depends on: local shared contract examples plus provider producer stories for Workflow Provider Binding, workflow command JSON, workflow events, and delivery health.
+Contract needed: Workflow Provider Binding payload schema, workflow command result envelope, workflow event envelope, workflow delivery status schema, Project Work Item identity schema, Phase Task identity schema, gate record shape, and reconciliation result shape.
+Blocking behavior: Hermes consumer stories cannot complete until relevant provider fixtures exist and Hermes tests parse them.
+Integration validation: Hermes pytest fixtures consume provider producer examples, reject invalid workflow event examples, and prove duplicate-safe project-work mutation.
 
 ## Validation
 
@@ -121,4 +128,4 @@ uv run pytest
 uv run ruff check .
 ```
 
-Validation must include Project Binding uniqueness, Bound Project Cwd enforcement, BMAD mount diagnostics, materialization idempotency, strict CLI adapter failure modes, callback validation, gate decision auditability, Story Timeline redaction, reconciliation drift cases, and diagnostic recovery paths.
+Validation must include Project Binding uniqueness, Bound Project Cwd enforcement, BMAD mount diagnostics, materialization idempotency, strict provider adapter failure modes, workflow event validation, gate decision auditability, Story Timeline redaction, reconciliation drift cases, and diagnostic recovery paths.

@@ -16,6 +16,7 @@ from tools.approval import (
     _smart_approve,
     approve_session,
     detect_dangerous_command,
+    detect_hardline_command,
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
@@ -282,6 +283,80 @@ class TestRmRecursiveFlagVariants:
         dangerous, key, desc = detect_dangerous_command("sudo rm -rf /tmp")
         assert dangerous is True
         assert key is not None
+
+
+class TestWindowsDriveLetterApproval:
+    """Regression for #38964: Windows drive-letter paths (X:/foo, X:\\foo)
+    must trigger the same dangerous-pattern checks as Unix '/' paths.
+
+    On Windows (including git-bash), patterns that anchored only on a
+    bare '/' silently let `rm X:/important.txt` through even with
+    approvals.mode=manual.
+    """
+
+    def test_rm_windows_drive_letter_forward_slash_triggers_approval(self):
+        dangerous, key, desc = detect_dangerous_command("rm X:/test.txt")
+        assert dangerous is True, "rm X:/test.txt must trigger approval"
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_rm_windows_drive_letter_backslash_triggers_approval(self):
+        dangerous, key, desc = detect_dangerous_command(r"rm X:\test.txt")
+        assert dangerous is True, r"rm X:\test.txt must trigger approval"
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_rm_windows_drive_letter_lowercase_triggers_approval(self):
+        dangerous, key, desc = detect_dangerous_command("rm c:/foo/bar")
+        assert dangerous is True
+        assert key is not None
+
+    def test_rm_windows_drive_letter_uppercase_triggers_approval(self):
+        dangerous, key, desc = detect_dangerous_command("rm C:/foo/bar")
+        assert dangerous is True
+        assert key is not None
+
+    def test_rm_with_flag_windows_drive_letter_triggers_approval(self):
+        dangerous, key, desc = detect_dangerous_command("rm -rf X:/PROJECTs/test")
+        assert dangerous is True
+        assert key is not None
+
+    def test_rm_unix_root_path_still_triggers_approval(self):
+        """Regression: Unix '/foo' paths must still trigger after the fix."""
+        dangerous, key, desc = detect_dangerous_command("rm /x/test.txt")
+        assert dangerous is True
+        assert key is not None
+        assert "delete" in desc.lower()
+
+    def test_rm_relative_path_does_not_trigger(self):
+        """Negative: relative paths like './foo' must NOT trigger."""
+        dangerous, key, desc = detect_dangerous_command("rm ./foo.txt")
+        assert dangerous is False, f"'rm ./foo.txt' should be safe, got: {desc}"
+        assert key is None
+
+    def test_rm_plain_filename_does_not_trigger(self):
+        """Negative regression: bare filename must NOT trigger."""
+        dangerous, key, desc = detect_dangerous_command("rm readme.txt")
+        assert dangerous is False
+        assert key is None
+
+    def test_hardline_windows_drive_root_recursive_delete(self):
+        """`rm -rf X:/` (wipe whole Windows drive) must hit HARDLINE,
+        same as `rm -rf /` does on Unix."""
+        is_hardline, desc = detect_hardline_command("rm -rf X:/")
+        assert is_hardline is True, "rm -rf X:/ must be hardline-blocked"
+        assert "root" in desc.lower() or "filesystem" in desc.lower()
+
+    def test_hardline_windows_drive_root_backslash_recursive_delete(self):
+        is_hardline, desc = detect_hardline_command("rm -rf X:\\")
+        assert is_hardline is True
+        assert "root" in desc.lower() or "filesystem" in desc.lower()
+
+    def test_hardline_unix_root_recursive_delete_still_blocks(self):
+        """Regression: `rm -rf /` Unix hardline still fires."""
+        is_hardline, desc = detect_hardline_command("rm -rf /")
+        assert is_hardline is True
+        assert desc is not None
 
 
 class TestMultilineBypass:

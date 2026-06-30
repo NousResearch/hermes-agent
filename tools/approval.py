@@ -197,6 +197,15 @@ _CREDENTIAL_FILES = (
 # /etc/sudoers on macOS but bypasses a plain "/etc/" pattern check. Match
 # both forms. Inspired by Claude Code 2.1.113's "dangerous path protection".
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
+# Windows drive-letter paths (X:/foo or X:\foo) must be treated the same
+# as Unix absolute paths (/foo) for "root-style" prefix checks. On Windows
+# (including git-bash), patterns that anchor on a bare '/' miss commands
+# like `rm X:/important.txt`, letting them bypass approval entirely even
+# with approvals.mode=manual. _ROOT_OR_DRIVE_PREFIX collapses both forms
+# (Unix '/' plus optional Windows '[A-Za-z]:[\\/]') into one shared
+# fragment so new and existing patterns stay consistent. Mirrors the
+# dual-form pattern used by _MACOS_PRIVATE_SYSTEM_PATH above. See #38964.
+_ROOT_OR_DRIVE_PREFIX = r'(?:[A-Za-z]:[\\/]|/)'
 # System-config paths that should trigger approval for any write/edit,
 # collapsing /etc, its macOS /private/etc mirror, and /etc/sudoers.d/ into
 # one shared fragment so new DANGEROUS_PATTERNS stay consistent.
@@ -261,8 +270,11 @@ _CMDPOS = (
 )
 
 HARDLINE_PATTERNS = [
-    # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
+    # rm recursive targeting the root filesystem or protected roots.
+    # Unix '/' plus Windows drive roots ('X:/', 'X:\\'): wiping a whole
+    # Windows drive is as catastrophic as wiping Unix root, and bare-'/'
+    # checks miss drive-letter forms entirely on git-bash. See #38964.
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*|[A-Za-z]:[\\/]|[A-Za-z]:[\\/]\*)(\s|$)', "recursive delete of root filesystem"),
     (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
     (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
     # Filesystem format
@@ -379,7 +391,7 @@ def _sudo_stdin_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    (rf'\brm\s+(-[^\s]*\s+)*{_ROOT_OR_DRIVE_PREFIX}', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),

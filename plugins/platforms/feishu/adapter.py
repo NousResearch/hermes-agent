@@ -1918,18 +1918,18 @@ class FeishuAdapter(BasePlatformAdapter):
                         getattr(getattr(response, "raw", None), "status_code", None),
                     )
                 # Token invalid — evict, force-refresh, and retry.
-                if not self._response_succeeded(response):
+                if self._is_token_invalid(response):
                     code = getattr(response, "code", None)
-                    if code in _FEISHU_TOKEN_INVALID_CODES:
-                        logger.warning(
-                            "[Feishu] Token invalid (code=%s) on edit attempt %d/3 — evicting cache and force-refreshing",
-                            code, attempt + 1,
-                        )
-                        self._evict_feishu_token()
-                        await self._force_refresh_token()
-                        if attempt < _FEISHU_SEND_ATTEMPTS - 1:
-                            await asyncio.sleep(2 ** attempt)
-                            continue
+                    logger.warning(
+                        "[Feishu] Token invalid (code=%s, status=%s) on edit attempt %d/3 — evicting cache and force-refreshing",
+                        code, getattr(getattr(response, "raw", None), "status_code", "?"),
+                        attempt + 1,
+                    )
+                    self._evict_feishu_token()
+                    await self._force_refresh_token()
+                    if attempt < _FEISHU_SEND_ATTEMPTS - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
                 result = self._finalize_send_result(response, "update failed")
                 if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                     logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
@@ -4609,6 +4609,24 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(response and getattr(response, "success", lambda: False)())
 
     @staticmethod
+    def _is_token_invalid(response: Any) -> bool:
+        """Check if the response indicates an invalid or expired token.
+
+        Checks both Feishu business error codes and HTTP 401 status code
+        (for cases where the response body may not contain the expected code).
+        """
+        if not response:
+            return False
+        code = getattr(response, "code", None)
+        if code is not None and code in _FEISHU_TOKEN_INVALID_CODES:
+            return True
+        # HTTP 401 is a reliable indicator regardless of response body format
+        raw = getattr(response, "raw", None)
+        if raw is not None and getattr(raw, "status_code", None) == 401:
+            return True
+        return False
+
+    @staticmethod
     def _extract_response_field(response: Any, field_name: str) -> Any:
         if not FeishuAdapter._response_succeeded(response):
             return None
@@ -4803,19 +4821,19 @@ class FeishuAdapter(BasePlatformAdapter):
                             metadata=metadata,
                         )
                 # Token expired/invalid — clear cache and force-refresh before retry.
-                if not self._response_succeeded(response):
+                if self._is_token_invalid(response):
                     code = getattr(response, "code", None)
-                    if code in _FEISHU_TOKEN_INVALID_CODES:
-                        logger.warning(
-                            "[Feishu] Token invalid (code=%s) on attempt %d/3 for chat %s — "
-                            "evicting cache and force-refreshing token",
-                            code, attempt + 1, chat_id,
-                        )
-                        self._evict_feishu_token()
-                        await self._force_refresh_token(context=f"chat {chat_id}")
-                        raise Exception(
-                            f"[Feishu] Token invalid (code={code}), retrying..."
-                        )
+                    logger.warning(
+                        "[Feishu] Token invalid (code=%s, status=%s) on attempt %d/3 for chat %s — "
+                        "evicting cache and force-refreshing token",
+                        code, getattr(getattr(response, "raw", None), "status_code", "?"),
+                        attempt + 1, chat_id,
+                    )
+                    self._evict_feishu_token()
+                    await self._force_refresh_token(context=f"chat {chat_id}")
+                    raise Exception(
+                        f"[Feishu] Token invalid (code={code}), retrying..."
+                    )
                 return response
             except Exception as exc:
                 last_error = exc

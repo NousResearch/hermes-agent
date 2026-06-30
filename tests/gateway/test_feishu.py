@@ -4985,6 +4985,43 @@ class TestFeishuTokenRefresh(unittest.TestCase):
         self.assertFalse(FeishuAdapter._response_succeeded(resp))
 
     # ------------------------------------------------------------------
+    # _is_token_invalid
+    # ------------------------------------------------------------------
+
+    def test_is_token_invalid_by_code(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        resp = SimpleNamespace(code=99991663, success=lambda: False)
+        self.assertTrue(FeishuAdapter._is_token_invalid(resp))
+
+    def test_is_token_invalid_by_http_401(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        resp = SimpleNamespace(
+            code=None,
+            success=lambda: False,
+            raw=SimpleNamespace(status_code=401),
+        )
+        self.assertTrue(FeishuAdapter._is_token_invalid(resp))
+
+    def test_is_token_invalid_returns_false_for_success(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        resp = SimpleNamespace(code=0, success=lambda: True)
+        self.assertFalse(FeishuAdapter._is_token_invalid(resp))
+
+    def test_is_token_invalid_returns_false_for_none(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        self.assertFalse(FeishuAdapter._is_token_invalid(None))
+
+    def test_is_token_invalid_returns_false_for_other_error(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        resp = SimpleNamespace(code=230011, success=lambda: False)
+        self.assertFalse(FeishuAdapter._is_token_invalid(resp))
+
+    # ------------------------------------------------------------------
     # _evict_feishu_token
     # ------------------------------------------------------------------
 

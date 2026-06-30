@@ -2920,6 +2920,7 @@ def run_conversation(
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
+                    FailoverReason.upstream_rate_limit,
                 }
                 _is_transport_failure = classified.reason in {
                     FailoverReason.timeout,
@@ -2934,13 +2935,30 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
-                        agent._credential_pool,
-                        provider=agent.provider,
-                        base_url=getattr(agent, "base_url", None),
+                    #
+                    # Exception: an upstream-aggregator 429 — the credential
+                    # pool can't help when the *upstream* model (DeepSeek,
+                    # etc.) is throttling OpenRouter, so always fall back to a
+                    # different model regardless of pool state.
+                    _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
+                    pool_may_recover = (
+                        False if _is_upstream
+                        else _ra()._pool_may_recover_from_rate_limit(
+                            agent._credential_pool,
+                            provider=agent.provider,
+                            base_url=getattr(agent, "base_url", None),
+                        )
                     )
                     if not pool_may_recover:
-                        if classified.reason == FailoverReason.billing:
+                        if _is_upstream:
+                            _upstream_name = (classified.error_context or {}).get(
+                                "upstream_provider", "aggregator"
+                            )
+                            agent._buffer_status(
+                                f"⚠️ Upstream {_upstream_name} rate-limited — "
+                                "switching to fallback model..."
+                            )
+                        elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
                             )

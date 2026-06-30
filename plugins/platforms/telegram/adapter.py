@@ -8228,7 +8228,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if offset < 0 or length <= 0:
                     continue
 
-                entity_text = source_text[offset:offset + length].strip()
+                entity_text = TelegramAdapter._telegram_entity_text(source_text, offset, length).strip()
                 if entity_type == "mention":
                     handle = entity_text.lstrip("@").lower()
                     if _is_bot_handle(handle):
@@ -8259,6 +8259,19 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return mentioned_bot_usernames
 
+    @staticmethod
+    def _telegram_entity_text(source_text: str, offset: int, length: int) -> str:
+        """Return a Telegram entity span using UTF-16 code-unit offsets."""
+        if offset < 0 or length <= 0:
+            return ""
+        try:
+            raw = source_text.encode("utf-16-le")
+            start = offset * 2
+            end = (offset + length) * 2
+            return raw[start:end].decode("utf-16-le")
+        except UnicodeDecodeError:
+            return ""
+
     def _message_mentions_bot(self, message: Message) -> bool:
         if not self._bot:
             return False
@@ -8285,7 +8298,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     length = int(getattr(entity, "length", 0))
                     if offset < 0 or length <= 0:
                         continue
-                    if source_text[offset:offset + length].strip().lower() == expected:
+                    if self._telegram_entity_text(source_text, offset, length).strip().lower() == expected:
                         return True
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
@@ -8305,7 +8318,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     length = int(getattr(entity, "length", 0))
                     if offset < 0 or length <= 0:
                         continue
-                    command_text = source_text[offset:offset + length]
+                    command_text = self._telegram_entity_text(source_text, offset, length)
                     at_index = command_text.find("@")
                     if at_index < 0:
                         continue

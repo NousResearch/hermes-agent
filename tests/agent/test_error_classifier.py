@@ -365,6 +365,76 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
 
+    def test_502_cloudflare_large_session_context_overflow(self):
+        e = MockAPIError(
+            "HTTP 502: Error code: 502 - {'error_name': 'origin_bad_gateway', "
+            "'detail': 'The origin web server returned an invalid or incomplete "
+            "response to Cloudflare.'}",
+            status_code=502,
+        )
+        result = classify_api_error(
+            e,
+            approx_tokens=242876,
+            context_length=200000,
+            num_messages=296,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_502_cloudflare_small_session_stays_server_error(self):
+        e = MockAPIError(
+            "HTTP 502: Error code: 502 - origin_bad_gateway via Cloudflare",
+            status_code=502,
+        )
+        result = classify_api_error(e, approx_tokens=5000, context_length=200000)
+        assert result.reason == FailoverReason.server_error
+        assert result.should_compress is False
+
+    def test_502_plain_large_session_stays_server_error(self):
+        e = MockAPIError("Bad Gateway", status_code=502)
+        result = classify_api_error(
+            e,
+            approx_tokens=242876,
+            context_length=200000,
+            num_messages=296,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.should_compress is False
+
+    def test_500_context_size_exceeded_compresses(self):
+        e = MockAPIError(
+            "server_error: Context size has been exceeded",
+            status_code=500,
+        )
+        result = classify_api_error(e, approx_tokens=1000, context_length=200000)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_504_cloudflare_large_session_context_overflow(self):
+        e = MockAPIError(
+            "HTTP 504: upstream timeout from Cloudflare while reading response",
+            status_code=504,
+        )
+        result = classify_api_error(
+            e,
+            approx_tokens=180000,
+            context_length=200000,
+            num_messages=240,
+        )
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_504_plain_gateway_timeout_stays_server_error(self):
+        e = MockAPIError("Gateway Timeout", status_code=504)
+        result = classify_api_error(
+            e,
+            approx_tokens=180000,
+            context_length=200000,
+            num_messages=240,
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.should_compress is False
+
     def test_503_overloaded(self):
         e = MockAPIError("Service Unavailable", status_code=503)
         result = classify_api_error(e)

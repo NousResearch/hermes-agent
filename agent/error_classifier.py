@@ -298,6 +298,20 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
+# Reverse proxies and provider gateways sometimes hide an oversized prompt
+# behind a generic 5xx instead of returning the OpenAI-style 400/413 context
+# error. Explicit context wording is enough to trigger compression; generic
+# Cloudflare/gateway wording only does so when the session is already large.
+_GATEWAY_BAD_RESPONSE_PATTERNS = [
+    "bad gateway",
+    "origin_bad_gateway",
+    "error code: 502",
+    "invalid or incomplete response",
+    "cloudflare",
+    "upstream error",
+    "provider returned error",
+]
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -945,6 +959,19 @@ def _classify_by_status(
             result_fn=result_fn,
         )
 
+    if status_code in {500, 502, 503, 504} and _large_gateway_5xx_should_compress(
+        error_msg,
+        body,
+        approx_tokens=approx_tokens,
+        context_length=context_length,
+        num_messages=num_messages,
+    ):
+        return result_fn(
+            FailoverReason.context_overflow,
+            retryable=True,
+            should_compress=True,
+        )
+
     if status_code in {500, 502}:
         # Some OpenAI-compatible gateways return request-validation errors
         # with a 5xx status (codex.nekos.me returns 502 for unknown/
@@ -963,9 +990,22 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+
+        if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
+        if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
+            return result_fn(
+                FailoverReason.context_overflow,
+                retryable=True,
+                should_compress=True,
+            )
         return result_fn(FailoverReason.overloaded, retryable=True)
 
     # Other 4xx — non-retryable
@@ -981,6 +1021,31 @@ def _classify_by_status(
         return result_fn(FailoverReason.server_error, retryable=True)
 
     return None
+
+
+def _large_gateway_5xx_should_compress(
+    error_msg: str,
+    body: dict,
+    *,
+    approx_tokens: int,
+    context_length: int,
+    num_messages: int,
+) -> bool:
+    """Return True for Cloudflare/origin 5xx envelopes on already-large sessions."""
+    body_text = str(body or {}).lower()
+    combined = f"{error_msg} {body_text}"
+    has_origin_signal = (
+        "origin_bad_gateway" in combined
+        or "origin_unavailable" in combined
+        or "origin" in combined and "bad gateway" in combined
+        or "origin" in combined and "bad_gateway" in combined
+        or "invalid or incomplete response" in combined
+    )
+    if "cloudflare" not in combined and not has_origin_signal:
+        return False
+    return approx_tokens > context_length * 0.6 or (
+        context_length <= 256000 and (approx_tokens > 120000 or num_messages > 200)
+    )
 
 
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:

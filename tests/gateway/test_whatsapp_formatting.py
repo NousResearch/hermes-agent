@@ -81,6 +81,27 @@ class TestFormatMessage:
         adapter = _make_adapter()
         assert adapter.format_message("__hello__") == "*hello*"
 
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("***launch now***", "*_launch now_*"),
+            ("___launch now___", "*_launch now_*"),
+            ("**_launch now_**", "*_launch now_*"),
+            ("__*launch now*__", "*_launch now_*"),
+            ("_**launch now**_", "*_launch now_*"),
+            ("*__launch now__*", "*_launch now_*"),
+        ],
+    )
+    def test_bold_italic_markdown(self, source, expected):
+        adapter = _make_adapter()
+        assert adapter.format_message(source) == expected
+
+    def test_bold_italic_inside_inline_code_protected(self):
+        adapter = _make_adapter()
+        assert adapter.format_message("use `***raw***` then ***ok***") == (
+            "use `***raw***` then *_ok_*"
+        )
+
     def test_strikethrough(self):
         adapter = _make_adapter()
         assert adapter.format_message("~~deleted~~") == "~deleted~"

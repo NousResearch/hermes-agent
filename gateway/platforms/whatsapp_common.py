@@ -373,6 +373,15 @@ class WhatsAppBehaviorMixin:
 
         # --- 3. Convert markdown formatting to WhatsApp syntax ---
         # Bold: **text** or __text__ → *text*
+        # Combined bold+italic must run before plain bold, or ***text***
+        # loses only one layer and leaves literal asterisks behind.
+        result = re.sub(r"\*\*\*(.+?)\*\*\*", r"*_\1_*", result)
+        result = re.sub(r"___(.+?)___", r"*_\1_*", result)
+        result = re.sub(r"\*\*_(.+?)_\*\*", r"*_\1_*", result)
+        result = re.sub(r"__\*(.+?)\*__", r"*_\1_*", result)
+        result = re.sub(r"_\*\*(.+?)\*\*_", r"*_\1_*", result)
+        result = re.sub(r"\*__(.+?)__\*", r"*_\1_*", result)
+
         result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
         result = re.sub(r"__(.+?)__", r"*\1*", result)
         # Strikethrough: ~~text~~ → ~text~

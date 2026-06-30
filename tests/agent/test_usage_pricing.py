@@ -2,9 +2,11 @@ from types import SimpleNamespace
 
 from agent.usage_pricing import (
     CanonicalUsage,
+    _infer_upstream_provider,
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -322,3 +324,118 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+# ── Proxy model-name inference ───────────────────────────────────────────
+
+
+class TestInferUpstreamProvider:
+    """_infer_upstream_provider maps well-known model prefixes to billing providers."""
+
+    def test_claude_models_infer_anthropic(self):
+        assert _infer_upstream_provider("claude-opus-4.6") == "anthropic"
+        assert _infer_upstream_provider("claude-sonnet-4") == "anthropic"
+        assert _infer_upstream_provider("claude-haiku") == "anthropic"
+        assert _infer_upstream_provider("Claude-Opus-4.6") == "anthropic"
+
+    def test_gpt_models_infer_openai(self):
+        assert _infer_upstream_provider("gpt-4o") == "openai"
+        assert _infer_upstream_provider("gpt-5.3") == "openai"
+
+    def test_o_series_models_infer_openai(self):
+        assert _infer_upstream_provider("o1-preview") == "openai"
+        assert _infer_upstream_provider("o3-pro") == "openai"
+        assert _infer_upstream_provider("o4-mini") == "openai"
+
+    def test_gemini_models_infer_google(self):
+        assert _infer_upstream_provider("gemini-pro") == "google"
+        assert _infer_upstream_provider("gemini-flash") == "google"
+
+    def test_deepseek_models_infer_deepseek(self):
+        assert _infer_upstream_provider("deepseek-v4-pro") == "deepseek"
+
+    def test_unknown_model_returns_none(self):
+        assert _infer_upstream_provider("my-custom-model") is None
+        assert _infer_upstream_provider("llama-3.3-70b") is None
+        assert _infer_upstream_provider("") is None
+
+
+class TestProxyBillingRoute:
+    """Proxied models on localhost resolve to official-docs pricing routes."""
+
+    def test_vertex_proxy_claude_resolves_to_anthropic(self):
+        route = resolve_billing_route(
+            "claude-opus-4.6",
+            provider="vertex-opus46",
+            base_url="http://127.0.0.1:8788/anthropic",
+        )
+        assert route.provider == "anthropic"
+        assert route.model == "claude-opus-4.6"
+        assert route.billing_mode == "official_docs_snapshot"
+
+    def test_litellm_proxy_gpt_resolves_to_openai(self):
+        route = resolve_billing_route(
+            "gpt-4o",
+            provider="litellm",
+            base_url="http://localhost:4000/v1",
+        )
+        assert route.provider == "openai"
+        assert route.model == "gpt-4o"
+        assert route.billing_mode == "official_docs_snapshot"
+
+    def test_localhost_proxy_unknown_model_stays_unknown(self):
+        route = resolve_billing_route(
+            "my-custom-finetune",
+            provider="custom",
+            base_url="http://localhost:11434/v1",
+        )
+        assert route.provider == "custom"
+        assert route.billing_mode == "unknown"
+
+    def test_canonical_providers_bypass_inference(self):
+        """Named providers like 'anthropic' and 'openai' must still use their
+        direct routing paths, not the inference fallback."""
+        route = resolve_billing_route(
+            "claude-sonnet-4", provider="anthropic", base_url=""
+        )
+        assert route.provider == "anthropic"
+        assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_proxy_claude_pricing_end_to_end():
+    """Full pricing path: a proxied Claude model on localhost must resolve
+    to Anthropic official-docs pricing with real dollar amounts.
+
+    This is the user-visible regression: vertex-proxy / LiteLLM users saw
+    'unknown' cost for every session because the custom provider name
+    didn't match any billing route.
+    """
+    entry = get_pricing_entry(
+        "claude-opus-4-6",
+        provider="vertex-opus46",
+        base_url="http://127.0.0.1:8788/anthropic",
+    )
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+    assert float(entry.input_cost_per_million) > 0
+    assert float(entry.output_cost_per_million) > 0
+
+
+def test_proxy_claude_cost_estimation_end_to_end():
+    """estimate_usage_cost through a proxy must return a dollar amount,
+    not status='unknown'."""
+    usage = CanonicalUsage(
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=5000,
+        cache_write_tokens=200,
+    )
+    result = estimate_usage_cost(
+        "claude-sonnet-4-6",
+        usage,
+        provider="vertex-sonnet46",
+        base_url="http://127.0.0.1:8788/anthropic",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert float(result.amount_usd) > 0

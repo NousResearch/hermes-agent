@@ -561,6 +561,37 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+# Model-name prefixes whose published pricing is maintained in
+# _OFFICIAL_DOCS_PRICING.  When a proxied model name starts with one of
+# these prefixes we can infer the upstream billing provider and resolve
+# to official-docs pricing instead of returning "unknown".
+_MODEL_PREFIX_TO_PROVIDER: tuple[tuple[str, str], ...] = (
+    ("claude-", "anthropic"),
+    ("gpt-", "openai"),
+    ("o1-", "openai"),
+    ("o3-", "openai"),
+    ("o4-", "openai"),
+    ("gemini-", "google"),
+    ("deepseek-", "deepseek"),
+)
+
+
+def _infer_upstream_provider(model: str) -> Optional[str]:
+    """Infer the upstream billing provider from model name patterns.
+
+    When a model is served through a local proxy (LiteLLM, vertex-proxy,
+    custom gateway) the Hermes provider name is a user-defined alias that
+    doesn't match any known billing route.  This helper checks the model
+    name against well-known vendor prefixes so the pricing lookup can fall
+    through to official-docs snapshot entries.
+    """
+    lower = model.lower()
+    for prefix, provider in _MODEL_PREFIX_TO_PROVIDER:
+        if lower.startswith(prefix):
+            return provider
+    return None
+
+
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,
@@ -587,8 +618,20 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name in {"custom", "local"} or (base and "localhost" in base):
+    if provider_name in {"custom", "local"} or (base and ("localhost" in base or "127.0.0.1" in base)):
+        # Infer upstream billing provider from model name patterns so
+        # proxied models (e.g. vertex-proxy, LiteLLM, custom gateways)
+        # resolve to official-docs pricing instead of "unknown".
+        inferred = _infer_upstream_provider(model)
+        if inferred:
+            return BillingRoute(provider=inferred, model=model, base_url=base_url or "", billing_mode="official_docs_snapshot")
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
+    # Final fallback: unrecognized provider -- still attempt model-name
+    # inference before giving up (covers user-defined provider names like
+    # "vertex-opus46" that proxy a known upstream model).
+    inferred = _infer_upstream_provider(model)
+    if inferred:
+        return BillingRoute(provider=inferred, model=model, base_url=base_url or "", billing_mode="official_docs_snapshot")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 
 

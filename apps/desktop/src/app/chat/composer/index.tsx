@@ -25,8 +25,7 @@ import {
   browseBackward,
   browseForward,
   deriveUserHistory,
-  isBrowsingHistory,
-  resetBrowseState
+  isBrowsingHistory
 } from '@/store/composer-input-history'
 import {
   $composerPopoutPosition,
@@ -49,7 +48,6 @@ import { AttachmentList } from './attachments'
 import {
   COMPLETION_ACTIONS,
   COMPOSER_FADE_BACKGROUND,
-  pickPlaceholder,
   type QueueEditState,
   slashArgStage,
   slashChipKindForItem,
@@ -66,6 +64,7 @@ import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
+import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerQueue } from './hooks/use-composer-queue'
 import { useComposerSubmit } from './hooks/use-composer-submit'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
@@ -186,8 +185,6 @@ export function ChatBar({
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
-  const newSessionPlaceholders = t.composer.newSessionPlaceholders
-  const followUpPlaceholders = t.composer.followUpPlaceholders
   const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
   const inputDisabled = disabled && !reconnecting
 
@@ -287,45 +284,9 @@ export function ChatBar({
     stashAt
   })
 
-  // Resting placeholder: a starter for brand-new sessions, a continuation for
-  // existing ones. Picked once and only re-rolled when we genuinely move to a
-  // *different* conversation. Critically, the first id assignment of a freshly
-  // started session (null → id, on the first send) is treated as the same
-  // conversation so the placeholder doesn't visibly flip mid-stream.
-  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
-  )
-
-  const prevSessionIdRef = useRef(sessionId)
-
-  useEffect(() => {
-    const prev = prevSessionIdRef.current
-    prevSessionIdRef.current = sessionId
-
-    if (prev === sessionId) {
-      return
-    }
-
-    // null → id: the new session we're already in just got persisted. Keep the
-    // starter we showed instead of swapping to a follow-up under the user.
-    if (prev == null && sessionId) {
-      return
-    }
-
-    resetBrowseState(prev)
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
-
-  // When the transport is disabled it's because the gateway isn't open.
-  // Distinguish a cold start ("Starting Hermes...") from a dropped connection
-  // we're trying to restore. During reconnect, keep the textbox editable so a
-  // flaky network doesn't block drafting; only submit/backend actions stay
-  // disabled until the gateway is open again.
-  const placeholder = disabled
-    ? reconnecting
-      ? t.composer.placeholderReconnecting
-      : t.composer.placeholderStarting
-    : restingPlaceholder
+  // Resting / reconnecting / starting placeholder text, re-rolled only on a real
+  // conversation change.
+  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
 
   // Keep the floating box on-screen: re-clamp (with the real measured size +
   // thread bounds) when it pops out and on every window resize — so a position

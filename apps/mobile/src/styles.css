@@ -754,6 +754,30 @@ html.hermes-mobile-standalone [data-slot='overlay-nav-item'] {
   font-size: 0.9375rem;
 }
 
+/* Done pill: bottom-right thumb-reach dismiss for full-screen overlays. */
+html.hermes-mobile-standalone .mobile-done-pill {
+  display: inline-flex !important;
+  position: absolute;
+  right: 1rem;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+  z-index: 20;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0 1.25rem;
+  border-radius: 9999px;
+  border: 1px solid var(--ui-stroke-secondary);
+  background: var(--ui-bg-tertiary);
+  color: var(--ui-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.12);
+  -webkit-tap-highlight-color: transparent;
+}
+html.hermes-mobile-standalone .mobile-done-pill:active {
+  background: var(--chrome-action-hover);
+}
+
 img,
 picture,
 video,

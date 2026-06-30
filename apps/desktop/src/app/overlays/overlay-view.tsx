@@ -50,6 +50,7 @@ export function OverlayView({
   return (
     <div
       className="fixed inset-0 z-50 bg-black/22 p-3 backdrop-blur-[0.125rem] sm:p-6"
+      data-slot="overlay-view"
       onClick={event => {
         if (event.target === event.currentTarget) {
           closeOverlay()
@@ -85,6 +86,17 @@ export function OverlayView({
             titlebar clearance so their backgrounds run flush to the card top
             (otherwise the card surface shows as a gap above the sidebar). */}
         <div className={cn('min-h-0 flex flex-1 flex-col', contentClassName)}>{children}</div>
+
+        {/* Mobile-only Done pill — bottom-right thumb-reach dismiss back to
+            root. Hidden on desktop via CSS. */}
+        <button
+          aria-label={closeLabel}
+          className="mobile-done-pill hidden"
+          onClick={closeOverlay}
+          type="button"
+        >
+          Done
+        </button>
       </div>
     </div>
   )

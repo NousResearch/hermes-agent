@@ -276,12 +276,30 @@ def _translate_tool_result_to_gemini(
         or tool_call_id
         or "tool"
     )
-    content = _coerce_content_to_text(message.get("content"))
+    content = message.get("content")
+    text_content = _coerce_content_to_text(content)
+
+    # Preserve image parts from tool results so the model can see
+    # screenshots, generated images, etc.  Gemini 3 accepts multimodal
+    # function responses with inlineData parts alongside the text output.
+    image_parts: List[Dict[str, Any]] = []
+    if isinstance(content, list):
+        image_parts = [
+            p for p in _extract_multimodal_parts(content)
+            if "inlineData" in p
+        ]
+
     try:
-        parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
+        parsed = json.loads(text_content) if text_content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
         parsed = None
-    response = parsed if isinstance(parsed, dict) else {"output": content}
+    response: Dict[str, Any] = parsed if isinstance(parsed, dict) else {"output": text_content}
+
+    if image_parts:
+        # Carry images as a 'parts' key inside the response dict so
+        # they reach the model alongside the textual output.
+        response["parts"] = image_parts
+
     return {
         "functionResponse": {
             "name": name,

@@ -313,6 +313,19 @@ class TestSaveEnvValueSecure:
             env_values = load_env()
             assert env_values["TENOR_API_KEY"] == "sk-test-secret"
 
+    def test_save_env_value_strips_ascii_control_characters(self, tmp_path):
+        """save_env_value must strip C0 controls (0x00-0x1f) and DEL (0x7f) from values."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            # sk- + NUL + live + TAB + key + DEL + \nnext\r
+            dirty_value = "sk-" + chr(0) + "live" + chr(9) + "key" + chr(127) + "\nnext\r"
+            save_env_value("OPENAI_API_KEY", dirty_value)
+            
+            # Should have stripped NUL (0), TAB (9), DEL (127), \n (10), \r (13)
+            # Resulting value should be "sk-livekeynext"
+            assert os.environ["OPENAI_API_KEY"] == "sk-livekeynext"
+            assert load_env()["OPENAI_API_KEY"] == "sk-livekeynext"
+
     def test_secure_save_returns_metadata_only(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             result = save_env_value_secure("GITHUB_TOKEN", "ghp_test_secret")

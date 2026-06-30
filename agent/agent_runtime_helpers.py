@@ -2338,8 +2338,13 @@ def looks_like_codex_intermediate_ack(
     if len(assistant_text) > 1200:
         return False
 
+    cjk_future_ack_markers = (
+        "我先", "我会", "我會", "我将", "我將", "我来", "我來",
+        "让我", "讓我", "先来", "先來", "先載", "先载", "先查", "先看",
+    )
     has_future_ack = bool(
         re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+        or any(marker in assistant_text for marker in cjk_future_ack_markers)
     )
     if not has_future_ack:
         return False
@@ -2364,6 +2369,39 @@ def looks_like_codex_intermediate_ack(
         "walkthrough",
         "report back",
         "summarize",
+        # CJK action markers. Keep these as concrete tool-like verbs so a
+        # conversational acknowledgement in Chinese/Japanese/Korean does not
+        # trip continuation without an announced action.
+        "載入",
+        "载入",
+        "確認",
+        "确认",
+        "檢查",
+        "检查",
+        "查看",
+        "讀取",
+        "读取",
+        "運行",
+        "运行",
+        "執行",
+        "执行",
+        "搜尋",
+        "搜索",
+        "查找",
+        "分析",
+        "修復",
+        "修复",
+        "調試",
+        "调试",
+        "테스트",
+        "확인",
+        "검색",
+        "분석",
+        "実行",
+        "確認",
+        "検索",
+        "分析",
+        "修正",
     )
     workspace_markers = (
         "directory",

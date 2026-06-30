@@ -144,6 +144,15 @@ def test_all_path_drops_workspace_requirement():
     )
 
 
+def test_non_english_cjk_future_ack_fires_when_opted_in():
+    """Non-English action acks should not be blocked by the English regex gate."""
+    a = _agent(True, "chat_completions")
+    user = "請檢查這個專案的 skill 用法"
+    ack = "我先載入 skill 確認用法，然後再繼續。"
+    msgs = [{"role": "user", "content": user}]
+    assert looks_like_codex_intermediate_ack(a, user, ack, msgs, require_workspace=False)
+
+
 # ── detector: guardrails that hold regardless of workspace ───────────────────
 
 

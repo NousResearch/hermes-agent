@@ -19,10 +19,9 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 import pytest
+trueconf = pytest.importorskip("trueconf", reason="python-trueconf-bot not installed")
 from trueconf.enums import ChatType, MessageType
 from trueconf.types import Message
-
-
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType as GatewayMessageType, SendResult

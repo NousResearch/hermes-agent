@@ -418,7 +418,8 @@ def summarize_background_review_actions(
     # result JSON only says "Entry added"; the call arguments contain action,
     # target, and content previews.  Restricting to notify_tools also prevents
     # helper tools from surfacing as memory work just because they succeeded.
-    notify_tools = {"memory", "skill_manage"}
+    # mem0_remember surfaces too (else a mem0-only review logs nothing and looks dark).
+    notify_tools = {"memory", "skill_manage", "mem0_remember"}
     all_tool_call_ids: set = set()
     call_details: dict = {}
     for msg in review_messages or []:
@@ -468,7 +469,20 @@ def summarize_background_review_actions(
             data = json.loads(msg.get("content", "{}"))
         except (json.JSONDecodeError, TypeError):
             continue
-        if not isinstance(data, dict) or not data.get("success"):
+        if not isinstance(data, dict):
+            continue
+        # mem0_remember surfaces on its own contract: {"result": ..., "dedup": <tag>}.
+        # It has no "success"/"created"/"updated" key, so handle it before the generic
+        # memory/skill path (else a mem0-only review would log NOTHING and look dark).
+        detail_tool = call_details.get(tcid, {}).get("tool")
+        if detail_tool == "mem0_remember":
+            dedup = data.get("dedup", "")
+            if dedup in ("skipped_exacthash", "skipped_identical"):
+                actions.append("Long-term memory: duplicate skipped")
+            elif "result" in data:
+                actions.append("Long-term memory updated")
+            continue
+        if not data.get("success"):
             continue
         message = data.get("message", "")
         detail = call_details.get(tcid, {})
@@ -794,13 +808,25 @@ def _run_review_in_thread(
                     _digest_history(messages_snapshot) if _routed
                     else messages_snapshot
                 )
-                review_agent.run_conversation(
-                    user_message=(
-                        prompt
-                        + "\n\nYou can only call memory and skill "
+                # The runtime tool-restriction reminder must MATCH the actual
+                # whitelist: when the mem0 flag is on, mem0_remember IS allowed, so a
+                # blanket "only memory and skill tools" reminder would contradict the
+                # mem0 clause in `prompt` and suppress the very call we want (the model
+                # obeys the last, most-emphatic instruction). Keep them consistent.
+                if _bgr_mem0_on:
+                    _tool_reminder = (
+                        "\n\nYou can only call memory, skill management, and the "
+                        "mem0_remember long-term-memory tool. Other tools will be "
+                        "denied at runtime — do not attempt them."
+                    )
+                else:
+                    _tool_reminder = (
+                        "\n\nYou can only call memory and skill "
                         "management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
-                    ),
+                    )
+                review_agent.run_conversation(
+                    user_message=(prompt + _tool_reminder),
                     conversation_history=_review_history,
                 )
             finally:

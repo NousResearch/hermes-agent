@@ -128,3 +128,42 @@ def test_removed_or_replaced_relabels_by_target():
 
     assert "User profile updated" in actions
     assert "Memory updated" in actions
+
+
+def _assistant_call(tool_call_id, name, arguments):
+    """An assistant message carrying one tool_call (populates call_details)."""
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{
+            "id": tool_call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)},
+        }],
+    }
+
+
+def test_mem0_remember_write_surfaces_in_summary():
+    """A mem0_remember write must show in the action summary (else a mem0-only
+    review logs nothing and looks 'dark'). Its result contract is
+    {"result": ..., "dedup": <tag>} — no success/created/updated key."""
+    review_messages = [
+        _assistant_call("m1", "mem0_remember", {"fact": "Ace's box is at 10.0.0.9."}),
+        _tool_msg("m1", {"result": "Fact stored.", "dedup": "wrote"}),
+    ]
+
+    actions = _summarize(review_messages, [])
+
+    assert actions == ["Long-term memory updated"]
+
+
+def test_mem0_remember_dedup_skip_surfaces_as_skip():
+    review_messages = [
+        _assistant_call("m1", "mem0_remember", {"fact": "dup fact"}),
+        _tool_msg("m1", {"result": "Already stored (exact dup).",
+                         "dedup": "skipped_exacthash"}),
+    ]
+
+    actions = _summarize(review_messages, [])
+
+    assert actions == ["Long-term memory: duplicate skipped"]

@@ -239,3 +239,88 @@ def test_memory_prompt_mem0_clause_gated_by_flag(monkeypatch):
     assert "mem0_remember" not in prompt_skill
 
 
+def test_tool_reminder_includes_mem0_remember_when_flag_on():
+    """When background_review_mem0_write is ON, the runtime tool-restriction
+    reminder appended to the review prompt must NOT say 'only memory and skill
+    tools' (which contradicts the mem0 clause and suppresses the call) — it must
+    explicitly allow mem0_remember. Regression for the 'feature dark / model never
+    calls mem0_remember' bug (2026-06-30)."""
+    import run_agent
+    from hermes_cli import plugins as _plugins
+    import hermes_cli.config as _cfgmod
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message=None, conversation_history=None, **kw):
+        captured["user_message"] = user_message
+        raise RuntimeError("stop after capturing the review prompt")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    # Force the mem0 flag ON regardless of the host config. cfg_get is imported
+    # locally from hermes_cli.config inside the function, so patch it there.
+    def _flag_on(cfg, *keys, default=None):
+        if keys and keys[-1] == "background_review_mem0_write":
+            return True
+        return default
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(run_agent.AIAgent, "run_conversation", _capture_run_conversation), \
+         patch.object(_cfgmod, "cfg_get", _flag_on), \
+         patch.object(_plugins, "set_thread_tool_whitelist", lambda *a, **k: None), \
+         patch.object(_plugins, "clear_thread_tool_whitelist", lambda *a, **k: None), \
+         patch("threading.Thread", _SyncThread):
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=[], review_memory=True, review_skills=False,
+            )
+        except RuntimeError:
+            pass
+
+    msg = captured.get("user_message", "")
+    assert "mem0_remember" in msg, (
+        "flag-on review reminder must allow mem0_remember, got: " + repr(msg[-300:]))
+    # And it must NOT carry the blanket 'only memory and skill' restriction.
+    assert "only call memory and skill" not in msg.lower()
+
+
+def test_tool_reminder_is_memory_skill_only_when_flag_off():
+    """Flag OFF: the reminder keeps the original 'only memory and skill tools'
+    restriction (mem0_remember is denied at dispatch and must not be advertised)."""
+    import run_agent
+    from hermes_cli import plugins as _plugins
+    import hermes_cli.config as _cfgmod
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message=None, conversation_history=None, **kw):
+        captured["user_message"] = user_message
+        raise RuntimeError("stop after capturing the review prompt")
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    def _no_init(self, *args, **kwargs):
+        return None
+
+    def _flag_off(cfg, *keys, default=None):
+        return default  # never returns True for the flag
+
+    with patch.object(run_agent.AIAgent, "__init__", _no_init), \
+         patch.object(run_agent.AIAgent, "run_conversation", _capture_run_conversation), \
+         patch.object(_cfgmod, "cfg_get", _flag_off), \
+         patch.object(_plugins, "set_thread_tool_whitelist", lambda *a, **k: None), \
+         patch.object(_plugins, "clear_thread_tool_whitelist", lambda *a, **k: None), \
+         patch("threading.Thread", _SyncThread):
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=[], review_memory=True, review_skills=False,
+            )
+        except RuntimeError:
+            pass
+
+    msg = captured.get("user_message", "")
+    assert "only call memory and skill" in msg.lower()
+    assert "mem0_remember" not in msg

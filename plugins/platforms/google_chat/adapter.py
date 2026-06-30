@@ -226,6 +226,7 @@ def _is_retryable_error(exc: BaseException) -> bool:
 #     otherwise the safety-net cleanup at base.py:_process_message_background
 #     would delete the response we just patched and leave a tombstone.
 _TYPING_CONSUMED_SENTINEL = "<consumed>"
+_GOOGLE_CHAT_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 
 
 def check_google_chat_requirements() -> bool:
@@ -297,6 +298,33 @@ def _redact_sensitive(text: str) -> str:
         text,
     )
     return text
+
+
+async def _read_error_text_limited(
+    response: Any,
+    *,
+    limit: int = _GOOGLE_CHAT_ERROR_BODY_LIMIT_BYTES,
+) -> str:
+    content = getattr(response, "content", None)
+    if content is not None and hasattr(content, "read"):
+        chunks: List[bytes] = []
+        total = 0
+        while total <= limit:
+            size = min(4096, limit + 1 - total)
+            chunk = await content.read(size)
+            if not chunk:
+                break
+            data = bytes(chunk)
+            chunks.append(data)
+            total += len(data)
+        if total > limit:
+            release = getattr(response, "release", None)
+            if callable(release):
+                release()
+        return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
+
+    text = await response.text()
+    return str(text)[:limit]
 
 
 def _mime_for_message_type(mime: str) -> MessageType:
@@ -3262,7 +3290,7 @@ async def _standalone_send(
                 },
             ) as resp:
                 if resp.status >= 400:
-                    text = await resp.text()
+                    text = await _read_error_text_limited(resp)
                     return {"error": (
                         f"Google Chat standalone send: API returned "
                         f"{resp.status}: {text[:300]}"

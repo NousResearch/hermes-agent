@@ -2785,17 +2785,39 @@ class TestCronSchedulerRegistry:
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
 
 
+class _FakeAiohttpContent:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self._offset = 0
+        self.bytes_read = 0
+
+    async def read(self, size: int = -1):
+        if size is None or size < 0:
+            size = len(self._payload) - self._offset
+        chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        self.bytes_read += len(chunk)
+        return chunk
+
+
 class _FakeAiohttpResponse:
     def __init__(self, status: int, payload, text_body: str = ""):
         self.status = status
         self._payload = payload
         self._text = text_body or (str(payload) if payload is not None else "")
+        self.content = _FakeAiohttpContent(self._text.encode("utf-8"))
+        self.released = False
+        self.text_calls = 0
 
     async def json(self):
         return self._payload
 
     async def text(self):
+        self.text_calls += 1
         return self._text
+
+    def release(self):
+        self.released = True
 
     async def __aenter__(self):
         return self
@@ -2836,6 +2858,17 @@ def _install_fake_google_auth_transport(monkeypatch):
     monkeypatch.setitem(sys.modules, "google.auth.transport.requests", fake_request_module)
 
 
+def _patch_standalone_service_account(monkeypatch, fake_creds):
+    credentials = types.SimpleNamespace(
+        from_service_account_info=MagicMock(return_value=fake_creds)
+    )
+    monkeypatch.setattr(
+        _gc_mod,
+        "service_account",
+        types.SimpleNamespace(Credentials=credentials),
+    )
+
+
 class TestGoogleChatStandaloneSend:
 
     @pytest.mark.asyncio
@@ -2855,23 +2888,17 @@ class TestGoogleChatStandaloneSend:
         fake_creds.token = "the-token"
         fake_creds.refresh = MagicMock(return_value=None)
 
-        original = _gc_mod.service_account.Credentials.from_service_account_info
-        _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
-            return_value=fake_creds
-        )
-        try:
-            _install_fake_google_auth_transport(monkeypatch)
-            send_resp = _FakeAiohttpResponse(200, {"name": "spaces/AAA/messages/MMM"})
-            session = _FakeAiohttpSession([send_resp])
-            _install_fake_aiohttp(monkeypatch, session)
+        _patch_standalone_service_account(monkeypatch, fake_creds)
+        _install_fake_google_auth_transport(monkeypatch)
+        send_resp = _FakeAiohttpResponse(200, {"name": "spaces/AAA/messages/MMM"})
+        session = _FakeAiohttpSession([send_resp])
+        _install_fake_aiohttp(monkeypatch, session)
 
-            result = await _gc_mod._standalone_send(
-                PlatformConfig(enabled=True, extra={}),
-                "spaces/AAAA-BBBB",
-                "hello cron",
-            )
-        finally:
-            _gc_mod.service_account.Credentials.from_service_account_info = original
+        result = await _gc_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "spaces/AAAA-BBBB",
+            "hello cron",
+        )
 
         assert result == {
             "success": True,
@@ -2910,30 +2937,68 @@ class TestGoogleChatStandaloneSend:
         fake_creds.token = "the-token"
         fake_creds.refresh = MagicMock(return_value=None)
 
-        original = _gc_mod.service_account.Credentials.from_service_account_info
-        _gc_mod.service_account.Credentials.from_service_account_info = MagicMock(
-            return_value=fake_creds
+        _patch_standalone_service_account(monkeypatch, fake_creds)
+        _install_fake_google_auth_transport(monkeypatch)
+        send_resp = _FakeAiohttpResponse(
+            403,
+            {"error": {"code": 403, "message": "forbidden"}},
+            text_body='{"error":{"code":403,"message":"forbidden"}}',
         )
-        try:
-            _install_fake_google_auth_transport(monkeypatch)
-            send_resp = _FakeAiohttpResponse(
-                403,
-                {"error": {"code": 403, "message": "forbidden"}},
-                text_body='{"error":{"code":403,"message":"forbidden"}}',
-            )
-            session = _FakeAiohttpSession([send_resp])
-            _install_fake_aiohttp(monkeypatch, session)
+        session = _FakeAiohttpSession([send_resp])
+        _install_fake_aiohttp(monkeypatch, session)
 
-            result = await _gc_mod._standalone_send(
-                PlatformConfig(enabled=True, extra={}),
-                "spaces/AAAA-BBBB",
-                "hi",
-            )
-        finally:
-            _gc_mod.service_account.Credentials.from_service_account_info = original
+        result = await _gc_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "spaces/AAAA-BBBB",
+            "hi",
+        )
 
         assert "error" in result
         assert "403" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_limits_api_failure_body(
+        self, monkeypatch, tmp_path
+    ):
+        sa_file = tmp_path / "sa.json"
+        sa_file.write_text(json.dumps({
+            "type": "service_account",
+            "client_email": "bot@example.iam.gserviceaccount.com",
+            "private_key": "fake",
+            "token_uri": "https://example/token",
+        }))
+        monkeypatch.setenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", str(sa_file))
+
+        fake_creds = MagicMock()
+        fake_creds.token = "the-token"
+        fake_creds.refresh = MagicMock(return_value=None)
+
+        _patch_standalone_service_account(monkeypatch, fake_creds)
+        _install_fake_google_auth_transport(monkeypatch)
+        large_body = ("google chat failure " * 1000) + "tail-marker"
+        send_resp = _FakeAiohttpResponse(
+            500,
+            {"error": {"code": 500}},
+            text_body=large_body,
+        )
+        session = _FakeAiohttpSession([send_resp])
+        _install_fake_aiohttp(monkeypatch, session)
+
+        result = await _gc_mod._standalone_send(
+            PlatformConfig(enabled=True, extra={}),
+            "spaces/AAAA-BBBB",
+            "hi",
+        )
+
+        assert "error" in result
+        assert "500" in result["error"]
+        assert "tail-marker" not in result["error"]
+        assert send_resp.text_calls == 0
+        assert (
+            send_resp.content.bytes_read
+            == _gc_mod._GOOGLE_CHAT_ERROR_BODY_LIMIT_BYTES + 1
+        )
+        assert send_resp.released is True
 
     @pytest.mark.asyncio
     async def test_standalone_send_rejects_chat_id_with_path_traversal(self, monkeypatch):

@@ -296,3 +296,102 @@ def test_loop_stops_if_task_reclaimed(monkeypatch):
         first_response="x",
     )
     assert res["outcome"] == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# CLI judge gate tests (hermes kanban complete bypass fix)
+# ---------------------------------------------------------------------------
+
+def _make_goal_task(tmp_path):
+    """Create a SQLite kanban DB with one goal_mode task and return (db_path, task_id)."""
+    db_path = tmp_path / "kanban.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            body TEXT,
+            status TEXT DEFAULT 'todo',
+            goal_mode INTEGER DEFAULT 0,
+            result TEXT,
+            summary TEXT,
+            metadata TEXT,
+            run_id TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, body, status, goal_mode) VALUES (?, ?, ?, ?, ?)",
+        ("t-goal", "Finish the report", "Body details", "running", 1),
+    )
+    conn.commit()
+    conn.close()
+    return db_path, "t-goal"
+
+
+class TestCLIJudgeGate:
+    """hermes kanban complete must apply the same goal_mode judge gate as the
+    kanban_complete tool (Issue #38367 sibling gap).
+
+    Uses mocks for kb.get_task and kb.complete_task to avoid depending on the
+    full kanban_db schema; the gate logic is the unit under test.
+    """
+
+    def _run(self, monkeypatch, *, goal_mode=True, judge_available=True,
+             verdict="done", reason="", complete_ok=True, summary="done"):
+        import argparse
+        import types
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.kanban import _cmd_complete
+
+        fake_task = types.SimpleNamespace(
+            goal_mode=goal_mode,
+            title="Finish report",
+            body="acceptance: criteria",
+        )
+        fake_conn = MagicMock()
+
+        def fake_connect_closing():
+            from contextlib import contextmanager
+            @contextmanager
+            def _cm():
+                yield fake_conn
+            return _cm()
+
+        monkeypatch.setattr("hermes_cli.kanban.kb.get_task", lambda conn, tid: fake_task)
+        monkeypatch.setattr("hermes_cli.kanban.kb.complete_task",
+                            lambda conn, tid, **kw: complete_ok)
+        monkeypatch.setattr("hermes_cli.kanban.kb.connect_closing", fake_connect_closing)
+        monkeypatch.setattr("hermes_cli.kanban._worker_run_id_for", lambda _: None)
+
+        _aux_client = (object(), "judge-model") if judge_available else (None, None)
+        monkeypatch.setattr(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            lambda name: _aux_client,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.goals.judge_goal",
+            lambda **kw: (verdict, reason, {}),
+        )
+
+        args = argparse.Namespace(task_ids=["t1"], summary=summary, result=None, metadata=None)
+        return _cmd_complete(args)
+
+    def test_judge_rejects_premature_completion(self, monkeypatch):
+        rc = self._run(monkeypatch, verdict="continue", reason="criteria not met")
+        assert rc != 0, "judge rejection must produce non-zero exit code"
+
+    def test_judge_allows_accepted_completion(self, monkeypatch):
+        rc = self._run(monkeypatch, verdict="done")
+        assert rc == 0
+
+    def test_judge_unavailable_fails_open(self, monkeypatch):
+        """No auxiliary client configured → gate skipped, task completes."""
+        rc = self._run(monkeypatch, judge_available=False)
+        assert rc == 0
+
+    def test_non_goal_mode_task_skips_gate(self, monkeypatch):
+        """Plain (non-goal_mode) tasks are never sent to the judge."""
+        rc = self._run(monkeypatch, goal_mode=False)
+        assert rc == 0

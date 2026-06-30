@@ -1141,6 +1141,7 @@ if _config_path.exists():
                 "coder_workspace": "CODER_WORKSPACE",
                 "coder_template": "CODER_TEMPLATE",
                 "coder_forward_env": "TERMINAL_CODER_FORWARD_ENV",
+                "coder_workspace_startup_timeout": "TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT",
                 "cwd": "TERMINAL_CWD",
                 "timeout": "TERMINAL_TIMEOUT",
                 "home_mode": "TERMINAL_HOME_MODE",

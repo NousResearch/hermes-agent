@@ -1170,6 +1170,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
         "coder_forward_env": _parse_env_var("TERMINAL_CODER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
+        "coder_workspace_startup_timeout": _parse_env_var("TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT", "180"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
@@ -1391,6 +1392,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             cwd=cwd,
             timeout=timeout,
             forward_env=cc.get("coder_forward_env", []),
+            workspace_startup_timeout=cc.get("coder_workspace_startup_timeout"),
         )
 
     else:
@@ -2059,6 +2061,7 @@ def terminal_tool(
                                 "coder_workspace": config.get("coder_workspace", ""),
                                 "coder_template": config.get("coder_template", ""),
                                 "coder_forward_env": config.get("coder_forward_env", []),
+                                "coder_workspace_startup_timeout": config.get("coder_workspace_startup_timeout", 180),
                             }
 
                         local_config = None

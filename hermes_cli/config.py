@@ -940,6 +940,7 @@ DEFAULT_CONFIG = {
         "coder_workspace": "",
         "coder_template": "",
         "coder_forward_env": [],
+        "coder_workspace_startup_timeout": 180,
         "cwd": ".",  # Use current directory
         "timeout": 180,
         # Environment variables to pass through to sandboxed execution
@@ -5341,6 +5342,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "coder_organization": "CODER_ORGANIZATION",
     "coder_workspace": "CODER_WORKSPACE",
     "coder_template": "CODER_TEMPLATE",
+    "coder_forward_env": "TERMINAL_CODER_FORWARD_ENV",
+    "coder_workspace_startup_timeout": "TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT",
 }
 
 

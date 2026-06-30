@@ -61,6 +61,33 @@ def test_get_env_config_reads_coder_values(monkeypatch):
     assert config["coder_organization"] == "acme"
     assert config["coder_workspace"] == "shared-dev"
     assert config["coder_template"] == "devcontainer"
+    assert config["coder_workspace_startup_timeout"] == 180
+
+
+def test_get_env_config_reads_coder_workspace_startup_timeout(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "coder")
+    monkeypatch.setenv("TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT", "240")
+
+    config = terminal_tool_module._get_env_config()
+
+    assert config["coder_workspace_startup_timeout"] == 240
+
+
+def test_coder_environment_defaults_snapshot_timeout_to_three_minutes(monkeypatch):
+    monkeypatch.setattr(
+        "tools.environments.coder.coder_workspace_name_for_task",
+        lambda task_id, db=None: "hermes-task",
+    )
+
+    env = CoderEnvironment(
+        base_url="https://coder.example",
+        template_name="devcontainer",
+        task_id="task-coder",
+        api_key="secret-token",
+        init_session=False,
+    )
+
+    assert env._snapshot_timeout == 180
 
 
 def test_get_env_config_defaults_to_local_without_terminal_env(monkeypatch):
@@ -132,6 +159,7 @@ def test_create_environment_constructs_coder_backend(monkeypatch):
             "coder_workspace": "shared-dev",
             "coder_template": "devcontainer",
             "coder_forward_env": [],
+            "coder_workspace_startup_timeout": 240,
         },
         task_id="task-coder",
     )
@@ -147,6 +175,7 @@ def test_create_environment_constructs_coder_backend(monkeypatch):
         cwd="/root",
         timeout=30,
         forward_env=[],
+        workspace_startup_timeout=240,
     )
 
 
@@ -880,6 +909,7 @@ def test_terminal_tool_passes_coder_config_into_environment_factory(monkeypatch)
     monkeypatch.setenv("CODER_WORKSPACE", "shared-dev")
     monkeypatch.setenv("CODER_TEMPLATE", "devcontainer")
     monkeypatch.setenv("TERMINAL_CODER_FORWARD_ENV", '["GITHUB_TOKEN"]')
+    monkeypatch.setenv("TERMINAL_CODER_WORKSPACE_STARTUP_TIMEOUT", "240")
 
     payload = json.loads(terminal_tool_module.terminal_tool(command="printf 'hi from coder'", task_id="coder-test"))
 
@@ -891,3 +921,4 @@ def test_terminal_tool_passes_coder_config_into_environment_factory(monkeypatch)
     assert create_env.call_args.kwargs["container_config"]["coder_workspace"] == "shared-dev"
     assert create_env.call_args.kwargs["container_config"]["coder_template"] == "devcontainer"
     assert create_env.call_args.kwargs["container_config"]["coder_forward_env"] == ["GITHUB_TOKEN"]
+    assert create_env.call_args.kwargs["container_config"]["coder_workspace_startup_timeout"] == 240

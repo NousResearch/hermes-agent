@@ -239,6 +239,7 @@ def coder_workspace_exists(*, base_url: str, workspace_name: str, api_key: str, 
 class CoderEnvironment(BaseEnvironment):
     """Execute commands inside a Coder workspace via the /pty websocket."""
 
+    _snapshot_timeout = 180
     _stdin_mode = "passthrough"
     _STDIN_CHUNK_SIZE = 32 * 1024
     _PTY_RECV_POLL_TIMEOUT = 1.0
@@ -258,6 +259,7 @@ class CoderEnvironment(BaseEnvironment):
         cwd: str = "~",
         timeout: int = 60,
         forward_env: list[str] | None = None,
+        workspace_startup_timeout: int | None = None,
         init_session: bool = True,
     ):
         super().__init__(cwd=cwd, timeout=timeout)
@@ -267,6 +269,8 @@ class CoderEnvironment(BaseEnvironment):
         self.task_id = task_id
         self.workspace = workspace_name or coder_workspace_name_for_task(task_id)
         self.api_key = api_key
+        if workspace_startup_timeout is not None:
+            self._snapshot_timeout = int(workspace_startup_timeout)
         self._workspace_id: str | None = None
         self._forward_env = normalize_forward_env_names(forward_env, config_name="coder_forward_env")
 

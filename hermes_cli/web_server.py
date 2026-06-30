@@ -6505,8 +6505,8 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "signal": {
         "name": "Signal",
-        "description": "Connect through a signal-cli REST bridge.",
-        "docs_url": "https://github.com/bbernhard/signal-cli-rest-api",
+        "description": "Connect through the native signal-cli HTTP daemon.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal",
         "env_vars": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_ALLOWED_USERS"),
         "required_env": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"),
     },
@@ -6691,12 +6691,12 @@ _PLATFORM_ORDER: tuple[str, ...] = (
 # falls back here so the UI can still render a friendly label.
 _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     "SIGNAL_HTTP_URL": {
-        "description": "signal-cli REST API base URL, e.g. http://127.0.0.1:8080",
-        "prompt": "Signal bridge URL",
-        "url": "https://github.com/bbernhard/signal-cli-rest-api",
+        "description": "Native signal-cli HTTP daemon URL, e.g. http://127.0.0.1:8080",
+        "prompt": "signal-cli HTTP URL",
+        "url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal",
     },
     "SIGNAL_ACCOUNT": {
-        "description": "Signal account phone number registered with the bridge",
+        "description": "Signal account phone number linked to signal-cli",
         "prompt": "Signal account",
     },
     "SIGNAL_ALLOWED_USERS": {

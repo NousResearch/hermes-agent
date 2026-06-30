@@ -113,7 +113,8 @@ def _get_subagent_approval_callback():
 
 # NOTE: nested delegation is granted by role='orchestrator' (which re-adds the
 # "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
-# — the model has no toolsets argument. Subagents inherit the parent's toolsets.
+# — the model has no toolsets argument. Subagents inherit the parent's toolsets
+# unless an operator-configured persona narrows them internally.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
@@ -658,6 +659,230 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Persona registry (config-backed, model-facing only by key + description)
+# ---------------------------------------------------------------------------
+
+_PERSONA_RUNTIME_KEYS = frozenset(
+    {
+        "model",
+        "provider",
+        "base_url",
+        "api_key",  # supported for runtime parity with delegation.base_url; never advertised
+        "api_mode",
+        "toolsets",
+        "reasoning_effort",
+        "max_iterations",
+    }
+)
+_PERSONA_SCHEMA_MAX_ITEMS = 30
+_PERSONA_DESCRIPTION_MAX_CHARS = 180
+
+
+def _normalize_persona_key(value: Any) -> Optional[str]:
+    """Return a stripped persona key, or None for an empty/missing value."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_persona_toolsets(value: Any) -> Optional[List[str]]:
+    """Normalize persona.toolsets from config into a non-empty list of strings."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        # Accept both YAML list form and a forgiving comma-separated string.
+        raw_items = value.split(",") if "," in value else [value]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return None
+    items = [str(item).strip() for item in raw_items if str(item).strip()]
+    return items or None
+
+
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _coerce_persona_entry(raw: Any) -> Optional[Dict[str, Any]]:
+    """Normalize one delegation.personas entry.
+
+    The public contract is a mapping with ``description`` and
+    ``system_prompt`` plus optional runtime defaults.  A plain string is
+    tolerated as shorthand for ``system_prompt`` for backwards-friendly config
+    ergonomics, but it is NEVER used as a schema description (to avoid leaking
+    prompts into model-facing tool definitions).
+    """
+    if isinstance(raw, str):
+        prompt = raw.strip()
+        if not prompt:
+            return None
+        return {"description": "", "system_prompt": prompt}
+
+    if not isinstance(raw, dict):
+        return None
+
+    prompt_value = raw.get("system_prompt")
+    # Accept "prompt" as a human-friendly alias, but keep system_prompt as the
+    # documented config key.
+    if prompt_value is None:
+        prompt_value = raw.get("prompt")
+    system_prompt = str(prompt_value or "").strip()
+
+    spec: Dict[str, Any] = {
+        "description": str(raw.get("description") or "").strip(),
+    }
+    if system_prompt:
+        spec["system_prompt"] = system_prompt
+
+    for key in _PERSONA_RUNTIME_KEYS:
+        if key not in raw:
+            continue
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        if key == "toolsets":
+            normalized = _normalize_persona_toolsets(value)
+            if normalized:
+                spec[key] = normalized
+        elif key == "max_iterations":
+            parsed = _coerce_positive_int(value)
+            if parsed is not None:
+                spec[key] = parsed
+            else:
+                logger.warning(
+                    "Ignoring invalid delegation persona max_iterations=%r", value
+                )
+        elif key == "api_mode":
+            spec[key] = str(value).strip().lower()
+        else:
+            spec[key] = str(value).strip() if isinstance(value, str) else value
+
+    # A persona may be runtime-only (for example, a cheap model preset) without
+    # a prompt. Drop completely empty mappings so typos don't create phantom
+    # personas that do nothing.
+    return spec if any(key in spec for key in ("system_prompt", *_PERSONA_RUNTIME_KEYS)) else None
+
+
+def _get_persona_registry(cfg: Optional[dict] = None) -> Dict[str, Dict[str, Any]]:
+    """Return normalized ``delegation.personas`` entries keyed by persona name.
+
+    The returned specs contain full system prompts for runtime use.  Callers
+    that build model-facing schema text MUST use _build_persona_param_description
+    (keys/descriptions only) instead of serialising this registry directly.
+    """
+    if cfg is None:
+        cfg = _load_config()
+    raw_personas = (cfg or {}).get("personas")
+    if not isinstance(raw_personas, dict):
+        return {}
+
+    registry: Dict[str, Dict[str, Any]] = {}
+    for raw_key, raw_entry in raw_personas.items():
+        key = _normalize_persona_key(raw_key)
+        if not key:
+            continue
+        spec = _coerce_persona_entry(raw_entry)
+        if spec is not None:
+            registry[key] = spec
+    return registry
+
+
+def _truncate_schema_description(text: str) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= _PERSONA_DESCRIPTION_MAX_CHARS:
+        return compact
+    return compact[: _PERSONA_DESCRIPTION_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _format_persona_options_for_schema(cfg: Optional[dict] = None) -> str:
+    """Model-facing persona list: keys + descriptions only, never prompts/secrets."""
+    registry = _get_persona_registry(cfg)
+    if not registry:
+        return "No delegation.personas are configured."
+
+    parts: List[str] = []
+    items = sorted(registry.items(), key=lambda kv: kv[0])
+    for key, spec in items[:_PERSONA_SCHEMA_MAX_ITEMS]:
+        desc = _truncate_schema_description(spec.get("description") or "")
+        if desc:
+            parts.append(f"'{key}' — {desc}")
+        else:
+            parts.append(f"'{key}'")
+    if len(items) > _PERSONA_SCHEMA_MAX_ITEMS:
+        parts.append(f"… +{len(items) - _PERSONA_SCHEMA_MAX_ITEMS} more")
+    return "; ".join(parts)
+
+
+def _build_persona_param_description() -> str:
+    return (
+        "Optional persona key from delegation.personas. Personas add a "
+        "child-local system prompt and may provide child-local defaults for "
+        "model/provider/base_url/api_mode/toolsets/reasoning/max_iterations. "
+        "Use the configured key only; do not invent personas. Available "
+        f"personas: {_format_persona_options_for_schema()}"
+    )
+
+
+def _resolve_persona(
+    persona: Any,
+    cfg: dict,
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Resolve a requested persona key to its normalized spec.
+
+    Returns (None, None) when no persona was requested. Raises ValueError with
+    a non-sensitive message for unknown keys.
+    """
+    key = _normalize_persona_key(persona)
+    if not key:
+        return None, None
+
+    registry = _get_persona_registry(cfg)
+    if key in registry:
+        return key, registry[key]
+
+    # Forgiving case-insensitive match when it is unambiguous. Keep the stored
+    # key in metadata so results match config exactly.
+    matches = [name for name in registry if name.lower() == key.lower()]
+    if len(matches) == 1:
+        actual = matches[0]
+        return actual, registry[actual]
+
+    available = ", ".join(f"'{name}'" for name in sorted(registry)) or "(none)"
+    raise ValueError(
+        f"Unknown delegation persona '{key}'. Available personas: {available}."
+    )
+
+
+def _merge_persona_runtime_config(
+    cfg: dict,
+    persona_spec: Optional[Dict[str, Any]],
+) -> dict:
+    """Overlay persona runtime defaults onto delegation config for one child."""
+    effective = dict(cfg or {})
+    if not persona_spec:
+        return effective
+    for key in ("model", "provider", "base_url", "api_key", "api_mode"):
+        if key in persona_spec and persona_spec[key] not in (None, ""):
+            effective[key] = persona_spec[key]
+    return effective
+
+
+def _persona_or_config_max_iterations(
+    default_max_iter: Any,
+    persona_spec: Optional[Dict[str, Any]],
+) -> Any:
+    if persona_spec and persona_spec.get("max_iterations") is not None:
+        return persona_spec["max_iterations"]
+    return default_max_iter
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
@@ -666,6 +891,8 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    persona: Optional[str] = None,
+    persona_system_prompt: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -680,6 +907,11 @@ def _build_child_system_prompt(
         "",
         f"YOUR TASK:\n{goal}",
     ]
+    if persona_system_prompt and str(persona_system_prompt).strip():
+        label = f"PERSONA ({persona})" if persona else "PERSONA"
+        parts.append(
+            f"\n{label} INSTRUCTIONS:\n{str(persona_system_prompt).strip()}"
+        )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -812,6 +1044,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    persona: Optional[str] = None,
     session_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
@@ -821,7 +1054,7 @@ def _build_child_progress_callback(
       Gateway: batches tool names and relays to parent's progress callback
 
     The identity kwargs (``subagent_id``, ``parent_id``, ``depth``, ``model``,
-    ``toolsets``) are threaded into every relayed event so the TUI can
+    ``toolsets``, ``persona``) are threaded into every relayed event so the TUI can
     reconstruct the live spawn tree and route per-branch controls (kill,
     pause) back by ``subagent_id``.  All are optional for backward compat —
     older callers that ignore them still produce a flat list on the TUI.
@@ -860,6 +1093,8 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        if persona is not None:
+            kw["persona"] = persona
         # The child's own session id — filled into the shared ref once the
         # child agent exists (the callback is built first), so every relayed
         # event lets UIs open/inspect the subagent's session directly.
@@ -1062,6 +1297,10 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Optional config-backed persona resolved by delegate_task for this child.
+    persona: Optional[str] = None,
+    persona_system_prompt: Optional[str] = None,
+    persona_reasoning_effort: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1149,6 +1388,8 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        persona=persona,
+        persona_system_prompt=persona_system_prompt,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1172,6 +1413,7 @@ def _build_child_agent(
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
+        persona=persona,
         session_ref=child_session_ref,
     )
 
@@ -1200,12 +1442,12 @@ def _build_child_agent(
     if not override_base_url:
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
     effective_api_key = override_api_key or parent_api_key
+    _parent_provider = getattr(parent_agent, "provider", None) or ""
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
     # Inheriting the parent's mode causes 404 errors when the child routes to the
     # wrong endpoint.  Derive the mode from the target provider when it differs.
-    _parent_provider = getattr(parent_agent, "provider", None) or ""
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
     elif effective_provider != _parent_provider:
@@ -1226,6 +1468,19 @@ def _build_child_agent(
             )
             override_acp_command = None
             override_acp_args = None
+            if effective_provider == "copilot-acp":
+                # A stale/missing ACP CLI must not leave the child configured
+                # as copilot-acp without a command. Fall back to the parent's
+                # normal transport instead of constructing an invalid child.
+                effective_provider = _parent_provider or getattr(
+                    parent_agent, "provider", None
+                )
+                effective_base_url = _inherit_parent_base_url(
+                    parent_agent,
+                    getattr(parent_agent, "base_url", effective_base_url),
+                )
+                effective_api_key = parent_api_key
+                effective_api_mode = getattr(parent_agent, "api_mode", None)
     effective_acp_command = override_acp_command or getattr(
         parent_agent, "acp_command", None
     )
@@ -1249,14 +1504,19 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: persona override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
         # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
         # False (``reasoning_effort: false``) to "" and inherit the parent
-        # instead of disabling thinking for children.
-        delegation_effort = delegation_cfg.get("reasoning_effort")
+        # instead of disabling thinking for children. Personas may also set
+        # ``reasoning_effort: false`` to disable thinking for that lane.
+        delegation_effort = (
+            persona_reasoning_effort
+            if persona_reasoning_effort is not None
+            else delegation_cfg.get("reasoning_effort")
+        )
         if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
 
@@ -1344,6 +1604,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    setattr(child, "_delegate_persona", persona)
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
@@ -1389,6 +1650,7 @@ def _build_child_agent(
             child_session_id=getattr(child, "session_id", None),
             child_subagent_id=subagent_id,
             child_role=effective_role,
+            child_persona=persona,
             child_goal=goal,
         )
     except Exception:
@@ -1841,6 +2103,8 @@ def _run_single_child(
     # hand us a MagicMock don't carry stable ids; skip registration then.
     _raw_sid = getattr(child, "_subagent_id", None)
     _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
+    _raw_persona = getattr(child, "_delegate_persona", None)
+    _persona = _raw_persona if isinstance(_raw_persona, str) and _raw_persona else None
     if _subagent_id:
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
@@ -1860,6 +2124,7 @@ def _run_single_child(
                 "status": "running",
                 "tool_count": 0,
                 "agent": child,
+                **({"persona": _persona} if _persona else {}),
             }
         )
 
@@ -2009,7 +2274,7 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
+            error_entry = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
@@ -2020,6 +2285,9 @@ def _run_single_child(
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
+            if _persona:
+                error_entry["persona"] = _persona
+            return error_entry
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
@@ -2140,6 +2408,8 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        if _persona:
+            entry["persona"] = _persona
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -2225,6 +2495,8 @@ def _run_single_child(
             "files_written": _files_written,
             "output_tail": _output_tail,
         }
+        if _persona:
+            complete_kwargs["persona"] = _persona
         if _cost_usd is not None:
             try:
                 complete_kwargs["cost_usd"] = float(_cost_usd)
@@ -2253,7 +2525,7 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
-        return {
+        error_entry = {
             "task_index": task_index,
             "status": "error",
             "summary": None,
@@ -2262,6 +2534,9 @@ def _run_single_child(
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
         }
+        if _persona:
+            error_entry["persona"] = _persona
+        return error_entry
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
@@ -2345,6 +2620,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    persona: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2352,13 +2628,15 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, role, persona)
+      - Batch:  provide tasks array [{goal, context, role, persona}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+    The 'persona' parameter selects a config-backed child persona;
+    per-task persona beats the top-level persona.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2415,17 +2693,7 @@ def delegate_task(
             "using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
-    effective_max_iter = default_max_iter
-
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    top_persona = _normalize_persona_key(persona)
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2446,7 +2714,14 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [
+            {
+                "goal": goal,
+                "context": context,
+                "role": top_role,
+                "persona": top_persona,
+            }
+        ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2476,36 +2751,108 @@ def delegate_task(
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
+    # Resolve and validate every child spec before building any child agent.
+    # If a later task has an unknown persona or credential failure, returning
+    # after a partial build would leak already-registered children because
+    # _run_single_child() cleanup never runs. Keep planning side-effect free.
+    planned_children: List[Dict[str, Any]] = []
+    _credential_cache: Dict[Optional[str], Dict[str, Any]] = {}
+    for i, t in enumerate(task_list):
+        # Per-task role beats top-level; normalise again so unknown
+        # per-task values warn and degrade to leaf uniformly.
+        effective_role = _normalize_role(t.get("role") or top_role)
+
+        task_persona_raw = t.get("persona")
+        if _normalize_persona_key(task_persona_raw) is None:
+            task_persona_raw = top_persona
+        try:
+            persona_key, persona_spec = _resolve_persona(task_persona_raw, cfg)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+        if persona_key not in _credential_cache:
+            effective_cfg = _merge_persona_runtime_config(cfg, persona_spec)
+            try:
+                _credential_cache[persona_key] = _resolve_delegation_credentials(
+                    effective_cfg, parent_agent
+                )
+            except ValueError as exc:
+                return tool_error(str(exc))
+        creds = _credential_cache[persona_key]
+
+        persona_toolsets = (
+            persona_spec.get("toolsets")
+            if isinstance(persona_spec, dict)
+            else None
+        )
+        effective_toolsets = persona_toolsets
+        effective_max_iter = _persona_or_config_max_iterations(
+            default_max_iter, persona_spec
+        )
+        persona_prompt = (
+            persona_spec.get("system_prompt")
+            if isinstance(persona_spec, dict)
+            else None
+        )
+        persona_reasoning = (
+            persona_spec.get("reasoning_effort")
+            if isinstance(persona_spec, dict)
+            else None
+        )
+
+        planned_children.append(
+            {
+                "task_index": i,
+                "task": t,
+                "effective_role": effective_role,
+                "effective_toolsets": effective_toolsets,
+                "effective_max_iter": effective_max_iter,
+                "persona_key": persona_key,
+                "persona_prompt": persona_prompt,
+                "persona_reasoning": persona_reasoning,
+                "creds": creds,
+            }
+        )
+
     # Build all child agents on the main thread (thread-safe construction)
-    # Wrapped in try/finally so the global is always restored even if a
-    # child build raises (otherwise _last_resolved_tool_names stays corrupted).
+    # only after the whole batch is known-good. Wrapped in try/finally so the
+    # global is always restored even if a child build raises (otherwise
+    # _last_resolved_tool_names stays corrupted).
     children = []
     try:
-        for i, t in enumerate(task_list):
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
+        for spec in planned_children:
+            i = spec["task_index"]
+            t = spec["task"]
+            creds = spec["creds"]
+            persona_key = spec["persona_key"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
+                # Model-facing schema does not expose toolsets. A configured
+                # persona may still narrow the child internally, and the child
+                # builder intersects that with the parent's available toolsets.
+                toolsets=spec["effective_toolsets"],
+                model=creds.get("model"),
+                max_iterations=spec["effective_max_iter"],
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=creds.get("provider"),
+                override_base_url=creds.get("base_url"),
+                override_api_key=creds.get("api_key"),
+                override_api_mode=creds.get("api_mode"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
-                role=effective_role,
+                role=spec["effective_role"],
+                persona=persona_key,
+                persona_system_prompt=spec["persona_prompt"],
+                persona_reasoning_effort=spec["persona_reasoning"],
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            # If tests/plugins wrap _build_child_agent, still stamp non-sensitive
+            # persona metadata so aggregation and hooks stay consistent.
+            setattr(child, "_delegate_persona", persona_key)
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
@@ -2649,6 +2996,23 @@ def delegate_task(
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])
 
+        # Ensure persona metadata is present even for mocked/fabricated result
+        # entries (interrupt branches, tests, plugin-wrapped child runners).
+        _child_by_index_all = {i: child for (i, _, child) in children}
+        for entry in results:
+            try:
+                idx = entry.get("task_index")
+                child = _child_by_index_all.get(idx)
+                raw_persona = getattr(child, "_delegate_persona", None)
+                if (
+                    isinstance(raw_persona, str)
+                    and raw_persona
+                    and not entry.get("persona")
+                ):
+                    entry["persona"] = raw_persona
+            except Exception:
+                pass
+
         # Cap subagent summaries against the parent's remaining context
         # headroom (split across the batch) before they enter the parent's
         # conversation. Full text is spilled to disk so nothing is lost.
@@ -2720,6 +3084,7 @@ def delegate_task(
                     parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
                     child_session_id=getattr(_child_agent, "session_id", None),
                     child_role=child_role,
+                    child_persona=entry.get("persona"),
                     child_summary=entry.get("summary"),
                     child_status=entry.get("status"),
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
@@ -2827,6 +3192,14 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _models = [getattr(c, "model", None) for c in _child_agents]
+        _unique_models = {m for m in _models if m}
+        _dispatch_model = (
+            next(iter(_unique_models))
+            if len(_unique_models) == 1
+            else ("mixed" if len(_unique_models) > 1 else None)
+        )
+        _personas = [getattr(c, "_delegate_persona", None) for c in _child_agents]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -2834,7 +3207,7 @@ def delegate_task(
             # parent's toolsets (no model-facing toolsets arg).
             toolsets=None,
             role=top_role,
-            model=creds["model"],
+            model=_dispatch_model,
             session_key=_session_key,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
@@ -2863,6 +3236,8 @@ def delegate_task(
                 "goals": _goals,
                 "note": note,
             }
+            if any(_personas):
+                payload["personas"] = _personas
             return json.dumps(payload, ensure_ascii=False)
 
         # Pool at capacity / schedule failure — children are still attached
@@ -2987,7 +3362,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     Otherwise, if ``delegation.provider`` is configured, the full credential
     bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
     provider system — the same path used by CLI/gateway startup. This lets
-    subagents run on a completely different provider:model pair.
+    subagents run on a completely different provider:model pair. If
+    ``delegation.api_key`` (or a persona-overlaid api_key) is also set, that
+    explicit child-local key overrides the provider-resolved key.
 
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
@@ -3079,19 +3456,26 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
         ) from exc
 
-    api_key = runtime.get("api_key", "")
+    runtime_api_key = runtime.get("api_key", "")
+    api_key = configured_api_key or runtime_api_key
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
+    api_mode = runtime.get("api_mode")
+    if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        # Explicit delegation/persona api_mode wins over provider defaults, just
+        # like it does for direct base_url endpoints.
+        api_mode = configured_api_mode
+
     return {
         "model": configured_model or runtime.get("model") or None,
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
-        "api_mode": runtime.get("api_mode"),
+        "api_mode": api_mode,
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
@@ -3224,7 +3608,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent model defaults to the parent model (plus its fallback chain) unless delegation.provider / delegation.model or a configured delegation.personas entry selects a child-local runtime.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3288,15 +3672,18 @@ def _build_dynamic_schema_overrides() -> dict:
     get_definitions() pass rewrites the description fields to the user's
     actual limits.
     """
-    overrides_params = {
-        **DELEGATE_TASK_SCHEMA["parameters"],
-    }
-    # Deep-copy properties so we don't mutate the static schema dict.
-    overrides_params["properties"] = {
-        k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
-    }
+    import copy
+
+    overrides_params = copy.deepcopy(DELEGATE_TASK_SCHEMA["parameters"])
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+    persona_desc = _build_persona_param_description()
+    if "persona" in overrides_params["properties"]:
+        overrides_params["properties"]["persona"]["description"] = persona_desc
+    try:
+        overrides_params["properties"]["tasks"]["items"]["properties"]["persona"]["description"] = persona_desc
+    except KeyError:
+        pass
 
     return {
         "description": _build_top_level_description(),
@@ -3353,6 +3740,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "persona": {
+                            "type": "string",
+                            "description": "Optional per-task persona override from delegation.personas.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3364,6 +3755,10 @@ DELEGATE_TASK_SCHEMA = {
             "role": {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
+                "description": "(rebuilt at get_definitions() time)",
+            },
+            "persona": {
+                "type": "string",
                 "description": "(rebuilt at get_definitions() time)",
             },
             "background": {
@@ -3436,6 +3831,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        persona=args.get("persona"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

@@ -636,6 +636,30 @@ delegation:
 
 Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
 
+For reusable specialist routing, configure `delegation.personas` instead. Personas let different tasks choose different child-local prompts, models, providers, and default toolsets without using full Hermes profiles:
+
+```yaml
+delegation:
+  personas:
+    social_writer:
+      description: "Drafts short-form social content"
+      system_prompt: "Write concise, platform-native social copy."
+      model: "google/gemini-3-flash-preview"
+      provider: "openrouter"
+
+    code_reviewer:
+      description: "Reviews code for correctness and regressions"
+      system_prompt: "Review code conservatively and cite concrete findings."
+      model: "anthropic/claude-sonnet-4"
+      provider: "openrouter"
+```
+
+Then ask Hermes to delegate with a persona, or let configured workflows choose one.
+
+Persona `description` values are shown to the active LLM in the `delegate_task` tool schema so it can choose the right persona. Keep descriptions short and non-sensitive; full `system_prompt` values and credential fields are not advertised in the schema.
+
+Personas are profile-scoped. A default-profile gateway reads `~/.hermes/config.yaml`; a `coder` session reads `~/.hermes/profiles/coder/config.yaml`. After editing personas, start a fresh chat and restart the long-running surface that serves it (Desktop app, gateway, or CLI/TUI process). If Hermes reports `Unknown delegation persona ... Available personas: (none)`, it is usually reading a profile/config that does not contain the persona or a process that has not been restarted since the config edit.
+
 You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_task`, which automatically picks up the delegation config.
 
 For one-off model switches without delegation, use `/model` in the CLI:

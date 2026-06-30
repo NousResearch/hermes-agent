@@ -14,7 +14,6 @@ The `delegate_task` tool spawns child AIAgent instances with isolated context, r
 delegate_task(
     goal="Debug why tests fail",
     context="Error: assertion in test_foo.py line 42",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -24,9 +23,9 @@ Up to 3 concurrent subagents by default (configurable, no hard ceiling):
 
 ```python
 delegate_task(tasks=[
-    {"goal": "Research topic A", "toolsets": ["web"]},
-    {"goal": "Research topic B", "toolsets": ["web"]},
-    {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
+    {"goal": "Research topic A"},
+    {"goal": "Research topic B"},
+    {"goal": "Fix the build"}
 ])
 ```
 
@@ -65,18 +64,15 @@ Research multiple topics simultaneously and collect summaries:
 delegate_task(tasks=[
     {
         "goal": "Research the current state of WebAssembly in 2025",
-        "context": "Focus on: browser support, non-browser runtimes, language support",
-        "toolsets": ["web"]
+        "context": "Focus on: browser support, non-browser runtimes, language support"
     },
     {
         "goal": "Research the current state of RISC-V adoption in 2025",
-        "context": "Focus on: server chips, embedded systems, software ecosystem",
-        "toolsets": ["web"]
+        "context": "Focus on: server chips, embedded systems, software ecosystem"
     },
     {
         "goal": "Research quantum computing progress in 2025",
-        "context": "Focus on: error correction breakthroughs, practical applications, key players",
-        "toolsets": ["web"]
+        "context": "Focus on: error correction breakthroughs, practical applications, key players"
     }
 ])
 ```
@@ -93,7 +89,6 @@ delegate_task(
     The project uses Flask, PyJWT, and bcrypt.
     Focus on: SQL injection, JWT validation, password handling, session management.
     Fix any issues found and run the test suite (pytest tests/auth/).""",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -113,7 +108,6 @@ delegate_task(
     - Other prints -> logger.info(...)
     Don't change print() in test files or CLI output.
     Run pytest after to verify nothing broke.""",
-    toolsets=["terminal", "file"]
 )
 ```
 
@@ -142,9 +136,69 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+## Persona Presets
+
+For reusable specialist subagents, configure `delegation.personas` in `config.yaml` and pass the persona key to `delegate_task`. A persona can add child-local instructions and optional runtime defaults without switching the parent conversation.
+
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  personas:
+    code_reviewer:
+      description: "Security- and correctness-focused code reviewer"
+      system_prompt: |
+        You are a senior code reviewer. Focus on correctness, regressions,
+        security, and minimal safe changes.
+      model: "anthropic/claude-sonnet-4"
+      provider: "openrouter"
+      toolsets: ["file", "terminal"]
+
+    quick_researcher:
+      description: "Fast web/documentation researcher"
+      system_prompt: |
+        Gather evidence with sources and separate facts from speculation.
+      model: "google/gemini-flash-2.0"
+      provider: "openrouter"
+      toolsets: ["web", "file"]
+```
+
+Then select a persona for one child or per task:
+
+```python
+delegate_task(
+    goal="Review the current diff for correctness and security",
+    persona="code_reviewer",
+)
+
+delegate_task(tasks=[
+    {"goal": "Find relevant docs", "persona": "quick_researcher"},
+    {"goal": "Review the patch", "persona": "code_reviewer"},
+])
+```
+
+Personas are **not** full Hermes profiles (`hermes -p ...`). They do not load separate memory, skills, or profile config. They are child-local presets for delegation only. The existing `role` parameter remains topology-only (`leaf` or `orchestrator`); use `persona` for specialist behavior.
+
+Persona `toolsets` are defaults, not authority escalation: Hermes still intersects them with the parent's available toolsets and strips blocked child tools.
+
+Personas are scoped to the active Hermes profile. A persona configured in `~/.hermes/profiles/coder/config.yaml` is available only to sessions running with `--profile coder`; a default-profile gateway reads `~/.hermes/config.yaml` instead. If you want the same persona in multiple profiles, add it to each profile's `config.yaml`.
+
+Configuration is loaded when a Hermes process/session builds its tool schema. After adding or renaming personas, start a fresh chat session. For long-running surfaces, restart the process that serves that surface:
+
+- CLI/TUI: start a new session (or relaunch Hermes).
+- Desktop: quit and reopen the Desktop app so its local `serve` backend restarts.
+- Messaging gateway: restart the gateway for the profile that serves the chat.
+
+If a delegated call fails with `Unknown delegation persona 'name'. Available personas: (none)`, the process handling that conversation did not load a `delegation.personas` entry for its active profile. Check the active profile and restart the relevant surface after editing config.
+
+:::note
+Persona `description` values are included in the model-facing `delegate_task` tool schema so the active LLM can choose among configured personas. Keep descriptions short and non-sensitive. Full `system_prompt` values and credential fields are used at runtime only and are not advertised in the schema.
+:::
+
 ## Toolset Selection Tips
 
-The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:
+`delegate_task` no longer exposes a model-facing `toolsets` argument. Child agents inherit the parent's enabled toolsets by default, and operator-configured personas may narrow those tools internally. Persona toolsets are still intersected with the parent's available toolsets and the child blocklist, so they cannot grant new capabilities.
+
+Choose persona toolsets based on the task:
 
 | Toolset Pattern | Use Case |
 |----------------|----------|

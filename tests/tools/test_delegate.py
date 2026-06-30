@@ -32,6 +32,8 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _get_persona_registry,
+    _resolve_persona,
     _inherit_parent_base_url,
 )
 
@@ -70,10 +72,15 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         # toolsets is intentionally NOT exposed to the model — subagents always
-        # inherit the parent's toolsets. Letting the model name toolsets was a
+        # inherit the parent's toolsets unless operator-configured persona
+        # defaults narrow them internally. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
         self.assertNotIn("toolsets", props)
         self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
+        self.assertIn("persona", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("persona", task_props)
+        self.assertEqual(props["role"]["enum"], ["leaf", "orchestrator"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -135,6 +142,34 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn(f"up to {_get_max_concurrent_children()}", fn["description"])
         self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
 
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "personas": {
+                "reviewer": {
+                    "description": "Careful code reviewer",
+                    "system_prompt": "SECRET REVIEW PROMPT",
+                },
+                "cheap": {
+                    "description": "Cheap runtime preset",
+                    "model": "google/gemini-flash",
+                },
+            }
+        },
+    )
+    def test_dynamic_schema_lists_persona_keys_without_prompts(self, mock_cfg):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        overrides = _build_dynamic_schema_overrides()
+        top_desc = overrides["parameters"]["properties"]["persona"]["description"]
+        task_desc = overrides["parameters"]["properties"]["tasks"]["items"]["properties"]["persona"]["description"]
+
+        self.assertIn("'reviewer'", top_desc)
+        self.assertIn("Careful code reviewer", top_desc)
+        self.assertIn("'cheap'", task_desc)
+        self.assertNotIn("SECRET REVIEW PROMPT", top_desc)
+        self.assertNotIn("SECRET REVIEW PROMPT", task_desc)
+
 
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
@@ -152,6 +187,16 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_persona_prompt_is_child_local_system_prompt(self):
+        prompt = _build_child_system_prompt(
+            "Review this patch",
+            persona="reviewer",
+            persona_system_prompt="Focus on correctness and security.",
+        )
+        self.assertIn("PERSONA (reviewer) INSTRUCTIONS", prompt)
+        self.assertIn("Focus on correctness and security.", prompt)
+        self.assertIn("Review this patch", prompt)
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -568,6 +613,41 @@ class TestToolNamePreservation(unittest.TestCase):
         )
         self.assertIsNone(captured["acp_command"])
         self.assertEqual(captured["acp_args"], [])
+
+    def test_build_child_agent_ignores_copilot_acp_provider_when_binary_missing(self):
+        """A resolved copilot-acp provider must fall back if its CLI is missing."""
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "openrouter"
+        parent.api_mode = "chat_completions"
+        parent.acp_command = None
+        parent.acp_args = []
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("shutil.which", return_value=None) as mock_which:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="copilot provider path",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="copilot-acp",
+                override_acp_command="copilot",
+                override_acp_args=["--foo"],
+            )
+
+            _, kwargs = MockAgent.call_args
+
+        mock_which.assert_called_with("copilot")
+        self.assertEqual(kwargs.get("provider"), "openrouter")
+        self.assertIsNone(kwargs.get("acp_command"))
+        self.assertEqual(kwargs.get("acp_args"), [])
+        self.assertEqual(kwargs.get("api_mode"), "chat_completions")
 
     def test_build_child_agent_honors_acp_command_when_binary_present(self):
         """When the acp_command binary exists on PATH, behavior is unchanged:
@@ -1228,6 +1308,85 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             _resolve_delegation_credentials(cfg, parent)
         self.assertIn("no API key", str(ctx.exception))
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_configured_provider_honors_explicit_api_mode(self, mock_resolve):
+        """Explicit delegation/persona api_mode wins over provider defaults."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "runtime-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "api_mode": "anthropic_messages",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_configured_provider_invalid_api_mode_uses_runtime_default(self, mock_resolve):
+        """Invalid explicit api_mode must not override the provider runtime mode."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "runtime-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "api_mode": "garbage",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "chat_completions")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_configured_provider_api_key_overrides_runtime_key(self, mock_resolve):
+        """Explicit delegation/persona api_key wins over provider-resolved credentials."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "runtime-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "api_key": "persona-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_key"], "persona-key")
+        mock_resolve.assert_called_once_with(
+            requested="openrouter", target_model="anthropic/claude-sonnet-4"
+        )
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_configured_provider_api_key_allows_runtime_without_key(self, mock_resolve):
+        """A persona/config api_key is sufficient even when runtime provider has none."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "api_key": "persona-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_key"], "persona-key")
+
     def test_missing_config_keys_inherit_parent(self):
         """When config dict has no model/provider keys at all, inherits parent."""
         parent = _make_mock_parent(depth=0)
@@ -1344,6 +1503,42 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         mock_resolve.assert_called_once()
         self.assertEqual(mock_resolve.call_args.kwargs.get("requested"), "bedrock")
 
+
+
+class TestPersonaRegistry(unittest.TestCase):
+    def test_registry_accepts_prompt_and_runtime_only_personas(self):
+        cfg = {
+            "personas": {
+                "reviewer": {
+                    "description": "Review code",
+                    "system_prompt": "Review carefully.",
+                    "toolsets": "file,terminal",
+                },
+                "cheap": {
+                    "description": "Cheap model preset",
+                    "model": "google/gemini-flash",
+                },
+                "empty": {"description": "No prompt or runtime"},
+            }
+        }
+        registry = _get_persona_registry(cfg)
+        self.assertIn("reviewer", registry)
+        self.assertIn("cheap", registry)
+        self.assertNotIn("empty", registry)
+        self.assertEqual(registry["reviewer"]["toolsets"], ["file", "terminal"])
+        self.assertEqual(registry["cheap"]["model"], "google/gemini-flash")
+
+    def test_resolve_persona_is_case_insensitive_and_unknown_fails_closed(self):
+        cfg = {"personas": {"Reviewer": {"system_prompt": "Review carefully."}}}
+        key, spec = _resolve_persona("reviewer", cfg)
+        self.assertEqual(key, "Reviewer")
+        assert spec is not None
+        self.assertEqual(spec["system_prompt"], "Review carefully.")
+
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_persona("missing", cfg)
+        self.assertIn("Unknown delegation persona", str(ctx.exception))
+        self.assertIn("'Reviewer'", str(ctx.exception))
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):
@@ -1620,6 +1815,204 @@ class TestDelegationProviderIntegration(unittest.TestCase):
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
                 self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
                 self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_mixed_persona_batch_resolves_runtime_per_child(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "personas": {
+                "reviewer": {
+                    "description": "Review code",
+                    "system_prompt": "Review carefully.",
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider": "openrouter",
+                    "toolsets": ["file"],
+                },
+                "cheap": {
+                    "description": "Cheap model preset",
+                    "model": "google/gemini-flash",
+                    "toolsets": ["terminal"],
+                },
+            },
+        }
+
+        def resolve(cfg, parent):
+            return {
+                "model": cfg.get("model"),
+                "provider": cfg.get("provider"),
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+
+        mock_creds.side_effect = resolve
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            children = [MagicMock(), MagicMock()]
+            mock_build.side_effect = children
+            mock_run.side_effect = [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "Reviewed",
+                    "api_calls": 1,
+                    "duration_seconds": 1.0,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "Ran",
+                    "api_calls": 1,
+                    "duration_seconds": 1.0,
+                },
+            ]
+
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "Review", "persona": "reviewer"},
+                        {"goal": "Run cheap", "persona": "cheap"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        first = mock_build.call_args_list[0].kwargs
+        second = mock_build.call_args_list[1].kwargs
+        self.assertEqual(first["persona"], "reviewer")
+        self.assertEqual(first["model"], "anthropic/claude-sonnet-4")
+        self.assertEqual(first["override_provider"], "openrouter")
+        self.assertEqual(first["toolsets"], ["file"])
+        self.assertEqual(first["persona_system_prompt"], "Review carefully.")
+        self.assertEqual(second["persona"], "cheap")
+        self.assertEqual(second["model"], "google/gemini-flash")
+        self.assertEqual(second["toolsets"], ["terminal"])
+        self.assertEqual(result["results"][0]["persona"], "reviewer")
+        self.assertEqual(result["results"][1]["persona"], "cheap")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_persona_provider_api_key_reaches_child(self, mock_resolve, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "personas": {
+                "isolated": {
+                    "description": "Use an isolated provider credential.",
+                    "system_prompt": "Stay isolated.",
+                    "model": "anthropic/claude-sonnet-4",
+                    "provider": "openrouter",
+                    "api_key": "persona-key",
+                }
+            },
+        }
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "runtime-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(goal="Use isolated credential", persona="isolated", parent_agent=parent)
+
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["persona"], "isolated")
+        self.assertEqual(kwargs["model"], "anthropic/claude-sonnet-4")
+        self.assertEqual(kwargs["override_provider"], "openrouter")
+        self.assertEqual(kwargs["override_base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(kwargs["override_api_key"], "persona-key")
+        self.assertEqual(kwargs["override_api_mode"], "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_unknown_persona_fails_without_spawning(self, mock_cfg):
+        mock_cfg.return_value = {
+            "personas": {"reviewer": {"system_prompt": "Review carefully."}}
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = json.loads(
+                delegate_task(goal="Review", persona="missing", parent_agent=parent)
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("Unknown delegation persona", result["error"])
+        mock_build.assert_not_called()
+
+    @patch("tools.delegate_tool._load_config")
+    def test_later_unknown_persona_fails_without_partial_child_build(self, mock_cfg):
+        mock_cfg.return_value = {
+            "personas": {"reviewer": {"system_prompt": "Review carefully."}}
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "Valid first", "persona": "reviewer"},
+                        {"goal": "Invalid second", "persona": "missing"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("Unknown delegation persona", result["error"])
+        mock_build.assert_not_called()
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_later_credential_error_fails_without_partial_child_build(
+        self, mock_creds, mock_cfg
+    ):
+        mock_cfg.return_value = {
+            "personas": {
+                "valid": {"system_prompt": "First persona."},
+                "broken": {"system_prompt": "Second persona.", "provider": "missing"},
+            }
+        }
+        mock_creds.side_effect = [
+            {
+                "model": None,
+                "provider": None,
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            },
+            ValueError("Cannot resolve delegation provider 'missing'"),
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "Valid first", "persona": "valid"},
+                        {"goal": "Broken second", "persona": "broken"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertIn("error", result)
+        self.assertIn("Cannot resolve delegation provider", result["error"])
+        mock_build.assert_not_called()
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

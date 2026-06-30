@@ -564,35 +564,18 @@ async def _ssrf_redirect_guard(response):
 # (e.g. Telegram file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Default location: {HERMES_HOME}/cache/images/ (legacy: image_cache/)
-#
-# NOTE: These module-level constants are the import-time DEFAULTS.  They exist
-# for two reasons: (1) backward-compatible references elsewhere, and (2) tests
-# monkeypatch them (e.g. ``monkeypatch.setattr("...IMAGE_CACHE_DIR", tmp)``).
-# The ``get_*_cache_dir()`` getters below re-resolve through ``get_hermes_dir()``
-# on every call so the context-local profile override
-# (``set_hermes_home_override``) is honored — freezing the resolved path at
-# import pinned every profile to whichever one first imported this module
-# (cross-profile leak in single-process multi-profile desktop runtime).  When a
-# test has monkeypatched the constant away from its import-time default, that
-# override wins (preserves the existing test seam).
+# Import-time default. Tests monkeypatch this; the get_*_cache_dir() getters
+# re-resolve per call so the active profile override is honored.
 IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 
 
 def _resolve_cache_dir(constant_name: str, new_subpath: str, old_name: str) -> Path:
-    """Resolve a cache dir, honoring profile override and test monkeypatches.
-
-    Precedence:
-      1. If the module constant ``constant_name`` was monkeypatched away from
-         its import-time default, return the patched value (test seam).
-      2. Otherwise resolve fresh via ``get_hermes_dir`` so the active profile's
-         ``set_hermes_home_override`` is reflected per-call.
-    """
+    """Resolve fresh via get_hermes_dir (active profile), unless a test has
+    monkeypatched the constant away from its import-time default."""
     fresh = get_hermes_dir(new_subpath, old_name)
     current = globals().get(constant_name)
     default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
     if current is not None and default is not None and current != default:
-        # A test (or caller) replaced the module constant — respect it.
         return Path(current)
     return fresh
 
@@ -968,10 +951,8 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
 
-# Import-time defaults for the cache-dir constants.  ``_resolve_cache_dir``
-# compares the live module value against these to detect a test monkeypatch
-# (in which case the patched value wins) vs. an unmodified constant (in which
-# case it re-resolves through the active profile override).
+# Import-time defaults; _resolve_cache_dir compares against these to tell a
+# test monkeypatch from an unmodified constant.
 _CACHE_DIR_IMPORT_DEFAULTS = {
     "IMAGE_CACHE_DIR": IMAGE_CACHE_DIR,
     "AUDIO_CACHE_DIR": AUDIO_CACHE_DIR,

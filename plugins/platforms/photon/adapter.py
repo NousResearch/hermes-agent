@@ -751,7 +751,7 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             out = subprocess.run(  # noqa: S603, S607
                 ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-                capture_output=True, text=True, timeout=5.0, check=False,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5.0, check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             return []
@@ -763,7 +763,7 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             out = subprocess.run(  # noqa: S603, S607
                 ["ps", "-p", str(pid), "-o", "command="],
-                capture_output=True, text=True, timeout=5.0, check=False,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5.0, check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
@@ -862,7 +862,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     str(_SIDECAR_DIR),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=10,
                 check=False,
             )

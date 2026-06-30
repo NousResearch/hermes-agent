@@ -1861,7 +1861,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         "--device", device,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.strip()
         # Filter out the "OK:" line from stderr
@@ -1943,7 +1943,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
         result = subprocess.run(
             [_sys.executable, "-m", "piper.download_voices", voice,
              "--download-dir", str(download_dir)],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300,
             stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:

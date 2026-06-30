@@ -50,7 +50,7 @@ def _listener_pids_on_port(port: int) -> list:
     try:
         result = subprocess.run(
             ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         for line in result.stdout.strip().splitlines():
             try:
@@ -65,7 +65,7 @@ def _listener_pids_on_port(port: int) -> list:
     try:
         result = subprocess.run(
             ["ss", "-ltnHp", f"sport = :{port}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         for m in re.finditer(r"pid=(\d+)", result.stdout):
             pids.append(int(m.group(1)))
@@ -83,7 +83,7 @@ def _kill_port_process(port: int) -> None:
             # Use netstat to find the PID bound to this port, then taskkill
             result = subprocess.run(
                 ["netstat", "-ano", "-p", "TCP"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
                 creationflags=windows_hide_flags(),
             )
             for line in result.stdout.splitlines():
@@ -218,7 +218,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=10,
             )
         except FileNotFoundError:
@@ -332,7 +332,7 @@ def check_whatsapp_requirements() -> bool:
         result = subprocess.run(
             [_node, "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=5
         )
         return result.returncode == 0
@@ -530,7 +530,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         [_npm_bin, "install", "--silent"],
                         cwd=str(bridge_dir),
                         capture_output=True,
-                        text=True,
+                        text=True, encoding='utf-8', errors='replace',
                         timeout=npm_install_timeout,
                         env=with_hermes_node_path(),
                     )

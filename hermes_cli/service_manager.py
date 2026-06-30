@@ -838,7 +838,7 @@ class S6ServiceManager:
         try:
             subprocess.run(
                 [f"{_S6_BIN_DIR}/s6-svc", action_flag, str(service_dir)],
-                check=True, capture_output=True, text=True, timeout=5,
+                check=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             )
         except subprocess.CalledProcessError as exc:
             raise S6CommandError(
@@ -873,7 +873,7 @@ class S6ServiceManager:
         try:
             result = subprocess.run(
                 [f"{_S6_BIN_DIR}/s6-svstat", str(self.scandir / name)],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -926,7 +926,7 @@ class S6ServiceManager:
         import subprocess
         result = subprocess.run(
             [f"{_S6_BIN_DIR}/s6-svstat", str(self.scandir / name)],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         return result.returncode == 0 and "up " in result.stdout
 
@@ -1029,7 +1029,7 @@ class S6ServiceManager:
         # Trigger rescan so s6-svscan picks up the new service.
         result = subprocess.run(
             [f"{_S6_BIN_DIR}/s6-svscanctl", "-a", str(self.scandir)],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         if result.returncode != 0:
             # Clean up: rescan failed, leave the directory in place would
@@ -1066,13 +1066,13 @@ class S6ServiceManager:
         # Stop the service (best effort — service may already be down).
         subprocess.run(
             [f"{_S6_BIN_DIR}/s6-svc", "-d", str(svc_dir)],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             check=False,
         )
         # Wait for it to actually go down (up to 10s).
         subprocess.run(
             [f"{_S6_BIN_DIR}/s6-svwait", "-D", "-t", "10000", str(svc_dir)],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
             check=False,
         )
 
@@ -1084,7 +1084,7 @@ class S6ServiceManager:
         # files inside the slot, so the upcoming rmtree doesn't race.
         subprocess.run(
             [f"{_S6_BIN_DIR}/s6-svscanctl", "-an", str(self.scandir)],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             check=False,
         )
         # Give s6-svscan a moment to reap. There's no synchronous

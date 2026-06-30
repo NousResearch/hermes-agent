@@ -162,7 +162,7 @@ def _resolve_mcp_invocation(
     try:
         proc = subprocess.run(
             [driver_cmd, "manifest"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
     except Exception:
@@ -233,7 +233,7 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
     try:
         proc = subprocess.run(
             [_CUA_DRIVER_CMD, "check-update", "--json"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
             # Some older drivers don't have the verb and fall through to a
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
             # so they exit fast instead of blocking until the timeout.

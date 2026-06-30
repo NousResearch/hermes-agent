@@ -4391,12 +4391,12 @@ def interactive_setup() -> None:
                 if uv_bin:
                     result = subprocess.run(
                         [uv_bin, "pip", "install", "--python", _sys.executable, matrix_pkg],
-                        capture_output=True, text=True,
+                        capture_output=True, text=True, encoding='utf-8', errors='replace',
                     )
                 else:
                     result = subprocess.run(
                         [_sys.executable, "-m", "pip", "install", matrix_pkg],
-                        capture_output=True, text=True,
+                        capture_output=True, text=True, encoding='utf-8', errors='replace',
                     )
                 if result.returncode == 0:
                     print_success(f"{matrix_pkg} installed")

@@ -176,7 +176,7 @@ def reap_orphan_containers(
     try:
         listing = subprocess.run(
             [docker, "ps", "-a", *filters, "--format", "{{.ID}}"],
-            capture_output=True, text=True, timeout=15, check=False,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15, check=False,
             stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -210,7 +210,7 @@ def reap_orphan_containers(
         try:
             result = subprocess.run(
                 [docker, "rm", "-f", cid],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0:
@@ -240,7 +240,7 @@ def _container_finished_at(docker_exe: str, container_id: str):
     try:
         result = subprocess.run(
             [docker_exe, "inspect", "--format", "{{.State.FinishedAt}}", container_id],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
             stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -391,7 +391,7 @@ def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
             [docker_exe, "image", "inspect", image,
              "--format", "{{json .Config.Entrypoint}}"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=15,
             stdin=subprocess.DEVNULL,
         )
@@ -474,7 +474,7 @@ def _cgroup_limits_available(image: str) -> bool:
              "--cpus", "0.5", "--memory", "64m", "--pids-limit", "32",
              image, "sleep", "0"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=60,
             stdin=subprocess.DEVNULL,
         )
@@ -517,7 +517,7 @@ def _ensure_docker_available() -> None:
         result = subprocess.run(
             [docker_exe, "version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=5,
             stdin=subprocess.DEVNULL,
         )
@@ -902,7 +902,7 @@ class DockerEnvironment(BaseEnvironment):
                         subprocess.run(
                             [self._docker_exe, "start", container_id],
                             capture_output=True,
-                            text=True,
+                            text=True, encoding='utf-8', errors='replace',
                             timeout=30,
                             check=True,
                             stdin=subprocess.DEVNULL,
@@ -941,7 +941,7 @@ class DockerEnvironment(BaseEnvironment):
                 result = subprocess.run(
                     run_cmd,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                     timeout=120,  # image pull may take a while
                     check=True,
                     stdin=subprocess.DEVNULL,
@@ -1071,7 +1071,7 @@ class DockerEnvironment(BaseEnvironment):
                 try:
                     subprocess.run(
                         [self._docker_exe, "start", cid],
-                        capture_output=True, text=True, timeout=30, check=True,
+                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True,
                         stdin=subprocess.DEVNULL,
                     )
                     self._container_id = cid
@@ -1102,7 +1102,7 @@ class DockerEnvironment(BaseEnvironment):
                     "sleep", "infinity",
                 ]
                 result = subprocess.run(
-                    run_cmd, capture_output=True, text=True, timeout=120, check=True,
+                    run_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
                 )
                 self._container_id = result.stdout.strip()
@@ -1157,7 +1157,7 @@ class DockerEnvironment(BaseEnvironment):
             docker = find_docker() or "docker"
             result = subprocess.run(
                 [docker, "info", "--format", "{{.Driver}}"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                 stdin=subprocess.DEVNULL,
             )
             driver = result.stdout.strip().lower()
@@ -1168,7 +1168,7 @@ class DockerEnvironment(BaseEnvironment):
             # Probe by attempting a dry-ish run — the fastest reliable check.
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                 stdin=subprocess.DEVNULL,
             )
             if probe.returncode == 0:
@@ -1209,7 +1209,7 @@ class DockerEnvironment(BaseEnvironment):
                     "--format", "{{.ID}}\t{{.State}}",
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=10,
                 check=False,
                 stdin=subprocess.DEVNULL,

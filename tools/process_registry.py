@@ -593,7 +593,7 @@ class ProcessRegistry:
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                     timeout=10,
                     creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL,
@@ -763,7 +763,7 @@ class ProcessRegistry:
 
         proc = subprocess.Popen(
             [user_shell, "-lic", f"set +m; {command}"],
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             cwd=session.cwd,
             env=bg_env,
             encoding="utf-8",

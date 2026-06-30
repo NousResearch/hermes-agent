@@ -492,7 +492,7 @@ def get_staged_files() -> list[Path]:
             ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
@@ -506,7 +506,7 @@ def get_diff_files(ref: str) -> list[Path]:
             ["git", "diff", f"{ref}...HEAD", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
             stderr=subprocess.DEVNULL,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []

@@ -74,7 +74,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             ["bash", "-c", command],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=max(1, int(timeout)),
             check=False,
             stdin=subprocess.DEVNULL,

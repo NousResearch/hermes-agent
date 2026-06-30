@@ -654,7 +654,7 @@ def _git(cwd: Path, *args: str) -> str:
         out = subprocess.run(
             ["git", "-C", str(cwd), *args],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=_GIT_TIMEOUT,
             **_popen_kwargs,
         )

@@ -376,7 +376,7 @@ def check_codex_binary(
         proc = subprocess.run(
             [codex_bin, "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=10,
             stdin=subprocess.DEVNULL,
         )

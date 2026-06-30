@@ -115,7 +115,7 @@ def _ensure_uv_path() -> Optional[str]:
         version = subprocess.run(
             [result, "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             check=False,
         ).stdout.strip()
         print(f"  ✓ Managed uv installed ({version})")
@@ -170,14 +170,14 @@ def update_managed_uv() -> Optional[str]:
     result = subprocess.run(
         [existing, "self", "update"],
         capture_output=True,
-        text=True,
+        text=True, encoding='utf-8', errors='replace',
         check=False,
     )
     if result.returncode == 0:
         version = subprocess.run(
             [existing, "--version"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             check=False,
         ).stdout.strip()
         print(f"  ✓ Managed uv updated ({version})")

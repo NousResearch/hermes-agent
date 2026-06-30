@@ -133,6 +133,7 @@ def _make_hermes_provider_class() -> Optional[type]:
             *args: Any,
             server_name: str = "",
             preregistered: bool = False,
+            force_oauth: bool = False,
             **kwargs: Any,
         ):
             super().__init__(*args, **kwargs)
@@ -143,6 +144,10 @@ def _make_hermes_provider_class() -> Optional[type]:
             # registration can't help. Only auto-heal dynamically-registered
             # clients. See _maybe_flag_poisoned_client.
             self._hermes_preregistered = preregistered
+            # When True, the next request forces a full OAuth flow even if
+            # the server returns 200 (not 401). Used by ``hermes mcp login``
+            # for servers that allow ``initialize`` without auth (e.g. Blynk).
+            self._force_oauth = force_oauth
 
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
@@ -418,6 +423,21 @@ def _make_hermes_provider_class() -> Optional[type]:
                 outgoing = await inner.__anext__()
                 while True:
                     incoming = yield outgoing
+                    # Force-OAuth: when ``hermes mcp login`` sets
+                    # ``_force_oauth``, treat a 200 response as 401 if we
+                    # still have no valid tokens.  Some MCP servers (e.g.
+                    # Blynk) return 200 for ``initialize`` without auth, so
+                    # the SDK's reactive 401 branch never fires.  A
+                    # synthetic 401 triggers the full OAuth flow (metadata
+                    # discovery → DCR → browser auth → token exchange).
+                    if self._force_oauth:
+                        if (
+                            not self.context.is_token_valid()
+                            and incoming.status_code != 401
+                        ):
+                            import httpx as _httpx
+                            incoming = _httpx.Response(401)
+                        self._force_oauth = False  # one-shot
                     # Sniff the response for a dead-client-registration signal
                     # before handing it back to the SDK (best-effort, GH#36767).
                     await self._maybe_flag_poisoned_client(incoming)
@@ -451,8 +471,22 @@ class MCPOAuthManager:
     def __init__(self) -> None:
         self._entries: dict[str, _ProviderEntry] = {}
         self._entries_lock = threading.Lock()
+        # Server names for which the next provider should be built with
+        # ``force_oauth=True``.  Populated by ``set_force_oauth()``, consumed
+        # and cleared by ``_build_provider()``.
+        self._force_oauth_names: set[str] = set()
 
     # -- Provider construction / caching -------------------------------------
+
+    def set_force_oauth(self, server_name: str) -> None:
+        """Mark *server_name* so the next ``_build_provider`` sets
+        ``_force_oauth = True`` on the new provider.
+
+        Used by ``hermes mcp login`` to force the OAuth flow even when the
+        server returns 200 for ``initialize`` without auth.
+        """
+        with self._entries_lock:
+            self._force_oauth_names.add(server_name)
 
     def get_or_build_provider(
         self,
@@ -541,9 +575,13 @@ class MCPOAuthManager:
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
 
+        force = server_name in self._force_oauth_names
+        self._force_oauth_names.discard(server_name)
+
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
             preregistered=bool(cfg.get("client_id")),
+            force_oauth=force,
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,

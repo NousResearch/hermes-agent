@@ -1694,6 +1694,13 @@ def _image_source_from_openai_url(url: str) -> Dict[str, str]:
             mime_part = header[len("data:"):].split(";", 1)[0].strip()
             if mime_part.startswith("image/"):
                 media_type = mime_part
+        # Anthropic Messages API only accepts {image/jpeg, image/png, image/gif, image/webp}.
+        # Normalize common aliases and validate.
+        _ANTHROPIC_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+        if media_type not in _ANTHROPIC_IMAGE_TYPES:
+            _TYPE_ALIASES = {"image/jpg": "image/jpeg", "image/jpe": "image/jpeg",
+                             "image/jfif": "image/jpeg", "image/pjpeg": "image/jpeg"}
+            media_type = _TYPE_ALIASES.get(media_type, "image/jpeg")
         return {
             "type": "base64",
             "media_type": media_type,

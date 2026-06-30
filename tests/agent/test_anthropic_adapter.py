@@ -2313,3 +2313,29 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+class TestImageSourceFormatNormalization:
+    """Regression tests for #55432: image/jpg normalization in Anthropic adapter."""
+
+    def test_jpg_normalized_to_jpeg(self):
+        from agent.anthropic_adapter import _image_source_from_openai_url
+        result = _image_source_from_openai_url("data:image/jpg;base64,QUJD")
+        assert result["media_type"] == "image/jpeg"
+
+    def test_unsupported_format_defaults_to_jpeg(self):
+        from agent.anthropic_adapter import _image_source_from_openai_url
+        for mime in ("image/svg+xml", "image/x-icon", "image/tiff"):
+            result = _image_source_from_openai_url(f"data:{mime};base64,QUJD")
+            assert result["media_type"] == "image/jpeg", f"Expected image/jpeg for {mime}"
+
+    def test_supported_formats_preserved(self):
+        from agent.anthropic_adapter import _image_source_from_openai_url
+        for fmt in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            result = _image_source_from_openai_url(f"data:{fmt};base64,QUJD")
+            assert result["media_type"] == fmt, f"Expected {fmt} preserved"
+
+    def test_data_url_with_params(self):
+        from agent.anthropic_adapter import _image_source_from_openai_url
+        result = _image_source_from_openai_url("data:image/jpg;charset=utf-8;base64,QUJD")
+        assert result["media_type"] == "image/jpeg"

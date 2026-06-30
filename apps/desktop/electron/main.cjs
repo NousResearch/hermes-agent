@@ -810,7 +810,7 @@ let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
-  message: 'Waiting to start Hermes backend',
+  message: 'Waiting to connect to the Reuben gateway',
   phase: 'idle',
   progress: 0,
   running: false,
@@ -3830,9 +3830,10 @@ function closePreviewWatchers() {
   }
 }
 
-async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+async function waitForHermes(baseUrl, token, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs
   let lastError = null
+  let delayMs = 500
 
   while (Date.now() < deadline) {
     try {
@@ -3844,11 +3845,16 @@ async function waitForHermes(baseUrl, token) {
       return
     } catch (error) {
       lastError = error
-      await new Promise(resolve => setTimeout(resolve, 500))
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) {
+        break
+      }
+      await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, remainingMs)))
+      delayMs = Math.min(2_000, Math.round(delayMs * 1.6))
     }
   }
 
-  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
+  throw new Error(`Remote Reuben gateway did not become reachable at ${baseUrl}: ${lastError?.message || 'timeout'}`)
 }
 
 function getWindowButtonPosition() {
@@ -4858,7 +4864,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     // the authoritative liveness check.
     if (!(await hasLiveOauthSession(baseUrl))) {
       const err = new Error(
-        'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+        'Remote Reuben gateway uses login auth, but you are not signed in. ' +
           'Open Settings → Gateway and click "Sign in".'
       )
       err.needsOauthLogin = true
@@ -4890,7 +4896,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
 
   if (!token) {
     throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
+      'Remote Reuben gateway is selected, but no session token is saved. ' +
         'Open Settings → Gateway and save a token.'
     )
   }
@@ -4918,7 +4924,7 @@ async function resolveEnvRemoteConnection(rawEnvUrl, rawEnvToken) {
     }
 
     const err = new Error(
-      `Could not reach remote Hermes gateway at ${baseUrl}: ${
+      `Could not reach remote Reuben gateway at ${baseUrl}: ${
         error instanceof Error ? error.message : String(error)
       }`
     )
@@ -5099,7 +5105,7 @@ async function testDesktopConnectionConfig(input = {}) {
       token = decryptDesktopSecret(block.token)
     }
   } else {
-    throw new Error('Hermes Desktop requires a remote gateway URL. Open Settings → Gateway and configure one.')
+    throw new Error('Reuben requires a remote gateway URL. Open Settings → Gateway and configure one.')
   }
   const status = await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: 8_000 })
 
@@ -5300,7 +5306,7 @@ async function spawnPoolBackend(profile) {
   }
 
   throw new Error(
-    `Profile "${profile}" is not configured with a remote Hermes gateway. ` +
+    `Profile "${profile}" is not configured with a remote Reuben gateway. ` +
       'Open Settings → Gateway and configure a backend URL.'
   )
 }
@@ -5394,16 +5400,16 @@ async function startHermes() {
   if (connectionPromise) return connectionPromise
 
   connectionPromise = (async () => {
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await advanceBootProgress('backend.resolve', 'Resolving Reuben gateway', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
     const remote = await resolveRemoteBackend(primaryProfileKey())
     if (remote) {
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
+      await advanceBootProgress('backend.remote', `Connecting to remote Reuben gateway at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
       updateBootProgress({
         phase: 'backend.ready',
-        message: 'Remote Hermes backend is ready',
+        message: 'Remote Reuben gateway is ready',
         progress: 94,
         running: true,
         error: null
@@ -5420,7 +5426,7 @@ async function startHermes() {
       }
     }
 
-    throw new Error('Hermes Desktop requires a remote gateway URL. Open Settings → Gateway and configure one.')
+    throw new Error('Reuben requires a remote gateway URL. Open Settings → Gateway and configure one.')
   })().catch(error => {
     const message = error instanceof Error ? error.message : String(error)
     backendStartFailure = error instanceof Error ? error : new Error(message)
@@ -5848,7 +5854,7 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
     // Unreachable remote: drop the stale cache so the renderer's next reconnect
     // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
     // nulls connectionPromise for a remote (no child to SIGTERM).
-    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    rememberLog('Cached remote Reuben gateway failed liveness probe; dropping stale connection.')
     resetHermesConnection()
     return { ok: true, rebuilt: true }
   }
@@ -6008,7 +6014,12 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   // the URL defensively so a login can be driven from a raw URL too.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
   await openOauthLoginWindow(baseUrl)
-  return { ok: true, baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+  const connected = await hasLiveOauthSession(baseUrl)
+  if (connected) {
+    backendStartFailure = null
+    connectionPromise = null
+  }
+  return { ok: true, baseUrl, connected }
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''

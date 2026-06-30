@@ -78,6 +78,13 @@ describe('desktop git facade', () => {
     })
   })
 
+  it('treats missing remote repo status as optional', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    api.mockRejectedValueOnce(new Error('404 Not Found: endpoint is likely missing on the backend'))
+
+    await expect(desktopGit()?.repoStatus('/srv/work')).resolves.toBeNull()
+  })
+
   it('sends mutations as POST bodies on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
 

@@ -63,7 +63,7 @@ describe('connecting overlay vs recovery surface', () => {
     // failDesktopBoot() ran: error set, gateway never opened.
     $desktopBoot.set({
       ...$desktopBoot.get(),
-      error: 'Hermes backend did not become ready',
+      error: 'Remote Reuben gateway did not become reachable',
       running: false,
       visible: true
     })

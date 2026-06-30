@@ -1,7 +1,7 @@
 /**
  * after-pack.cjs — electron-builder afterPack hook.
  *
- * Stamps the Hermes icon + identity onto the packed Windows Hermes.exe via
+ * Stamps the Reuben icon + identity onto the packed Windows Reuben.exe via
  * rcedit (delegated to set-exe-identity.cjs). This runs for EVERY packed build
  * — first install, `hermes desktop`, the installer's --update rebuild, and a
  * dev's manual `npm run pack` — so the branded exe can never silently revert
@@ -16,7 +16,7 @@
  * electron-builder passes a context with:
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
  *   - appOutDir:            the unpacked app directory for this target
- *   - packager.appInfo.productFilename: the exe basename (e.g. 'Hermes')
+ *   - packager.appInfo.productFilename: the exe basename (e.g. 'Reuben')
  */
 
 const path = require('node:path')
@@ -28,7 +28,7 @@ exports.default = async function afterPack(context) {
     return
   }
 
-  const productName = context.packager?.appInfo?.productFilename || 'Hermes'
+  const productName = context.packager?.appInfo?.productFilename || 'Reuben'
   const exe = path.join(context.appOutDir, `${productName}.exe`)
   const desktopRoot = path.resolve(__dirname, '..')
 
@@ -36,6 +36,6 @@ exports.default = async function afterPack(context) {
     await stampExeIdentity(exe, desktopRoot)
   } catch (err) {
     // Never fail the build over a cosmetic stamp.
-    console.warn(`[after-pack] exe identity stamp failed (${err.message}); Hermes.exe keeps the stock Electron icon`)
+    console.warn(`[after-pack] exe identity stamp failed (${err.message}); ${productName}.exe keeps the stock Electron icon`)
   }
 }

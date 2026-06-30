@@ -20,7 +20,7 @@ function desktopApi<T>(path: string, body?: Record<string, unknown>): Promise<T>
   const desktop = window.hermesDesktop
 
   if (!desktop) {
-    throw new Error('Hermes Desktop bridge is unavailable')
+    throw new Error('Reuben desktop bridge is unavailable')
   }
 
   return desktop.api<T>(
@@ -44,6 +44,33 @@ function gitPost<T>(route: string, body: Record<string, unknown>): Promise<T> {
   return desktopApi<T>(`/api/git/${route}`, body)
 }
 
+function isOptionalRemoteRouteMissing(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return (
+    /\b(404|405)\b/.test(message) ||
+    /not found/i.test(message) ||
+    /method not allowed/i.test(message) ||
+    /endpoint is likely missing/i.test(message)
+  )
+}
+
+async function optionalGitGet<T>(
+  route: string,
+  params: Record<string, boolean | null | string | undefined>,
+  fallback: T
+): Promise<T> {
+  try {
+    return await gitGet<T>(route, params)
+  } catch (error) {
+    if (isOptionalRemoteRouteMissing(error)) {
+      return fallback
+    }
+
+    throw error
+  }
+}
+
 const remoteGit: GitBridge = {
   worktreeList: async repoPath =>
     (await gitGet<{ worktrees: HermesGitWorktree[] }>('worktrees', { path: repoPath })).worktrees,
@@ -58,7 +85,7 @@ const remoteGit: GitBridge = {
   branchList: async repoPath =>
     (await gitGet<{ branches: HermesGitBranch[] }>('branches', { path: repoPath })).branches,
 
-  repoStatus: repoPath => gitGet<HermesRepoStatus | null>('status', { path: repoPath }),
+  repoStatus: repoPath => optionalGitGet<HermesRepoStatus | null>('status', { path: repoPath }, null),
 
   fileDiff: async (repoPath, filePath) =>
     (await gitGet<{ diff: string }>('file-diff', { file: filePath, path: repoPath })).diff,

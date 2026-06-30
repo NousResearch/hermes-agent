@@ -20,6 +20,19 @@ def _clear_approval_state():
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    # Tests in TestCronWithGatewayOrigin call set_session_vars() which binds
+    # session contextvars to "" via clear_session_vars().  The empty-string
+    # sentinel prevents get_session_env() from falling back to os.environ,
+    # so subsequent tests that set HERMES_SESSION_KEY via monkeypatch (e.g.
+    # TestApprovalTimeoutIsNotConsent in test_approval.py) read the wrong
+    # session key ("default" instead of the expected value).
+    # Reset _SESSION_KEY to its _UNSET sentinel so the os.environ fallback
+    # works again for later tests in the same pytest process.
+    try:
+        from gateway.session_context import _SESSION_KEY, _UNSET
+        _SESSION_KEY.set(_UNSET)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

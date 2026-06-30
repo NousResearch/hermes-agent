@@ -89,6 +89,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
@@ -7816,7 +7817,7 @@ def _default_spawn(
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
     except FileNotFoundError:
         log_f.close()

@@ -46,6 +46,7 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.thread_context import propagate_context_to_thread
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
@@ -1308,7 +1309,7 @@ def execute_code(
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
         )
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
@@ -1652,7 +1653,7 @@ def _is_usable_python(python_path: str) -> bool:
              "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
             timeout=5,
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL,
         )
         return result.returncode == 0

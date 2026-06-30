@@ -15,7 +15,9 @@ Several common subprocess patterns break silently-or-loudly on Windows:
 
 * Console-window flashes — every ``subprocess.Popen`` of a ``.exe`` on
   Windows spawns a cmd window briefly unless ``CREATE_NO_WINDOW`` is
-  passed.  Cosmetic but jarring for background daemons.
+  passed.  Electron/Tauri hosts often run Hermes inside a job object where
+  ``CREATE_NO_WINDOW`` alone is ignored, so hidden children also need
+  ``CREATE_BREAKAWAY_FROM_JOB``.
 
 This module centralizes the platform-branching logic so the rest of the
 codebase doesn't sprinkle ``if sys.platform == "win32":`` everywhere.
@@ -191,6 +193,13 @@ def windows_hide_flags() -> int:
     operation (``taskkill``, ``where``, version probes) where we want no
     flash but also want to collect stdout/exit code synchronously.
 
+    ``CREATE_BREAKAWAY_FROM_JOB`` is included even though this is not a
+    detach helper. Electron/Tauri wrappers run Hermes inside Win32 job
+    objects, and in that context ``CREATE_NO_WINDOW`` by itself can be
+    ignored by console children, producing visible ``cmd.exe`` / ``git.exe``
+    flashes. Breakaway lets the no-window flag take effect while keeping
+    stdio attached for capture.
+
     The key difference from :func:`windows_detach_flags`: NO
     ``DETACHED_PROCESS`` — the child still inherits stdio handles so
     ``capture_output=True`` works.  ``DETACHED_PROCESS`` would sever
@@ -198,7 +207,7 @@ def windows_hide_flags() -> int:
     """
     if not IS_WINDOWS:
         return 0
-    return _CREATE_NO_WINDOW
+    return _CREATE_NO_WINDOW | _CREATE_BREAKAWAY_FROM_JOB
 
 
 def windows_detach_popen_kwargs() -> dict:

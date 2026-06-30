@@ -601,6 +601,16 @@ class TestSubprocessCompatHelpers:
             "can respawn the gateway after Electron exits."
         )
 
+    def test_windows_hide_flags_includes_breakaway_from_job(self, monkeypatch):
+        """Hidden short-lived probes must also escape Electron job objects."""
+        from hermes_cli import _subprocess_compat as sc
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        flags = sc.windows_hide_flags()
+        assert flags & 0x08000000, "missing CREATE_NO_WINDOW"
+        assert flags & 0x01000000, "missing CREATE_BREAKAWAY_FROM_JOB"
+        assert not flags & 0x00000008, "hide flags must not detach stdio"
+
     def test_windows_detach_flags_without_breakaway_drops_only_that_bit(
         self, monkeypatch
     ):

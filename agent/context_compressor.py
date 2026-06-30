@@ -6045,8 +6045,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         SimpleNamespace), for logging/display only. Matching logic must use
         :meth:`_tool_call_id_variants` instead — see its docstring."""
         if isinstance(tc, dict):
-            return tc.get("call_id", "") or tc.get("id", "") or ""
-        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+            return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
+        return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
 
     @staticmethod
     def _tool_call_id_variants(tc) -> set:
@@ -6092,7 +6092,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         result_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
+                cid = (msg.get("tool_call_id") or "").strip()
                 if cid:
                     # Expand alias spellings on the RESULT side too — a
                     # composite ``call|item`` tool_call_id must match a

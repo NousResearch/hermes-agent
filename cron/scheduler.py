@@ -2400,10 +2400,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
+        # Reasoning config: a per-job ``reasoning_effort`` override (mirrors the
+        # per-job ``model`` override above) wins when it parses to a valid effort;
+        # otherwise fall back to config.yaml ``agent.reasoning_effort`` exactly as
+        # before. Re-read from job storage every tick so a
+        # ``cronjob action=update reasoning_effort=...`` takes effect next tick.
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        reasoning_config = None
+        _job_effort = str(job.get("reasoning_effort") or "").strip()
+        if _job_effort:
+            # Invalid value parses to None and falls through to config (fail-safe).
+            reasoning_config = parse_reasoning_effort(_job_effort)
+        if reasoning_config is None:
+            effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+            reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

@@ -865,6 +865,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -941,6 +942,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_reasoning_effort = _normalize_job_optional_text(reasoning_effort)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1013,6 +1015,12 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+
+    # Only persist reasoning_effort when explicitly set, so existing jobs stay
+    # byte-identical (absent key => the scheduler falls back to config.yaml
+    # agent.reasoning_effort, the pre-existing behaviour).
+    if normalized_reasoning_effort is not None:
+        job["reasoning_effort"] = normalized_reasoning_effort
 
     with _jobs_lock():
         jobs = load_jobs()

@@ -224,6 +224,11 @@ _LONG_HANDLERS = frozenset(
         "setup.status",
         "session.branch",
         "session.compress",
+        # context_breakdown now build-on-demand + waits for the deferred agent
+        # build (up to 30s on a cold resume), so it must not run inline on the
+        # reader thread — that would freeze prompt.submit / session.interrupt
+        # exactly like the completion RPCs above.
+        "session.context_breakdown",
         "session.list",
         "session.resume",
         "shell.exec",
@@ -6500,7 +6505,16 @@ def _(rid, params: dict) -> dict:
 
 @method("session.context_breakdown")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_nowait(params, rid)
+    # Build-on-demand + wait (like every other agent-dependent RPC) instead of
+    # _sess_nowait. A resumed session takes the deferred-build path, so its agent
+    # is constructed on a background timer; _sess_nowait returns before that lands
+    # and the handler below falls into the agent-is-None branch, reporting an
+    # all-zero breakdown (0%, 0/0, empty bar). The desktop context-usage popover
+    # fetches this once with no retry, so it latches onto those zeros until the
+    # user reopens it. _sess triggers the build and waits, so the popover gets
+    # real numbers on first open. (Routed to _LONG_HANDLERS so the up-to-30s wait
+    # never blocks the reader thread's fast path.)
+    session, err = _sess(params, rid)
     if err:
         return err
     agent = session.get("agent")

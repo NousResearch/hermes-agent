@@ -1418,6 +1418,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    compact_all: bool = False,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1438,6 +1439,12 @@ def build_skills_system_prompt(
     the rendered index. Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    ``compact_all`` applies that same names-only rendering to every category.
+    It is used for subscription-backed Claude OAuth requests where Anthropic's
+    first-party quota rejects larger third-party-agent prompts even though the
+    same Claude Code account can answer compact CLI prompts. Skill names stay
+    visible and loadable; only descriptions are omitted.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1463,6 +1470,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        bool(compact_all),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1605,18 +1613,29 @@ def build_skills_system_prompt(
     # what the index stops showing them. Match on the top-level category
     # segment so nested categories ("social-media/twitter") are demoted with
     # their parent.
-    demoted = frozenset(
-        cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
-    )
+    if compact_all:
+        demoted = frozenset(skills_by_category)
+    else:
+        demoted = frozenset(
+            cat for cat in skills_by_category
+            if cat.split("/", 1)[0] in (compact_categories or frozenset())
+        )
 
     hidden_note = ""
     if demoted:
-        hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
-        )
+        if compact_all:
+            hidden_note = (
+                "\n(Skill descriptions are omitted in this subscription/OAuth "
+                "prompt to keep Claude Max requests within Anthropic's "
+                "third-party-agent quota. The skills work normally and load "
+                "with skill_view(name) as usual.)"
+            )
+        else:
+            hidden_note = (
+                "\n(Categories marked [names only] are outside the current coding "
+                "context, so their descriptions are omitted — the skills work "
+                "normally and load with skill_view(name) as usual.)"
+            )
 
     if not skills_by_category:
         result = ""

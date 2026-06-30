@@ -5865,6 +5865,21 @@ class TelegramAdapter(BasePlatformAdapter):
         for key in reversed(list(placeholders.keys())):
             text = text.replace(key, placeholders[key])
 
+        # 11.5) Safety net: strip orphan escaped `\*\*` bold markers.
+        #       Step 5 converts well-formed `**bold**` to a placeholder, which
+        #       is restored above as clean `*bold*` (raw single `*`). Any
+        #       `\*\*` surviving to here therefore came from bold that step 5
+        #       could NOT match: bold spanning a newline, an unpaired/trailing
+        #       `**`, or residual `**` inside a table cell. In MarkdownV2 each
+        #       such escaped pair renders as a literal `**`, which is the leak
+        #       users see. Removing the escaped pair leaves the inner text as
+        #       plain (losing the bold) rather than showing raw `**`.
+        #       This is safe to run globally: correctly-converted `*bold*`
+        #       uses raw single `*` (no backslash), and fenced/inline code was
+        #       protected before step 10's escaping so it contains raw `**`,
+        #       never the escaped `\*\*` this strips.
+        text = re.sub(r'\\\*\\\*', '', text)
+
         # 12) Safety net: escape unescaped ( ) { } that slipped through
         #     placeholder processing.  Split the text into code/non-code
         #     segments so we never touch content inside ``` or ` spans.

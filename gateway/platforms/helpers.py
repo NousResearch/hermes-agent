@@ -351,7 +351,15 @@ def _render_table_block(table_block: list[str]) -> str:
                 continue
             bullets.append(f"• {header}: {value}")
 
-        group_lines = [f"**{heading}**", *bullets]
+        # Strip any existing `*` bold/italic markers from the heading before
+        # wrapping it in `**...**`. LLMs often emit `**bold**` inside table
+        # cells; without this, `**{**bold**}**` becomes `****bold****`, which
+        # the MarkdownV2 bold converter downstream mangles into escaped `\*\*`
+        # that Telegram then renders as a literal `**`.
+        _heading = re.sub(r"\*+", "", heading).strip()
+        if not _heading:
+            _heading = f"Row {index}"
+        group_lines = [f"**{_heading}**", *bullets]
         rendered_groups.append("\n".join(group_lines))
 
     return "\n\n".join(rendered_groups)

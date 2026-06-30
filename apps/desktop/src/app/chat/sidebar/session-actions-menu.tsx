@@ -112,6 +112,8 @@ function useSessionActions({
     icon: 'pin',
     label: pinned ? r.unpin : r.pin,
     onSelect: () => {
+      // eslint-disable-next-line no-console -- diagnostic: traced via [hermes:webview]
+      console.log('[pinItem:onSelect]', { sessionId, title: String(title).slice(0, 24) })
       triggerHaptic('selection')
       onPin?.()
     }

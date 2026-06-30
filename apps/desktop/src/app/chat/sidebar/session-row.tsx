@@ -100,8 +100,7 @@ export function SidebarSessionRow({
     () =>
       typeof window !== 'undefined' &&
       (Boolean((window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__) ||
-        (typeof document !== 'undefined' &&
-          document.documentElement.classList.contains('hermes-mobile-standalone')))
+        (typeof document !== 'undefined' && document.documentElement.classList.contains('hermes-mobile-standalone')))
   )
   const longPressTimer = useRef<number | null>(null)
   const longPressFired = useRef(false)
@@ -112,16 +111,39 @@ export function SidebarSessionRow({
     }
   }
   const onPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (mobileStandalone) {
+      // eslint-disable-next-line no-console -- diagnostic: traced via [hermes:webview]
+      console.log('[row:pointerdown]', {
+        title: title.slice(0, 24),
+        pointerType: event.pointerType,
+        target: (event.target as HTMLElement).tagName,
+        targetData: (event.target as HTMLElement).dataset
+      })
+    }
     if (!mobileStandalone || event.pointerType !== 'touch') return
     longPressFired.current = false
     clearLongPress()
     longPressTimer.current = window.setTimeout(() => {
       longPressFired.current = true
       triggerHaptic('selection')
+      // eslint-disable-next-line no-console -- diagnostic
+      console.log('[row:longpress-fire-onPin]', { title: title.slice(0, 24) })
       onPin()
     }, 480)
   }
-  const onPointerUpOrLeave = () => clearLongPress()
+  const onPointerUpOrLeave = (event?: React.PointerEvent<HTMLButtonElement>) => {
+    if (mobileStandalone && event) {
+      // eslint-disable-next-line no-console -- diagnostic
+      console.log('[row:pointerup]', {
+        title: title.slice(0, 24),
+        type: event.type,
+        target: (event.target as HTMLElement).tagName,
+        targetData: (event.target as HTMLElement).dataset,
+        longPressFired: longPressFired.current
+      })
+    }
+    clearLongPress()
+  }
 
   const shell = (
     <SidebarRowShell
@@ -191,6 +213,19 @@ export function SidebarSessionRow({
       <SidebarRowBody
         className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
         onClick={event => {
+          if (mobileStandalone) {
+            // eslint-disable-next-line no-console -- diagnostic
+            console.log('[row:click]', {
+              title: title.slice(0, 24),
+              target: (event.target as HTMLElement).tagName,
+              targetData: (event.target as HTMLElement).dataset,
+              currentTarget: (event.currentTarget as HTMLElement).tagName,
+              shift: event.shiftKey,
+              meta: event.metaKey,
+              ctrl: event.ctrlKey,
+              longPressFired: longPressFired.current
+            })
+          }
           // Mobile long-press already fired onPin; suppress the synthetic
           // click that follows the pointer-up so we don't also resume.
           if (longPressFired.current) {

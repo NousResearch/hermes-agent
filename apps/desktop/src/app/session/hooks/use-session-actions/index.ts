@@ -18,6 +18,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $freshDraftUsesProfileDefault,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
@@ -30,9 +31,12 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentCwdTransient,
+  setCurrentModel,
+  setCurrentProvider,
   setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
+  setFreshDraftUsesProfileDefault,
   setIntroSeed,
   setMessages,
   setNewChatWorkspaceTarget,
@@ -127,7 +131,10 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 // A no-op for single-profile/local-pooled users (a backend resolves its own launch
 // profile to None). The sticky UI model/effort/fast ride as per-session overrides,
 // never the profile default (that lives in Settings → Model).
-async function desktopSessionCreateParams(cwd: string): Promise<Record<string, unknown>> {
+async function desktopSessionCreateParams(
+  cwd: string,
+  useProfileDefaultModel = false
+): Promise<Record<string, unknown>> {
   const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
   await ensureGatewayProfile(profile)
 
@@ -140,7 +147,9 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     source: 'desktop',
     ...(cwd && { cwd }),
     ...(profile ? { profile } : {}),
-    ...(model ? { model, ...(provider ? { provider } : {}) } : {}),
+    // When seeding a fresh New Session (not inheriting from previous session),
+    // skip the sticky model/provider so the profile default is used instead.
+    ...(!useProfileDefaultModel && model ? { model, ...(provider ? { provider } : {}) } : {}),
     ...(effort ? { reasoning_effort: effort } : {}),
     ...($currentFastMode.get() ? { fast: true } : {})
   }
@@ -214,12 +223,14 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // The composer's model/effort/fast is sticky UI state (persisted in
-      // localStorage) — a new chat FOLLOWS your last pick instead of snapping
-      // back to the profile default, so we deliberately don't reset it here. The
-      // profile default still owns first-run seeding and profile switches (see
-      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
-      // is cleared.
+      // A visible New Session starts from Settings → Model, not from the model
+      // inherited from the previously focused conversation. Clear the composer
+      // override synchronously so an immediate send cannot race ahead with a
+      // stale per-session model; DesktopController then re-seeds the display
+      // from the profile default.
+      setFreshDraftUsesProfileDefault(true)
+      setCurrentModel('')
+      setCurrentProvider('')
       setCurrentServiceTier('')
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
@@ -261,9 +272,25 @@ export function useSessionActions({
             : typeof workspaceTarget === 'string'
               ? workspaceTarget.trim()
               : $currentCwd.get().trim() || resolveNewSessionCwd()
+        // A plain new session (top "New Session", /new, keybind) leaves
+        // $newChatProfile null to mean "use the live context"; the per-profile
+        // "+" sets it explicitly. Resolve null to the active gateway profile so
+        // session.create always carries it: in global-remote mode one backend
+        // serves every profile, so an omitted profile param silently lands the
+        // chat on the launch (default) profile — the "rubberbands back to
+        // default" bug. This is a no-op for single-profile/local-pooled users:
+        // a backend resolves its own launch profile to None (_profile_home).
+        const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+        await ensureGatewayProfile(newChatProfile)
+        // Seed from profile default on fresh draft (New Session), not from the
+        // previously focused conversation's sticky model. The composer picker
+        // preserves deliberate choices across send/receive; only the New Session
+        // path is reset.
+        const useProfileDefaultModel = $freshDraftUsesProfileDefault.get()
 
-        const params = await desktopSessionCreateParams(cwd)
+        const params = await desktopSessionCreateParams(cwd, useProfileDefaultModel)
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
+
         const stored = created.stored_session_id ?? null
 
         if (
@@ -296,6 +323,7 @@ export function useSessionActions({
 
         setFreshDraftReady(false)
         setNewChatWorkspaceTarget(undefined)
+        setFreshDraftUsesProfileDefault(false)
         setActiveSessionId(created.session_id)
         setSelectedStoredSessionId(stored)
         setSessionStartedAt(Date.now())

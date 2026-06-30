@@ -783,6 +783,45 @@ html.hermes-mobile-standalone [data-slot='overlay-view'] > div {
   box-shadow: none !important;
 }
 
+/* Settings / overlay coherence: phone-style list with thin dividers between
+   nav items, larger row leading, sienna-on-white active state instead of
+   the desktop boxed border. The list reads as a single grouped panel
+   rather than a row of detached chips. */
+html.hermes-mobile-standalone [data-slot='overlay-sidebar'] {
+  padding-inline: 1rem !important;
+  padding-top: calc(env(safe-area-inset-top) + 1.25rem) !important;
+  gap: 0 !important;
+}
+html.hermes-mobile-standalone [data-slot='overlay-sidebar'] [data-slot='overlay-nav-item'] {
+  height: auto;
+  min-height: 3rem;
+  padding: 0.625rem 0.5rem;
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-foreground) 7%, transparent);
+  font-size: 1rem;
+  color: var(--ui-text-primary);
+  background: transparent !important;
+}
+html.hermes-mobile-standalone [data-slot='overlay-sidebar'] [data-slot='overlay-nav-item']:active {
+  background: color-mix(in srgb, var(--ui-accent) 8%, transparent) !important;
+}
+html.hermes-mobile-standalone [data-slot='overlay-sidebar'] [data-slot='overlay-nav-item'] svg {
+  size: 1.1rem;
+  color: var(--ui-text-tertiary);
+}
+/* Drilled detail pane reads as a phone settings page: comfortable inset,
+   first heading carries notch clearance, sections breathe. */
+html.hermes-mobile-standalone body[data-mobile-drilled] [data-slot='overlay-main'] {
+  padding-top: calc(env(safe-area-inset-top) + 0.75rem) !important;
+  padding-inline: 1.25rem !important;
+}
+html.hermes-mobile-standalone [data-slot='overlay-main'] h1,
+html.hermes-mobile-standalone [data-slot='overlay-main'] h2 {
+  font-size: 1.25rem;
+  letter-spacing: -0.01em;
+}
+
 /* Overlay form controls — 16pt+ font to suppress iOS zoom-on-focus, and a
    44pt tap floor on inputs/combobox/select. */
 html.hermes-mobile-standalone [data-slot='overlay-view'] input,

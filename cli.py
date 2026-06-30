@@ -10030,6 +10030,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
 
         new_mcp = new_cfg.get("mcp_servers") or {}
+        # Expand ${VAR} templates so the comparison is consistent with the
+        # init snapshot (self._config_mcp_servers), which was populated from
+        # the deep-merged + expanded config.  Without this, any
+        # save_config_value() that rewrites config.yaml (even for unrelated
+        # keys) triggers a false-positive MCP reload because the raw yaml
+        # still has "${POWERMEM_API_KEY}" while the snapshot has the
+        # expanded value.
+        from hermes_cli.config import _expand_env_vars
+        new_mcp = _expand_env_vars(new_mcp)
         if new_mcp == self._config_mcp_servers:
             return  # mcp_servers unchanged (some other section was edited)
 

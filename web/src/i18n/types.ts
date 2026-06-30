@@ -516,7 +516,7 @@ export interface Translations {
     invalidKeyName: string;
   };
 
-  ssh: {
+  ssh?: {
     description: string;
     keysTitle: string;
     keysHint: string;

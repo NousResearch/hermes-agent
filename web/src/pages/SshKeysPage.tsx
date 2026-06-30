@@ -26,10 +26,12 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
 export default function SshKeysPage() {
   const { t } = useI18n();
+  const s = t.ssh ?? en.ssh!;
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
 
@@ -56,9 +58,9 @@ export default function SshKeysPage() {
         setKeys(keyRes.keys);
         setHosts(hostRes.hosts);
       })
-      .catch(() => showToast(t.ssh.loadFailed, "error"))
+      .catch(() => showToast(s.loadFailed, "error"))
       .finally(() => setLoading(false));
-  }, [showToast, t.ssh.loadFailed]);
+  }, [showToast, s.loadFailed]);
 
   useEffect(() => {
     loadAll();
@@ -79,7 +81,7 @@ export default function SshKeysPage() {
         setBusy(name);
         try {
           await api.deleteSshKey(name);
-          showToast(t.ssh.keyDeleted.replace("{name}", name), "success");
+          showToast(s.keyDeleted.replace("{name}", name), "success");
           loadAll();
         } catch (e) {
           showToast(`${t.common.failedToRemove} ${name}: ${e}`, "error");
@@ -88,7 +90,7 @@ export default function SshKeysPage() {
           setBusy(null);
         }
       },
-      [loadAll, showToast, t.common.failedToRemove, t.ssh.keyDeleted],
+      [loadAll, showToast, t.common.failedToRemove, s.keyDeleted],
     ),
   });
 
@@ -98,7 +100,7 @@ export default function SshKeysPage() {
         setBusy(alias);
         try {
           await api.deleteSshHost(alias);
-          showToast(t.ssh.hostDeleted.replace("{alias}", alias), "success");
+          showToast(s.hostDeleted.replace("{alias}", alias), "success");
           loadAll();
         } catch (e) {
           showToast(`${t.common.failedToRemove} ${alias}: ${e}`, "error");
@@ -107,7 +109,7 @@ export default function SshKeysPage() {
           setBusy(null);
         }
       },
-      [loadAll, showToast, t.common.failedToRemove, t.ssh.hostDeleted],
+      [loadAll, showToast, t.common.failedToRemove, s.hostDeleted],
     ),
   });
 
@@ -115,10 +117,10 @@ export default function SshKeysPage() {
     setBusy("generate");
     try {
       await api.generateSshKey(genName, genComment);
-      showToast(t.ssh.keyGenerated, "success");
+      showToast(s.keyGenerated, "success");
       loadAll();
     } catch (e) {
-      showToast(`${t.ssh.generateFailed}: ${e}`, "error");
+      showToast(`${s.generateFailed}: ${e}`, "error");
     } finally {
       setBusy(null);
     }
@@ -130,10 +132,10 @@ export default function SshKeysPage() {
     try {
       await api.importSshKey(importName, importKey);
       setImportKey("");
-      showToast(t.ssh.keyImported, "success");
+      showToast(s.keyImported, "success");
       loadAll();
     } catch (e) {
-      showToast(`${t.ssh.importFailed}: ${e}`, "error");
+      showToast(`${s.importFailed}: ${e}`, "error");
     } finally {
       setBusy(null);
     }
@@ -149,10 +151,10 @@ export default function SshKeysPage() {
         port: Number(hostPort) || 22,
         identity_file: hostIdentity,
       });
-      showToast(t.ssh.hostSaved, "success");
+      showToast(s.hostSaved, "success");
       loadAll();
     } catch (e) {
-      showToast(`${t.ssh.hostSaveFailed}: ${e}`, "error");
+      showToast(`${s.hostSaveFailed}: ${e}`, "error");
     } finally {
       setBusy(null);
     }
@@ -164,7 +166,7 @@ export default function SshKeysPage() {
       const res = await api.testSshHost(alias);
       showToast(res.message, res.ok ? "success" : "error");
     } catch (e) {
-      showToast(`${t.ssh.testFailed}: ${e}`, "error");
+      showToast(`${s.testFailed}: ${e}`, "error");
     } finally {
       setBusy(null);
     }
@@ -173,9 +175,9 @@ export default function SshKeysPage() {
   const copyPublicKey = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      showToast(t.ssh.publicKeyCopied, "success");
+      showToast(s.publicKeyCopied, "success");
     } catch {
-      showToast(t.ssh.copyFailed, "error");
+      showToast(s.copyFailed, "error");
     }
   };
 
@@ -191,19 +193,19 @@ export default function SshKeysPage() {
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
-      <p className="text-sm text-muted-foreground">{t.ssh.description}</p>
+      <p className="text-sm text-muted-foreground">{s.description}</p>
 
       <Card>
         <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
             <KeyRound className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">{t.ssh.keysTitle}</CardTitle>
+            <CardTitle className="text-base">{s.keysTitle}</CardTitle>
           </div>
-          <CardDescription>{t.ssh.keysHint}</CardDescription>
+          <CardDescription>{s.keysHint}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 pt-4">
           {keys.length === 0 ? (
-            <p className="text-sm text-text-tertiary">{t.ssh.noKeys}</p>
+            <p className="text-sm text-text-tertiary">{s.noKeys}</p>
           ) : (
             keys.map((key) => (
               <div
@@ -227,7 +229,7 @@ export default function SshKeysPage() {
                         prefix={<Copy />}
                         onClick={() => copyPublicKey(key.public_key!)}
                       >
-                        {t.ssh.copyPublic}
+                        {s.copyPublic}
                       </Button>
                     )}
                     <Button
@@ -261,12 +263,12 @@ export default function SshKeysPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader className="border-b border-border bg-card">
-            <CardTitle className="text-base">{t.ssh.generateTitle}</CardTitle>
-            <CardDescription>{t.ssh.generateHint}</CardDescription>
+            <CardTitle className="text-base">{s.generateTitle}</CardTitle>
+            <CardDescription>{s.generateHint}</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 pt-4">
             <div className="grid gap-1">
-              <Label>{t.ssh.keyName}</Label>
+              <Label>{s.keyName}</Label>
               <Input
                 value={genName}
                 onChange={(e) => setGenName(e.target.value)}
@@ -274,7 +276,7 @@ export default function SshKeysPage() {
               />
             </div>
             <div className="grid gap-1">
-              <Label>{t.ssh.comment}</Label>
+              <Label>{s.comment}</Label>
               <Input
                 value={genComment}
                 onChange={(e) => setGenComment(e.target.value)}
@@ -285,26 +287,26 @@ export default function SshKeysPage() {
               onClick={handleGenerate}
               disabled={busy === "generate"}
             >
-              {busy === "generate" ? "..." : t.ssh.generateAction}
+              {busy === "generate" ? "..." : s.generateAction}
             </Button>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="border-b border-border bg-card">
-            <CardTitle className="text-base">{t.ssh.importTitle}</CardTitle>
-            <CardDescription>{t.ssh.importHint}</CardDescription>
+            <CardTitle className="text-base">{s.importTitle}</CardTitle>
+            <CardDescription>{s.importHint}</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 pt-4">
             <div className="grid gap-1">
-              <Label>{t.ssh.keyName}</Label>
+              <Label>{s.keyName}</Label>
               <Input
                 value={importName}
                 onChange={(e) => setImportName(e.target.value)}
               />
             </div>
             <div className="grid gap-1">
-              <Label>{t.ssh.privateKey}</Label>
+              <Label>{s.privateKey}</Label>
               <textarea
                 className="min-h-[120px] w-full rounded-none border border-border bg-background px-3 py-2 font-mono-ui text-xs"
                 value={importKey}
@@ -317,7 +319,7 @@ export default function SshKeysPage() {
               onClick={handleImport}
               disabled={busy === "import" || !importKey.trim()}
             >
-              {busy === "import" ? "..." : t.ssh.importAction}
+              {busy === "import" ? "..." : s.importAction}
             </Button>
           </CardContent>
         </Card>
@@ -327,9 +329,9 @@ export default function SshKeysPage() {
         <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
             <Server className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">{t.ssh.hostsTitle}</CardTitle>
+            <CardTitle className="text-base">{s.hostsTitle}</CardTitle>
           </div>
-          <CardDescription>{t.ssh.hostsHint}</CardDescription>
+          <CardDescription>{s.hostsHint}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 pt-4">
           {hosts.map((host) => (
@@ -352,7 +354,7 @@ export default function SshKeysPage() {
                   onClick={() => handleTestHost(host.alias)}
                   disabled={busy === `test:${host.alias}`}
                 >
-                  {t.ssh.testConnection}
+                  {s.testConnection}
                 </Button>
                 <Button
                   size="sm"
@@ -368,31 +370,31 @@ export default function SshKeysPage() {
           ))}
 
           <div className="grid gap-3 border border-dashed border-border p-4">
-            <p className="text-xs font-semibold tracking-wide">{t.ssh.addHost}</p>
+            <p className="text-xs font-semibold tracking-wide">{s.addHost}</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
-                <Label>{t.ssh.hostAlias}</Label>
+                <Label>{s.hostAlias}</Label>
                 <Input value={hostAlias} onChange={(e) => setHostAlias(e.target.value)} placeholder="prod" />
               </div>
               <div className="grid gap-1">
-                <Label>{t.ssh.hostName}</Label>
+                <Label>{s.hostName}</Label>
                 <Input value={hostName} onChange={(e) => setHostName(e.target.value)} placeholder="10.0.0.120" />
               </div>
               <div className="grid gap-1">
-                <Label>{t.ssh.hostUser}</Label>
+                <Label>{s.hostUser}</Label>
                 <Input value={hostUser} onChange={(e) => setHostUser(e.target.value)} />
               </div>
               <div className="grid gap-1">
-                <Label>{t.ssh.hostPort}</Label>
+                <Label>{s.hostPort}</Label>
                 <Input value={hostPort} onChange={(e) => setHostPort(e.target.value)} />
               </div>
               <div className="grid gap-1 sm:col-span-2">
-                <Label>{t.ssh.identityFile}</Label>
+                <Label>{s.identityFile}</Label>
                 <Input value={hostIdentity} onChange={(e) => setHostIdentity(e.target.value)} />
               </div>
             </div>
             <Button onClick={handleSaveHost} disabled={busy === "host" || !hostAlias || !hostName}>
-              {busy === "host" ? "..." : t.ssh.saveHost}
+              {busy === "host" ? "..." : s.saveHost}
             </Button>
           </div>
         </CardContent>
@@ -402,16 +404,16 @@ export default function SshKeysPage() {
         open={keyDelete.isOpen}
         onCancel={keyDelete.cancel}
         onConfirm={keyDelete.confirm}
-        title={t.ssh.deleteKeyTitle}
-        description={t.ssh.deleteKeyMessage}
+        title={s.deleteKeyTitle}
+        description={s.deleteKeyMessage}
         loading={keyDelete.isDeleting}
       />
       <DeleteConfirmDialog
         open={hostDelete.isOpen}
         onCancel={hostDelete.cancel}
         onConfirm={hostDelete.confirm}
-        title={t.ssh.deleteHostTitle}
-        description={t.ssh.deleteHostMessage}
+        title={s.deleteHostTitle}
+        description={s.deleteHostMessage}
         loading={hostDelete.isDeleting}
       />
     </div>

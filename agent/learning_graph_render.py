@@ -188,8 +188,10 @@ def derive_palette(primary_hex: str, *, dark: bool = True) -> dict[str, str]:
     bg = (8, 8, 12) if dark else (250, 250, 250)
     return {
         "primary": primary_hex,
-        "skill": rgb_to_hex(mix_rgb(primary, base, 0.12 if dark else 0.18)),
-        "memory": rgb_to_hex(mix_rgb(_complementary_ink(primary), bg, 0.45)),
+        # Memories are drillable → primary "clickable" ink; skills are dead-ends
+        # → muted complement.
+        "memory": rgb_to_hex(mix_rgb(primary, base, 0.12 if dark else 0.18)),
+        "skill": rgb_to_hex(mix_rgb(_complementary_ink(primary), bg, 0.45)),
         "label": rgb_to_hex(mix_rgb(base, bg, 0.35)),
         "dim": rgb_to_hex(mix_rgb(base, bg, 0.7)),
         "bg": rgb_to_hex(bg),

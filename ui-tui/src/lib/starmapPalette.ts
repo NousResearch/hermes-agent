@@ -112,8 +112,10 @@ export function deriveStarmapPalette(primaryHex: string, fgHex: string): Starmap
     bg,
     dim: mix(base, bg, 0.7),
     label: mix(base, bg, 0.35),
-    memory: mix(complementaryInk(primary), bg, 0.45),
-    skill: mix(primary, base, dark ? 0.12 : 0.18)
+    // Memories are drillable, so they wear the primary "clickable" ink; skills
+    // are dead-ends and get the muted complement.
+    memory: mix(primary, base, dark ? 0.12 : 0.18),
+    skill: mix(complementaryInk(primary), bg, 0.45)
   }
 }
 

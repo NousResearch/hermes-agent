@@ -1,38 +1,26 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
-import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
+import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
-  type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState
 } from 'react'
 
-import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
+import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
-import { useMediaQuery } from '@/hooks/use-media-query'
-import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import {
-  $composerAttachments,
-  clearComposerAttachments,
-  clearSessionDraft,
-  type ComposerAttachment,
-  stashSessionDraft,
-  takeSessionDraft
-} from '@/store/composer'
+import { $composerAttachments, clearComposerAttachments } from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -48,56 +36,41 @@ import {
   setComposerPopoutPosition,
   setComposerPoppedOut
 } from '@/store/composer-popout'
-import {
-  $queuedPromptsBySession,
-  enqueueQueuedPrompt,
-  MAX_AUTO_DRAIN_ATTEMPTS,
-  migrateQueuedPrompts,
-  promoteQueuedPrompt,
-  type QueuedPromptEntry,
-  removeQueuedPrompt,
-  shouldAutoDrain,
-  updateQueuedPrompt
-} from '@/store/composer-queue'
-import { $statusItemsBySession } from '@/store/composer-status'
-import { notify } from '@/store/notifications'
-import { $previewStatusBySession } from '@/store/preview-status'
+import { removeQueuedPrompt } from '@/store/composer-queue'
 import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
-import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
+import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes'
 
-import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
-
 import { AttachmentList } from './attachments'
+import {
+  COMPLETION_ACTIONS,
+  COMPOSER_FADE_BACKGROUND,
+  pickPlaceholder,
+  type QueueEditState,
+  slashArgStage,
+  slashChipKindForItem,
+  slashCommandToken
+} from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import {
-  type ComposerInsertMode,
-  focusComposerInput,
-  markActiveComposer,
-  onComposerFocusRequest,
-  onComposerInsertRefsRequest,
-  onComposerInsertRequest,
-  onComposerSubmitRequest,
-  onComposerVoiceToggleRequest
-} from './focus'
+import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useComposerDraft } from './hooks/use-composer-draft'
+import { useComposerDrop } from './hooks/use-composer-drop'
+import { useComposerMetrics } from './hooks/use-composer-metrics'
+import { useComposerQueue } from './hooks/use-composer-queue'
+import { useComposerSubmit } from './hooks/use-composer-submit'
+import { useComposerVoice } from './hooks/use-composer-voice'
 import { useComposerPopoutGestures } from './hooks/use-popout-drag'
 import { useSlashCompletions } from './hooks/use-slash-completions'
-import { useVoiceConversation } from './hooks/use-voice-conversation'
-import { useVoiceRecorder } from './hooks/use-voice-recorder'
-import {
-  dragHasAttachments,
-  droppedFileInlineRefs,
-  type InlineRefInput,
-  insertInlineRefsIntoEditor
-} from './inline-refs'
+import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -118,61 +91,6 @@ import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
-
-const COMPOSER_STACK_BREAKPOINT_PX = 320
-
-// A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
-// vertical padding). Anything taller means the text wrapped to a second line,
-// which is when the composer should expand to the stacked layout.
-const COMPOSER_SINGLE_LINE_MAX_PX = 36
-
-const COMPOSER_FADE_BACKGROUND =
-  'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
-
-const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
-
-/** Completion items can carry an `action` (set in use-slash-completions) that
- *  runs a side effect on pick instead of inserting a chip — e.g. the session
- *  picker's "Browse all…" entry opens the overlay. Table-driven so new action
- *  items are a registry row, not a composer branch. */
-const COMPLETION_ACTIONS: Record<string, () => void> = {
-  'session-picker': () => setSessionPickerOpen(true)
-}
-
-/** Map a picked `/` completion to its pill accent. Driven by the completion
- *  group set in use-slash-completions (Skills / Themes / Commands|Options). */
-function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
-  const group = (item.metadata as { group?: unknown } | undefined)?.group
-
-  if (group === 'Skills') {
-    return 'skill'
-  }
-
-  if (group === 'Themes') {
-    return 'theme'
-  }
-
-  return 'command'
-}
-
-/** A `/` query is at its arg stage once it's past the command name. */
-const slashArgStage = (query: string) => query.includes(' ')
-
-/** The `/command` token of a slash query (`personality x` → `/personality`). */
-const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
-
-interface QueueEditState {
-  attachments: ComposerAttachment[]
-  draft: string
-  entryId: string
-  sessionKey: string
-}
-
-const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
-
-// Quiet period after the last keystroke before persisting the draft;
-// unmount/pagehide flushes bypass it.
-const DRAFT_PERSIST_DEBOUNCE_MS = 400
 
 export function ChatBar({
   busy,
@@ -197,39 +115,9 @@ export function ChatBar({
   onSubmit,
   onTranscribeAudio
 }: ChatBarProps) {
-  const aui = useAui()
-  const draft = useAuiState(s => s.composer.text)
-
-  // assistant-ui's composer *mutators* (setText/send/…) throw "Composer is not
-  // available" when the thread's composer core isn't bound yet — and unlike the
-  // read path (`s.composer.text`, which is null-safe), there's no graceful
-  // fallback. There's a startup/thread-swap window where this ChatBar's mount
-  // effects (draft restore, clearDraft, external inserts) run before the core
-  // binds; the popout refactor (#49488) widened it by moving the composer out
-  // of the contain wrapper into a sibling of the thread, so the throw began
-  // surfacing as an uncaught error that wedged the desktop input (#49903).
-  //
-  // Guard every mutation: if the core isn't ready, no-op the assistant-ui write.
-  // The contentEditable DOM + draftRef already hold the text, and the
-  // draft⇄editor sync reconciles composer state once the core attaches, so the
-  // draft is never lost — only the (premature) state push is skipped.
-  const setComposerText = useCallback(
-    (value: string) => {
-      try {
-        aui.composer().setText(value)
-      } catch {
-        // Composer core not bound yet — DOM/draftRef carry the text; the sync
-        // effect re-applies it after bind. Swallow so the input stays usable.
-      }
-    },
-    [aui]
-  )
-
   const attachments = useStore($composerAttachments)
-  const queuedPromptsBySession = useStore($queuedPromptsBySession)
-  const statusItemsBySession = useStore($statusItemsBySession)
-  const previewStatusBySession = useStore($previewStatusBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
   // not interrupt it — there's nothing actively running to stop, and stopping
   // would discard a question the user may want to come back to. The blocking
@@ -244,29 +132,17 @@ export function ChatBar({
   const popoutPosition = useStore($composerPopoutPosition)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
-  const queuedPrompts = useMemo(
-    () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
-    [activeQueueSessionKey, queuedPromptsBySession]
-  )
-
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
 
-  const statusStackVisible = useMemo(
-    () =>
-      queuedPrompts.length > 0 ||
-      (statusSessionId
-        ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 ||
-          (previewStatusBySession[statusSessionId]?.length ?? 0) > 0
-        : false),
-    [previewStatusBySession, queuedPrompts.length, statusItemsBySession, statusSessionId]
-  )
+  // Coarse edge: re-renders ChatBar only when the stack shows/hides, NOT on
+  // every per-item status mutation or other sessions' churn (see the hook).
+  const statusPresent = useSessionStatusPresence(statusSessionId)
 
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
-  const editorRef = useRef<HTMLDivElement | null>(null)
 
   const handleComposerPopOut = useCallback(() => {
     triggerHaptic('open')
@@ -296,50 +172,19 @@ export function ChatBar({
     position: popoutPosition
   })
 
-  const draftRef = useRef(draft)
-  const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
-  const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
-  activeQueueSessionKeyRef.current = activeQueueSessionKey
-  const prevQueueKeyRef = useRef(activeQueueSessionKey)
-  const drainingQueueRef = useRef(false)
-  // Per-entry auto-drain failure counts; bounds retries so a persistent 404
-  // can't spin-loop. Cleared on success; reset naturally on remount/reconnect.
-  const drainFailuresRef = useRef(new Map<string, number>())
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
-  const [expanded, setExpanded] = useState(false)
-  const [voiceConversationActive, setVoiceConversationActive] = useState(false)
-  const [tight, setTight] = useState(false)
-  const [dragActive, setDragActive] = useState(false)
-  const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
-  const [focusRequestId, setFocusRequestId] = useState(0)
-  const queueEditRef = useRef(queueEdit)
-  queueEditRef.current = queueEdit
-  const dragDepthRef = useRef(0)
+  // Coordinator-owned: the draft engine reads the live queue-edit snapshot off
+  // this ref (to suppress its stash while editing a queued prompt) and the queue
+  // engine writes it — an explicit shared handle, not a back-reference.
+  const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
-  const lastSpokenIdRef = useRef<string | null>(null)
-
-  const narrow = useMediaQuery('(max-width: 30rem)')
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
   const slash = useSlashCompletions({ activeSkin: themeName, gateway: gateway ?? null, skinThemes: availableThemes })
-
-  const stacked = expanded || narrow || tight
-  const trimmedDraft = draft.trim()
-  const hasComposerPayload = trimmedDraft.length > 0 || attachments.length > 0
-  const canSubmit = busy || hasComposerPayload
-  const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
-  const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
-
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  const canSteer =
-    busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
-
-  const showHelpHint = draft === '?'
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
@@ -347,6 +192,95 @@ export function ChatBar({
   const followUpPlaceholders = t.composer.followUpPlaceholders
   const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
   const inputDisabled = disabled && !reconnecting
+
+  // The draft engine — detached source of truth (DOM + draftRef + edge
+  // selectors); typing never re-renders the chrome. ChatBar owns `queueEditRef`
+  // and threads it in so the draft↔queue coupling is an explicit dep, not a tangle.
+  const {
+    activeQueueSessionKeyRef,
+    clearDraft,
+    draftRef,
+    editorRef,
+    focusInput,
+    hasText,
+    insertInlineRefs,
+    insertText,
+    isHelpHint,
+    isSteerableText,
+    loadIntoComposer,
+    requestMainFocus,
+    sessionIdRef,
+    setComposerText,
+    stashAt
+  } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+
+  // The queue engine — queued turns, in-place editing, the shared drain lock,
+  // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
+  const {
+    beginQueuedEdit,
+    drainNextQueued,
+    editingQueuedPrompt,
+    exitQueuedEdit,
+    queueCurrentDraft,
+    queueEdit,
+    queuedPrompts,
+    sendQueuedNow,
+    stepQueuedEdit
+  } = useComposerQueue({
+    activeQueueSessionKey,
+    attachments,
+    busy,
+    clearDraft,
+    draftRef,
+    focusInput,
+    loadIntoComposer,
+    onCancel,
+    onSubmit,
+    queueEditRef,
+    queueSessionKey,
+    sessionId
+  })
+
+  const statusStackVisible = queuedPrompts.length > 0 || statusPresent
+
+  const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
+  const hasComposerPayload = hasText || attachments.length > 0
+  const canSubmit = busy || hasComposerPayload
+  const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
+  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
+  // into a tool result) and never for a slash command (those execute inline).
+  const canSteer = busy && !!onSteer && attachments.length === 0 && isSteerableText
+
+  const showHelpHint = isHelpHint
+
+  // The submit engine — the orchestration seam where draft + queue meet. Owns
+  // the submit decision tree, the send-with-restore primitive, and steer.
+  const { steerDraft, submitDraft } = useComposerSubmit({
+    activeQueueSessionKey,
+    activeQueueSessionKeyRef,
+    attachments,
+    busy,
+    canSteer,
+    clearDraft,
+    disabled,
+    draftRef,
+    drainNextQueued,
+    editorRef,
+    exitQueuedEdit,
+    focusInput,
+    inputDisabled,
+    loadIntoComposer,
+    onCancel,
+    onSteer,
+    onSubmit,
+    queueCurrentDraft,
+    queueEdit,
+    queuedPrompts,
+    sessionId,
+    setComposerText,
+    stashAt
+  })
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -388,206 +322,11 @@ export function ChatBar({
       : t.composer.placeholderStarting
     : restingPlaceholder
 
-  const focusInput = useCallback(() => {
-    focusComposerInput(editorRef.current)
-    markActiveComposer('main')
-  }, [])
-
-  const requestMainFocus = useCallback(() => {
-    setFocusRequestId(id => id + 1)
-  }, [])
-
-  const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
-      const value = text.trim()
-
-      if (!value) {
-        return
-      }
-
-      const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
-      const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
-      const next = `${base}${sep}${value}`
-
-      draftRef.current = next
-      setComposerText(next)
-
-      const editor = editorRef.current
-
-      if (editor) {
-        renderComposerContents(editor, next)
-        placeCaretEnd(editor)
-      }
-
-      setFocusRequestId(id => id + 1)
-    },
-    [setComposerText]
-  )
-
-  useEffect(() => {
-    if (!inputDisabled) {
-      focusInput()
-    }
-  }, [focusInput, focusKey, focusRequestId, inputDisabled])
-
-  useEffect(() => {
-    if (inputDisabled) {
-      return undefined
-    }
-
-    const offFocus = onComposerFocusRequest(target => {
-      if (target === 'main') {
-        setFocusRequestId(id => id + 1)
-      }
-    })
-
-    const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
-      if (target === 'main') {
-        appendExternalText(text, mode)
-      }
-    })
-
-    return () => {
-      offFocus()
-      offInsert()
-    }
-  }, [appendExternalText, inputDisabled])
-
-  // Keep draftRef in sync with the assistant-ui composer state for callers
-  // that read the latest text outside the React render cycle. We don't push
-  // to `$composerDraft` per keystroke any more — nobody outside the composer
-  // subscribes to it (verified by grep), and the round-trip
-  // `setText` ⇄ `subscribe` ⇄ `setText` was adding two useEffects to the per-
-  // keystroke critical path. `reconcileComposerTerminalSelections` only
-  // matters when the draft is submitted; we now call it from the submit
-  // path instead.
-  useEffect(() => {
-    draftRef.current = draft
-
-    const editor = editorRef.current
-
-    if (editor && document.activeElement !== editor && composerPlainText(editor) !== draft) {
-      renderComposerContents(editor, draft)
-    }
-  }, [draft])
-
   useEffect(() => {
     if (urlOpen) {
       window.requestAnimationFrame(() => urlInputRef.current?.focus({ preventScroll: true }))
     }
   }, [urlOpen])
-
-  // Expansion (input on its own full-width row, controls below) is driven by
-  // the editor's *actual* rendered height via the ResizeObserver in
-  // syncComposerMetrics — it only fires when the text genuinely wraps to a
-  // second line, so the layout flips exactly at the wrap point rather than at
-  // a guessed character count. We only handle the two cases the observer
-  // can't: an explicit newline (expand before layout settles) and an emptied
-  // draft (collapse back). We never read scrollHeight per keystroke.
-  useEffect(() => {
-    if (!draft) {
-      setExpanded(false)
-
-      return
-    }
-
-    if (expanded) {
-      return
-    }
-
-    // Only a non-trailing newline forces an immediate expand. A trailing newline
-    // (or phantom \n from contenteditable junk) is left to the ResizeObserver,
-    // which expands only when the editor's real height actually grows.
-    if (draft.trimEnd().includes('\n')) {
-      setExpanded(true)
-    }
-  }, [draft, expanded])
-
-  // Bucket measured heights so we only invalidate the global CSS var when
-  // the size crosses a meaningful threshold. Without bucketing, the editor
-  // grows ~1px per character → setProperty fires every keystroke → entire
-  // tree's computed style is invalidated → next paint forces a full
-  // recalculate-style pass. With an 8px bucket, the invalidation rate drops
-  // ~8× and small char-by-char typing produces no style invalidation at all
-  // until a wrap or row change actually happens.
-  const lastBucketedHeightRef = useRef(0)
-  const lastBucketedSurfaceHeightRef = useRef(0)
-  const lastTightRef = useRef<boolean | null>(null)
-
-  const syncComposerMetrics = useCallback(() => {
-    const composer = composerRef.current
-
-    if (!composer) {
-      return
-    }
-
-    // Floating composer is out of the thread's flow — it must not reserve any
-    // bottom clearance. Zero the measured vars so the thread reclaims the space.
-    // (Read globals here so the callback stays stable; mirror the popoutAllowed
-    // gate since secondary windows are forced docked.)
-    if ($composerPoppedOut.get() && !isSecondaryWindow()) {
-      const root = document.documentElement
-      lastBucketedHeightRef.current = 0
-      lastBucketedSurfaceHeightRef.current = 0
-      root.style.setProperty('--composer-measured-height', '0px')
-      root.style.setProperty('--composer-surface-measured-height', '0px')
-
-      return
-    }
-
-    const { height, width } = composer.getBoundingClientRect()
-    const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
-    const root = document.documentElement
-
-    if (width > 0) {
-      const nextTight = width < COMPOSER_STACK_BREAKPOINT_PX
-
-      if (nextTight !== lastTightRef.current) {
-        lastTightRef.current = nextTight
-        setTight(nextTight)
-      }
-    }
-
-    // Expand once the input has actually wrapped past a single line. The
-    // observer only fires on real size changes, so this reads scrollHeight at
-    // most once per wrap (not per keystroke). One line ≈ 28px (1.625rem
-    // min-height + padding); a second line clears ~36px. We only ever expand
-    // here — collapse is handled by the emptied-draft effect to avoid
-    // oscillating across the wrap boundary as the input switches widths.
-    const editor = editorRef.current
-
-    if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
-      setExpanded(true)
-    }
-
-    if (height > 0) {
-      const bucket = Math.round(height / 8) * 8
-
-      if (bucket !== lastBucketedHeightRef.current) {
-        lastBucketedHeightRef.current = bucket
-        root.style.setProperty('--composer-measured-height', `${bucket}px`)
-      }
-    }
-
-    if (surfaceHeight && surfaceHeight > 0) {
-      const bucket = Math.round(surfaceHeight / 8) * 8
-
-      if (bucket !== lastBucketedSurfaceHeightRef.current) {
-        lastBucketedSurfaceHeightRef.current = bucket
-        root.style.setProperty('--composer-surface-measured-height', `${bucket}px`)
-      }
-    }
-  }, [])
-
-  useResizeObserver(syncComposerMetrics, composerRef, composerSurfaceRef, editorRef)
-
-  // Toggling pop-out changes whether the composer reserves thread clearance.
-  // The ResizeObserver may not fire (the box can keep the same box size), so
-  // re-sync explicitly: docked republishes the measured height, floating zeroes
-  // it so the thread reclaims the bottom space.
-  useEffect(() => {
-    syncComposerMetrics()
-  }, [poppedOut, syncComposerMetrics])
 
   // Keep the floating box on-screen: re-clamp (with the real measured size +
   // thread bounds) when it pops out and on every window resize — so a position
@@ -616,72 +355,6 @@ export function ChatBar({
       window.removeEventListener('resize', onResize)
     }
   }, [poppedOut])
-
-  useEffect(() => {
-    return () => {
-      const root = document.documentElement
-      root.style.removeProperty('--composer-measured-height')
-      root.style.removeProperty('--composer-surface-measured-height')
-    }
-  }, [])
-
-  const insertText = (text: string) => {
-    const currentDraft = draftRef.current
-    const sep = currentDraft && !currentDraft.endsWith('\n') ? '\n' : ''
-    const nextDraft = `${currentDraft}${sep}${text}`
-
-    draftRef.current = nextDraft
-    setComposerText(nextDraft)
-
-    // Push the new text into the contentEditable editor directly. Setting the
-    // assistant-ui composer state alone is not enough: the draft→editor sync
-    // effect only re-renders the editor when it is NOT focused
-    // (document.activeElement !== editor), and the dictation/insert paths
-    // typically run while the editor has (or immediately regains) focus — so
-    // the store would hold the text but the visible editor would stay empty
-    // and there'd be nothing to send. Mirror appendExternalText here.
-    const editor = editorRef.current
-
-    if (editor) {
-      renderComposerContents(editor, nextDraft)
-      placeCaretEnd(editor)
-    }
-
-    requestMainFocus()
-  }
-
-  const insertInlineRefs = (refs: InlineRefInput[]) => {
-    const editor = editorRef.current
-
-    if (!editor) {
-      return false
-    }
-
-    const nextDraft = insertInlineRefsIntoEditor(editor, refs)
-
-    if (nextDraft === null) {
-      return false
-    }
-
-    draftRef.current = nextDraft
-    setComposerText(nextDraft)
-    requestMainFocus()
-
-    return true
-  }
-
-  // Latest-closure ref so the (once-only) subscription always calls the current
-  // insertInlineRefs without re-subscribing every render.
-  const insertInlineRefsRef = useRef(insertInlineRefs)
-  insertInlineRefsRef.current = insertInlineRefs
-
-  useEffect(() => {
-    return onComposerInsertRefsRequest(({ refs, target }) => {
-      if (target === 'main') {
-        insertInlineRefsRef.current(refs)
-      }
-    })
-  }, [])
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
@@ -743,7 +416,20 @@ export function ChatBar({
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
+  // A pending coalesced flush (rAF id). `composerPlainText` serializes the whole
+  // editor (O(n)), so running it on every event during a burst — holding a key,
+  // or holding Cmd+V into a growing editor — is O(n²) across the burst. The
+  // contentEditable DOM is the source of truth (submit + the compositionend /
+  // keydown paths re-read it synchronously), so collapsing the input/paste
+  // flushes to one per paint is lossless.
+  const flushRafRef = useRef<number | undefined>(undefined)
+
   const flushEditorToDraft = (editor: HTMLDivElement) => {
+    if (flushRafRef.current !== undefined) {
+      window.cancelAnimationFrame(flushRafRef.current)
+      flushRafRef.current = undefined
+    }
+
     normalizeComposerEditorDom(editor)
 
     const nextDraft = composerPlainText(editor)
@@ -756,6 +442,29 @@ export function ChatBar({
     window.setTimeout(refreshTrigger, 0)
   }
 
+  // Coalesce the high-frequency input/paste flushes to one per frame. Immediate
+  // paths (compositionend, Enter/keydown, submit) keep calling
+  // flushEditorToDraft directly, which cancels any pending coalesced run first.
+  const scheduleFlushEditorToDraft = (editor: HTMLDivElement) => {
+    if (flushRafRef.current !== undefined) {
+      return
+    }
+
+    flushRafRef.current = window.requestAnimationFrame(() => {
+      flushRafRef.current = undefined
+      flushEditorToDraft(editor)
+    })
+  }
+
+  useEffect(
+    () => () => {
+      if (flushRafRef.current !== undefined) {
+        window.cancelAnimationFrame(flushRafRef.current)
+      }
+    },
+    []
+  )
+
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
@@ -764,7 +473,7 @@ export function ChatBar({
       return
     }
 
-    flushEditorToDraft(event.currentTarget)
+    scheduleFlushEditorToDraft(event.currentTarget)
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -814,7 +523,7 @@ export function ChatBar({
 
     event.preventDefault()
     insertPlainTextAtCaret(event.currentTarget, pastedText)
-    flushEditorToDraft(event.currentTarget)
+    scheduleFlushEditorToDraft(event.currentTarget)
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -1247,137 +956,15 @@ export function ChatBar({
     window.setTimeout(refreshTrigger, 0)
   }
 
-  const resetDragState = () => {
-    dragDepthRef.current = 0
-    setDragActive(false)
-  }
-
-  const handleDragEnter = (event: ReactDragEvent<HTMLFormElement>) => {
-    if (!onAttachDroppedItems || !dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
-      return
-    }
-
-    event.preventDefault()
-    dragDepthRef.current += 1
-
-    if (!dragActive) {
-      setDragActive(true)
-    }
-  }
-
-  const handleDragOver = (event: ReactDragEvent<HTMLFormElement>) => {
-    if (!onAttachDroppedItems || !dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
-      return
-    }
-
-    event.preventDefault()
-    event.dataTransfer.dropEffect = 'copy'
-  }
-
-  const handleDragLeave = (event: ReactDragEvent<HTMLFormElement>) => {
-    if (!onAttachDroppedItems) {
-      return
-    }
-
-    event.preventDefault()
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
-
-    if (dragDepthRef.current === 0) {
-      setDragActive(false)
-    }
-  }
-
-  const handleDrop = (event: ReactDragEvent<HTMLFormElement>) => {
-    if (!onAttachDroppedItems) {
-      return
-    }
-
-    event.preventDefault()
-    resetDragState()
-
-    const candidates = extractDroppedFiles(event.dataTransfer)
-
-    if (candidates.length === 0) {
-      return
-    }
-
-    // In-app drags (project tree / gutter) are workspace-relative paths the
-    // gateway resolves directly, so they stay inline @file:/@line: refs. OS
-    // drops are absolute local paths a remote gateway can't read (and images
-    // need byte upload for vision), so route them through the upload pipeline.
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
-    const refs = droppedFileInlineRefs(inAppRefs, cwd)
-
-    if (refs.length && insertInlineRefs(refs)) {
-      triggerHaptic('selection')
-    }
-
-    if (osDrops.length) {
-      void Promise.resolve(onAttachDroppedItems(osDrops)).then(attached => {
-        if (attached) {
-          triggerHaptic('selection')
-          requestMainFocus()
-        }
-      })
-    }
-  }
-
-  const handleInputDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
-      return
-    }
-
-    event.preventDefault()
-    event.stopPropagation()
-    event.dataTransfer.dropEffect = 'copy'
-  }
-
-  const handleInputDrop = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
-      return
-    }
-
-    const candidates = extractDroppedFiles(event.dataTransfer)
-
-    if (!candidates.length) {
-      return
-    }
-
-    event.preventDefault()
-    event.stopPropagation()
-    resetDragState()
-
-    // Dropping straight onto the text box used to inline-ref *every* file —
-    // including OS/Finder drops, whose absolute local path a remote gateway
-    // can't read and whose image bytes never reached vision. Split by origin:
-    // in-app drags stay inline refs; OS drops go through the upload pipeline.
-    // (When no upload handler is wired, fall back to inline refs for all.)
-    const attach = onAttachDroppedItems
-    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
-    const refs = droppedFileInlineRefs(attach ? inAppRefs : candidates, cwd)
-
-    if (refs.length && insertInlineRefs(refs)) {
-      triggerHaptic('selection')
-    }
-
-    if (attach && osDrops.length) {
-      void Promise.resolve(attach(osDrops)).then(attached => {
-        if (attached) {
-          triggerHaptic('selection')
-          requestMainFocus()
-        }
-      })
-    }
-  }
-
-  const clearDraft = useCallback(() => {
-    setComposerText('')
-    draftRef.current = ''
-
-    if (editorRef.current) {
-      editorRef.current.replaceChildren()
-    }
-  }, [setComposerText])
+  const {
+    dragActive,
+    handleDragEnter,
+    handleDragLeave,
+    handleDragOver,
+    handleDrop,
+    handleInputDragOver,
+    handleInputDrop
+  } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, requestMainFocus })
 
   // Hand a worktree off to the controller: open a fresh session anchored there,
   // carrying the composer draft as its first turn. Clearing here means the draft
@@ -1453,329 +1040,6 @@ export function ChatBar({
     [cwd]
   )
 
-  const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
-    draftRef.current = text
-    setComposerText(text)
-    $composerAttachments.set(cloneAttachments(attachments))
-
-    const editor = editorRef.current
-
-    if (editor) {
-      renderComposerContents(editor, text)
-      placeCaretEnd(editor)
-    }
-  }
-
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
-
-  // Per-thread draft swap — the composer's only session coupling. Lifecycle
-  // never clears composer state; this effect alone stashes on leave, restores
-  // on enter. Keyed writes are idempotent, so no skip-sentinel.
-  useEffect(() => {
-    const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
-    loadIntoComposer(text, attachments)
-
-    return () => {
-      const editing = queueEditRef.current
-
-      if (editing?.sessionKey === activeQueueSessionKey) {
-        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
-      } else if (!isBrowsingHistory(sessionId)) {
-        stashAt(activeQueueSessionKey)
-      }
-    }
-  }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Debounced stash into the active scope. Skipped while browsing history or
-  // editing a queued prompt — recalled text must not clobber the real draft.
-  useEffect(() => {
-    if (isBrowsingHistory(sessionId) || queueEdit) {
-      return
-    }
-
-    pendingDraftPersistRef.current = { scope: activeQueueSessionKey, text: draft }
-
-    const handle = window.setTimeout(() => {
-      pendingDraftPersistRef.current = null
-      stashAt(activeQueueSessionKey, draft)
-    }, DRAFT_PERSIST_DEBOUNCE_MS)
-
-    return () => window.clearTimeout(handle)
-  }, [activeQueueSessionKey, draft, queueEdit, sessionId])
-
-  // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
-  // inside the debounce window would drop trailing keystrokes without this.
-  useEffect(() => {
-    const flushPendingDraftPersist = () => {
-      const pending = pendingDraftPersistRef.current
-
-      if (!pending) {
-        return
-      }
-
-      pendingDraftPersistRef.current = null
-      stashAt(pending.scope, pending.text)
-    }
-
-    window.addEventListener('pagehide', flushPendingDraftPersist)
-
-    return () => {
-      window.removeEventListener('pagehide', flushPendingDraftPersist)
-      flushPendingDraftPersist()
-    }
-  }, [])
-
-  const beginQueuedEdit = (entry: QueuedPromptEntry) => {
-    if (!activeQueueSessionKey || queueEdit) {
-      return
-    }
-
-    setQueueEdit({
-      attachments: cloneAttachments($composerAttachments.get()),
-      draft: draftRef.current,
-      entryId: entry.id,
-      sessionKey: activeQueueSessionKey
-    })
-    loadIntoComposer(entry.text, entry.attachments)
-    triggerHaptic('selection')
-    focusInput()
-  }
-
-  // Walk queued entries while editing (ArrowUp = older, ArrowDown = newer),
-  // saving the in-progress edit on each step. Stepping newer past the last
-  // entry exits edit mode and restores the pre-edit draft.
-  const stepQueuedEdit = (direction: -1 | 1) => {
-    if (!queueEdit) {
-      return false
-    }
-
-    const index = queuedPrompts.findIndex(e => e.id === queueEdit.entryId)
-    const target = index + direction
-
-    if (index < 0 || target < 0) {
-      return index >= 0 // at the oldest: swallow; missing entry: let it fall through
-    }
-
-    const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
-      attachments: cloneAttachments($composerAttachments.get()),
-      text: draftRef.current
-    })
-
-    const next = queuedPrompts[target]
-
-    if (next) {
-      setQueueEdit({ ...queueEdit, entryId: next.id })
-      loadIntoComposer(next.text, next.attachments)
-    } else {
-      setQueueEdit(null)
-      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
-    }
-
-    triggerHaptic(saved ? 'success' : 'selection')
-    focusInput()
-
-    return true
-  }
-
-  const exitQueuedEdit = (action: 'cancel' | 'save'): boolean => {
-    if (!queueEdit) {
-      return false
-    }
-
-    if (action === 'save') {
-      const text = draftRef.current
-      const next = cloneAttachments($composerAttachments.get())
-
-      if (!text.trim() && next.length === 0) {
-        return false
-      }
-
-      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
-      triggerHaptic(saved ? 'success' : 'selection')
-    } else {
-      triggerHaptic('cancel')
-    }
-
-    loadIntoComposer(queueEdit.draft, queueEdit.attachments)
-    setQueueEdit(null)
-    focusInput()
-
-    return true
-  }
-
-  const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
-      return false
-    }
-
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
-      return false
-    }
-
-    clearDraft()
-    clearComposerAttachments()
-    triggerHaptic('selection')
-
-    return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
-
-  // Steer the live turn (nudge without interrupting). Clears the draft up front
-  // for snappy feedback; if the gateway rejects (no live tool window) the words
-  // are re-queued so nothing is lost — same safety net as a plain queue.
-  const steerDraft = useCallback(() => {
-    if (!onSteer || !canSteer) {
-      return
-    }
-
-    const text = draftRef.current.trim()
-
-    triggerHaptic('submit')
-    clearDraft()
-
-    void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
-      }
-    })
-  }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
-
-  // All queue drain paths share one lock + send-then-remove sequence.
-  // `pickEntry` lets each caller choose head, by-id, or skip-edited.
-  const runDrain = useCallback(
-    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
-      if (drainingQueueRef.current || !activeQueueSessionKey) {
-        return false
-      }
-
-      const entry = pickEntry(queuedPrompts)
-
-      if (!entry) {
-        return false
-      }
-
-      drainingQueueRef.current = true
-
-      try {
-        const accepted = await Promise.resolve(
-          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
-        )
-
-        if (accepted === false) {
-          return false
-        }
-
-        drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(activeQueueSessionKey, entry.id)
-        resetBrowseState(sessionId)
-
-        return true
-      } finally {
-        drainingQueueRef.current = false
-      }
-    },
-    [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
-  )
-
-  const pickDrainHead = useCallback(
-    (entries: QueuedPromptEntry[]) => {
-      const skip = queueEditRef.current?.entryId
-
-      return skip ? entries.find(e => e.id !== skip) : entries[0]
-    },
-    [] // reads the edit id off a ref so the lock-holder always sees the latest
-  )
-
-  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
-
-  const sendQueuedNow = useCallback(
-    (id: string) => {
-      if (!activeQueueSessionKey || id === queueEdit?.entryId) {
-        return false
-      }
-
-      if (busy) {
-        // Promote to the head, then interrupt. The gateway always emits a
-        // settle (message.complete + session.info running:false) when the
-        // turn unwinds, and the busy→false auto-drain below sends this entry.
-        promoteQueuedPrompt(activeQueueSessionKey, id)
-        triggerHaptic('selection')
-        void Promise.resolve(onCancel())
-
-        return true
-      }
-
-      // A manual send clears the auto-drain backoff so a stuck entry the user
-      // taps gets a fresh attempt (and re-enables auto-retry on success).
-      drainFailuresRef.current.delete(id)
-
-      return runDrain(entries => entries.find(e => e.id === id))
-    },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
-  )
-
-  // Edge-independent auto-drain: send the head whenever the session is idle and
-  // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
-  // a stale-session 404) can't strand the entry permanently nor spin-loop. The
-  // drain lock serializes sends; a remount/reconnect resets the failure counts.
-  const autoDrainNext = useCallback(() => {
-    if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
-      return
-    }
-
-    const entry = pickDrainHead(queuedPrompts)
-
-    if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
-      return
-    }
-
-    const onFail = () => {
-      const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
-      drainFailuresRef.current.set(entry.id, fails)
-
-      if (fails >= MAX_AUTO_DRAIN_ATTEMPTS) {
-        notify({
-          id: 'composer-queue-stuck',
-          kind: 'error',
-          title: t.composer.queueStuckTitle,
-          message: t.composer.queueStuckBody
-        })
-      }
-    }
-
-    void runDrain(() => entry)
-      .then(sent => {
-        if (!sent) {
-          onFail()
-        }
-      })
-      .catch(onFail)
-  }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
-
-  // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
-  // never churns, so a change there is a real session switch and must NOT
-  // migrate; only the runtime-derived key (queueSessionKey falsy → key is
-  // sessionId) churns on a backend bounce/resume of the same conversation.
-  useEffect(() => {
-    const prev = prevQueueKeyRef.current
-    prevQueueKeyRef.current = activeQueueSessionKey
-
-    if (queueSessionKey || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
-      return
-    }
-
-    migrateQueuedPrompts(prev, activeQueueSessionKey)
-  }, [activeQueueSessionKey, queueSessionKey])
-
-  // Queued turns flow whenever the session is idle — on the busy→false settle
-  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
-  // strand them. To cancel queued turns, the user deletes them from the panel.
-  useEffect(() => {
-    if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
-      autoDrainNext()
-    }
-  }, [autoDrainNext, busy, queuedPrompts.length])
-
   // Esc cancels the in-flight turn when the CHAT has focus — not just the
   // composer input (which has its own handler above). Clicking into the
   // transcript and hitting Esc now stops the run, matching the Stop button.
@@ -1816,117 +1080,6 @@ export function ChatBar({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  // Queue-edit cleanup: on session swap the scope effect already stashed the
-  // edit snapshot; only restore into the composer when still on the same scope.
-  useEffect(() => {
-    if (!queueEdit) {
-      return
-    }
-
-    if (queueEdit.sessionKey === activeQueueSessionKey) {
-      if (editingQueuedPrompt) {
-        return
-      }
-
-      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
-    }
-
-    setQueueEdit(null)
-  }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
-    const submittedScope = activeQueueSessionKeyRef.current
-    const submittedAttachments = attachments ?? []
-
-    const restore = () => {
-      loadIntoComposer(text, submittedAttachments)
-      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
-    }
-
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
-      .catch(restore)
-  }
-
-  // External "submit this prompt" requests (e.g. the review pane's agent-ship
-  // button) route through the same send path. A ref keeps the listener stable
-  // while always calling the latest dispatchSubmit closure.
-  const dispatchSubmitRef = useRef(dispatchSubmit)
-  dispatchSubmitRef.current = dispatchSubmit
-
-  useEffect(
-    () =>
-      onComposerSubmitRequest(({ target, text }) => {
-        if (target === 'main' && !inputDisabled) {
-          dispatchSubmitRef.current(text)
-        }
-      }),
-    [inputDisabled]
-  )
-
-  const submitDraft = () => {
-    if (disabled) {
-      return
-    }
-
-    // Source the text from the DOM editor, not React state. The AUI composer
-    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
-    // render, so on fast typing or IME composition the final keystroke(s) may
-    // not have synced yet — reading state here drops the message (Enter looks
-    // like it does nothing; typing a trailing space only "fixes" it because the
-    // extra input event forces a state sync). draftRef is updated on every
-    // input event; refresh it from the editor once more to also cover an
-    // in-flight keystroke that hasn't fired its input event yet.
-    const editor = editorRef.current
-
-    if (editor) {
-      const domText = composerPlainText(editor)
-
-      if (domText !== draftRef.current) {
-        draftRef.current = domText
-        setComposerText(domText)
-      }
-    }
-
-    const text = draftRef.current
-    const payloadPresent = text.trim().length > 0 || attachments.length > 0
-
-    if (queueEdit) {
-      exitQueuedEdit('save')
-    } else if (busy) {
-      // Slash commands should execute immediately even while the agent is
-      // busy — they're client-side operations (/yolo, /skin, /new, /help,
-      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
-      // routes them to executeSlashCommand, which has its own per-command
-      // busy guard for commands that genuinely need an idle session (skill
-      // /send directives).  Queuing them would make every slash command wait
-      // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
-        triggerHaptic('submit')
-        clearDraft()
-        dispatchSubmit(text)
-      } else if (payloadPresent) {
-        queueCurrentDraft()
-      } else {
-        // Stop button (the only way to reach here while busy with an empty
-        // composer — empty Enter is short-circuited in the keydown handler).
-        triggerHaptic('cancel')
-        void Promise.resolve(onCancel())
-      }
-    } else if (!payloadPresent && queuedPrompts.length > 0) {
-      void drainNextQueued()
-    } else if (payloadPresent) {
-      const submittedAttachments = cloneAttachments(attachments)
-      triggerHaptic('submit')
-      resetBrowseState(sessionId)
-      clearDraft()
-      clearComposerAttachments()
-      dispatchSubmit(text, submittedAttachments)
-    }
-
-    focusInput()
-  }
-
   const submitUrl = () => {
     const url = urlValue.trim()
 
@@ -1945,81 +1098,26 @@ export function ChatBar({
     setUrlOpen(false)
   }
 
-  const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
-    focusInput,
-    maxRecordingSeconds,
-    onTranscript: insertText,
-    onTranscribeAudio
-  })
-
-  const pendingResponse = () => {
-    const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-
-    if (!last || last.id === lastSpokenIdRef.current) {
-      return null
-    }
-
-    const text = chatMessageText(last).trim()
-
-    if (!text) {
-      return null
-    }
-
-    return {
-      id: last.id,
-      pending: Boolean(last.pending),
-      text
-    }
-  }
-
-  const consumePendingResponse = () => {
-    const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-
-    if (last) {
-      lastSpokenIdRef.current = last.id
-    }
-  }
-
-  const submitVoiceTurn = async (text: string) => {
-    if (busy) {
-      return
-    }
-
-    triggerHaptic('submit')
-    resetBrowseState(sessionId)
-    clearDraft()
-    await onSubmit(text)
-  }
-
-  const conversation = useVoiceConversation({
+  const {
+    conversation,
+    dictate,
+    endConversation,
+    handleToggleAutoSpeak,
+    startConversation,
+    voiceActivityState,
+    voiceConversationActive,
+    voiceStatus
+  } = useComposerVoice({
     busy,
-    consumePendingResponse,
-    enabled: voiceConversationActive,
-    onFatalError: () => setVoiceConversationActive(false),
-    onSubmit: submitVoiceTurn,
+    clearDraft,
+    disabled,
+    focusInput,
+    insertText,
+    maxRecordingSeconds,
+    onSubmit,
     onTranscribeAudio,
-    pendingResponse
+    sessionId
   })
-
-  // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
-  // with STT unconfigured lets the conversation surface its own "configure
-  // speech-to-text" notice rather than silently no-opping.
-  const toggleVoiceConversation = useCallback(() => {
-    if (disabled) {
-      return
-    }
-
-    if (voiceConversationActive) {
-      setVoiceConversationActive(false)
-      void conversation.end()
-    } else {
-      setVoiceConversationActive(true)
-    }
-  }, [conversation, disabled, voiceConversationActive])
-
-  useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
 
   const contextMenu = (
     <ContextMenu
@@ -2038,6 +1136,7 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
+      autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
       canSteer={canSteer}
@@ -2047,12 +1146,9 @@ export function ChatBar({
         active: voiceConversationActive,
         level: conversation.level,
         muted: conversation.muted,
-        onEnd: () => {
-          setVoiceConversationActive(false)
-          void conversation.end()
-        },
+        onEnd: endConversation,
         onInterruptResponse: conversation.interruptResponse,
-        onStart: () => setVoiceConversationActive(true),
+        onStart: startConversation,
         onStopTurn: conversation.stopTurn,
         onToggleMute: conversation.toggleMute,
         status: conversation.status
@@ -2061,6 +1157,7 @@ export function ChatBar({
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
       onSteer={steerDraft}
+      onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
     />
@@ -2146,7 +1243,12 @@ export function ChatBar({
       {dragging && poppedOut && (
         <div
           aria-hidden
-          className="pointer-events-none fixed inset-x-0 bottom-0 z-20 h-32"
+          // `absolute`, not `fixed`: anchor to the chat-column root (the same
+          // `relative isolate` container the docked composer centers in) so the
+          // glow spans the thread area only — never the full viewport / under the
+          // sidebar. The dock target IS the docked position, so they must share
+          // a containing block.
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32"
           style={{
             // A bottom-centered radial glow — soft on every side by construction,
             // so it reads as the dock target without any hard band edges. Its

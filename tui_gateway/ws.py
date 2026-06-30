@@ -335,6 +335,9 @@ async def handle_ws(ws: Any) -> None:
         while True:
             try:
                 raw = await ws.receive_text()
+                if len(raw) > 16 * 1024 * 1024:  # 16 MiB cap to prevent OOM (#53142)
+                    await ws.send_json({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Message too large (max 16 MiB)"}, "id": None})
+                    continue
             except _WebSocketDisconnect as exc:
                 disconnect_reason = (
                     "client_disconnect("

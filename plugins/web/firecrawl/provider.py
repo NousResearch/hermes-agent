@@ -481,6 +481,20 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                 continue
 
             try:
+                # SSRF floor: block cloud metadata endpoints before passing
+                # to Firecrawl.  check_website_access() is a domain-policy
+                # gate, not an IP check, so it won't catch 169.254.169.254
+                # or other metadata IPs directly.  is_always_blocked_url()
+                # is the non-negotiable floor regardless of allow_private_urls.
+                from tools.url_safety import is_always_blocked_url
+                if is_always_blocked_url(url):
+                    logger.warning("Blocked Firecrawl request to cloud metadata endpoint: %s", url)
+                    results.append({
+                        "url": url, "title": "", "content": "",
+                        "error": "Blocked: cloud metadata / SSRF-protected endpoint",
+                    })
+                    continue
+
                 logger.info("Firecrawl scraping: %s", url)
                 try:
                     scrape_result = await asyncio.wait_for(

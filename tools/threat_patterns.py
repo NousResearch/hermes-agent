@@ -119,6 +119,32 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'bash\s+-i\s+>&?\s*/dev/(tcp|udp)/', "reverse_shell", "all"),
     (r'nc\s+(?:-e|-c)\s+(?:/bin/)?(?:bash|sh)', "nc_shell", "all"),
 
+    # ── Shell-pipe installer patterns (applies everywhere) ───────────
+    # "curl url | bash" and "wget -O- url | bash" are the canonical
+    # supply-chain attack vector.  Anchored on the pipe-to-interpreter
+    # suffix so legitimate curl-to-file downloads don't trigger.
+    (r'curl\s+[^\n|]*\|\s*(?:bash|sh|python\d?|perl|ruby|node)', "curl_bash_pipe", "all"),
+    (r'wget\s+[^\n|]*\|\s*(?:bash|sh|python\d?|perl|ruby|node)', "wget_bash_pipe", "all"),
+
+    # ── Jailbreak patterns (strict scope — memory + skills) ──────────
+    # DAN/Developer Mode are well-known jailbreak families.  Scoped
+    # to strict because they appear in security-research blog posts and
+    # tutorial web pages that a user might legitimately browse; blocking
+    # them only when the agent is about to write to memory or install a
+    # skill is the right tradeoff.
+    (r'\bDAN\s+mode\b|Do\s+Anything\s+Now', "jailbreak_dan", "strict"),
+    (r'\bdeveloper\s+mode\b.*\benabled?\b', "jailbreak_dev_mode", "strict"),
+    # Hypothetical framing + bypass verb — context scope because the
+    # combination is suspicious in scraped pages and tool results too.
+    (r'hypothetical\s+scenario.*(?:ignore|bypass|override)', "hypothetical_bypass", "context"),
+    # "for educational purposes only" pretext — strict only; very common
+    # in legitimate documentation and README files.
+    (r'for\s+educational\s+purposes?\s+only', "educational_pretext", "strict"),
+    # Fake policy announcement — social engineering that claims new rules
+    # have been issued to make the agent comply.  Context scope: this
+    # phrasing appears in poisoned web pages and MCP tool results.
+    (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions', "fake_policy", "context"),
+
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),

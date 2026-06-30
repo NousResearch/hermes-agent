@@ -137,7 +137,7 @@ def _xai_image_field(source: str) -> Dict[str, str]:
     import base64
     import os as _os
 
-    with open(_os.path.expanduser(source), "rb") as fh:
+    with open(_os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
         raw = fh.read()
     ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()
     if ext == "jpg":

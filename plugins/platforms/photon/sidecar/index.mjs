@@ -79,6 +79,26 @@ const MAX_INLINE_ATTACHMENT_BYTES =
   Number(process.env.PHOTON_MAX_INLINE_ATTACHMENT_BYTES) || 20 * 1024 * 1024;
 const DM_CHAT_GUID_RE = /^any;-;(\+\d{6,})$/;
 const E164_RE = /^\+\d{6,}$/;
+const EFFECTS = {
+  slam: "com.apple.MobileSMS.expressivesend.impact",
+  impact: "com.apple.MobileSMS.expressivesend.impact",
+  loud: "com.apple.MobileSMS.expressivesend.loud",
+  gentle: "com.apple.MobileSMS.expressivesend.gentle",
+  invisible: "com.apple.MobileSMS.expressivesend.invisibleink",
+  invisibleink: "com.apple.MobileSMS.expressivesend.invisibleink",
+  "invisible-ink": "com.apple.MobileSMS.expressivesend.invisibleink",
+  confetti: "com.apple.messages.effect.CKConfettiEffect",
+  fireworks: "com.apple.messages.effect.CKFireworksEffect",
+  balloons: "com.apple.messages.effect.CKBalloonEffect",
+  balloon: "com.apple.messages.effect.CKBalloonEffect",
+  heart: "com.apple.messages.effect.CKHeartEffect",
+  lasers: "com.apple.messages.effect.CKLasersEffect",
+  celebration: "com.apple.messages.effect.CKHappyBirthdayEffect",
+  birthday: "com.apple.messages.effect.CKHappyBirthdayEffect",
+  sparkles: "com.apple.messages.effect.CKSparklesEffect",
+  spotlight: "com.apple.messages.effect.CKSpotlightEffect",
+  echo: "com.apple.messages.effect.CKEchoEffect",
+};
 const MAX_KNOWN_SPACES = 2048;
 const MAX_KNOWN_MESSAGES = 1024;
 const MAX_REACTION_HANDLES = 512;
@@ -238,20 +258,39 @@ let Spectrum,
   imessage,
   imessageRead,
   attachment,
+  contact,
+  editContent,
   voice,
+  poll,
+  replyContent,
   spectrumText,
   spectrumMarkdown,
-  spectrumTyping;
+  spectrumTyping,
+  unsendContent,
+  imessageBackground,
+  imessageCustomizedMiniApp,
+  imessageEffect;
 try {
   ({
     Spectrum,
     attachment,
+    contact,
+    edit: editContent,
     voice,
+    poll,
+    reply: replyContent,
     text: spectrumText,
     markdown: spectrumMarkdown,
     typing: spectrumTyping,
+    unsend: unsendContent,
   } = await import("spectrum-ts"));
-  ({ imessage, read: imessageRead } = await import("spectrum-ts/providers/imessage"));
+  ({
+    imessage,
+    background: imessageBackground,
+    customizedMiniApp: imessageCustomizedMiniApp,
+    effect: imessageEffect,
+    read: imessageRead,
+  } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -600,6 +639,98 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
+function stringParam(body, ...keys) {
+  for (const key of keys) {
+    const value = body?.[key];
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+function stringArrayParam(body, ...keys) {
+  const values = [];
+  for (const key of keys) {
+    const value = body?.[key];
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) values.push(trimmed);
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        const trimmed = String(item ?? "").trim();
+        if (trimmed) values.push(trimmed);
+      }
+    }
+  }
+  return Array.from(new Set(values));
+}
+
+function numberParam(body, ...keys) {
+  for (const key of keys) {
+    const value = body?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value !== "string") continue;
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function effectId(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+  if (value.startsWith("com.apple.")) return value;
+  return EFFECTS[value.toLowerCase()] ?? null;
+}
+
+function contentBuilder(text, format = "text") {
+  return format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+}
+
+function contactInput(body) {
+  const raw = stringParam(body, "vcard", "vCard", "raw");
+  if (raw) return raw;
+  const formatted = stringParam(body, "name", "formattedName", "formatted_name", "fullName", "full_name");
+  const first = stringParam(body, "firstName", "first_name", "givenName", "given_name");
+  const last = stringParam(body, "lastName", "last_name", "familyName", "family_name");
+  const phones = stringArrayParam(body, "phone", "phones", "phoneNumber", "phone_number");
+  const emails = stringArrayParam(body, "email", "emails", "emailAddress", "email_address");
+  const urls = stringArrayParam(body, "url", "urls", "website", "websites");
+  const orgName = stringParam(body, "org", "organization", "organisation", "company");
+  const title = stringParam(body, "title", "role", "jobTitle", "job_title");
+  const note = stringParam(body, "note", "notes");
+  if (!formatted && !first && !last && phones.length === 0 && emails.length === 0) return null;
+  return {
+    ...(formatted || first || last ? { name: { formatted, first, last } } : {}),
+    ...(phones.length ? { phones: phones.map((value) => ({ value })) } : {}),
+    ...(emails.length ? { emails: emails.map((value) => ({ value })) } : {}),
+    ...(urls.length ? { urls: urls.map((value) => ({ value })) } : {}),
+    ...(orgName || title ? { org: { name: orgName, title } } : {}),
+    ...(note ? { note } : {}),
+  };
+}
+
+function miniAppInput(body) {
+  const layout = body?.layout && typeof body.layout === "object" && !Array.isArray(body.layout)
+    ? body.layout
+    : body;
+  return {
+    appName: stringParam(body, "appName", "app_name"),
+    appStoreId: numberParam(body, "appStoreId", "app_store_id"),
+    extensionBundleId: stringParam(body, "extensionBundleId", "extension_bundle_id", "bundleId", "bundle_id"),
+    teamId: stringParam(body, "teamId", "team_id"),
+    url: stringParam(body, "url", "appUrl", "app_url"),
+    layout: {
+      ...(stringParam(layout, "caption", "title") ? { caption: stringParam(layout, "caption", "title") } : {}),
+      ...(stringParam(layout, "subcaption", "subtitle") ? { subcaption: stringParam(layout, "subcaption", "subtitle") } : {}),
+      ...(stringParam(layout, "trailingCaption", "trailing_caption") ? { trailingCaption: stringParam(layout, "trailingCaption", "trailing_caption") } : {}),
+      ...(stringParam(layout, "trailingSubcaption", "trailing_subcaption") ? { trailingSubcaption: stringParam(layout, "trailingSubcaption", "trailing_subcaption") } : {}),
+      ...(stringParam(layout, "summary", "fallback") ? { summary: stringParam(layout, "summary", "fallback") } : {}),
+    },
+  };
+}
+
 function serverError(res) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
@@ -692,6 +823,16 @@ async function resolveSpace(spaceId) {
   return space;
 }
 
+async function resolveMessage(space, messageId) {
+  if (!messageId || typeof messageId !== "string") return null;
+  const cached = knownMessages.get(messageId);
+  if (cached) return cached;
+  if (typeof space.getMessage !== "function") return null;
+  const message = await space.getMessage(messageId);
+  if (message) lruSet(knownMessages, messageId, message, MAX_KNOWN_MESSAGES);
+  return message;
+}
+
 // Constant-time token comparison — don't leak the token via `!==` timing.
 const _tokenBuf = Buffer.from(sharedToken);
 function tokenOk(header) {
@@ -733,10 +874,114 @@ const server = http.createServer(async (req, res) => {
       const space = await resolveSpace(spaceId);
       // iMessage renders markdown natively; spectrum-ts degrades it to
       // readable plain text on platforms that don't.
-      const builder =
-        format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      const builder = contentBuilder(text, format);
       const result = await space.send(builder);
       return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/send-effect") {
+      const { spaceId, text, format = "markdown" } = body || {};
+      if (!spaceId || typeof text !== "string") {
+        return badRequest(res, "spaceId and text are required");
+      }
+      if (format !== "text" && format !== "markdown") {
+        return badRequest(res, "format must be text or markdown");
+      }
+      const id = effectId(body?.effectId ?? body?.effect);
+      if (!id) {
+        return badRequest(
+          res,
+          "effect/effectId is required; supported names: slam, loud, gentle, invisible, confetti, fireworks, balloons, heart, lasers, celebration, sparkles, spotlight, echo"
+        );
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(imessageEffect(contentBuilder(text, format), id));
+      return ok(res, { messageId: result?.id || null, effectId: id });
+    }
+    if (req.url === "/reply") {
+      const { spaceId, messageId, text, format = "markdown" } = body || {};
+      if (!spaceId || !messageId || typeof text !== "string") {
+        return badRequest(res, "spaceId, messageId and text are required");
+      }
+      if (format !== "text" && format !== "markdown") {
+        return badRequest(res, "format must be text or markdown");
+      }
+      const space = await resolveSpace(spaceId);
+      const target = await resolveMessage(space, messageId);
+      if (!target) return badRequest(res, "message not found");
+      const result = await space.send(replyContent(contentBuilder(text, format), target));
+      return ok(res, { messageId: result?.id || null, repliedTo: messageId });
+    }
+    if (req.url === "/edit") {
+      const { spaceId, messageId, text, format = "markdown" } = body || {};
+      if (!spaceId || !messageId || typeof text !== "string") {
+        return badRequest(res, "spaceId, messageId and text are required");
+      }
+      if (format !== "text" && format !== "markdown") {
+        return badRequest(res, "format must be text or markdown");
+      }
+      const space = await resolveSpace(spaceId);
+      const target = await resolveMessage(space, messageId);
+      if (!target) return badRequest(res, "message not found");
+      const result = await space.send(editContent(contentBuilder(text, format), target));
+      return ok(res, { messageId: result?.id || null, edited: messageId });
+    }
+    if (req.url === "/unsend") {
+      const { spaceId, messageId } = body || {};
+      if (!spaceId || !messageId) return badRequest(res, "spaceId and messageId are required");
+      const space = await resolveSpace(spaceId);
+      const target = await resolveMessage(space, messageId);
+      if (!target) return badRequest(res, "message not found");
+      const result = await space.send(unsendContent(target));
+      return ok(res, { messageId: result?.id || null, unsent: messageId });
+    }
+    if (req.url === "/send-poll") {
+      const { spaceId } = body || {};
+      const question = stringParam(body, "question", "pollQuestion", "message", "text", "title");
+      const options = stringArrayParam(body, "options", "pollOptions", "pollOption");
+      if (!spaceId || !question || options.length < 2) {
+        return badRequest(res, "spaceId, question and at least two options are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(poll(question, ...options));
+      return ok(res, { messageId: result?.id || null, question, optionCount: options.length });
+    }
+    if (req.url === "/send-contact") {
+      const { spaceId } = body || {};
+      const input = contactInput(body);
+      if (!spaceId || !input) {
+        return badRequest(res, "spaceId and contact fields are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(contact(input));
+      return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/send-mini-app") {
+      const { spaceId } = body || {};
+      const input = miniAppInput(body || {});
+      if (!spaceId || !input.appName || !input.extensionBundleId || !input.teamId || !input.url) {
+        return badRequest(res, "spaceId, appName, extensionBundleId, teamId and url are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(imessageCustomizedMiniApp(input));
+      return ok(res, {
+        messageId: result?.id || null,
+        appName: input.appName,
+        extensionBundleId: input.extensionBundleId,
+      });
+    }
+    if (req.url === "/set-background") {
+      const { spaceId, clear = false } = body || {};
+      if (!spaceId) return badRequest(res, "spaceId is required");
+      const space = await resolveSpace(spaceId);
+      if (clear === true) {
+        await space.send(imessageBackground("clear"));
+        return ok(res, { cleared: true });
+      }
+      const media = stringParam(body, "background", "image", "media", "mediaUrl", "filePath", "path", "fileUrl");
+      if (!media) return badRequest(res, "background/image/media/path is required unless clear=true");
+      const input = /^https?:\/\//i.test(media) ? new URL(media) : media;
+      const result = await space.send(imessageBackground(input));
+      return ok(res, { messageId: result?.id || null, backgroundSet: true });
     }
     if (req.url === "/send-attachment") {
       const { spaceId, path, name, mimeType, caption, kind } =

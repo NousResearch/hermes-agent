@@ -74,7 +74,7 @@ _POLISHED_TOOLS = {
     "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",
     "kanban_block", "kanban_link", "kanban_heartbeat",
     "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
-    "yb_send_dm", "yb_send_sticker",
+    "yb_send_dm", "yb_send_sticker", "mixture_of_agents",
 }
 
 

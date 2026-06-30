@@ -2,7 +2,7 @@
   "name": "¥LAN",
   "symbol": "¥LAN",
   "description": "Agent tuition token for Atlantis University — Agent入学学费代币，用于AU法学院学费、DWAC仲裁费及生态服务支付",
-  "decimals": "9",
+  "decimals": "0",
   "image": "https://raw.githubusercontent.com/Harry-DWAC/hermes-agent/main/ylan-logo.png",
   "external_link": "https://atlantis.university"
 }

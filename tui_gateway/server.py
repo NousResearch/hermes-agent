@@ -2964,12 +2964,19 @@ def _get_usage(agent) -> dict:
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
-        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        ctx_used = getattr(comp, "last_prompt_tokens", 0) or 0
         ctx_max = getattr(comp, "context_length", 0) or 0
         if ctx_max:
-            usage["context_used"] = ctx_used
             usage["context_max"] = ctx_max
-            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+            # Only report a "used" count when the compressor has measured the
+            # current model's prompt. After a model switch, update_model() resets
+            # last_prompt_tokens to 0; falling back to the session lifetime total
+            # made a smaller context window (e.g. 1M -> 200K) look instantly
+            # full because the old total far exceeded the new max. Wait for the
+            # next real response to repopulate usage.
+            if ctx_used > 0:
+                usage["context_used"] = ctx_used
+                usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     # Live count of background/async subagents still running (delegate_task
     # batches + background single delegations). Mirrors the classic CLI status

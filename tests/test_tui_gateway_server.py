@@ -8266,6 +8266,57 @@ def test_get_usage_safe_when_active_count_raises(monkeypatch):
     assert usage["model"] == "x"
 
 
+class _AgentWithCompressorAfterSwitch:
+    """Simulates an agent immediately after a model switch to a smaller context window.
+
+    The compressor has the new, smaller context_length but last_prompt_tokens is 0
+    because update_model() resets calibration state. The session's lifetime total is
+    still large from the previous model; the bug was that _get_usage used that total
+    as the "used" count, making the smaller window look full.
+    """
+
+    model = "smol-model"
+    session_total_tokens = 950_000
+    session_api_calls = 42
+
+    class _comp:
+        context_length = 200_000
+        last_prompt_tokens = 0
+        compression_count = 0
+
+    context_compressor = _comp()
+
+
+def test_get_usage_does_not_use_total_tokens_when_last_prompt_tokens_reset(monkeypatch):
+    """After a model switch, last_prompt_tokens is 0; the old fallback to session
+    total made the new smaller context window look instantly full."""
+    usage = server._get_usage(_AgentWithCompressorAfterSwitch())
+    assert usage["context_max"] == 200_000
+    assert "context_used" not in usage
+    assert "context_percent" not in usage
+
+
+class _AgentWithCompressorHasMeasured:
+    """Normal steady-state agent: the compressor has a real measured prompt size."""
+
+    model = "current-model"
+    session_total_tokens = 100_000
+
+    class _comp:
+        context_length = 200_000
+        last_prompt_tokens = 80_000
+        compression_count = 1
+
+    context_compressor = _comp()
+
+
+def test_get_usage_reports_percent_when_last_prompt_tokens_available(monkeypatch):
+    usage = server._get_usage(_AgentWithCompressorHasMeasured())
+    assert usage["context_max"] == 200_000
+    assert usage["context_used"] == 80_000
+    assert usage["context_percent"] == 40
+
+
 def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch):
     """#48305: switching models from the TUI must NOT destroy sibling keys under
     `model:` (model_slots, model_fallback, etc.). _persist_model_switch now uses

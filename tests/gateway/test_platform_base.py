@@ -649,6 +649,54 @@ class TestMediaExtensionAllowlistParity:
         assert "Here is your report:" in stripped
 
 
+class TestExtensionlessMediaDelivery:
+    """Regression: MEDIA: tags for extension-less files (Caddyfile, Makefile)."""
+
+    def _patch_allow_root(self, monkeypatch, root):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(root),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+    def test_extensionless_media_extracted_when_file_validates(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("localhost {}", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        content = f"Here is your config:\nMEDIA:{caddy}\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(caddy.resolve())
+        assert "MEDIA:" not in cleaned
+        assert "Done." in cleaned
+
+    def test_extensionless_media_left_visible_when_not_on_disk(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        self._patch_allow_root(monkeypatch, root)
+
+        content = "MEDIA:/nonexistent/Caddyfile"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/nonexistent/Caddyfile" in cleaned
+
+    def test_strip_media_directives_for_display_strips_validated_extensionless(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("x", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        text = f"MEDIA:{caddy}"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(

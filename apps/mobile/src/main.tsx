@@ -30,6 +30,14 @@ if (typeof window !== 'undefined') {
 setPaneOpen('chat-sidebar', false)
 setPaneOpen('preview', false)
 
+// Reset master-detail drill state whenever the route changes (closing an
+// overlay, navigating to root, opening a different overlay).
+if (typeof window !== 'undefined') {
+  window.addEventListener('hashchange', () => {
+    document.body.removeAttribute('data-mobile-drilled')
+  })
+}
+
 
 
 

@@ -40,6 +40,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
         'grid h-full min-h-0 flex-1 grid-cols-[13rem_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1',
         className
       )}
+      data-slot="overlay-split-layout"
     >
       {children}
     </div>
@@ -55,6 +56,7 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
         'flex min-h-0 flex-col gap-0.5 overflow-y-auto bg-(--ui-sidebar-surface-background) px-2.5 pb-3 pt-[calc(var(--titlebar-height)+1rem)]',
         className
       )}
+      data-slot="overlay-sidebar"
     >
       {children}
     </aside>
@@ -69,7 +71,19 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
         PAGE_INSET_X,
         className
       )}
+      data-slot="overlay-main"
     >
+      <button
+        aria-label="Back"
+        className="mobile-detail-back hidden"
+        onClick={() => {
+          if (typeof document !== 'undefined') document.body.removeAttribute('data-mobile-drilled')
+        }}
+        type="button"
+      >
+        <Codicon name="chevron-left" />
+        <span>Back</span>
+      </button>
       {children}
     </main>
   )
@@ -113,7 +127,18 @@ export function OverlayNavItem({ active, icon: Icon, label, nested, onClick, tra
             ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
       )}
-      onClick={onClick}
+      data-slot="overlay-nav-item"
+      onClick={() => {
+        // ponytail: mobile master-detail — drilling into a section hides the
+        // list pane and reveals the detail. Back button in OverlayMain clears.
+        if (
+          typeof window !== 'undefined' &&
+          (window as { __HERMES_MOBILE_STANDALONE__?: boolean }).__HERMES_MOBILE_STANDALONE__
+        ) {
+          document.body.setAttribute('data-mobile-drilled', '1')
+        }
+        onClick()
+      }}
       type="button"
     >
       <Icon

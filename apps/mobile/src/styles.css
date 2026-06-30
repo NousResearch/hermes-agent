@@ -712,6 +712,48 @@ button,
   user-select: none;
 }
 
+/* Master-detail nav: on mobile, full-screen overlays (Settings / Command
+   Center / Cron / Profiles / Messaging) open to the LIST. Tapping a row
+   sets body[data-mobile-drilled] which swaps to the detail pane plus a
+   back button. The desktop split-view is preserved at wider widths. */
+html.hermes-mobile-standalone [data-slot='overlay-split-layout'] {
+  grid-template-columns: 1fr !important;
+}
+html.hermes-mobile-standalone [data-slot='overlay-sidebar'] {
+  width: 100%;
+  padding-inline: 1rem;
+}
+html.hermes-mobile-standalone [data-slot='overlay-main'] {
+  display: none !important;
+}
+html.hermes-mobile-standalone body[data-mobile-drilled] [data-slot='overlay-sidebar'] {
+  display: none !important;
+}
+html.hermes-mobile-standalone body[data-mobile-drilled] [data-slot='overlay-main'] {
+  display: flex !important;
+}
+html.hermes-mobile-standalone .mobile-detail-back {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.25rem;
+  align-self: flex-start;
+  margin-bottom: 0.75rem;
+  padding: 0.375rem 0.5rem 0.375rem 0;
+  background: transparent;
+  border: none;
+  color: var(--ui-text-secondary);
+  font-size: 0.875rem;
+  -webkit-tap-highlight-color: transparent;
+}
+html.hermes-mobile-standalone .mobile-detail-back:active {
+  color: var(--ui-text-primary);
+}
+/* Nav rows tap-target: 44pt min height on mobile. */
+html.hermes-mobile-standalone [data-slot='overlay-nav-item'] {
+  min-height: 2.75rem;
+  font-size: 0.9375rem;
+}
+
 img,
 picture,
 video,

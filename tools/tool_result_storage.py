@@ -8,11 +8,16 @@ Defense against context-window overflow operates at three levels:
 
 2. **Per-result persistence** (maybe_persist_tool_result): After a tool
    returns, if its output exceeds the tool's registered threshold
-   (registry.get_max_result_size), the full output is written INTO THE
-   SANDBOX temp dir (for example /tmp/hermes-results/{tool_use_id}.txt on
-   standard Linux, or $TMPDIR/hermes-results/{tool_use_id}.txt on Termux)
-   via env.execute(). The in-context content is replaced with a preview +
-   file path reference. The model can read_file to access the full output
+   (registry.get_max_result_size), the full output is written to disk and
+   the in-context content is replaced with a preview + file path reference.
+   When a sandbox env is available, the file is written INTO THE SANDBOX
+   temp dir (for example /tmp/hermes-results/{tool_use_id}.txt on standard
+   Linux, or $TMPDIR/hermes-results/{tool_use_id}.txt on Termux) via
+   env.execute(). When no sandbox env is available (bare CLI, local custom
+   providers), the file is written to the local filesystem at
+   $HERMES_HOME/tool_results/{safe_id}.txt with owner-only permissions and
+   an atomic rename. Inline truncation is the last-resort fallback when
+   both write paths fail. The model can read_file to access the full output
    on any backend.
 
 3. **Per-turn aggregate budget** (enforce_turn_budget): After all tool
@@ -24,9 +29,12 @@ Defense against context-window overflow operates at three levels:
 
 import logging
 import os
+import re
 import shlex
+import tempfile
 import uuid
 
+from hermes_constants import get_hermes_home
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
@@ -37,6 +45,7 @@ logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
+LOCAL_FS_SPILL_SUBDIR = "tool_results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 
@@ -73,6 +82,60 @@ def _heredoc_marker(content: str) -> str:
     if HEREDOC_MARKER not in content:
         return HEREDOC_MARKER
     return f"HERMES_PERSIST_{uuid.uuid4().hex[:8]}"
+
+
+def _write_to_local_filesystem(content: str, tool_use_id: str) -> str | None:
+    """Spill content to ``<HERMES_HOME>/tool_results/<safe_id>.txt``.
+
+    Used when no sandbox env is available so ``read_file`` can still access
+    the full output. Writes are atomic (tempfile + rename) and owner-only
+    (mode 0o600), and refuse to follow a symlink at the spill root.
+    Returns the absolute path on success, ``None`` on any filesystem
+    failure (the caller falls back to inline truncation).
+    """
+    # TODO: consolidate with tools/hook_output_spill.py once #20468 merges --
+    # both share head/tail-preview-plus-disk-spill semantics.
+    storage_dir = get_hermes_home() / LOCAL_FS_SPILL_SUBDIR
+    tmp_path: "Path | None" = None  # noqa: F821 -- forward ref for cleanup
+    try:
+        # Refuse to write into a symlinked spill root so a pre-planted symlink
+        # cannot redirect attacker-influenced tool output onto arbitrary files.
+        if storage_dir.is_symlink():
+            logger.warning(
+                "Local-fs persistence refused: spill root is a symlink (%s)", storage_dir,
+            )
+            return None
+        storage_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", tool_use_id).strip("._") or uuid.uuid4().hex
+        target = storage_dir / f"{safe_name}.txt"
+        # surrogateescape preserves arbitrary bytes from tool output round-trip
+        # (errors='replace' would silently map malformed bytes to U+FFFD).
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            errors="surrogateescape",
+            dir=str(storage_dir),
+            prefix=f".{safe_name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = type(target)(tmp.name)
+            tmp.write(content)
+        # NamedTemporaryFile creates with 0o600 on POSIX; os.replace preserves
+        # the source's permissions, so the visible target also lands at 0o600.
+        os.replace(tmp_path, target)
+        tmp_path = None  # successfully renamed; nothing to clean up
+        return str(target)
+    except Exception as exc:
+        logger.warning(
+            "Local-fs persistence failed for %s -> %s: %s", tool_use_id, storage_dir, exc,
+        )
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return None
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -127,11 +190,21 @@ def maybe_persist_tool_result(
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
 ) -> str:
-    """Layer 2: persist oversized result into the sandbox, return preview + path.
+    """Layer 2: persist oversized result and return preview + path.
 
-    Writes via env.execute() so the file is accessible from any backend
-    (local, Docker, SSH, Modal, Daytona). Falls back to inline truncation
-    if write fails or no env is available.
+    Three-step fallback chain:
+      1. ``env`` is given -> write into the sandbox via ``env.execute()`` so
+         the file is reachable from any backend (local, Docker, SSH, Modal,
+         Daytona) using the agent's own ``read_file``.
+      2. ``env`` is ``None`` -> write to the local filesystem at
+         ``<HERMES_HOME>/tool_results/<safe_id>.txt`` so ``read_file`` can
+         still reach the full output on bare CLI / local-provider setups
+         where the inline-truncation path drives a compression-grows-size
+         loop on lower-context models (see #23767).
+      3. Both writes failed -> fall back to inline truncation. The agent
+         loses access to the full content; the warning log on step 1 or 2
+         and the elevated WARNING-level fallthrough log are the operator's
+         signal that the session is now in degraded mode.
 
     Args:
         content: Raw tool result string.
@@ -152,11 +225,12 @@ def maybe_persist_tool_result(
     if len(content) <= effective_threshold:
         return content
 
-    storage_dir = _resolve_storage_dir(env)
-    remote_path = f"{storage_dir}/{tool_use_id}.txt"
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    local_fs_attempted = False
 
     if env is not None:
+        storage_dir = _resolve_storage_dir(env)
+        remote_path = f"{storage_dir}/{tool_use_id}.txt"
         try:
             if _write_to_sandbox(content, remote_path, env):
                 logger.info(
@@ -166,15 +240,28 @@ def maybe_persist_tool_result(
                 return _build_persisted_message(preview, has_more, len(content), remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+    else:
+        local_fs_attempted = True
+        local_path = _write_to_local_filesystem(content, tool_use_id)
+        if local_path is not None:
+            logger.info(
+                "Persisted large tool result to local fs: %s (%s, %d chars -> %s)",
+                tool_name, tool_use_id, len(content), local_path,
+            )
+            return _build_persisted_message(preview, has_more, len(content), local_path)
 
-    logger.info(
-        "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
+    # Degraded-mode fallthrough. Use WARNING when the local-fs path was tried
+    # and failed -- monitors should see this; INFO when env != None and the
+    # caller knows their sandbox is the only persistence option.
+    fallthrough_log = logger.warning if local_fs_attempted else logger.info
+    fallthrough_log(
+        "Inline-truncating large tool result: %s (%d chars, no sandbox or local-fs write)",
         tool_name, len(content),
     )
     return (
         f"{preview}\n\n"
         f"[Truncated: tool response was {len(content):,} chars. "
-        f"Full output could not be saved to sandbox.]"
+        f"Full output could not be saved.]"
     )
 
 

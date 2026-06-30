@@ -1,8 +1,13 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import os
+import stat
+from pathlib import Path
+
 import pytest
 from unittest.mock import MagicMock, patch
 
+from hermes_constants import get_hermes_home
 from tools.budget_config import (
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -10,12 +15,14 @@ from tools.budget_config import (
 )
 from tools.tool_result_storage import (
     HEREDOC_MARKER,
+    LOCAL_FS_SPILL_SUBDIR,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
     _build_persisted_message,
     _heredoc_marker,
     _resolve_storage_dir,
+    _write_to_local_filesystem,
     _write_to_sandbox,
     enforce_turn_budget,
     generate_preview,
@@ -155,6 +162,88 @@ class TestWriteToSandbox:
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
 
 
+class TestWriteToLocalFilesystem:
+    def test_writes_under_hermes_home(self):
+        path = _write_to_local_filesystem("hello content", "tu_abc")
+        assert path is not None
+        target = get_hermes_home() / LOCAL_FS_SPILL_SUBDIR / "tu_abc.txt"
+        assert target.exists()
+        assert target.read_text(encoding="utf-8") == "hello content"
+        assert path == str(target)
+
+    def test_sanitizes_path_traversal(self):
+        path = _write_to_local_filesystem("data", "../../etc/passwd")
+        assert path is not None
+        # No literal ".." or "/" can survive in the spilled filename.
+        name = Path(path).name
+        assert ".." not in name
+        assert "/" not in name
+        # The file must live under the spill dir, not outside it.
+        spill_root = get_hermes_home() / LOCAL_FS_SPILL_SUBDIR
+        assert Path(path).parent == spill_root
+
+    def test_empty_id_falls_back_to_uuid(self):
+        path = _write_to_local_filesystem("data", "")
+        assert path is not None
+        name = Path(path).stem
+        assert len(name) >= 8  # uuid4 hex is 32 chars
+
+    def test_sanitize_to_empty_falls_back_to_uuid(self):
+        # Pure-dot inputs survive re.sub then strip to empty -> uuid fallback.
+        path = _write_to_local_filesystem("data", "....")
+        assert path is not None
+        name = Path(path).stem
+        # uuid4().hex is 32 chars; sanitized "...." would be 0 chars.
+        assert len(name) >= 8
+
+    def test_unicode_content_round_trip(self):
+        content = "日本語テスト " * 100
+        path = _write_to_local_filesystem(content, "tu_unicode")
+        assert path is not None
+        assert Path(path).read_text(encoding="utf-8") == content
+
+    def test_returns_none_on_unwritable_home(self, tmp_path, monkeypatch):
+        # Point HERMES_HOME at a regular file, so mkdir(parents=True) under it
+        # cannot succeed.
+        blocker = tmp_path / "not_a_directory"
+        blocker.write_text("blocker")
+        monkeypatch.setenv("HERMES_HOME", str(blocker))
+        assert _write_to_local_filesystem("data", "tu_x") is None
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX-only file mode semantics")
+    def test_spill_file_is_owner_only_readable(self):
+        path = _write_to_local_filesystem("secret", "tu_perm")
+        assert path is not None
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        # tempfile.NamedTemporaryFile creates files at 0o600 on POSIX; os.replace
+        # preserves source mode, so the visible target is also 0o600.
+        assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_refuses_symlinked_spill_root(self, tmp_path, monkeypatch):
+        # Set up a HERMES_HOME with a pre-planted symlink at tool_results.
+        hermes_home = tmp_path / "fake_home"
+        hermes_home.mkdir()
+        attacker_target = tmp_path / "attacker_dir"
+        attacker_target.mkdir()
+        (hermes_home / LOCAL_FS_SPILL_SUBDIR).symlink_to(attacker_target)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        assert _write_to_local_filesystem("payload", "tu_sym") is None
+        # No write happened anywhere.
+        assert list(attacker_target.iterdir()) == []
+
+    def test_overwrite_is_atomic(self):
+        # Two consecutive writes to the same tool_use_id overwrite cleanly.
+        path1 = _write_to_local_filesystem("first", "tu_overwrite")
+        path2 = _write_to_local_filesystem("second", "tu_overwrite")
+        assert path1 == path2
+        assert Path(path1).read_text(encoding="utf-8") == "second"
+        # No leftover .tmp scratch files.
+        spill_root = get_hermes_home() / LOCAL_FS_SPILL_SUBDIR
+        leftovers = [p for p in spill_root.iterdir() if p.suffix == ".tmp"]
+        assert leftovers == []
+
+
 class TestResolveStorageDir:
     def test_defaults_to_storage_dir_without_env(self):
         assert _resolve_storage_dir(None) == STORAGE_DIR
@@ -253,12 +342,40 @@ class TestMaybePersistToolResult:
         # command string — see test_large_content_via_stdin for why).
         assert env.execute.call_args[1]["stdin_data"] == content
 
-    def test_above_threshold_no_env_truncates_inline(self):
+    def test_above_threshold_no_env_spills_to_local_fs(self):
+        """Bare CLI (env=None) spills oversized results to ``<HERMES_HOME>/tool_results``.
+
+        Regression for #23767: previously env=None fell through to inline
+        truncation, leaving the truncated preview inflating every subsequent
+        prompt and driving a compression-grows-size loop on lower-context models.
+        """
         content = "x" * 60_000
         result = maybe_persist_tool_result(
             content=content,
             tool_name="terminal",
             tool_use_id="tc_789",
+            env=None,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert len(result) < len(content)
+
+        spilled_dir = get_hermes_home() / LOCAL_FS_SPILL_SUBDIR
+        spilled_path = spilled_dir / "tc_789.txt"
+        assert spilled_path.exists()
+        assert spilled_path.read_text() == content
+        assert str(spilled_path) in result
+
+    def test_no_env_local_fs_failure_falls_back_to_truncation(self, tmp_path, monkeypatch):
+        """If both sandbox AND local-fs are unavailable, last-resort is inline truncation."""
+        blocker = tmp_path / "blocker_file"
+        blocker.write_text("not a dir")
+        monkeypatch.setenv("HERMES_HOME", str(blocker))
+        content = "x" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_double_fail",
             env=None,
             threshold=30_000,
         )
@@ -475,13 +592,39 @@ class TestEnforceTurnBudget:
         )
         assert persisted_count >= 2  # Need to shed at least ~52K
 
-    def test_no_env_falls_back_to_truncation(self):
+    def test_no_env_spills_to_local_fs(self):
+        """Layer 3 with env=None must spill via local fs, not silently truncate.
+
+        Regression for #23767 at the budget layer: previously the only
+        coverage was an or-assertion that accepted either truncation or
+        persisted-output, hiding whether the local-fs path actually fired.
+        """
         msgs = [
-            {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
+            {"role": "tool", "tool_call_id": "tu_layer3", "content": "x" * 250_000},
         ]
         enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
-        # Should be truncated (no sandbox available)
-        assert "Truncated" in msgs[0]["content"] or PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        assert "Truncated" not in msgs[0]["content"]
+        # The spill file exists under the per-test HERMES_HOME with the full content.
+        spilled = get_hermes_home() / LOCAL_FS_SPILL_SUBDIR / "tu_layer3.txt"
+        assert spilled.exists()
+        assert spilled.read_text(encoding="utf-8") == "x" * 250_000
+        # The absolute path appears inside the persisted-output block.
+        assert str(spilled) in msgs[0]["content"]
+
+    def test_no_env_local_fs_failure_falls_back_to_truncation_at_layer3(
+        self, tmp_path, monkeypatch
+    ):
+        """When local-fs is unavailable at Layer 3, last-resort is inline truncation."""
+        blocker = tmp_path / "blocker_file"
+        blocker.write_text("not a dir")
+        monkeypatch.setenv("HERMES_HOME", str(blocker))
+        msgs = [
+            {"role": "tool", "tool_call_id": "tu_layer3_fail", "content": "x" * 250_000},
+        ]
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert "Truncated" in msgs[0]["content"]
+        assert PERSISTED_OUTPUT_TAG not in msgs[0]["content"]
 
     def test_returns_same_list(self):
         msgs = [{"role": "tool", "tool_call_id": "t1", "content": "ok"}]

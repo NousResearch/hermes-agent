@@ -217,6 +217,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = "hermes"
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
         self._sync_thread = None
+        self._prefetch_thread = None
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
@@ -391,27 +392,37 @@ class Mem0MemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Recall memories relevant to the CURRENT question, synchronously.
+        """Recall memories for the CURRENT question, off the turn's hot path.
 
-        Searches the backend with ``query`` so the auto-injected context
-        matches what the user is asking right now — not a stale warm from the
-        previous turn. Best-effort: gated by the circuit breaker, errors are
-        swallowed, and the backend's own search timeout bounds latency so a
-        slow recall can never block the turn. queue_prefetch is therefore a
-        no-op (ABC default).
+        Searches ``query`` in a daemon thread and waits up to 3s for it (main's
+        bounded join, but keyed on the current question instead of a background
+        warm from the previous turn — which left the first turn empty and later
+        turns stale/off-topic). The bounded wait means a slow/hung backend can
+        never stall the turn; if recall doesn't return in time we inject nothing
+        and let the agent's own mem0_search be the backstop. Best-effort:
+        circuit-breaker-gated, errors swallowed. queue_prefetch is a no-op (ABC
+        default) — recall happens here, on demand, not pre-warmed.
         """
         if not query or self._backend is None or self._is_breaker_open():
             return ""
-        try:
-            results = self._backend.search(
-                query, filters=self._read_filters(), top_k=10, rerank=True,
-            )
-            self._record_success()
-        except Exception as e:
-            self._record_failure()
-            logger.debug("Mem0 prefetch failed: %s", e)
-            return ""
-        lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
+        backend = self._backend
+        holder: Dict[str, Any] = {}
+
+        def _run():
+            try:
+                holder["results"] = backend.search(
+                    query, filters=self._read_filters(), top_k=10, rerank=True,
+                )
+                self._record_success()
+            except Exception as e:
+                self._record_failure()
+                logger.debug("Mem0 prefetch failed: %s", e)
+
+        t = threading.Thread(target=_run, daemon=True, name="mem0-prefetch")
+        self._prefetch_thread = t
+        t.start()
+        t.join(timeout=3.0)  # slow backend → skip this turn; mem0_search backstops
+        lines = [r.get("memory", "") for r in (holder.get("results") or []) if r.get("memory")]
         if not lines:
             return ""
         body = "\n".join(f"- {l}" for l in lines)
@@ -580,8 +591,9 @@ class Mem0MemoryProvider(MemoryProvider):
             pass
 
     def shutdown(self) -> None:
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
+        for t in (self._prefetch_thread, self._sync_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
         self._shutdown_backend()
 
 

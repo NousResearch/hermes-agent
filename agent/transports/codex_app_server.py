@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from tools.environments.local import hermes_subprocess_env
+
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
@@ -74,7 +76,13 @@ class CodexAppServerClient:
         env: Optional[dict[str, str]] = None,
     ) -> None:
         self._codex_bin = codex_bin
-        spawn_env = os.environ.copy()
+        # Codex app-server is a model-driving CLI executor: it legitimately
+        # needs LLM provider credentials, so inherit_credentials=True. But it
+        # still must not inherit Tier-1 secrets (gateway bot tokens, GitHub
+        # auth, infra tokens) that have nothing to do with running code —
+        # the previous `os.environ.copy()` handed those over unfiltered to
+        # every codex subprocess (#29157 sibling gap).
+        spawn_env = hermes_subprocess_env(inherit_credentials=True)
         if env:
             spawn_env.update(env)
         if codex_home:

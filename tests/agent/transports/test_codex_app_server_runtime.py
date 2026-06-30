@@ -295,3 +295,103 @@ class TestSpawnEnvIsolation:
         )
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+
+class TestSpawnEnvSecretStripping:
+    """Codex app-server is a model-driving CLI executor (sibling of the
+    #29157 subprocess-env-leak class): it legitimately needs LLM provider
+    credentials, but must not inherit Tier-1 secrets (gateway bot tokens,
+    GitHub auth, infra tokens) that have nothing to do with running code.
+
+    Before this fix, ``spawn_env`` was a raw ``os.environ.copy()`` with no
+    filtering at all — every secret in the Hermes process environment was
+    handed unfiltered to the spawned ``codex`` subprocess.
+    """
+
+    def test_tier1_secrets_stripped_from_spawn_env(self, monkeypatch):
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+        monkeypatch.setenv("GH_TOKEN", "ghp_super_secret")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-secret")
+        monkeypatch.setenv("MODAL_TOKEN_SECRET", "modal-secret")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "dash-secret")
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        env = captured["env"]
+        for leaked in (
+            "GH_TOKEN",
+            "TELEGRAM_BOT_TOKEN",
+            "MODAL_TOKEN_SECRET",
+            "HERMES_DASHBOARD_SESSION_TOKEN",
+        ):
+            assert leaked not in env, f"{leaked} leaked into codex subprocess env"
+        # The Tier-1 strip must not collide with HOME preservation
+        # (TestSpawnEnvIsolation) — codex's own shell tool still needs it.
+        assert env.get("HOME") == "/users/alice"
+
+    def test_provider_credentials_still_reach_codex(self, monkeypatch):
+        """Codex is a model-driving CLI — it needs its own provider auth
+        (e.g. OPENAI_API_KEY) to actually authenticate. The Tier-1 strip
+        must not collaterally remove the credential codex itself needs."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["env"] = kwargs.get("env", {}).copy()
+                self.stdin = None
+                self.stdout = None
+                self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HOME", "/users/alice")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake-codex-key")
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        assert captured["env"].get("OPENAI_API_KEY") == "sk-fake-codex-key"

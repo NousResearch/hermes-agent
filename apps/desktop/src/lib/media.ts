@@ -43,13 +43,21 @@ export function mediaMime(path: string): string {
 }
 
 export function mediaName(path: string): string {
-  try {
-    const url = new URL(path)
+  // Only parse as a URL when there is a real `scheme://authority` form. A native
+  // filesystem path (incl. Windows `C:\…`) is not a URL even though
+  // `new URL('C:\\…')` succeeds — a drive letter parses as a URL scheme, leaving
+  // `url.pathname` backslash-separated so the '/'-only split returns the whole path.
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(path)) {
+    try {
+      const url = new URL(path)
 
-    return url.pathname.split('/').filter(Boolean).pop() || path
-  } catch {
-    return path.split(/[\\/]/).filter(Boolean).pop() || path
+      return url.pathname.split('/').filter(Boolean).pop() || path
+    } catch {
+      // fall through to the dual-separator path split below
+    }
   }
+
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
 export function mediaMarkdownHref(path: string): string {

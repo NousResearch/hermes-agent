@@ -50,9 +50,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from session_orchestration.adapters.base import AgentAdapter
 from session_orchestration.adapters.verify import verify_adapters
@@ -94,6 +95,15 @@ _ACTIVE_STATES = frozenset(
     }
 )
 
+#: Attention states — sessions waiting for user input.  Used to stamp
+#: ``attention_since`` on entry and to gate the re-nudge check.
+_ATTENTION_STATES = frozenset(
+    {
+        SessionLifecycle.WAITING_USER.value,
+        SessionLifecycle.PAUSED_HANDOFF.value,
+    }
+)
+
 #: Terminal states — rows in these states are never re-iterated.
 _TERMINAL_STATES = frozenset(
     {
@@ -121,6 +131,101 @@ def _parse_marker_ts(ts_str: str) -> float:
         return dt.timestamp()
     except (ValueError, TypeError):
         return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Config helper for dead-tmux reap (avoids importing config at module level)
+# ---------------------------------------------------------------------------
+
+
+def _load_dead_tmux_reap_cfg() -> bool:
+    """Return True if dead_tmux_reap is enabled in config (default True).
+
+    Lazy-imported so the watcher module does not pull in config at import
+    time.  Returns True (safe default) on any error.
+    """
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+        return load_session_orchestration_config().dead_tmux_reap
+    except Exception:  # config load must never crash the watcher
+        return True
+
+
+def _load_gc_after_seconds_cfg() -> int:
+    """Return gc_after_seconds from config (default 86400 = 24 h).
+
+    Lazy-imported so the watcher module does not pull in config at import
+    time.  Returns the default on any error.
+    """
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+        return load_session_orchestration_config().gc_after_seconds
+    except Exception:  # config load must never crash the watcher
+        return 86400
+
+
+def _load_renudge_after_seconds_cfg() -> int:
+    """Return renudge_after_seconds from config (default 1800 = 30 min).
+
+    Lazy-imported so the watcher module does not pull in config at import
+    time.  Returns the default on any error.  A value <= 0 disables re-nudging.
+    """
+    try:
+        from session_orchestration.config import load_session_orchestration_config
+        return load_session_orchestration_config().renudge_after_seconds
+    except Exception:  # config load must never crash the watcher
+        return 1800
+
+
+# ---------------------------------------------------------------------------
+# Default DM sender (injectable for tests so no network calls are made)
+# ---------------------------------------------------------------------------
+
+
+def _default_send_dm(user_id: str, msg: str) -> bool:
+    """Send a DM to *user_id* with *msg*.
+
+    Lazy-imports ``_get_bot_token`` and ``send_dm`` at call time.
+    Returns ``False`` (never raises) on any error so the caller's try/except
+    can still log the failure without crashing the watcher tick.
+
+    This is the production default — tests inject a recording fake via the
+    ``_send_dm_fn`` parameter on ``SessionWatcher``.
+    """
+    try:
+        from tools.discord_tool import _get_bot_token  # type: ignore[import]
+        from session_orchestration.dm_transport import send_dm
+
+        token = _get_bot_token()
+        if not token:
+            return False
+        return send_dm(user_id, msg, token)
+    except Exception as exc:
+        logger.debug("watcher._default_send_dm: failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Default tmux-liveness check (injectable for tests)
+# ---------------------------------------------------------------------------
+
+
+def _default_tmux_liveness(tmux_session: str) -> bool:
+    """Return True if the tmux session is alive (exit 0), False otherwise.
+
+    Uses ``tmux has-session -t <tmux_session>``.  Returns False on any error
+    including binary-not-found so the reap logic degrades safely.
+    """
+    if not tmux_session:
+        return False
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", tmux_session],
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except (OSError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +269,8 @@ def _on_turn_change(
     row: Dict[str, Any],
     new_state: str,
     old_state: str,
+    *,
+    registry: Optional["SessionOrchestrationRegistry"] = None,
 ) -> None:
     """Called when a session transitions into a user-attention state.
 
@@ -171,12 +278,21 @@ def _on_turn_change(
     Non-transition ticks never reach this hook (the call-site in
     ``_process_row`` gates on ``new_state != old_state``).
 
+    Feed-board discipline (T-FEED-003): captures the feed message id
+    returned by ``push_turn_change`` and persists it via the registry
+    when it differs from the current ``row["feed_message_id"]``.  The
+    registry write runs inside the tick (single-writer) — this is a
+    small follow-up UPDATE after the main upsert.
+
     Parameters
     ----------
     task_id:    Registry key.
     row:        Full registry row dict at the time of the transition.
     new_state:  The new ``SessionLifecycle`` value (string).
     old_state:  The previous ``SessionLifecycle`` value (string).
+    registry:   Registry instance (injected by ``_process_row``; defaults
+                to a fresh production instance when absent, matching the
+                ``_heartbeat_registry_ref`` pattern).
     """
     logger.debug(
         "watcher._on_turn_change: task_id=%s %s -> %s",
@@ -187,7 +303,7 @@ def _on_turn_change(
     try:
         from session_orchestration.feed import push_turn_change
 
-        push_turn_change(task_id, row, new_state, old_state)
+        new_feed_id = push_turn_change(task_id, row, new_state, old_state)
     except Exception as exc:
         # Non-fatal: a failed notification must not crash the watcher.
         logger.error(
@@ -195,6 +311,26 @@ def _on_turn_change(
             task_id,
             exc,
         )
+        return
+
+    # Persist the feed message id when it differs from what the row had.
+    old_feed_id: Optional[str] = row.get("feed_message_id") or None
+    if new_feed_id != old_feed_id:
+        try:
+            reg = registry or SessionOrchestrationRegistry()
+            reg.set_feed_message_id(task_id, new_feed_id)
+            logger.debug(
+                "watcher._on_turn_change: persisted feed_message_id=%r task_id=%s",
+                new_feed_id,
+                task_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "watcher._on_turn_change: failed to persist feed_message_id "
+                "for task_id=%s: %s",
+                task_id,
+                exc,
+            )
 
 
 def _on_heartbeat_tick(task_id: str, row: Dict[str, Any]) -> None:
@@ -517,6 +653,7 @@ def _on_hang(
                 repo=row.get("repo"),
                 source=row.get("source", "spawn"),
                 state=SessionLifecycle.ERROR.value,
+                terminated_at=time.time(),
             )
         except Exception as exc:
             logger.error("watcher._on_hang: failed to mark ERROR: %s", exc)
@@ -685,6 +822,103 @@ def _handle_terminate_adapter(
 
 
 # ---------------------------------------------------------------------------
+# Re-nudge helper
+# ---------------------------------------------------------------------------
+
+
+def _check_renudge(
+    task_id: str,
+    row: dict,
+    now: float,
+    *,
+    registry: "SessionOrchestrationRegistry",
+    send_dm_fn,
+) -> None:
+    """Fire a re-nudge DM if the attention interval has elapsed (non-fatal).
+
+    Called from ``_process_row`` on non-transition ticks where the session
+    remains in an attention state (WAITING_USER or PAUSED_HANDOFF) without
+    user action.  Fires at most once per ``renudge_after_seconds``.
+
+    The caller wraps this in a try/except so any unexpected error is logged
+    but does not crash the watcher tick.
+
+    Parameters
+    ----------
+    task_id:       Registry key.
+    row:           Fresh registry row dict (must include ``attention_since``,
+                   ``last_renudge_at``, and ``discord_user_id``).
+    now:           Current epoch (injectable for tests; from ``SessionWatcher._now_fn``).
+    registry:      Registry instance (for persisting ``last_renudge_at``).
+    send_dm_fn:    Callable ``(user_id: str, msg: str) -> bool``.  The production
+                   default is ``_default_send_dm``; tests inject a recording fake.
+    """
+    renudge_after = _load_renudge_after_seconds_cfg()
+    if renudge_after <= 0:
+        logger.debug(
+            "watcher._check_renudge: disabled (renudge_after_seconds=%d) for task_id=%s",
+            renudge_after, task_id,
+        )
+        return
+
+    attention_since = row.get("attention_since")
+    if attention_since is None:
+        # No stamp yet — the entering-attention set_attention_stamps hasn't been
+        # read by this fresh_row yet (race-free: stamp is written, then fresh_row
+        # is read, so this branch is only hit when the DB row genuinely has no stamp).
+        logger.debug(
+            "watcher._check_renudge: no attention_since for task_id=%s — skipping",
+            task_id,
+        )
+        return
+
+    attention_since_f = float(attention_since)
+    last_renudge_at = row.get("last_renudge_at")
+    reference_ts = max(attention_since_f, float(last_renudge_at or 0.0))
+
+    if now - reference_ts < renudge_after:
+        logger.debug(
+            "watcher._check_renudge: within interval (%.0fs remaining) for task_id=%s",
+            renudge_after - (now - reference_ts), task_id,
+        )
+        return
+
+    # Interval elapsed — fire re-nudge DM
+    user_id = row.get("discord_user_id")
+    if user_id:
+        wait_min = max(1, int((now - attention_since_f) / 60))
+        task_label = row.get("project") or row.get("repo") or task_id
+        msg = f"{task_label} still needs your input — waiting {wait_min}m"
+        try:
+            send_dm_fn(user_id, msg)
+        except Exception as exc:
+            logger.error(
+                "watcher._check_renudge: DM failed for task_id=%s: %s",
+                task_id, exc,
+            )
+    else:
+        logger.debug(
+            "watcher._check_renudge: no discord_user_id for task_id=%s — skipping DM",
+            task_id,
+        )
+
+    # Always persist last_renudge_at so the next fire waits a full interval,
+    # regardless of whether the DM succeeded (best-effort).
+    try:
+        registry.set_attention_stamps(task_id, attention_since_f, now)
+        logger.info(
+            "watcher._check_renudge: re-nudge fired for task_id=%s "
+            "(attention for %.0fs, last_renudge_at updated)",
+            task_id, now - attention_since_f,
+        )
+    except Exception as exc:
+        logger.error(
+            "watcher._check_renudge: failed to persist last_renudge_at for task_id=%s: %s",
+            task_id, exc,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Core watcher
 # ---------------------------------------------------------------------------
 
@@ -714,11 +948,25 @@ class SessionWatcher:
         *,
         tmux_capture=None,
         lock_ttl_seconds: float = _LOCK_TTL_SECONDS,
+        tmux_liveness_fn: Optional[Callable[[str], bool]] = None,
+        _now_fn: Optional[Callable[[], float]] = None,
+        _send_dm_fn=None,
     ) -> None:
         self._registry = registry or SessionOrchestrationRegistry()
         self._raw_adapters: Dict[str, AgentAdapter] = adapters or {}
         self._tmux_capture = tmux_capture or _TmuxCapture()
         self._lock_ttl = lock_ttl_seconds
+        # Injectable tmux-liveness check (``tmux has-session``). Tests inject a
+        # fake so no real subprocess is spawned; production uses the default.
+        self._tmux_liveness_fn: Callable[[str], bool] = (
+            tmux_liveness_fn if tmux_liveness_fn is not None else _default_tmux_liveness
+        )
+        # Injectable clock — defaults to ``time.time``.  Tests inject a fixed
+        # value so the attention-since / re-nudge interval logic is deterministic.
+        self._now_fn: Callable[[], float] = _now_fn if _now_fn is not None else time.time
+        # Injectable DM sender — defaults to ``_default_send_dm``.  Tests inject
+        # a recording fake so no real Discord API calls are made.
+        self._send_dm_fn = _send_dm_fn if _send_dm_fn is not None else _default_send_dm
         # Available adapters are populated once in run() / tick()
         self._available_adapters: Dict[str, AgentAdapter] = {}
         self._verified = False
@@ -846,6 +1094,23 @@ class SessionWatcher:
                     exc,
                 )
 
+        # Step 3 — GC terminal rows
+        gc_after = _load_gc_after_seconds_cfg()
+        if gc_after > 0:
+            try:
+                deleted = self._registry.gc_terminal_rows(
+                    now=time.time(), max_age_seconds=gc_after
+                )
+                if deleted > 0:
+                    logger.info(
+                        "watcher.tick: gc_terminal_rows deleted %d row(s) "
+                        "(gc_after_seconds=%d)",
+                        deleted,
+                        gc_after,
+                    )
+            except Exception as exc:
+                logger.error("watcher.tick: gc_terminal_rows failed: %s", exc)
+
         return processed
 
     # ------------------------------------------------------------------
@@ -882,7 +1147,7 @@ class SessionWatcher:
                     exc,
                 )
 
-        now = time.time()
+        now = self._now_fn()
         recent_markers = [
             m for m in new_markers
             if _parse_marker_ts(m.get("ts", "")) >= now - _MARKER_RECENCY_SECONDS
@@ -914,6 +1179,54 @@ class SessionWatcher:
         latest_marker_payload = recent_markers[-1].get("payload", {}) if recent_markers else {}
 
         try:
+            # ------------------------------------------------------------------
+            # Dead-tmux reap: if the tmux session is gone and there are no recent
+            # markers (no heartbeat proving liveness), mark the row terminal
+            # immediately rather than waiting out the hang-nudge ladder.
+            # Gated on config knob dead_tmux_reap (default True).
+            # Runs INSIDE the lock so the relay cannot be mid-write.
+            # Grace: skipped when has_recent_markers (session may have just spawned
+            # or be alive but with a silent pane).
+            # ------------------------------------------------------------------
+            if tmux_session and not has_recent_markers:
+                _so_cfg = _load_dead_tmux_reap_cfg()
+                if _so_cfg:
+                    pane_gone = not self._tmux_liveness_fn(tmux_session)
+                    if pane_gone:
+                        # Determine terminal state: DONE if the last known marker
+                        # was a 'done' kind, ERROR otherwise.
+                        all_markers, _ = [], new_offset
+                        try:
+                            if workdir:
+                                all_markers, _ = read_markers_since(
+                                    f"{workdir}/.hermes/sessions/{task_id}.jsonl", 0
+                                )
+                        except OSError:
+                            pass
+                        last_kind = all_markers[-1].get("kind", "") if all_markers else ""
+                        terminal_state = (
+                            SessionLifecycle.DONE.value
+                            if last_kind == "done"
+                            else SessionLifecycle.ERROR.value
+                        )
+                        logger.info(
+                            "watcher._process_row: dead-tmux reap task_id=%s "
+                            "tmux_session=%s -> %s",
+                            task_id,
+                            tmux_session,
+                            terminal_state,
+                        )
+                        self._registry.upsert(
+                            task_id,
+                            agent=row.get("agent", "unknown"),
+                            run_id=row.get("run_id"),
+                            repo=row.get("repo"),
+                            source=row.get("source", "spawn"),
+                            state=terminal_state,
+                            terminated_at=now,
+                        )
+                        return True
+
             # Capture pane while we hold the lock
             if pane:
                 pane_text = self._tmux_capture(pane)
@@ -992,6 +1305,20 @@ class SessionWatcher:
         new_state = new_lifecycle.value
         old_state = row.get("state", SessionLifecycle.RUNNING.value)
 
+        # Attention-state transition flags (used for stamp/clear and re-nudge below)
+        entering_attention = (
+            new_state in _ATTENTION_STATES
+            and old_state not in _ATTENTION_STATES
+        )
+        leaving_attention = (
+            old_state in _ATTENTION_STATES
+            and new_state not in _ATTENTION_STATES
+        )
+        staying_attention = (
+            new_state == old_state
+            and new_state in _ATTENTION_STATES
+        )
+
         # Compute pane hash for hang-detection (T009 consumes this)
         pane_hash = _pane_hash(pane_text) if pane_text else None
 
@@ -1007,7 +1334,7 @@ class SessionWatcher:
         if pane_hash is not None:
             update_fields["last_pane_hash"] = pane_hash
         if pane_changed:
-            update_fields["last_output_ts"] = time.time()
+            update_fields["last_output_ts"] = now
             update_fields["idle_ticks"] = 0
         else:
             # Atomic increment — done via registry.increment_counter
@@ -1041,7 +1368,29 @@ class SessionWatcher:
         # Heartbeat counter — always bump (T008 gates on modulo)
         self._registry.increment_counter(task_id, "heartbeat_counter", by=1)
 
-        # Re-read fresh row for hook calls (reflects counters just written)
+        # Stamp/clear attention_since and last_renudge_at.  Done BEFORE the
+        # fresh_row read so fresh_row reflects the updated values for the hooks.
+        # These writes are sequential within the single-writer tick — no race.
+        if entering_attention:
+            try:
+                self._registry.set_attention_stamps(task_id, now, None)
+            except Exception as exc:
+                logger.error(
+                    "watcher._process_row: set_attention_stamps (enter) failed "
+                    "for task_id=%s: %s",
+                    task_id, exc,
+                )
+        elif leaving_attention:
+            try:
+                self._registry.set_attention_stamps(task_id, None, None)
+            except Exception as exc:
+                logger.error(
+                    "watcher._process_row: set_attention_stamps (leave) failed "
+                    "for task_id=%s: %s",
+                    task_id, exc,
+                )
+
+        # Re-read fresh row for hook calls (reflects counters + attention stamps)
         fresh_row = self._registry.get(task_id) or row
 
         # Fire transition hook if state changed into a notify state (T011/T013)
@@ -1068,7 +1417,13 @@ class SessionWatcher:
                 }
             )
         ):
-            _on_turn_change(task_id, fresh_row, new_state, old_state)
+            _on_turn_change(
+                task_id,
+                fresh_row,
+                new_state,
+                old_state,
+                registry=self._registry,
+            )
         elif new_state != old_state and old_state in _NOTIFY_STATES:
             # Transitioning OUT of an attention state — re-arm the debounce
             # so the NEXT transition back fires as a new notification.
@@ -1103,6 +1458,22 @@ class SessionWatcher:
                 adapter=adapter,
                 pane_text=pane_text,
             )
+
+        # Re-nudge check — fires at most once per renudge_after_seconds when
+        # the session stays in an attention state without user action.
+        # This is the COMPLEMENT of the turn-change hook: same state, no transition.
+        if staying_attention:
+            try:
+                _check_renudge(
+                    task_id, fresh_row, now,
+                    registry=self._registry,
+                    send_dm_fn=self._send_dm_fn,
+                )
+            except Exception as exc:
+                logger.error(
+                    "watcher._process_row: _check_renudge failed for task_id=%s: %s",
+                    task_id, exc,
+                )
 
         return True
 

@@ -117,8 +117,111 @@ def _post_discord_message(
 
 
 # ---------------------------------------------------------------------------
+# Feed-board edit / delete helpers (T-FEED-003)
+# ---------------------------------------------------------------------------
+
+
+def _edit_discord_message(
+    channel_id: str,
+    message_id: str,
+    content: str,
+    *,
+    token: Optional[str] = None,
+) -> bool:
+    """PATCH an existing Discord message in-place.  Returns True on success.
+
+    Best-effort: logs on failure and returns False rather than raising.
+    Mirrors ``edit_status_message`` but used exclusively for the feed-board
+    in-place update path.
+    """
+    if not channel_id or not message_id:
+        return False
+
+    try:
+        from tools.discord_tool import _discord_request, _get_bot_token, DiscordAPIError  # type: ignore[import]
+    except ImportError as exc:
+        logger.warning("feed: cannot import discord helpers: %s", exc)
+        return False
+
+    resolved_token = token or _get_bot_token()
+    if not resolved_token:
+        logger.warning(
+            "feed: DISCORD_BOT_TOKEN not set; skipping PATCH of message=%s channel=%s",
+            message_id,
+            channel_id,
+        )
+        return False
+
+    try:
+        _discord_request(
+            "PATCH",
+            f"/channels/{channel_id}/messages/{message_id}",
+            resolved_token,
+            body={"content": content},
+        )
+        return True
+    except Exception as exc:
+        logger.warning(
+            "feed: failed to PATCH message=%s channel=%s: %s",
+            message_id,
+            channel_id,
+            exc,
+        )
+        return False
+
+
+def _delete_discord_message(
+    channel_id: str,
+    message_id: str,
+    *,
+    token: Optional[str] = None,
+) -> bool:
+    """DELETE an existing Discord message.  Returns True on success.
+
+    Best-effort: logs on failure and returns False rather than raising.
+    Used to reap the feed-board entry when a session terminates.
+    """
+    if not channel_id or not message_id:
+        return False
+
+    try:
+        from tools.discord_tool import _discord_request, _get_bot_token, DiscordAPIError  # type: ignore[import]
+    except ImportError as exc:
+        logger.warning("feed: cannot import discord helpers: %s", exc)
+        return False
+
+    resolved_token = token or _get_bot_token()
+    if not resolved_token:
+        logger.warning(
+            "feed: DISCORD_BOT_TOKEN not set; skipping DELETE of message=%s channel=%s",
+            message_id,
+            channel_id,
+        )
+        return False
+
+    try:
+        _discord_request(
+            "DELETE",
+            f"/channels/{channel_id}/messages/{message_id}",
+            resolved_token,
+        )
+        return True
+    except Exception as exc:
+        logger.warning(
+            "feed: failed to DELETE message=%s channel=%s: %s",
+            message_id,
+            channel_id,
+            exc,
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Public API consumed by watcher._on_turn_change
 # ---------------------------------------------------------------------------
+
+
+_TERMINAL_STATES = frozenset({"DONE", "ERROR"})
 
 
 def push_turn_change(
@@ -130,12 +233,28 @@ def push_turn_change(
     feed_channel_id: Optional[str] = None,
     token: Optional[str] = None,
     summarize_fn: Optional[Callable[[str], str]] = None,
-) -> bool:
+) -> Optional[str]:
     """Push a turn-change notification to the feed channel + task thread.
 
     Called exactly once per state transition (the watcher call-site already
     gates on ``new_state != old_state``).  Belt-and-suspenders debounce via
     ``_last_notified`` ensures idempotence inside a single cron run.
+
+    Feed-board single-message discipline (T-FEED-003)
+    --------------------------------------------------
+    The feed channel is kept as a live "needs action" board — one edited-in-
+    place message per active session, deleted when the session terminates:
+
+    - Non-terminal transition, no existing board entry: POST a new message
+      and return its id.
+    - Non-terminal transition, existing board entry: PATCH the existing
+      message in-place and return the same id (no new notification).
+    - Terminal transition (DONE/ERROR): DELETE the existing message (if any)
+      and return None (reaped from the board).
+
+    The per-session thread and DM paths are unchanged: the thread always
+    receives a new POST on every transition (append-only conversation log),
+    and DM behaviour is unmodified.
 
     Parameters
     ----------
@@ -160,7 +279,13 @@ def push_turn_change(
         Never called for non-WAITING_USER transitions or when last_question
         is absent/empty.
 
-    Returns True if at least one message was posted, False otherwise.
+    Returns
+    -------
+    Optional[str]
+        The resulting feed-board message id:
+        - New id on first POST (non-terminal, no prior entry).
+        - Same id after a PATCH (non-terminal, prior entry retained).
+        - None after a DELETE (terminal) or when no feed channel is configured.
     """
     # Belt-and-suspenders: skip if we already notified this state for this task.
     if _last_notified.get(task_id) == new_state:
@@ -169,7 +294,7 @@ def push_turn_change(
             task_id,
             new_state,
         )
-        return False
+        return None
 
     # Resolve feed channel
     resolved_feed_channel = feed_channel_id or _get_feed_channel_id()
@@ -213,24 +338,67 @@ def push_turn_change(
             )
             message += f"\n> {question_text}"
 
-    posted = False
+    # 1. Feed-board: POST / PATCH / DELETE based on terminal state + existing entry
+    feed_msg_id: Optional[str] = None
+    existing_feed_id: Optional[str] = row.get("feed_message_id") or None
 
-    # 1. Push to the unified feed channel
     if resolved_feed_channel:
-        msg_id = _post_discord_message(resolved_feed_channel, message, token=token)
-        if msg_id:
-            logger.info(
-                "feed.push_turn_change: posted to feed channel=%s msg_id=%s task_id=%s state=%s",
-                resolved_feed_channel,
-                msg_id,
-                task_id,
-                new_state,
+        if new_state in _TERMINAL_STATES:
+            # Reap the board entry: DELETE if one exists, result is None
+            if existing_feed_id:
+                ok = _delete_discord_message(
+                    resolved_feed_channel, existing_feed_id, token=token
+                )
+                logger.info(
+                    "feed.push_turn_change: deleted feed message=%s channel=%s "
+                    "task_id=%s state=%s ok=%s",
+                    existing_feed_id,
+                    resolved_feed_channel,
+                    task_id,
+                    new_state,
+                    ok,
+                )
+            # feed_msg_id stays None (reaped)
+        elif existing_feed_id:
+            # Non-terminal + existing entry: PATCH in place, retain same id
+            ok = _edit_discord_message(
+                resolved_feed_channel, existing_feed_id, message, token=token
             )
-            posted = True
+            if ok:
+                feed_msg_id = existing_feed_id
+                logger.info(
+                    "feed.push_turn_change: patched feed message=%s channel=%s "
+                    "task_id=%s state=%s",
+                    feed_msg_id,
+                    resolved_feed_channel,
+                    task_id,
+                    new_state,
+                )
+            else:
+                logger.warning(
+                    "feed.push_turn_change: PATCH failed for message=%s channel=%s "
+                    "task_id=%s — no id retained",
+                    existing_feed_id,
+                    resolved_feed_channel,
+                    task_id,
+                )
+        else:
+            # Non-terminal + no existing entry: POST new message
+            new_id = _post_discord_message(resolved_feed_channel, message, token=token)
+            if new_id:
+                feed_msg_id = new_id
+                logger.info(
+                    "feed.push_turn_change: posted to feed channel=%s msg_id=%s "
+                    "task_id=%s state=%s",
+                    resolved_feed_channel,
+                    feed_msg_id,
+                    task_id,
+                    new_state,
+                )
     else:
         logger.debug("feed.push_turn_change: no feed_channel_id; skipping feed post")
 
-    # 2. Push to the task's own Discord thread (if different from feed channel)
+    # 2. Push to the task's own Discord thread (append-only — always POST)
     if thread_id and thread_id != resolved_feed_channel:
         thread_msg_id = _post_discord_message(thread_id, message, token=token)
         if thread_msg_id:
@@ -240,7 +408,6 @@ def push_turn_change(
                 thread_msg_id,
                 task_id,
             )
-            posted = True
     elif not thread_id:
         logger.debug("feed.push_turn_change: no discord_thread_id; skipping thread post")
 
@@ -263,7 +430,7 @@ def push_turn_change(
     # Record the notified state (debounce marker)
     _last_notified[task_id] = new_state
 
-    return posted
+    return feed_msg_id
 
 
 def push_hang_notification(

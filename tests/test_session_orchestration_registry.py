@@ -606,3 +606,107 @@ class TestMigrateSchemaLastQuestion:
         row = reg.get(task_id)
         assert row is not None
         assert row.get("last_question") == "What is the meaning of life?"
+
+
+# ---------------------------------------------------------------------------
+# gc_terminal_rows
+# ---------------------------------------------------------------------------
+
+
+def _seed_terminal(
+    registry: SessionOrchestrationRegistry,
+    *,
+    state: str,
+    terminated_at: float | None,
+    task_id: str | None = None,
+) -> str:
+    """Insert a row with the given terminal state and terminated_at stamp."""
+    tid = task_id or str(uuid.uuid4())
+    registry.upsert(
+        tid,
+        agent="claude",
+        run_id=f"run-{uuid.uuid4().hex[:8]}",
+        repo=f"repo-{uuid.uuid4().hex[:8]}",
+        state=state,
+        terminated_at=terminated_at,
+    )
+    return tid
+
+
+class TestGcTerminalRows:
+    """gc_terminal_rows GC method — four eligibility rules."""
+
+    def test_old_terminal_row_is_deleted(self, registry):
+        """(a) A terminal row with terminated_at older than the threshold is deleted."""
+        now = 1_000_000.0
+        max_age = 3600  # 1 h
+        # terminated_at is 2 h ago — eligible
+        task_id = _seed_terminal(
+            registry, state="DONE", terminated_at=now - 7200.0
+        )
+
+        deleted = registry.gc_terminal_rows(now=now, max_age_seconds=max_age)
+
+        assert deleted == 1
+        assert registry.get(task_id) is None, "old terminal row must be deleted"
+
+    def test_fresh_terminal_row_is_retained(self, registry):
+        """(b) A terminal row with a recent terminated_at is NOT deleted."""
+        now = 1_000_000.0
+        max_age = 3600  # 1 h
+        # terminated_at is only 30 min ago — too fresh
+        task_id = _seed_terminal(
+            registry, state="DONE", terminated_at=now - 1800.0
+        )
+
+        deleted = registry.gc_terminal_rows(now=now, max_age_seconds=max_age)
+
+        assert deleted == 0
+        assert registry.get(task_id) is not None, "fresh terminal row must be retained"
+
+    def test_terminal_row_with_null_terminated_at_is_retained(self, registry):
+        """(c) A terminal row with terminated_at=NULL is never GC-ed."""
+        now = 1_000_000.0
+        task_id = _seed_terminal(registry, state="ERROR", terminated_at=None)
+
+        deleted = registry.gc_terminal_rows(now=now, max_age_seconds=60)
+
+        assert deleted == 0
+        assert registry.get(task_id) is not None, "NULL-stamp terminal row must survive GC"
+
+    def test_running_row_is_never_deleted(self, registry):
+        """(d) A non-terminal RUNNING row is never deleted regardless of timestamps."""
+        now = 1_000_000.0
+        # Seed a running row with a very old timestamp (not a real column but
+        # we store terminated_at=old just to confirm it does not get deleted)
+        task_id = _seed_terminal(registry, state="RUNNING", terminated_at=now - 999_999.0)
+
+        deleted = registry.gc_terminal_rows(now=now, max_age_seconds=1)
+
+        assert deleted == 0
+        assert registry.get(task_id) is not None, "RUNNING row must never be deleted by GC"
+
+    def test_only_eligible_rows_deleted_mixed_batch(self, registry):
+        """Mixed batch: only the old terminal rows are deleted."""
+        now = 1_000_000.0
+        max_age = 3600
+
+        old_done = _seed_terminal(registry, state="DONE", terminated_at=now - 7200.0)
+        old_error = _seed_terminal(registry, state="ERROR", terminated_at=now - 7200.0)
+        fresh_done = _seed_terminal(registry, state="DONE", terminated_at=now - 1800.0)
+        null_done = _seed_terminal(registry, state="DONE", terminated_at=None)
+        running = _seed_terminal(registry, state="RUNNING", terminated_at=now - 99999.0)
+
+        deleted = registry.gc_terminal_rows(now=now, max_age_seconds=max_age)
+
+        assert deleted == 2
+        assert registry.get(old_done) is None
+        assert registry.get(old_error) is None
+        assert registry.get(fresh_done) is not None
+        assert registry.get(null_done) is not None
+        assert registry.get(running) is not None
+
+    def test_returns_zero_when_nothing_eligible(self, registry):
+        """gc_terminal_rows returns 0 when no rows match."""
+        deleted = registry.gc_terminal_rows(now=1_000_000.0, max_age_seconds=86400)
+        assert deleted == 0

@@ -1234,6 +1234,25 @@ updates:
 #   # session is declared hung.  Each tick is roughly 1-2 minutes.
 #   # hang_idle_ticks: 3
 #
+#   # When true (default), the watcher proactively marks a session terminal
+#   # (ERROR or DONE) if its tmux pane disappears without emitting a 'done'
+#   # marker and there are no recent heartbeats.  Set to false to revert to
+#   # the prior behaviour of waiting out the full hang-nudge ladder instead.
+#   # dead_tmux_reap: true
+#
+#   # Retention window (seconds) for completed/errored sessions.  Terminal rows
+#   # (DONE or ERROR) with a ``terminated_at`` timestamp older than this value
+#   # are garbage-collected once per watcher tick.  Set to 0 to disable GC.
+#   # Default: 86400 (24 hours).
+#   # gc_after_seconds: 86400
+#
+#   # Re-nudge interval (seconds) for sessions that remain in WAITING_USER or
+#   # PAUSED_HANDOFF without user action.  When a session has been sitting in an
+#   # attention state for this long, the watcher sends a DM to the owner to
+#   # re-surface it.  Fires at most once per interval (debounced).
+#   # Set to 0 to disable re-nudging entirely.  Default: 1800 (30 minutes).
+#   # renudge_after_seconds: 1800
+#
 #   # ── Repo registry manual overrides ───────────────────────────────────────
 #   #
 #   # Hermes auto-scans ~/dev/* and ~/.hermes for git repos and makes them

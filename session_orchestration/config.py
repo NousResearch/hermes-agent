@@ -36,6 +36,9 @@ _DEFAULT_FEED_CHANNEL_ID: Optional[str] = None
 _DEFAULT_EXTERNAL_RUNS_CHANNEL_ID: Optional[str] = None
 _DEFAULT_HANG_STALE_SECONDS: int = 300  # 5 min static stale threshold
 _DEFAULT_HANG_IDLE_TICKS: int = 3       # N ticks of pane-hash unchanged before hang
+_DEFAULT_DEAD_TMUX_REAP: bool = True    # reap sessions whose tmux pane died without a done marker
+_DEFAULT_GC_AFTER_SECONDS: int = 86400  # 24 h retention for terminal rows
+_DEFAULT_RENUDGE_AFTER_SECONDS: int = 1800  # 30 min before re-surfacing an unacted attention item
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,20 @@ class SessionOrchestrationConfig:
     external_runs_channel_id: Optional[str] = _DEFAULT_EXTERNAL_RUNS_CHANNEL_ID
     hang_stale_seconds: int = _DEFAULT_HANG_STALE_SECONDS
     hang_idle_ticks: int = _DEFAULT_HANG_IDLE_TICKS
+    # When True (default), the watcher proactively marks a session terminal
+    # (ERROR/DONE) if its tmux pane has died without emitting a 'done' marker
+    # and there are no recent heartbeats.  Set to false to revert to the prior
+    # behaviour of waiting out the full hang-nudge ladder instead.
+    dead_tmux_reap: bool = _DEFAULT_DEAD_TMUX_REAP
+    # Retention window (seconds) for terminal rows (DONE / ERROR).  Rows with a
+    # ``terminated_at`` stamp older than this are GC-ed once per watcher tick.
+    # Set to 0 (or any value <= 0) to disable GC entirely.  Default: 86400 (24 h).
+    gc_after_seconds: int = _DEFAULT_GC_AFTER_SECONDS
+    # Re-nudge interval (seconds) for sessions that remain in an attention state
+    # (WAITING_USER or PAUSED_HANDOFF) without user action.  The watcher sends a
+    # DM at most once per interval to re-surface the waiting item.  Set to 0 (or
+    # any value <= 0) to disable re-nudging entirely.  Default: 1800 (30 min).
+    renudge_after_seconds: int = _DEFAULT_RENUDGE_AFTER_SECONDS
     # Manual repo alias overrides for the repo registry (alias → path or dict).
     # Stored as the raw config dict so repo_registry.build_repo_registry() can
     # parse it without the config module importing the registry module.
@@ -80,6 +97,13 @@ class SessionOrchestrationConfig:
         hang_idle_ticks = _coerce_positive_int(
             data.get("hang_idle_ticks"), _DEFAULT_HANG_IDLE_TICKS
         )
+        dead_tmux_reap = _coerce_bool(data.get("dead_tmux_reap"), _DEFAULT_DEAD_TMUX_REAP)
+        gc_after_seconds = _coerce_int(
+            data.get("gc_after_seconds"), _DEFAULT_GC_AFTER_SECONDS
+        )
+        renudge_after_seconds = _coerce_int(
+            data.get("renudge_after_seconds"), _DEFAULT_RENUDGE_AFTER_SECONDS
+        )
         repos = data.get("repos")
         repos = repos if isinstance(repos, dict) else {}
 
@@ -89,6 +113,9 @@ class SessionOrchestrationConfig:
             external_runs_channel_id=external_runs_channel_id,
             hang_stale_seconds=hang_stale_seconds,
             hang_idle_ticks=hang_idle_ticks,
+            dead_tmux_reap=dead_tmux_reap,
+            gc_after_seconds=gc_after_seconds,
+            renudge_after_seconds=renudge_after_seconds,
             repos=repos,
         )
 
@@ -172,5 +199,19 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     try:
         n = int(value)
         return n if n > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Coerce *value* to int; fall back to *default* on parse failure.
+
+    Unlike ``_coerce_positive_int`` this allows 0 and negative values so
+    callers can use 0 as a sentinel (e.g. gc_after_seconds=0 disables GC).
+    """
+    if value is None:
+        return default
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return default

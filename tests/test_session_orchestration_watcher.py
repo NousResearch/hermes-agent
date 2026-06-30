@@ -30,7 +30,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List
+import os
+from typing import Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -135,12 +136,20 @@ def _make_watcher(
     capture: FakeCapture,
     *,
     adapter_name: str = "fake",
+    tmux_liveness_fn=None,
 ) -> SessionWatcher:
-    """Build a SessionWatcher with injected fakes."""
+    """Build a SessionWatcher with injected fakes.
+
+    ``tmux_liveness_fn`` defaults to a stub that returns True (pane alive) so
+    that existing tests that don't exercise dead-tmux reaping are not affected.
+    Tests that want to exercise reap must pass an explicit ``tmux_liveness_fn``
+    (see ``_make_watcher_with_liveness`` below and ``TestDeadTmuxReap``).
+    """
     watcher = SessionWatcher(
         registry=registry,
         adapters={adapter_name: adapter},
         tmux_capture=capture,
+        tmux_liveness_fn=tmux_liveness_fn if tmux_liveness_fn is not None else (lambda _s: True),
     )
     # Inject probe fakes so no real binaries are touched
     probe_runner = FakeProbeRunner()
@@ -1296,7 +1305,7 @@ class TestDoneMarkerFiresTurnChange:
         turn_change_calls: List = []
         monkeypatch.setattr(
             "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s: turn_change_calls.append(
+            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
                 (tid, new_s, old_s)
             ),
         )
@@ -1475,7 +1484,7 @@ class TestProcessRowRunningTransition:
         turn_change_calls: List = []
         monkeypatch.setattr(
             "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s: turn_change_calls.append(
+            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
                 (tid, new_s, old_s)
             ),
         )
@@ -1505,7 +1514,7 @@ class TestProcessRowRunningTransition:
         turn_change_calls: List = []
         monkeypatch.setattr(
             "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s: turn_change_calls.append(
+            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
                 (tid, new_s, old_s)
             ),
         )
@@ -1549,7 +1558,7 @@ class TestProcessRowRunningTransition:
         turn_change_calls: List = []
         monkeypatch.setattr(
             "session_orchestration.watcher._on_turn_change",
-            lambda tid, row, new_s, old_s: turn_change_calls.append(
+            lambda tid, row, new_s, old_s, **kw: turn_change_calls.append(
                 (tid, new_s, old_s)
             ),
         )
@@ -1566,4 +1575,252 @@ class TestProcessRowRunningTransition:
         ]
         assert running_from_stalled == [], (
             "_on_turn_change must NOT fire for STALLED -> RUNNING (not from attention state)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dead-tmux reap tests (T-FEED-001)
+# ---------------------------------------------------------------------------
+
+
+def _make_watcher_with_liveness(
+    registry: SessionOrchestrationRegistry,
+    adapter: FakeAdapter,
+    capture: FakeCapture,
+    liveness_fn,
+    *,
+    adapter_name: str = "fake",
+) -> SessionWatcher:
+    """Build a SessionWatcher with injected fakes including liveness function."""
+    watcher = SessionWatcher(
+        registry=registry,
+        adapters={adapter_name: adapter},
+        tmux_capture=capture,
+        tmux_liveness_fn=liveness_fn,
+    )
+    probe_runner = FakeProbeRunner()
+    probe_specs = {type(adapter).__name__: _fake_probe_spec(adapter)}
+    watcher.startup_verify(probe_runner=probe_runner, probe_specs=probe_specs)
+    return watcher
+
+
+class TestDeadTmuxReap:
+    """Dead-tmux reap: sessions whose tmux pane dies are marked terminal immediately.
+
+    (a) pane-gone + no done marker + no recent heartbeat -> ERROR + terminated_at set
+    (b) pane-gone + done marker present -> DONE
+    (c) recent heartbeat -> NOT reaped (session stays active)
+    (d) dead_tmux_reap=false -> NOT reaped
+    """
+
+    def _seed(
+        self,
+        registry: SessionOrchestrationRegistry,
+        task_id: str = "reap-001",
+        state: str = "RUNNING",
+        tmux_session: str = "hermes-reap-001",
+        workdir: Optional[str] = None,
+    ) -> None:
+        registry.upsert(
+            task_id,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            state=state,
+            tmux_session=tmux_session,
+            workdir=workdir,
+        )
+
+    def test_pane_gone_no_done_marker_yields_error(self, registry, db_path, tmp_path):
+        """(a) Pane gone + no done marker + no recent heartbeat -> ERROR + terminated_at."""
+        task_id = "reap-a-001"
+        tmux_session = "dead-session-a"
+        workdir = str(tmp_path)
+        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
+
+        # Liveness check: pane is GONE
+        def dead(_s):
+            return False
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("some text")
+        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
+
+        processed = watcher.tick()
+
+        assert processed == 1
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "ERROR", (
+            "dead pane with no done marker should be marked ERROR"
+        )
+        assert row.get("terminated_at") is not None, (
+            "terminated_at must be stamped on dead-tmux reap"
+        )
+        assert isinstance(row["terminated_at"], float), (
+            "terminated_at must be a float epoch"
+        )
+
+    def test_pane_gone_with_done_marker_yields_done(self, registry, db_path, tmp_path):
+        """(b) Pane gone + done marker present -> DONE."""
+        task_id = "reap-b-001"
+        tmux_session = "dead-session-b"
+        workdir = str(tmp_path)
+        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
+
+        # Write a 'done' marker so read_markers_since(offset=0) returns it
+        marker_file = f"{workdir}/.hermes/sessions/{task_id}.jsonl"
+        os.makedirs(f"{workdir}/.hermes/sessions", exist_ok=True)
+        append_marker(marker_file, "done", {}, task=task_id)
+
+        def dead(_s):
+            return False
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture()
+        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
+
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] == "DONE", (
+            "dead pane + done marker should be marked DONE"
+        )
+
+    def test_recent_heartbeat_prevents_reap(self, registry, db_path, tmp_path):
+        """(c) Recent heartbeat marker -> NOT reaped (session allowed to continue)."""
+        task_id = "reap-c-001"
+        tmux_session = "alive-session-c"
+        workdir = str(tmp_path)
+        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
+
+        # Write a recent heartbeat marker (within _MARKER_RECENCY_SECONDS)
+        marker_file = f"{workdir}/.hermes/sessions/{task_id}.jsonl"
+        os.makedirs(f"{workdir}/.hermes/sessions", exist_ok=True)
+        append_marker(marker_file, "heartbeat", {}, task=task_id)
+
+        # Liveness check says pane is DEAD — but heartbeat should prevent reap
+        def dead(_s):
+            return False
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("alive pane output")
+        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
+
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        # State must NOT be a terminal state: the heartbeat guards against reap
+        assert row["state"] not in {"DONE", "ERROR"}, (
+            "recent heartbeat must prevent dead-tmux reap"
+        )
+        assert row.get("terminated_at") is None, (
+            "terminated_at must NOT be set when reap is suppressed by heartbeat"
+        )
+
+    def test_dead_tmux_reap_disabled_by_config(
+        self, registry, db_path, tmp_path, monkeypatch
+    ):
+        """(d) dead_tmux_reap=false -> NOT reaped even when pane is gone."""
+        import session_orchestration.watcher as _watcher_mod
+
+        # Patch _load_dead_tmux_reap_cfg to return False (knob disabled)
+        monkeypatch.setattr(_watcher_mod, "_load_dead_tmux_reap_cfg", lambda: False)
+
+        task_id = "reap-d-001"
+        tmux_session = "dead-session-d"
+        workdir = str(tmp_path)
+        self._seed(registry, task_id=task_id, tmux_session=tmux_session, workdir=workdir)
+
+        def dead(_s):
+            return False
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture("some output")
+        watcher = _make_watcher_with_liveness(registry, adapter, capture, dead)
+
+        watcher.tick()
+
+        row = registry.get(task_id)
+        assert row is not None
+        assert row["state"] not in {"DONE", "ERROR"}, (
+            "dead_tmux_reap=false must prevent reaping even when pane is gone"
+        )
+        assert row.get("terminated_at") is None
+
+
+# ---------------------------------------------------------------------------
+# GC gating in tick()
+# ---------------------------------------------------------------------------
+
+
+class TestTickGc:
+    """Watcher tick GC gate — gc_after_seconds config knob controls deletion."""
+
+    def _seed_terminal(
+        self,
+        registry: SessionOrchestrationRegistry,
+        *,
+        state: str,
+        terminated_at: float,
+    ) -> str:
+        tid = str(uuid.uuid4())
+        registry.upsert(
+            tid,
+            agent="fake",
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            repo=f"repo-{uuid.uuid4().hex[:8]}",
+            state=state,
+            terminated_at=terminated_at,
+        )
+        return tid
+
+    def test_gc_deletes_old_terminal_row_during_tick(
+        self, registry, monkeypatch
+    ):
+        """(e-positive) An old terminal row is deleted when gc_after_seconds > 0."""
+        import session_orchestration.watcher as _watcher_mod
+
+        now = 1_000_000.0
+        gc_age = 3600
+        # terminated_at is 2 h ago — eligible
+        task_id = self._seed_terminal(
+            registry, state="DONE", terminated_at=now - 7200.0
+        )
+
+        # Patch config loader and time.time inside the module
+        monkeypatch.setattr(_watcher_mod, "_load_gc_after_seconds_cfg", lambda: gc_age)
+        monkeypatch.setattr(_watcher_mod.time, "time", lambda: now)
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture()
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert registry.get(task_id) is None, "old terminal row must be GC-ed during tick"
+
+    def test_gc_disabled_when_gc_after_seconds_zero(
+        self, registry, monkeypatch
+    ):
+        """(e) gc_after_seconds=0 disables GC — no rows deleted even if eligible."""
+        import session_orchestration.watcher as _watcher_mod
+
+        now = 1_000_000.0
+        task_id = self._seed_terminal(
+            registry, state="DONE", terminated_at=now - 999_999.0
+        )
+
+        # gc_after_seconds == 0 → GC disabled
+        monkeypatch.setattr(_watcher_mod, "_load_gc_after_seconds_cfg", lambda: 0)
+        monkeypatch.setattr(_watcher_mod.time, "time", lambda: now)
+
+        adapter = FakeAdapter(SessionLifecycle.RUNNING)
+        capture = FakeCapture()
+        watcher = _make_watcher(registry, adapter, capture)
+        watcher.tick()
+
+        assert registry.get(task_id) is not None, (
+            "gc_after_seconds=0 must disable GC — row must be retained"
         )

@@ -90,12 +90,16 @@ CREATE TABLE IF NOT EXISTS session_orchestration (
     last_output_ts         REAL,
     heartbeat_counter      INTEGER NOT NULL DEFAULT 0,
     status_message_id      TEXT,
+    feed_message_id        TEXT,
     lock_holder            TEXT,
     lock_ts                TEXT,
     source                 TEXT NOT NULL DEFAULT 'spawn',
     run_id                 TEXT,
     repo                   TEXT,
     marker_offset          INTEGER NOT NULL DEFAULT 0,
+    terminated_at          REAL,
+    attention_since        REAL,
+    last_renudge_at        REAL,
     created_at             TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(run_id, repo)
@@ -274,6 +278,38 @@ class SessionOrchestrationRegistry:
                 conn.execute(
                     "ALTER TABLE session_orchestration "
                     "ADD COLUMN last_question TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN terminated_at REAL"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN feed_message_id TEXT"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN attention_since REAL"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists — idempotent
+
+            try:
+                conn.execute(
+                    "ALTER TABLE session_orchestration "
+                    "ADD COLUMN last_renudge_at REAL"
                 )
             except sqlite3.OperationalError:
                 pass  # Column already exists — idempotent
@@ -609,10 +645,119 @@ class SessionOrchestrationRegistry:
                 repo=existing.get("repo"),
                 source=existing.get("source", "spawn"),
                 state=terminal_state,
+                terminated_at=time.time(),
             )
 
         else:
             logger.warning("registry._apply_intent: unknown intent kind %r", kind)
+
+    def gc_terminal_rows(self, *, now: float, max_age_seconds: int) -> int:
+        """Delete terminal rows whose ``terminated_at`` stamp is old enough.
+
+        A row is eligible for GC when ALL of:
+
+        - ``state`` is in the terminal set (``DONE`` or ``ERROR``).
+        - ``terminated_at IS NOT NULL`` (rows without a stamp are never GC-ed
+          so legacy pre-stamp rows are preserved indefinitely).
+        - ``terminated_at < now - max_age_seconds`` (the row is older than the
+          configured retention window).
+
+        The DELETE runs inside a single ``BEGIN IMMEDIATE`` transaction (the
+        watcher is the sole mutator, so this is safe within the tick).
+
+        Parameters
+        ----------
+        now:
+            Current epoch timestamp (seconds).  Pass ``time.time()`` in
+            production; inject a fixed value in tests for determinism.
+        max_age_seconds:
+            Retention window in seconds.  Rows with a ``terminated_at`` older
+            than ``now - max_age_seconds`` are deleted.
+
+        Returns
+        -------
+        int
+            Number of rows deleted.
+        """
+        cutoff = now - max_age_seconds
+        terminal_states = (
+            SessionLifecycle.DONE.value,
+            SessionLifecycle.ERROR.value,
+        )
+
+        def _do(conn: sqlite3.Connection) -> int:
+            cur = conn.execute(
+                "DELETE FROM session_orchestration "
+                "WHERE state IN (?, ?) "
+                "AND terminated_at IS NOT NULL "
+                "AND terminated_at < ?",
+                (*terminal_states, cutoff),
+            )
+            return cur.rowcount
+
+        return self._write(_do) or 0
+
+    def set_feed_message_id(
+        self,
+        task_id: str,
+        feed_message_id: Optional[str],
+    ) -> None:
+        """Persist the Discord feed-channel message id for *task_id*.
+
+        **Cron watcher only.**  Called by ``_on_turn_change`` after a feed
+        POST/PATCH/DELETE to keep the registry in sync with the live board.
+
+        Parameters
+        ----------
+        task_id:
+            Registry row to update.
+        feed_message_id:
+            The Discord message id of the live feed-board entry, or ``None``
+            to clear it (used after a DELETE when the session terminates).
+        """
+        def _do(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE session_orchestration "
+                "SET feed_message_id = ?, updated_at = datetime('now') "
+                "WHERE task_id = ?",
+                (feed_message_id, task_id),
+            )
+
+        self._write(_do)
+
+    def set_attention_stamps(
+        self,
+        task_id: str,
+        attention_since: Optional[float],
+        last_renudge_at: Optional[float],
+    ) -> None:
+        """Persist attention_since and last_renudge_at for *task_id*.
+
+        **Cron watcher only.**  Pass ``None`` to clear either column to NULL.
+        Called by ``_process_row`` when a session enters or leaves an attention
+        state (WAITING_USER / PAUSED_HANDOFF) and when a re-nudge fires.
+
+        Parameters
+        ----------
+        task_id:
+            Registry row to update.
+        attention_since:
+            Epoch timestamp when the row entered the current attention state,
+            or ``None`` to clear (row is leaving attention).
+        last_renudge_at:
+            Epoch timestamp of the most recent re-nudge, or ``None`` to reset
+            the debounce marker (row just entered attention, no nudge yet).
+        """
+        def _do(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE session_orchestration "
+                "SET attention_since = ?, last_renudge_at = ?, "
+                "    updated_at = datetime('now') "
+                "WHERE task_id = ?",
+                (attention_since, last_renudge_at, task_id),
+            )
+
+        self._write(_do)
 
     # ------------------------------------------------------------------
     # Public API — queue write (any caller, append-only)

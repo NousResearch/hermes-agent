@@ -1072,13 +1072,18 @@ class WeComAdapter(BasePlatformAdapter):
         max_bytes: int,
     ) -> Tuple[bytes, Dict[str, str]]:
         from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
 
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
-        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        client = self._http_client or httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        )
         created_client = client is not self._http_client
         try:
             async with client.stream(
@@ -1090,6 +1095,8 @@ class WeComAdapter(BasePlatformAdapter):
                 },
             ) as response:
                 response.raise_for_status()
+                if not is_safe_url(str(response.url)):
+                    raise ValueError("Blocked unsafe redirect URL (SSRF protection)")
                 headers = {key.lower(): value for key, value in response.headers.items()}
                 content_length = headers.get("content-length")
                 if content_length and content_length.isdigit() and int(content_length) > max_bytes:

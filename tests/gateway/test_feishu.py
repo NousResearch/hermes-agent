@@ -1825,8 +1825,12 @@ class TestAdapterBehavior(unittest.TestCase):
                 return b"doc-bytes"
 
         class _FakeAsyncClient:
-            def __init__(self, *_a: object, **_k: object) -> None:
-                pass
+            def __init__(self, *_a: object, **kwargs: object) -> None:
+                events.append(
+                    "has_redirect_guard"
+                    if kwargs.get("event_hooks", {}).get("response")
+                    else "missing_redirect_guard"
+                )
 
             async def __aenter__(self) -> "_FakeAsyncClient":
                 events.append("client_enter")
@@ -1860,6 +1864,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertEqual(path, "/tmp/cached-doc.bin")
         self.assertTrue(filename)
+        self.assertIn("has_redirect_guard", events)
         # content_read MUST happen before client_exit — otherwise we're
         # reading response body after the connection pool has been torn
         # down, which only works by accident (httpx's eager buffering).

@@ -443,6 +443,7 @@ class TestMediaUpload:
 
         class FakeResponse:
             headers = {"content-length": "10"}
+            url = "https://example.com/file.bin"
 
             async def __aenter__(self):
                 return self
@@ -465,6 +466,44 @@ class TestMediaUpload:
 
         with pytest.raises(ValueError, match="exceeds WeCom limit"):
             await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=4)
+
+    @pytest.mark.asyncio
+    async def test_download_remote_bytes_rejects_unsafe_redirect(self, monkeypatch):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        class FakeResponse:
+            headers = {}
+            url = "http://169.254.169.254/latest/meta-data"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"secret"
+
+        class FakeClient:
+            def stream(self, method, url, headers=None):
+                return FakeResponse()
+
+        calls = []
+
+        def fake_safe(url):
+            calls.append(url)
+            return len(calls) == 1
+
+        monkeypatch.setattr("tools.url_safety.is_safe_url", fake_safe)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = FakeClient()
+
+        with pytest.raises(ValueError, match="unsafe redirect"):
+            await adapter._download_remote_bytes("https://example.com/file.bin", max_bytes=100)
 
     @pytest.mark.asyncio
     async def test_cache_media_decrypts_url_payload_before_writing(self):

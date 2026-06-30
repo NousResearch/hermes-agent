@@ -1965,6 +1965,77 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     assert "***" in dumped_text or "..." in dumped_text
 
 
+def test_dump_api_request_debug_anthropic_mode_shows_masked_key(monkeypatch, tmp_path):
+    """Debug dumps for anthropic_messages mode should show a masked key, not 'None'.
+
+    For Anthropic-mode providers (MiniMax, Kimi, etc.) ``agent.client`` is
+    ``None`` — the real client lives in ``agent._anthropic_client``.  The dump
+    must fall back to ``agent.api_key`` so the Authorization header shows a
+    masked key instead of ``Bearer None``.
+    """
+    import json
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="MiniMax-M3",
+        provider="minimax-cn",
+        api_mode="anthropic_messages",
+        base_url="https://api.minimaxi.com/anthropic",
+        api_key="sk-cp-abcdef0123456789",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+    # Anthropic mode sets agent.client = None
+    assert agent.client is None
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "MiniMax-M3", "messages": [{"role": "user", "content": "hi"}]},
+        reason="preflight",
+    )
+
+    assert dump_file is not None
+    payload = json.loads(dump_file.read_text())
+    auth_header = payload["request"]["headers"]["Authorization"]
+    # Must NOT be "Bearer None"
+    assert auth_header != "Bearer None", f"Expected masked key, got: {auth_header}"
+    # Must show a masked representation of the key
+    assert auth_header.startswith("Bearer sk-cp-ab...")
+    assert "None" not in auth_header
+
+
+def test_dump_api_request_debug_anthropic_mode_shows_messages_url(monkeypatch, tmp_path):
+    """Debug dumps for anthropic_messages mode should show /v1/messages URL.
+
+    The Anthropic SDK posts to ``/v1/messages``, not ``/chat/completions``.
+    """
+    import json
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="MiniMax-M3",
+        provider="minimax-cn",
+        api_mode="anthropic_messages",
+        base_url="https://api.minimaxi.com/anthropic",
+        api_key="sk-cp-abcdef0123456789",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "MiniMax-M3", "messages": [{"role": "user", "content": "hi"}]},
+        reason="preflight",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["request"]["url"] == "https://api.minimaxi.com/anthropic/v1/messages"
+
+
 # --- Reasoning-only response tests (fix for empty content retry loop) ---
 
 

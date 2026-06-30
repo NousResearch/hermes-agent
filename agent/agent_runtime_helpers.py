@@ -1240,6 +1240,22 @@ def dump_api_request_debug(
             api_key = getattr(agent.client, "api_key", None)
         except Exception as e:
             _ra().logger.debug("Could not extract API key for debug dump: %s", e)
+        # Anthropic-mode providers store the client in
+        # ``agent._anthropic_client`` and set ``agent.client = None``.
+        # Fall back to ``agent.api_key`` (set by init_agent for all modes)
+        # so the dump shows a masked key instead of ``Bearer None``.
+        if not api_key:
+            api_key = getattr(agent, "api_key", None)
+
+        # Build the dump URL to match the actual outbound endpoint.
+        # Anthropic SDK posts to ``/v1/messages`` (base_url already has /v1
+        # stripped by the normalizer); Codex uses ``/responses``.
+        if agent.api_mode == "anthropic_messages":
+            _dump_url = f"{agent.base_url.rstrip('/')}/v1/messages"
+        elif agent.api_mode == "codex_responses":
+            _dump_url = f"{agent.base_url.rstrip('/')}/responses"
+        else:
+            _dump_url = f"{agent.base_url.rstrip('/')}/chat/completions"
 
         dump_payload: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
@@ -1247,7 +1263,7 @@ def dump_api_request_debug(
             "reason": reason,
             "request": {
                 "method": "POST",
-                "url": f"{agent.base_url.rstrip('/')}{'/responses' if agent.api_mode == 'codex_responses' else '/chat/completions'}",
+                "url": _dump_url,
                 "headers": {
                     "Authorization": f"Bearer {agent._mask_api_key_for_logs(api_key)}",
                     "Content-Type": "application/json",

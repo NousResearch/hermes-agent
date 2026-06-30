@@ -1589,6 +1589,18 @@ if _config_path.exists():
             _trust_recent_seconds = _gateway_cfg.get("trust_recent_files_seconds")
             if _trust_recent_seconds is not None:
                 os.environ["HERMES_MEDIA_TRUST_RECENT_SECONDS"] = str(_trust_recent_seconds)
+            # Bridge gateway.platform_connect_timeout → the internal env var the
+            # connect path + Discord adapter ready-wait both read (#19776).
+            # Unlike the agent.*/display.* bridges above (config-authoritative),
+            # this env var is the manual-override escape hatch, so it WINS if
+            # already set explicitly; otherwise config.yaml supplies the value.
+            if (
+                "platform_connect_timeout" in _gateway_cfg
+                and not os.environ.get("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
+            ):
+                os.environ["HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT"] = str(
+                    _gateway_cfg["platform_connect_timeout"]
+                )
     except Exception as _bridge_err:
         # Previously this was silent (`except Exception: pass`), which
         # hid partial bridge failures and let .env defaults shadow

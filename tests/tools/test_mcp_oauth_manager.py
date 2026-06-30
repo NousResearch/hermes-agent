@@ -174,6 +174,12 @@ async def test_handle_401_tracks_inflight_task_to_prevent_gc(tmp_path, monkeypat
 
     result = await mgr.handle_401("srv", failed_access_token="TOK")
 
+    # The discard done-callback is scheduled via loop.call_soon, so it runs on
+    # a later loop iteration than the one that resolved `pending` and let
+    # handle_401 return. Yield once so the callback fires before we assert the
+    # task was removed from the live set.
+    await asyncio.sleep(0)
+
     # Exactly one handler task was created and tracked.
     assert len(mgr._inflight_tasks.ever_added) == 1
     tracked_task = mgr._inflight_tasks.ever_added[0]
@@ -226,6 +232,8 @@ async def test_handle_401_dedup_survives_even_if_task_reference_dropped(tmp_path
 
     results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5.0)
     assert results == [False] * 8
+    # Let the shared _do_handle task's discard done-callback (call_soon) run.
+    await asyncio.sleep(0)
     assert len(mgr._inflight_tasks) == 0
 
 
